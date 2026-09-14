@@ -13,7 +13,7 @@ mod store;
 
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
-pub use id::{AgentId, LeaseOwnerId, MessageId, RequestId, SessionId};
+pub use id::{AgentId, LeaseOwnerId, MessageId, NodeId, RequestId, SessionId};
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
 

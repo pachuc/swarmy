@@ -1,0 +1,18 @@
+: heartbeat
+
+event: response.created
+data: {"type": "response.created", "response": {"id": "resp_1"}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Hello "}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "🌍"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "msg_1", "role": "assistant", "content": [{"type": "output_text", "text": "Hello 🌍"}]}}
+
+event: response.completed
+data: {"type": "response.completed", "response": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13, "input_tokens_details": {"cached_tokens": 4}, "output_tokens_details": {"reasoning_tokens": 2}}, "output": [{"type": "message", "id": "msg_1", "role": "assistant", "content": [{"type": "output_text", "text": "Hello 🌍"}]}]}}
+
+: end of fixture

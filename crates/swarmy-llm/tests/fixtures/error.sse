@@ -1,0 +1,6 @@
+: heartbeat
+
+event: response.failed
+data: {"type": "response.failed", "response": {"status": "failed", "error": {"code": "quota_exceeded", "message": "Quota exhausted"}}}
+
+: end of fixture
