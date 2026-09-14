@@ -54,3 +54,10 @@ RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path \
       --default-toolchain "${RUST_VERSION}" --profile minimal \
       --component clippy --component rustfmt \
     && cargo --version && cargo clippy --version && cargo fmt --version
+
+# Login shells source /etc/profile, which resets PATH, so the toolchain must
+# also be added from the user's own profile files. The launcher and Codex run
+# commands through bash -l.
+RUN printf '\nexport PATH="$HOME/.cargo/bin:$PATH"\n' >> /home/node/.profile \
+    && printf '\nexport PATH="$HOME/.cargo/bin:$PATH"\n' >> /home/node/.bashrc \
+    && bash -lc 'cargo --version'

@@ -7,6 +7,9 @@
 //
 // Usage: node .daytona/build-snapshot.mjs
 //
+// Resources are sized so two sandboxes fit under the Daytona organization's
+// 10 GiB total memory cap; raise them if the tier is upgraded.
+//
 // The script borrows the Daytona SDK and the DAYTONA_API_KEY from a checkout of
 // codex-daytona. Set CODEX_DAYTONA_DIR if it is not at ~/code/codex-daytona.
 
@@ -43,7 +46,7 @@ try {
 if (!exists) {
   console.log(`Building snapshot ${name} from ${dockerfile}`);
   await daytona.snapshot.create(
-    { name, image: Image.fromDockerfile(dockerfile), resources: { cpu: 4, memory: 8, disk: 10 } },
+    { name, image: Image.fromDockerfile(dockerfile), resources: { cpu: 4, memory: 5, disk: 10 } },
     { onLogs: chunk => process.stdout.write(chunk), timeout: 3600 },
   );
   console.log(`Snapshot ${name} is ready.`);
