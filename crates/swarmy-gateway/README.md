@@ -82,3 +82,25 @@ Tests allocate unique FoundationDB directories and bus prefixes and run the
 actual binary as a child. They skip with a printed message when the required
 service variables are absent. The crash test sends SIGKILL after a live delta,
 then restarts the binary against the same durable state and call log.
+
+For concurrent sessions and gateway restarts, use the request-based script mode:
+
+```json
+{
+  "latency_ms": 100,
+  "request_based": {
+    "steps": 3,
+    "tool_steps": [0, 1],
+    "final_answer": "chaos session complete"
+  }
+}
+```
+
+The zero-based step is the number of assistant messages in the incoming request,
+so retries and interleaved sessions select the same response on any process.
+Listed steps emit `get_time` with a stable `clock-STEP` call id. Other steps emit
+`final_answer` and end the turn. For a turn of exactly `steps` responses, list all
+steps before the final one; the current harness ends on a text-only response.
+Tool steps must precede the final step, and requests beyond `steps` fail.
+Choose either `responses` or `request_based`. Existing turn-keyed scripts,
+`fail`, latency, and the synced call log keep their previous behavior.

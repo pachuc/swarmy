@@ -2252,6 +2252,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-chaos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "clap",
+ "foundationdb",
+ "futures",
+ "jiff",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "serde_json",
+ "swarmy-bus",
+ "swarmy-core",
+ "swarmy-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-cli"
 version = "0.1.0"
 dependencies = [
