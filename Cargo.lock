@@ -2249,6 +2249,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-harness"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-llm",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-llm"
 version = "0.1.0"
 dependencies = [

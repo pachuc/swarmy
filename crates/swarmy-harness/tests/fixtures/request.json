@@ -1,0 +1,33 @@
+{
+  "system_prompt": "You are a helpful agent.\nUse tools when needed.\n",
+  "messages": [
+    {
+      "id": "00000000000000000000000003",
+      "role": "user",
+      "parts": [
+        {
+          "text": {
+            "text": "What time is it?"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_time",
+      "description": "Return the current time as an RFC 3339 timestamp.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    }
+  ],
+  "settings": {
+    "model": "fixture-model",
+    "max_output_tokens": 256,
+    "temperature": null,
+    "reasoning_effort": null
+  }
+}

@@ -50,6 +50,7 @@ swarmy-core = { path = "crates/swarmy-core" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-llm = { path = "crates/swarmy-llm" }
 swarmy-store = { path = "crates/swarmy-store" }
+swarmy-harness = { path = "crates/swarmy-harness" }
 
 [profile.dev.package."*"]
 opt-level = 3
