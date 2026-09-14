@@ -158,3 +158,5 @@ sandbox, so no real account model availability is claimed.
 Every request carries the bearer access token, the chatgpt-account-id header, and the same client identification headers Codex sends: OpenAI-Beta set to responses=experimental, originator set to codex_cli_rs, and a matching User-Agent. The backend uses these to decide which features a request may use; a bare request without them has not been verified against the live service.
 
 Reasoning parts are replayed into a request only when they carry the reasoning item this backend returned, stored under the chatgpt key of the part metadata. Reasoning produced by another provider, such as the fake provider in tests, is skipped rather than rejected, so a session that switches providers keeps working.
+
+The live backend answers with a full event stream but sends no Content-Type header. The provider therefore rejects only an explicit non-stream content type, such as an HTML block page, and otherwise lets the event parser decide whether the body is valid.

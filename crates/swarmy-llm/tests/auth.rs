@@ -336,3 +336,66 @@ async fn separate_processes_share_the_refresh_file_lock() {
     }
     server.verify().await;
 }
+
+#[tokio::test]
+async fn provider_accepts_streams_without_a_content_type_header() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
+    let mut initial = fixture();
+    initial["last_refresh"] = json!(jiff::Timestamp::now().to_string());
+    store
+        .save(Credentials::from_json(initial).unwrap())
+        .await
+        .unwrap();
+    // The live Codex backend sends its event stream with no Content-Type at all.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(include_str!("fixtures/text.sse")))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let provider: Box<dyn Provider> = Box::new(
+        ChatGptProvider::with_endpoints(
+            store,
+            &server.uri(),
+            OAuthClient::with_issuer(&server.uri()).unwrap(),
+        )
+        .unwrap(),
+    );
+    let events: Vec<_> = provider.request(request()).try_collect().await.unwrap();
+    assert!(matches!(events.last(), Some(Delta::Completed(_))));
+    let again: Vec<_> = provider.request(request()).try_collect().await.unwrap();
+    assert_eq!(again.len(), events.len());
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn provider_rejects_an_explicit_non_stream_content_type() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
+    let mut initial = fixture();
+    initial["last_refresh"] = json!(jiff::Timestamp::now().to_string());
+    store
+        .save(Credentials::from_json(initial).unwrap())
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<html>blocked</html>", "text/html"))
+        .mount(&server)
+        .await;
+    let provider = ChatGptProvider::with_endpoints(
+        store,
+        &server.uri(),
+        OAuthClient::with_issuer(&server.uri()).unwrap(),
+    )
+    .unwrap();
+    let error = provider
+        .request(request())
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("got text/html"), "{error}");
+}
