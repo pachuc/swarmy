@@ -1076,5 +1076,58 @@ async fn inflight_scan_pages_without_skips_or_duplicates() {
         test.store.scan_inflight(None, 0).await,
         Err(StoreError::InvalidLimit)
     ));
+}
+
+#[tokio::test]
+async fn session_listing_pages_by_id_and_hydrates_snapshots() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    assert!(test.store.list_sessions(None, 2).await.unwrap().is_empty());
+    for limit in [0, swarmy_store::MAX_SCAN_LIMIT + 1] {
+        assert!(matches!(
+            test.store.list_sessions(None, limit).await,
+            Err(StoreError::InvalidLimit)
+        ));
+    }
+    let mut expected = Vec::new();
+    for _ in 0..5 {
+        let id = test.create().await;
+        test.store
+            .append_events(id, 0, &[event("hello")])
+            .await
+            .unwrap();
+        test.store
+            .write_snapshot(
+                id,
+                &SnapshotRef {
+                    object_key: "snapshots/".repeat(10_000),
+                    seq: 1,
+                },
+            )
+            .await
+            .unwrap();
+        expected.push(test.store.fetch_session(id).await.unwrap().unwrap());
+    }
+    expected.sort_by_key(|session| session.session_id);
+    let mut actual = Vec::new();
+    let mut after = None;
+    loop {
+        let page = test.store.list_sessions(after, 2).await.unwrap();
+        assert!(page.len() <= 2);
+        let Some(last) = page.last() else { break };
+        after = Some(last.session_id);
+        actual.extend(page);
+    }
+    assert_eq!(actual, expected);
+    // A cursor need not refer to an existing session.
+    let beyond = SessionId::from_ulid(Ulid::from(u128::MAX));
+    assert!(
+        test.store
+            .list_sessions(Some(beyond), 2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     test.cleanup().await;
 }
