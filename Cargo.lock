@@ -2247,6 +2247,7 @@ dependencies = [
  "swarmy-core",
  "thiserror",
  "tokio",
+ "tracing",
  "ulid",
 ]
 
@@ -2300,6 +2301,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-harness"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-llm",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-llm"
 version = "0.1.0"
 dependencies = [
@@ -2318,6 +2333,24 @@ dependencies = [
  "tokio",
  "ulid",
  "wiremock",
+]
+
+[[package]]
+name = "swarmy-scheduler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "foundationdb",
+ "futures-util",
+ "jiff",
+ "swarmy-bus",
+ "swarmy-core",
+ "swarmy-store",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

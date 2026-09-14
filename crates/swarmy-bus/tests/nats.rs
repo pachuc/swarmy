@@ -5,7 +5,7 @@ use futures_util::{FutureExt, TryStreamExt};
 use swarmy_bus::{
     Bus, Config, Error, LiveFeed, SubjectToken, WorkMessage, WorkMessages, WorkQueue,
 };
-use swarmy_core::{EncodingError, NodeId, SessionId};
+use swarmy_core::{EncodingError, NodeId, SessionId, WakeReply};
 use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 
@@ -404,4 +404,102 @@ fn routing_tokens_reject_subject_injection() {
         assert!(SubjectToken::new(invalid).is_err(), "accepted {invalid:?}");
     }
     assert!(SubjectToken::new("provider_class-1").is_ok());
+}
+
+#[tokio::test]
+async fn wake_requests_round_trip_without_persisting_and_bad_requests_are_skipped() {
+    run(|f| async move {
+        let session_id = SessionId::from_ulid(Ulid::generate());
+        let server = f.bus.clone();
+        let serving = tokio::spawn(async move {
+            server
+                .serve_wake_requests(|request| async move {
+                    if request.session_id == session_id {
+                        WakeReply::Runnable
+                    } else {
+                        WakeReply::Failed("test failure".into())
+                    }
+                })
+                .await
+        });
+        timeout(WAIT, async {
+            loop {
+                if let Ok(reply) = f.bus.request_wake(session_id, ACK_WAIT).await {
+                    assert_eq!(reply, WakeReply::Runnable);
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let malformed = f
+            .admin
+            .send_request(
+                format!("{}.sched.wake", f.prefix),
+                async_nats::Request::new()
+                    .payload(vec![255].into())
+                    .timeout(Some(Duration::from_millis(50))),
+            )
+            .await;
+        assert!(malformed.is_err());
+        assert_eq!(
+            f.bus
+                .request_wake(SessionId::from_ulid(Ulid::generate()), ACK_WAIT)
+                .await
+                .unwrap(),
+            WakeReply::Failed("test failure".into())
+        );
+        assert_eq!(
+            f.bus.request_wake(session_id, ACK_WAIT).await.unwrap(),
+            WakeReply::Runnable
+        );
+        let context = jetstream::new(f.admin.clone());
+        for name in f.names() {
+            assert_eq!(
+                context
+                    .get_stream(name)
+                    .await
+                    .unwrap()
+                    .cached_info()
+                    .state
+                    .messages,
+                0
+            );
+        }
+        serving.abort();
+        assert!(serving.await.unwrap_err().is_cancelled());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn absent_or_unresponsive_scheduler_is_named_in_request_errors() {
+    run(|f| async move {
+        let session_id = SessionId::from_ulid(Ulid::generate());
+        let error = f.bus.request_wake(session_id, ACK_WAIT).await.unwrap_err();
+        assert!(matches!(error, Error::Scheduler(_)));
+        assert!(error.to_string().contains("scheduler"));
+        // A listener that never replies exercises the caller's deadline.
+        let _silent = f
+            .admin
+            .subscribe(format!("{}.sched.wake", f.prefix))
+            .await
+            .unwrap();
+        let inbox = f.admin.new_inbox();
+        f.admin
+            .send_request(inbox.clone(), async_nats::Request::new().inbox(inbox))
+            .await
+            .unwrap();
+        let deadline = Duration::from_millis(100);
+        let started = tokio::time::Instant::now();
+        let error = timeout(ACK_WAIT, f.bus.request_wake(session_id, deadline))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(started.elapsed() >= deadline);
+        assert!(matches!(error, Error::Scheduler(_)));
+        assert!(error.to_string().contains("scheduler"));
+    })
+    .await;
 }

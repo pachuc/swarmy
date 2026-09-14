@@ -7,6 +7,26 @@ use crate::{
 };
 
 impl Store {
+    /// Wake an Idle session and return its previous state.
+    /// Unlike an unconditional `set_state`, this cannot wake a session that
+    /// concurrently started waiting for inference, tools, or a timer.
+    /// Repeated requests leave the runnable entry and its wake time intact.
+    /// # Errors
+    /// Returns missing-session and transaction errors.
+    pub async fn wake_session(&self, id: SessionId, now: Timestamp) -> Result<SessionState> {
+        self.transaction(|trx| async move {
+            let session = self.session(&trx, id).await?;
+            if session.state == SessionState::Idle {
+                self.transition(&trx, session, SessionState::Runnable, now)
+                    .await?;
+                Ok(SessionState::Idle)
+            } else {
+                Ok(session.state)
+            }
+        })
+        .await
+    }
+
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("lease", id.as_ulid().to_bytes().as_slice()))

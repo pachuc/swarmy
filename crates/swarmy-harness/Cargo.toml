@@ -1,5 +1,5 @@
 [package]
-name = "swarmy-bus"
+name = "swarmy-harness"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,13 +9,13 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-async-nats.workspace = true
-futures-util.workspace = true
+futures.workspace = true
+jiff.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 swarmy-core.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
-tracing.workspace = true
+swarmy-llm.workspace = true
 
 [dev-dependencies]
+tokio.workspace = true
 ulid.workspace = true
