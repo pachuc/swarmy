@@ -1,0 +1,12 @@
+: heartbeat
+
+event: response.reasoning_summary_text.delta
+data: {"type": "response.reasoning_summary_text.delta", "output_index": 0, "summary_index": 0, "delta": "Think first."}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "output_index": 0, "item": {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}}
+
+event: response.completed
+data: {"type": "response.completed", "response": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13, "input_tokens_details": {"cached_tokens": 4}, "output_tokens_details": {"reasoning_tokens": 2}}, "output": [{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}]}}
+
+: end of fixture

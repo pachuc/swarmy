@@ -1,0 +1,18 @@
+: heartbeat
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "output_index": 0, "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_time", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "output_index": 0, "delta": "{\"zone\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "output_index": 0, "delta": "\"UTC\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "output_index": 0, "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_time", "arguments": "{\"zone\":\"UTC\"}"}}
+
+event: response.completed
+data: {"type": "response.completed", "response": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13, "input_tokens_details": {"cached_tokens": 4}, "output_tokens_details": {"reasoning_tokens": 2}}}}
+
+: end of fixture
