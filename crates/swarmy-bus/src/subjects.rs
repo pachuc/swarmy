@@ -1,6 +1,7 @@
 //! Subject templates from design section 6.2. Services use typed routes instead.
 
 pub const SCHED_RUNNABLE: &str = "sched.runnable.{partition}";
+pub const SCHED_WAKE: &str = "sched.wake";
 pub const SCHED_PLACE: &str = "sched.place";
 pub const INFER_REQ: &str = "infer.req.{provider_class}";
 pub const INFER_LIVE: &str = "infer.live.{session_id}";

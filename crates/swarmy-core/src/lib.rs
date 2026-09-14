@@ -8,6 +8,7 @@ mod encoding;
 mod event;
 mod id;
 mod message;
+mod scheduler;
 mod session;
 mod store;
 
@@ -15,6 +16,7 @@ pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
 pub use id::{AgentId, LeaseOwnerId, MessageId, NodeId, RequestId, SessionId};
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
+pub use scheduler::{Nudge, WakeReply, WakeRequest};
 pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
