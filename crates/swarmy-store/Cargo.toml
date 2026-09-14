@@ -1,0 +1,26 @@
+[package]
+name = "swarmy-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# The FoundationDB network boot function is the only local unsafe-code exception.
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+foundationdb.workspace = true
+futures.workspace = true
+jiff.workspace = true
+object_store.workspace = true
+serde.workspace = true
+swarmy-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ulid.workspace = true

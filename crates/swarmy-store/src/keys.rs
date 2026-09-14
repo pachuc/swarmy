@@ -1,0 +1,114 @@
+use foundationdb::{Transaction, tuple::Subspace};
+use jiff::Timestamp;
+use swarmy_core::{RunnableEntry, SessionId, SessionState};
+
+use crate::{Result, Store, StoreError, read, scan, write};
+
+pub const RUNNABLE_PARTITIONS: u16 = 256;
+
+/// Stable BLAKE3 partition of the session's 16 ULID bytes.
+#[must_use]
+pub fn runnable_partition(id: SessionId) -> u16 {
+    u16::from(blake3::hash(&id.as_ulid().to_bytes()).as_bytes()[0])
+}
+
+impl Store {
+    pub(crate) fn session_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    pub(crate) fn event_space(&self, id: SessionId) -> Subspace {
+        self.root
+            .subspace(&("event", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    fn runnable_key(&self, entry: &RunnableEntry) -> Vec<u8> {
+        self.root.pack(&(
+            "runnable",
+            runnable_partition(entry.session_id),
+            entry.priority,
+            (entry.wake_at.as_second(), entry.wake_at.subsec_nanosecond()),
+            entry.session_id.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    fn runnable_lookup(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("runnable_by_session", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    pub(crate) async fn remove_runnable(&self, trx: &Transaction, id: SessionId) -> Result<()> {
+        let lookup = self.runnable_lookup(id);
+        if let Some(entry) = read::<RunnableEntry>(trx, &lookup).await? {
+            trx.clear(&self.runnable_key(&entry));
+            trx.clear(&lookup);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn index_runnable(
+        &self,
+        trx: &Transaction,
+        entry: &RunnableEntry,
+    ) -> Result<()> {
+        self.remove_runnable(trx, entry.session_id).await?;
+        write(trx, &self.runnable_key(entry), &())?;
+        write(trx, &self.runnable_lookup(entry.session_id), entry)
+    }
+
+    /// Insert or reschedule a Runnable session, replacing its previous index entry.
+    /// # Errors
+    /// Rejects missing or non-Runnable sessions and transaction failures.
+    pub async fn insert_runnable(&self, entry: &RunnableEntry) -> Result<()> {
+        self.transaction(|trx| async move {
+            if self.session(&trx, entry.session_id).await?.state != SessionState::Runnable {
+                return Err(StoreError::InvalidState);
+            }
+            self.index_runnable(&trx, entry).await
+        })
+        .await
+    }
+
+    /// Scan one partition by priority, wake time, and id. `after` is exclusive.
+    /// Wake times are returned for the scheduler to evaluate against its clock.
+    /// # Errors
+    /// Rejects invalid partitions, cursors, limits, and malformed stored keys.
+    pub async fn scan_runnable(
+        &self,
+        partition: u16,
+        after: Option<&RunnableEntry>,
+        limit: usize,
+    ) -> Result<Vec<RunnableEntry>> {
+        if partition >= RUNNABLE_PARTITIONS
+            || after.is_some_and(|entry| runnable_partition(entry.session_id) != partition)
+        {
+            return Err(StoreError::InvalidState);
+        }
+        self.transaction(|trx| async move {
+            let space = self.root.subspace(&("runnable", partition));
+            let (mut begin, end) = space.range();
+            if let Some(entry) = after {
+                begin = self.runnable_key(entry);
+                begin.push(0);
+            }
+            let mut entries = Vec::new();
+            for (key, _) in scan(&trx, (begin, end), limit).await? {
+                let (priority, (seconds, nanos), id): (i64, (i64, i32), Vec<u8>) =
+                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                entries.push(RunnableEntry {
+                    session_id: session_id(id)?,
+                    priority,
+                    wake_at: Timestamp::new(seconds, nanos).map_err(|_| StoreError::Corrupt)?,
+                });
+            }
+            Ok(entries)
+        })
+        .await
+    }
+}
+
+pub(crate) fn session_id(bytes: Vec<u8>) -> Result<SessionId> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+    Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
+}

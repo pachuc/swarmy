@@ -1,0 +1,224 @@
+use foundationdb::Transaction;
+use jiff::Timestamp;
+use swarmy_core::{Lease, LeaseOwnerId, RunnableEntry, SessionId, SessionState, can_transition};
+
+use crate::{
+    Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read, scan, write,
+};
+
+impl Store {
+    fn lease_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("lease", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
+        self.root.pack(&(
+            "lease_by_expiry",
+            (expires.as_second(), expires.subsec_nanosecond()),
+            id.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
+        if let Some(lease) = read::<Lease>(trx, &self.lease_key(id)).await? {
+            trx.clear(&self.expiry_key(id, lease.expires_at));
+            trx.clear(&self.lease_key(id));
+        }
+        Ok(())
+    }
+
+    fn store_lease(&self, trx: &Transaction, id: SessionId, lease: &Lease) -> Result<()> {
+        write(trx, &self.lease_key(id), lease)?;
+        write(trx, &self.expiry_key(id, lease.expires_at), lease)
+    }
+
+    /// Claim only a Runnable session and atomically transition it to Leased.
+    /// A fresh owner id identifies each worker incarnation. The supplied expiry
+    /// may be in the past so recovery can be tested without reading a local clock.
+    /// # Errors
+    /// Rejects missing or non-Runnable sessions and transaction failures.
+    pub async fn claim_lease(
+        &self,
+        id: SessionId,
+        owner: LeaseOwnerId,
+        expires_at: Timestamp,
+    ) -> Result<Lease> {
+        self.transaction(|trx| async move {
+            let mut session = self.session(&trx, id).await?;
+            if session.state != SessionState::Runnable {
+                return Err(StoreError::InvalidState);
+            }
+            let lease = Lease {
+                owner,
+                expires_at,
+                seq: session
+                    .head_seq
+                    .checked_add(1)
+                    .ok_or(StoreError::SequenceOverflow)?,
+            };
+            self.remove_runnable(&trx, id).await?;
+            self.store_lease(&trx, id, &lease)?;
+            session.state = SessionState::Leased;
+            write(&trx, &self.session_key(id), &session)?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    async fn verify_lease(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        expected: &Lease,
+    ) -> Result<Lease> {
+        let lease = read::<Lease>(trx, &self.lease_key(id))
+            .await?
+            .ok_or(StoreError::LeaseMismatch)?;
+        if &lease != expected {
+            return Err(StoreError::LeaseMismatch);
+        }
+        Ok(lease)
+    }
+
+    /// Renew a still-live lease using the full previous record as a fencing token.
+    /// # Errors
+    /// Rejects expired or replaced leases and non-increasing expiry times.
+    pub async fn renew_lease(
+        &self,
+        id: SessionId,
+        expected: &Lease,
+        now: Timestamp,
+        expires_at: Timestamp,
+    ) -> Result<Lease> {
+        self.transaction(|trx| async move {
+            let mut lease = self.verify_lease(&trx, id, expected).await?;
+            if lease.expires_at <= now || expires_at <= lease.expires_at {
+                return Err(StoreError::LeaseMismatch);
+            }
+            self.clear_lease(&trx, id).await?;
+            lease.expires_at = expires_at;
+            self.store_lease(&trx, id, &lease)?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    /// Release a live lease and return the session to Runnable.
+    /// # Errors
+    /// Rejects expired or replaced leases and transaction failures.
+    pub async fn release_lease(
+        &self,
+        id: SessionId,
+        expected: &Lease,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.set_state(id, SessionState::Runnable, Some(expected), now)
+            .await
+    }
+
+    /// Change state and update both indexes atomically. Leaving Leased requires
+    /// its live token; entering Leased is only possible through `claim_lease`.
+    /// # Errors
+    /// Rejects invalid transitions, stale lease tokens, and transaction failures.
+    pub async fn set_state(
+        &self,
+        id: SessionId,
+        state: SessionState,
+        lease: Option<&Lease>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            let session = self.session(&trx, id).await?;
+            if state == SessionState::Leased || !can_transition(session.state, state) {
+                return Err(StoreError::InvalidState);
+            }
+            if session.state == SessionState::Leased {
+                let expected = lease.ok_or(StoreError::LeaseMismatch)?;
+                if self.verify_lease(&trx, id, expected).await?.expires_at <= now {
+                    return Err(StoreError::LeaseMismatch);
+                }
+            } else if lease.is_some() {
+                return Err(StoreError::LeaseMismatch);
+            }
+            self.transition(&trx, session, state, now).await
+        })
+        .await
+    }
+
+    async fn transition(
+        &self,
+        trx: &Transaction,
+        mut session: StoredSession,
+        state: SessionState,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.clear_lease(trx, session.session_id).await?;
+        self.remove_runnable(trx, session.session_id).await?;
+        session.state = state;
+        if state == SessionState::Runnable {
+            self.index_runnable(
+                trx,
+                &RunnableEntry {
+                    session_id: session.session_id,
+                    priority: 0,
+                    wake_at: now,
+                },
+            )
+            .await?;
+        }
+        write(trx, &self.session_key(session.session_id), &session)
+    }
+
+    /// Return a page of leases expiring at or before `now`, ordered by expiry/id.
+    /// The cursor is the last `(session_id, lease)` returned by the previous page.
+    /// # Errors
+    /// Rejects invalid limits, malformed keys, and transaction failures.
+    pub async fn scan_expired_leases(
+        &self,
+        now: Timestamp,
+        after: Option<&(SessionId, Lease)>,
+        limit: usize,
+    ) -> Result<Vec<(SessionId, Lease)>> {
+        check_limit(limit)?;
+        self.transaction(|trx| async move {
+            let space = self.root.subspace(&("lease_by_expiry",));
+            let mut begin = space.range().0;
+            if let Some((id, lease)) = after {
+                begin = self.expiry_key(*id, lease.expires_at);
+                begin.push(0);
+            }
+            let end = space
+                .subspace(&((now.as_second(), now.subsec_nanosecond()),))
+                .range()
+                .1;
+            if begin >= end {
+                return Ok(Vec::new());
+            }
+            let mut leases = Vec::new();
+            for (key, value) in scan(&trx, (begin, end), limit).await? {
+                let (_, id): ((i64, i32), Vec<u8>) =
+                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                leases.push((session_id(id)?, swarmy_core::decode(&value)?));
+            }
+            Ok(leases)
+        })
+        .await
+    }
+
+    /// Recheck an expired scan result and return that session to Runnable.
+    /// # Errors
+    /// Rejects renewed/replaced leases, live leases, and transaction failures.
+    pub async fn reap_lease(&self, id: SessionId, expected: &Lease, now: Timestamp) -> Result<()> {
+        self.transaction(|trx| async move {
+            let lease = self.verify_lease(&trx, id, expected).await?;
+            let session = self.session(&trx, id).await?;
+            if lease.expires_at > now || session.state != SessionState::Leased {
+                return Err(StoreError::LeaseMismatch);
+            }
+            self.transition(&trx, session, SessionState::Runnable, now)
+                .await
+        })
+        .await
+    }
+}

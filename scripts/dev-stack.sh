@@ -145,9 +145,13 @@ JSON
     launch fdb fdbserver -p 127.0.0.1:4500 -C "$dev_dir/fdb.cluster" \
         -d "$dev_dir/fdb/data" -L "$dev_dir/fdb/logs"
     launch nats nats-server -js -sd "$dev_dir/nats" -a 127.0.0.1 -p 4222 -m 8222
+    # Unix socket paths are limited to about 100 bytes, so they cannot live
+    # under a deep repository path. Key a short directory by the repository.
+    socket_dir="${TMPDIR:-/tmp}/swarmy-$(printf '%s' "$dev_dir" | sha256sum | cut -c1-12)"
+    mkdir -p -- "$socket_dir"
     launch seaweed weed server -dir "$dev_dir/seaweed" -ip 127.0.0.1 -ip.bind 127.0.0.1 \
         -s3 -s3.port 8333 -s3.config "$dev_dir/s3.json" \
-        -filer.localSocket "$dev_dir/seaweed/filer.sock" -s3.localSocket "$dev_dir/seaweed/s3.sock" \
+        -filer.localSocket "$socket_dir/filer.sock" -s3.localSocket "$socket_dir/s3.sock" \
         -s3.port.iceberg 0 -s3.port.lance 0 -master.telemetry=false
 
     if [[ ! -f $dev_dir/fdb/configured ]]; then
