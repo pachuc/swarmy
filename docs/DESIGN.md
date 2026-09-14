@@ -355,6 +355,22 @@ four wire dialects: Anthropic Messages, OpenAI Chat and Responses, Gemini, and
 OpenAI-compatible generic. Bedrock and Vertex are auth and endpoint variants
 of the first three.
 
+**First provider: ChatGPT subscription via the Codex backend.** Slice 1
+uses ChatGPT subscription inference, not the OpenAI platform API. Requests go
+to the ChatGPT backend Responses endpoint with a Bearer access token and the
+account id header, in the Responses API wire dialect. Auth is the Codex OAuth
+device-code flow with refresh tokens, stored in the same auth.json shape the
+Codex CLI uses so an existing login can be imported. The Codex CLI is itself
+Rust, so its login crate and backend client are the reference implementation
+to port or depend on. Operating rules learned from running Codex in remote
+sandboxes: one credential cache is one refresh chain, concurrent refreshers
+get the whole session revoked server-side, so refresh is serialized per
+account through a single writer, gateways read the current access token from
+the credential store on every request, and a key pool here means many
+ChatGPT accounts, each with its own quota counters. Using subscription
+inference in a third-party harness is the operator's decision and is taken as
+given in this design.
+
 Swarm additions:
 
 - **Key pools.** Many keys per provider, each with its own quota counters.
@@ -461,7 +477,7 @@ into a suite that kills random processes during runs.
 event-driven inference completion.
 **Build:** workspace, local stack of FoundationDB, NATS, and MinIO, core
 types, store with session log and leases, scheduler, step worker, gateway
-with the Anthropic adapter and the mock provider, one in-worker tool such as
+with the ChatGPT subscription provider and the mock provider, one in-worker tool such as
 `get_time`, CLI to create a session and stream events.
 **Accept:** `swarmy run "what time is it"` completes. Repeat while killing
 the worker, gateway, and scheduler at random points mid-step. Every run
