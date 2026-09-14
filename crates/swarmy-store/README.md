@@ -39,7 +39,10 @@ mutations are bounded to 8 MiB. Session headers contain only fixed-size fields
 and the snapshot sequence. Scans take a limit
 of 1 through 64. Continue event scans with the last sequence, runnable scans with
 the last entry, and expired-lease scans with the last session/lease pair. Runnable
-scans include future wake times for the scheduler to evaluate.
+scans include future wake times for the scheduler to evaluate. `list_sessions`
+scans session keys in ascending id order and continues strictly after the last
+session id. Each page includes hydrated snapshot pointers; pages are independent
+views of the database.
 
 Event, snapshot, and request values are versioned envelopes containing either versioned
 inline bytes or a content-addressed blob pointer. Payloads over 80 KiB are uploaded
