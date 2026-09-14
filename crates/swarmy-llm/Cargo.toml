@@ -1,0 +1,28 @@
+[package]
+name = "swarmy-llm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream.workspace = true
+base64.workspace = true
+blake3.workspace = true
+fs2.workspace = true
+futures.workspace = true
+jiff.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+swarmy-core.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ulid.workspace = true
+wiremock.workspace = true

@@ -22,6 +22,13 @@ large_stack_frames = "deny"
 
 [workspace.dependencies]
 anyhow = "1"
+async-stream = "0.3"
+base64 = "0.22"
+fs2 = "0.4"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tempfile = "3"
+wiremock = "0.6"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 jiff = { version = "0.2", features = ["serde"] }
@@ -34,6 +41,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = { version = "3", features = ["serde"] }
 swarmy-core = { path = "crates/swarmy-core" }
+swarmy-llm = { path = "crates/swarmy-llm" }
 
 [profile.dev.package."*"]
 opt-level = 3
