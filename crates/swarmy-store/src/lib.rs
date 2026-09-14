@@ -280,17 +280,68 @@ impl Store {
         let Some((session, snapshot)) = stored else {
             return Ok(None);
         };
+        Ok(Some(self.hydrate_session(session, snapshot).await?))
+    }
+
+    async fn hydrate_session(
+        &self,
+        session: StoredSession,
+        snapshot: Option<Vec<u8>>,
+    ) -> Result<SessionRecord> {
         let snapshot_ref = match snapshot {
             Some(value) => Some(self.hydrate(&value).await?),
             None => None,
         };
-        Ok(Some(SessionRecord {
+        Ok(SessionRecord {
             session_id: session.session_id,
             agent_id: session.agent_id,
             state: session.state,
             head_seq: session.head_seq,
             snapshot_ref,
-        }))
+        })
+    }
+
+    /// List sessions in ascending id order, strictly after `after`.
+    /// Each page reads headers and snapshot pointers in one transaction. Pages
+    /// are independent views; sessions created behind the cursor are not included.
+    /// # Errors
+    /// Rejects invalid limits and returns storage, blob, or decoding errors.
+    pub async fn list_sessions(
+        &self,
+        after: Option<SessionId>,
+        limit: usize,
+    ) -> Result<Vec<SessionRecord>> {
+        check_limit(limit)?;
+        let stored = self
+            .transaction(|trx| async move {
+                let (mut begin, end) = self.root.subspace(&("session",)).range();
+                if let Some(id) = after {
+                    begin = self.session_key(id);
+                    begin.push(0);
+                }
+                let mut sessions = Vec::new();
+                for (_, value) in scan(&trx, (begin, end), limit).await? {
+                    let session: StoredSession = decode(&value)?;
+                    let snapshot = if let Some(seq) = session.snapshot_seq {
+                        Some(
+                            trx.get(&self.snapshot_key(session.session_id, seq), false)
+                                .await?
+                                .ok_or(StoreError::Corrupt)?
+                                .to_vec(),
+                        )
+                    } else {
+                        None
+                    };
+                    sessions.push((session, snapshot));
+                }
+                Ok(sessions)
+            })
+            .await?;
+        let mut sessions = Vec::with_capacity(stored.len());
+        for (session, snapshot) in stored {
+            sessions.push(self.hydrate_session(session, snapshot).await?);
+        }
+        Ok(sessions)
     }
 
     /// Assign sequences after `expected_head`, ignoring input event sequences.

@@ -2256,11 +2256,19 @@ name = "swarmy-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-nats",
  "clap",
+ "foundationdb",
+ "futures-util",
+ "jiff",
  "serde_json",
+ "swarmy-bus",
  "swarmy-core",
  "swarmy-llm",
+ "swarmy-store",
  "tokio",
+ "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

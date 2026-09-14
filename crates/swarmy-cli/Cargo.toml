@@ -19,3 +19,13 @@ anyhow.workspace = true
 serde_json.workspace = true
 swarmy-llm.workspace = true
 tokio.workspace = true
+swarmy-bus.workspace = true
+swarmy-store.workspace = true
+jiff.workspace = true
+ulid.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-nats.workspace = true
+foundationdb.workspace = true
+futures-util.workspace = true

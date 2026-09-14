@@ -1,3 +1,5 @@
+mod session;
+
 use clap::{Parser, Subcommand};
 use std::{io::Write, path::PathBuf};
 use swarmy_llm::auth::{FileCredentialStore, OAuthClient};
@@ -20,6 +22,13 @@ struct Cli {
 enum Command {
     /// Print the version of this CLI
     Version,
+    /// Start a conversation and stream its output until idle
+    Run { prompt: String },
+    /// Inspect stored sessions
+    Session {
+        #[command(subcommand)]
+        command: session::Command,
+    },
     /// Manage `ChatGPT` subscription credentials
     Auth {
         /// Swarmy's credential file (never defaults to Codex's auth.json)
@@ -38,10 +47,23 @@ enum AuthCommand {
     Import { source: PathBuf },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// The network guard must outlive the runtime and all database operations.
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .init();
     let cli = Cli::parse();
+    let _network = swarmy_store::boot();
+    tokio::runtime::Runtime::new()?.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Run { prompt } => session::run(prompt, cli.json).await?,
+        Command::Session { command } => session::inspect(command, cli.json).await?,
         Command::Auth { auth_file, command } => {
             let path = auth_file.map_or_else(
                 || {
