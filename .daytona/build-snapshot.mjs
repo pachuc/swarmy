@@ -7,8 +7,8 @@
 //
 // Usage: node .daytona/build-snapshot.mjs
 //
-// Resources are sized so two sandboxes fit under the Daytona organization's
-// 10 GiB total memory cap; raise them if the tier is upgraded.
+// The snapshot name covers the Dockerfile and the resource sizes, so changing
+// either builds a new snapshot. Daytona caps disk at 10 GB per sandbox.
 //
 // The script borrows the Daytona SDK and the DAYTONA_API_KEY from a checkout of
 // codex-daytona. Set CODEX_DAYTONA_DIR if it is not at ~/code/codex-daytona.
@@ -30,7 +30,12 @@ if (!apiKey) throw new Error(`DAYTONA_API_KEY not found in ${join(launcher, '.en
 
 const { Daytona, Image } = await import(pathToFileURL(join(launcher, 'node_modules', '@daytona', 'sdk', 'esm', 'index.js')).href);
 
-const hash = createHash('sha256').update(await readFile(dockerfile)).digest('hex').slice(0, 12);
+const resources = { cpu: 4, memory: 8, disk: 10 };
+const hash = createHash('sha256')
+  .update(await readFile(dockerfile))
+  .update(JSON.stringify(resources))
+  .digest('hex')
+  .slice(0, 12);
 const name = `swarmy-dev-${hash}`;
 const daytona = new Daytona({ apiKey });
 
@@ -46,7 +51,7 @@ try {
 if (!exists) {
   console.log(`Building snapshot ${name} from ${dockerfile}`);
   await daytona.snapshot.create(
-    { name, image: Image.fromDockerfile(dockerfile), resources: { cpu: 4, memory: 5, disk: 10 } },
+    { name, image: Image.fromDockerfile(dockerfile), resources },
     { onLogs: chunk => process.stdout.write(chunk), timeout: 3600 },
   );
   console.log(`Snapshot ${name} is ready.`);
