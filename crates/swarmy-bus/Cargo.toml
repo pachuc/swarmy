@@ -1,0 +1,20 @@
+[package]
+name = "swarmy-bus"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-nats.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+swarmy-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+ulid.workspace = true
