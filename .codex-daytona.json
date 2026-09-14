@@ -1,0 +1,9 @@
+{
+  "branch": "master",
+  "snapshot": "swarmy-dev-PLACEHOLDER",
+  "codexVersion": "0.153.4",
+  "model": "gpt6-astra",
+  "effort": "high",
+  "setup": ["rustup show", "cargo fetch"],
+  "autoStopMinutes": 60
+}

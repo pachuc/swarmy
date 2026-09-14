@@ -475,7 +475,7 @@ into a suite that kills random processes during runs.
 ### Slice 1: Immortal echo agent
 **Retires:** durable step model, FoundationDB key layout, lease semantics,
 event-driven inference completion.
-**Build:** workspace, local stack of FoundationDB, NATS, and MinIO, core
+**Build:** workspace, local stack of FoundationDB, NATS, and SeaweedFS, core
 types, store with session log and leases, scheduler, step worker, gateway
 with the ChatGPT subscription provider and the mock provider, one in-worker tool such as
 `get_time`, CLI to create a session and stream events.
@@ -566,5 +566,8 @@ depends on it.
 - **Multi-region.** NATS leaf nodes and per-region chunk caches are
   designed for but not built until after slice 9.
 - **Local development without Docker.** The dev machine has no container
-  runtime. Options are installing podman, or running FoundationDB, NATS, and
-  MinIO as plain processes with a small script. Decide at slice 1 start.
+  runtime, so FoundationDB, NATS, and SeaweedFS run as plain processes
+  started by a small script. SeaweedFS replaces MinIO as the local
+  S3-compatible store because MinIO stopped publishing binaries in late
+  2025; the services only ever speak the S3 protocol, so the choice of
+  local server does not leak into the code.
