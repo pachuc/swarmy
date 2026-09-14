@@ -470,3 +470,34 @@ async fn fake_provider_and_worker_tool_complete_a_turn() {
     }
     assert_eq!(provider.call_count(), 2);
 }
+
+#[test]
+fn exhausted_inference_ends_the_turn_instead_of_retrying() {
+    let request_id = RequestId::for_step(session().session_id, 2);
+    let events = [
+        user_event(),
+        Event::InferenceRequested {
+            seq: 2,
+            request_id,
+            step: 2,
+        },
+        Event::InferenceFailed {
+            seq: 3,
+            request_id,
+            error: "provider failed".into(),
+        },
+    ];
+    assert_eq!(step(&events), Action::EndTurn);
+    // A failure for some other request does not disturb the wait.
+    let other = RequestId::for_step(session().session_id, 9);
+    let unrelated = [
+        events[0].clone(),
+        events[1].clone(),
+        Event::InferenceFailed {
+            seq: 3,
+            request_id: other,
+            error: "stale".into(),
+        },
+    ];
+    assert_eq!(step(&unrelated), Action::Wait);
+}
