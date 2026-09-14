@@ -11,9 +11,10 @@ ARG RUST_VERSION=1.98.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash git python3 tar ca-certificates curl jq ripgrep \
-    build-essential pkg-config libssl-dev \
+    build-essential pkg-config libssl-dev clang libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# clang and libclang are needed by bindgen when the foundationdb crate builds.
 # FoundationDB client library, fdbcli, and fdbserver. The packages are
 # extracted rather than installed so that no postinst script tries to start a
 # system service inside the image build.
