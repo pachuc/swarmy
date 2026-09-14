@@ -2277,6 +2277,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "async-stream",
+ "blake3",
+ "foundationdb",
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "swarmy-bus",
+ "swarmy-core",
+ "swarmy-llm",
+ "swarmy-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-harness"
 version = "0.1.0"
 dependencies = [

@@ -12,6 +12,7 @@ mod scheduler;
 mod session;
 mod store;
 
+pub use encoding::json;
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
 pub use id::{AgentId, LeaseOwnerId, MessageId, NodeId, RequestId, SessionId};

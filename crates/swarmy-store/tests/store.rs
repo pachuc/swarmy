@@ -693,3 +693,248 @@ async fn large_snapshot_metadata_survives_head_and_lease_updates() {
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), bytes);
     test.cleanup().await;
 }
+
+#[tokio::test]
+async fn inference_completion_is_atomic_fenced_and_idempotent() {
+    use swarmy_store::{InferenceClaim, InferenceCompletion};
+
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(10))
+        .await
+        .unwrap();
+    test.store
+        .set_state(
+            id,
+            SessionState::WaitingInference,
+            Some(&lease),
+            timestamp(0),
+        )
+        .await
+        .unwrap();
+    let request_id = RequestId::for_step(id, 1);
+    let inflight = InflightRecord {
+        session_id: id,
+        seq: 1,
+        provider: "fake".into(),
+        key_id: "fake".into(),
+    };
+    test.store
+        .put_inflight(request_id, &inflight)
+        .await
+        .unwrap();
+    let claim = InferenceClaim {
+        session_id: id,
+        request_id,
+        owner: owner(),
+        expires_at: timestamp(10),
+    };
+    assert!(
+        test.store
+            .start_inference(&claim, timestamp(0))
+            .await
+            .unwrap()
+    );
+    let rival = InferenceClaim {
+        owner: owner(),
+        expires_at: timestamp(20),
+        ..claim.clone()
+    };
+    assert!(
+        !test
+            .store
+            .start_inference(&rival, timestamp(1))
+            .await
+            .unwrap()
+    );
+    assert!(
+        test.store
+            .start_inference(&rival, timestamp(11))
+            .await
+            .unwrap()
+    );
+    let mut completion = InferenceCompletion {
+        claim,
+        expected_head: 0,
+        event: Event::InferenceFailed {
+            seq: 999,
+            request_id,
+            error: "exhausted".into(),
+        },
+        now: timestamp(12),
+    };
+    let response = "large result".repeat(20_000);
+    assert!(matches!(
+        test.store.complete_inference(&completion, &response).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    completion.claim = rival;
+    completion.expected_head = 1;
+    assert!(matches!(
+        test.store.complete_inference(&completion, &response).await,
+        Err(StoreError::StaleSequence { .. })
+    ));
+    assert_inference_pending(&test.store, id, request_id, inflight).await;
+    completion.expected_head = 0;
+    test.store
+        .complete_inference(&completion, &response)
+        .await
+        .unwrap();
+    test.store
+        .complete_inference(&completion, &response)
+        .await
+        .unwrap();
+    assert!(
+        !test
+            .store
+            .start_inference(&completion.claim, timestamp(12))
+            .await
+            .unwrap()
+    );
+    assert_inference_completed(&test.store, id, request_id, response).await;
+    test.cleanup().await;
+}
+
+async fn assert_inference_pending(
+    store: &Store,
+    id: SessionId,
+    request_id: RequestId,
+    inflight: InflightRecord,
+) {
+    assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
+    assert_eq!(
+        store.get_inflight(request_id).await.unwrap(),
+        Some(inflight)
+    );
+    assert_eq!(
+        store
+            .get_idempotency(request_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        IdempotencyState::Requested
+    );
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::WaitingInference
+    );
+    assert!(
+        store
+            .get_inference_result::<String>(request_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+async fn assert_inference_completed(
+    store: &Store,
+    id: SessionId,
+    request_id: RequestId,
+    response: String,
+) {
+    assert_eq!(store.read_events(id, 0, 64).await.unwrap().len(), 1);
+    assert_eq!(store.read_events(id, 0, 64).await.unwrap()[0].seq(), 1);
+    assert!(store.get_inflight(request_id).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .get_idempotency(request_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        IdempotencyState::Completed
+    );
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    assert_eq!(
+        store
+            .scan_runnable(runnable_partition(id), None, 64)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_inference_result::<String>(request_id)
+            .await
+            .unwrap(),
+        Some(response)
+    );
+}
+
+#[tokio::test]
+async fn inference_claim_rejects_work_without_matching_inflight() {
+    use swarmy_store::InferenceClaim;
+
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(10))
+        .await
+        .unwrap();
+    test.store
+        .set_state(
+            id,
+            SessionState::WaitingInference,
+            Some(&lease),
+            timestamp(0),
+        )
+        .await
+        .unwrap();
+    let request_id = RequestId::for_step(id, 1);
+    let claim = InferenceClaim {
+        session_id: id,
+        request_id,
+        owner: owner(),
+        expires_at: timestamp(10),
+    };
+    assert!(matches!(
+        test.store.start_inference(&claim, timestamp(0)).await,
+        Err(StoreError::InvalidState)
+    ));
+    let mut inflight = InflightRecord {
+        session_id: SessionId::from_ulid(Ulid::generate()),
+        seq: 1,
+        provider: "fake".into(),
+        key_id: "fake".into(),
+    };
+    test.store
+        .put_inflight(request_id, &inflight)
+        .await
+        .unwrap();
+    assert!(matches!(
+        test.store.start_inference(&claim, timestamp(0)).await,
+        Err(StoreError::InvalidState)
+    ));
+    assert!(
+        test.store
+            .get_idempotency(request_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    inflight.session_id = id;
+    test.store
+        .put_inflight(request_id, &inflight)
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .start_inference(&claim, timestamp(0))
+            .await
+            .unwrap()
+    );
+    test.cleanup().await;
+}

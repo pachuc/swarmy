@@ -49,9 +49,12 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, EncodingError> {
 /// JSON values need their own type information, which postcard does not provide.
 /// Store only these open-ended fields as JSON strings inside the binary payload;
 /// human-readable serializers retain ordinary JSON objects, arrays, and scalars.
-pub(crate) mod json {
+pub mod json {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 
+    /// Serialize structured JSON in human-readable formats and a string in binary formats.
+    /// # Errors
+    /// Returns JSON or serializer errors.
     pub fn serialize<T: Serialize, S: Serializer>(
         value: &T,
         serializer: S,
@@ -65,6 +68,9 @@ pub(crate) mod json {
         }
     }
 
+    /// Decode the format-specific JSON representation.
+    /// # Errors
+    /// Returns JSON or deserializer errors.
     pub fn deserialize<'de, T: DeserializeOwned, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<T, D::Error> {

@@ -116,6 +116,14 @@ impl Snapshot {
                     pending.call.result = Some(result.clone());
                 }
             }
+            Event::InferenceFailed { request_id, .. } => {
+                // Retries were exhausted by the gateway. End the turn rather than
+                // requesting inference again, so a broken provider cannot loop.
+                if matches!(self.phase, Phase::WaitingInference { request_id: pending } if pending == *request_id)
+                {
+                    self.phase = Phase::EndTurn;
+                }
+            }
             Event::StateChanged { .. } | Event::SnapshotWritten { .. } => {}
         }
     }

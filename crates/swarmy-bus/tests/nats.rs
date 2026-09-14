@@ -85,8 +85,11 @@ async fn unacknowledged_work_is_redelivered() {
             .publish_work(&WorkQueue::RemoteTools, &42_u64)
             .await
             .unwrap();
-        assert_eq!(next(&mut messages).await.value, 42);
+        let first = next(&mut messages).await;
+        assert_eq!(first.delivery_count().unwrap(), 1);
+        assert_eq!(first.value, 42);
         let retried = next(&mut messages).await;
+        assert_eq!(retried.delivery_count().unwrap(), 2);
         assert_eq!(retried.value, 42);
         retried.acknowledge().await.unwrap();
     })

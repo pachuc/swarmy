@@ -1,0 +1,493 @@
+use std::{
+    future::Future,
+    panic::AssertUnwindSafe,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+
+use foundationdb::{
+    Database,
+    directory::{Directory, DirectoryLayer},
+};
+use futures::FutureExt;
+use jiff::Timestamp;
+use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
+use swarmy_core::{
+    AgentId, Event, IdempotencyState, InflightRecord, LeaseOwnerId, Part, RequestId, SessionId,
+    SessionRecord, SessionState, encode,
+};
+use swarmy_llm::{
+    Delta, GenerationSettings, InferenceJob, Request, Response, StopReason, TokenUsage,
+};
+use swarmy_store::{Store, blob::ObjectBlobStore};
+use tempfile::TempDir;
+use tokio::{
+    process::{Child, Command},
+    time::{sleep, timeout},
+};
+use ulid::Ulid;
+
+const ACK_WAIT: Duration = Duration::from_millis(600);
+const WAIT: Duration = Duration::from_secs(20);
+
+struct Fixture {
+    store: Store,
+    bus: Bus,
+    queue: WorkQueue,
+    prefix: String,
+    files: TempDir,
+    children: Vec<Child>,
+}
+
+impl Fixture {
+    async fn new() -> Option<Self> {
+        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
+        for variable in [
+            "SWARMY_FDB_CLUSTER_FILE",
+            "SWARMY_NATS_URL",
+            "SWARMY_S3_ENDPOINT",
+        ] {
+            if std::env::var(variable).is_err() {
+                eprintln!("skipping gateway integration test: {variable} is unset");
+                return None;
+            }
+        }
+        NETWORK.get_or_init(swarmy_store::boot);
+        let prefix = format!("gateway_{}", Ulid::generate());
+        let store = Store::open(
+            Some(&std::env::var("SWARMY_FDB_CLUSTER_FILE").unwrap()),
+            Some(std::slice::from_ref(&prefix)),
+            Arc::new(ObjectBlobStore::from_env().unwrap()),
+        )
+        .await
+        .unwrap();
+        let bus = Bus::connect(
+            &std::env::var("SWARMY_NATS_URL").unwrap(),
+            Config {
+                prefix: Some(SubjectToken::new(&prefix).unwrap()),
+                ack_wait: ACK_WAIT,
+                max_deliver: 3,
+            },
+        )
+        .await
+        .unwrap();
+        let queue = WorkQueue::Inference(SubjectToken::new("fake").unwrap());
+        bus.setup(std::slice::from_ref(&queue)).await.unwrap();
+        Some(Self {
+            store,
+            bus,
+            queue,
+            prefix,
+            files: TempDir::new().unwrap(),
+            children: Vec::new(),
+        })
+    }
+
+    fn script(&self, latency_ms: u64, fail: bool, text: &str) -> Response {
+        let response = Response {
+            parts: vec![Part::Text { text: text.into() }],
+            stop_reason: StopReason::EndTurn,
+            usage: TokenUsage {
+                output_tokens: 42,
+                ..TokenUsage::default()
+            },
+        };
+        let responses: std::collections::BTreeMap<_, _> =
+            (0..10).map(|turn| (turn, &response)).collect();
+        std::fs::write(
+            self.files.path().join("script.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "latency_ms": latency_ms, "fail": fail, "responses": responses,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        response
+    }
+
+    fn start(&mut self, concurrency: usize) {
+        self.children.push(
+            Command::new(env!("CARGO_BIN_EXE_swarmy-gateway"))
+                .env("SWARMY_PROVIDER", "fake")
+                .env("SWARMY_STORE_DIRECTORY", &self.prefix)
+                .env("SWARMY_BUS_PREFIX", &self.prefix)
+                .env("SWARMY_BUS_ACK_WAIT_MS", ACK_WAIT.as_millis().to_string())
+                .env("SWARMY_BUS_MAX_DELIVER", "3")
+                .env("SWARMY_GATEWAY_CONCURRENCY", concurrency.to_string())
+                .env("SWARMY_FAKE_SCRIPT", self.files.path().join("script.json"))
+                .env("SWARMY_FAKE_CALL_LOG", self.files.path().join("calls"))
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+        );
+    }
+
+    async fn kill(&mut self) {
+        for child in &mut self.children {
+            child.kill().await.unwrap();
+        }
+        self.children.clear();
+    }
+
+    fn calls(&self) -> usize {
+        std::fs::read_to_string(self.files.path().join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    async fn job(&self) -> InferenceJob {
+        let session_id = SessionId::from_ulid(Ulid::generate());
+        let now = Timestamp::now();
+        self.store
+            .create_session(
+                &SessionRecord {
+                    session_id,
+                    agent_id: AgentId::from_ulid(Ulid::generate()),
+                    state: SessionState::Runnable,
+                    head_seq: 0,
+                    snapshot_ref: None,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let lease = self
+            .store
+            .claim_lease(
+                session_id,
+                LeaseOwnerId::from_ulid(Ulid::generate()),
+                now.checked_add(Duration::from_secs(60)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let request_id = RequestId::for_step(session_id, lease.seq);
+        self.store
+            .append_events(
+                session_id,
+                0,
+                &[Event::InferenceRequested {
+                    seq: 0,
+                    request_id,
+                    step: lease.seq,
+                }],
+            )
+            .await
+            .unwrap();
+        self.store
+            .put_inflight(
+                request_id,
+                &InflightRecord {
+                    session_id,
+                    seq: lease.seq,
+                    provider: "fake".into(),
+                    key_id: "fake".into(),
+                },
+            )
+            .await
+            .unwrap();
+        self.store
+            .set_state(
+                session_id,
+                SessionState::WaitingInference,
+                Some(&lease),
+                now,
+            )
+            .await
+            .unwrap();
+        InferenceJob {
+            session_id,
+            step: lease.seq,
+            request_id,
+            request: Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+            },
+        }
+    }
+
+    async fn publish(&self, job: &InferenceJob) {
+        self.bus.publish_work(&self.queue, job).await.unwrap();
+    }
+
+    async fn terminal(&self, job: &InferenceJob) -> Event {
+        timeout(WAIT, async {
+            loop {
+                let events = self.store.read_events(job.session_id, 1, 64).await.unwrap();
+                if let Some(event) = events.first() {
+                    assert_eq!(events.len(), 1);
+                    assert_eq!(
+                        self.store
+                            .fetch_session(job.session_id)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .state,
+                        SessionState::Runnable
+                    );
+                    assert!(
+                        self.store
+                            .get_inflight(job.request_id)
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                    assert_eq!(
+                        self.store
+                            .get_idempotency(job.request_id)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .state,
+                        IdempotencyState::Completed
+                    );
+                    return event.clone();
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn drained(&self) {
+        let context = async_nats::jetstream::new(
+            async_nats::connect(std::env::var("SWARMY_NATS_URL").unwrap())
+                .await
+                .unwrap(),
+        );
+        timeout(WAIT, async {
+            loop {
+                if context
+                    .get_stream(format!("{}_INFER_REQ", self.prefix))
+                    .await
+                    .unwrap()
+                    .cached_info()
+                    .state
+                    .messages
+                    == 0
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn cleanup(mut self) {
+        self.kill().await;
+        let db = Database::new(Some(&std::env::var("SWARMY_FDB_CLUSTER_FILE").unwrap())).unwrap();
+        let path = vec![self.prefix.clone()];
+        db.run(|trx, _| {
+            let path = &path;
+            async move {
+                DirectoryLayer::default().remove(&trx, path).await?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        let context = async_nats::jetstream::new(
+            async_nats::connect(std::env::var("SWARMY_NATS_URL").unwrap())
+                .await
+                .unwrap(),
+        );
+        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+            context
+                .delete_stream(format!("{}_{name}", self.prefix))
+                .await
+                .unwrap();
+        }
+    }
+}
+
+async fn run<F>(test: impl FnOnce(Fixture) -> F)
+where
+    F: Future<Output = ()>,
+{
+    if let Some(fixture) = Fixture::new().await {
+        test(fixture).await;
+    }
+}
+
+#[tokio::test]
+async fn one_request_completes_and_duplicates_across_gateways_call_once() {
+    run(|mut f| async move {
+        let expected = f.script(100, false, "hello");
+        f.start(4);
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            f.drained().await;
+            f.publish(&job).await;
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+            assert_eq!(
+                f.store
+                    .get_inference_result::<Result<Response, String>>(job.request_id)
+                    .await
+                    .unwrap(),
+                Some(Ok(expected))
+            );
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn kill_mid_stream_redelivers_and_live_deltas_precede_completion() {
+    run(|mut f| async move {
+        f.script(2_000, false, "partial output");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            let mut live = f
+                .bus
+                .subscribe_live::<Delta>(LiveFeed::ModelDeltas(job.session_id))
+                .await
+                .unwrap();
+            f.publish(&job).await;
+            let first = timeout(WAIT, live.next()).await.unwrap().unwrap().unwrap();
+            assert!(matches!(first, Delta::PartDone { .. }));
+            assert!(
+                f.store
+                    .read_events(job.session_id, 1, 64)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            f.kill().await; // Child::kill sends SIGKILL on Unix and waits for exit.
+            f.start(4);
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            f.drained().await;
+            assert_eq!(f.calls(), 2);
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn exhausted_retries_append_failure_and_stop_delivery() {
+    run(|mut f| async move {
+        f.script(0, true, "unused");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceFailed { .. }
+            ));
+            f.drained().await;
+            sleep(ACK_WAIT * 3).await;
+            assert_eq!(f.calls(), 3);
+            let mut work = f.bus.consume::<InferenceJob>(&f.queue).await.unwrap();
+            assert!(timeout(ACK_WAIT * 2, work.next()).await.is_err());
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn concurrency_limit_and_large_responses_preserve_full_results() {
+    run(|mut f| async move {
+        let text = format!("{}{}", f.prefix, "x".repeat(100 * 1024));
+        let expected = f.script(200, false, &text);
+        f.start(1);
+        let first = f.job().await;
+        let second = f.job().await;
+        let result = AssertUnwindSafe(async {
+            let mut live = f
+                .bus
+                .subscribe_live::<Delta>(LiveFeed::ModelDeltas(first.session_id))
+                .await
+                .unwrap();
+            f.publish(&first).await;
+            f.publish(&second).await;
+            timeout(WAIT, live.next()).await.unwrap().unwrap().unwrap();
+            assert_eq!(f.calls(), 1);
+            for job in [&first, &second] {
+                let event = f.terminal(job).await;
+                let bytes = encode(&event).unwrap();
+                assert!(bytes.len() > swarmy_store::INLINE_LIMIT);
+                let blobs = ObjectBlobStore::from_env().unwrap();
+                blobs
+                    .delete(&format!("blobs/{}", blake3::hash(&bytes).to_hex()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    f.store
+                        .get_inference_result::<Result<Response, String>>(job.request_id)
+                        .await
+                        .unwrap(),
+                    Some(Ok(expected.clone()))
+                );
+            }
+            f.drained().await;
+            assert_eq!(f.calls(), 2);
+            let bytes = encode(&Ok::<_, String>(expected)).unwrap();
+            ObjectBlobStore::from_env()
+                .unwrap()
+                .delete(&format!("blobs/{}", blake3::hash(&bytes).to_hex()))
+                .await
+                .unwrap();
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn invalid_request_id_is_acknowledged_without_provider_call() {
+    run(|mut f| async move {
+        f.script(0, false, "unused");
+        f.start(4);
+        let mut job = f.job().await;
+        job.request_id = RequestId::for_step(job.session_id, job.step + 1);
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            f.drained().await;
+            assert_eq!(f.calls(), 0);
+            assert!(
+                f.store
+                    .read_events(job.session_id, 1, 64)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}

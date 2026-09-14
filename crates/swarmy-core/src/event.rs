@@ -48,6 +48,12 @@ pub enum Event {
         seq: u64,
         snapshot: SnapshotRef,
     },
+    /// Provider retries were exhausted; the next step can handle the failure.
+    InferenceFailed {
+        seq: u64,
+        request_id: RequestId,
+        error: String,
+    },
 }
 
 impl Event {
@@ -60,7 +66,8 @@ impl Event {
             | Self::ToolCallRequested { seq, .. }
             | Self::ToolCallCompleted { seq, .. }
             | Self::StateChanged { seq, .. }
-            | Self::SnapshotWritten { seq, .. } => *seq,
+            | Self::SnapshotWritten { seq, .. }
+            | Self::InferenceFailed { seq, .. } => *seq,
         }
     }
 }
@@ -75,7 +82,7 @@ mod tests {
     };
     use ulid::Ulid;
 
-    fn events() -> [Event; 7] {
+    fn events() -> [Event; 8] {
         let request_id = RequestId::for_step(SessionId::from_ulid(Ulid::from_parts(1, 2)), 1);
         [
             Event::MessageAppended {
@@ -115,6 +122,11 @@ mod tests {
                     seq: 6,
                 },
             },
+            Event::InferenceFailed {
+                seq: 8,
+                request_id,
+                error: "provider failed".into(),
+            },
         ]
     }
 
@@ -128,6 +140,7 @@ mod tests {
             "tool_call_completed",
             "state_changed",
             "snapshot_written",
+            "inference_failed",
         ];
         for (index, (event, tag)) in events().into_iter().zip(tags).enumerate() {
             assert_round_trip(&event);
