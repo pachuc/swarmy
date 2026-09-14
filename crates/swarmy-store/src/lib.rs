@@ -8,7 +8,9 @@
 //! fetch blobs. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 pub mod blob;
+mod inference;
 mod keys;
+pub use inference::{InferenceClaim, InferenceCompletion};
 mod leases;
 
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
@@ -315,7 +317,8 @@ impl Store {
                 | Event::ToolCallRequested { seq: n, .. }
                 | Event::ToolCallCompleted { seq: n, .. }
                 | Event::StateChanged { seq: n, .. }
-                | Event::SnapshotWritten { seq: n, .. } => *n = seq,
+                | Event::SnapshotWritten { seq: n, .. }
+                | Event::InferenceFailed { seq: n, .. } => *n = seq,
             }
             let key = self.event_space(id).pack(&(seq,));
             let value = self.prepare(&event).await?;

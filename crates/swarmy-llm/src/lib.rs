@@ -8,7 +8,17 @@ pub mod responses;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use swarmy_core::{Message, Part};
+use swarmy_core::{Message, Part, RequestId, SessionId};
+
+/// Durable inference work, shared by step workers and gateways.
+/// `request_id` must equal `RequestId::for_step(session_id, step)`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InferenceJob {
+    pub session_id: SessionId,
+    pub step: u64,
+    pub request_id: RequestId,
+    pub request: Request,
+}
 
 /// Provider-neutral input built from durable core messages.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -23,6 +33,7 @@ pub struct Request {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
+    #[serde(with = "swarmy_core::json")]
     pub parameters: Value,
 }
 
@@ -125,4 +136,31 @@ pub enum Error {
     Join(#[from] tokio::task::JoinError),
     #[error("fake provider has no response for turn {0}")]
     UnscriptedTurn(usize),
+}
+
+#[cfg(test)]
+mod job_tests {
+    use super::*;
+
+    #[test]
+    fn inference_jobs_with_tool_schemas_round_trip() {
+        let session_id = SessionId::from_ulid(ulid::Ulid::generate());
+        let job = InferenceJob {
+            session_id,
+            step: 7,
+            request_id: RequestId::for_step(session_id, 7),
+            request: Request {
+                system_prompt: "test".into(),
+                messages: Vec::new(),
+                tools: vec![ToolDefinition {
+                    name: "clock".into(),
+                    description: "Read the time".into(),
+                    parameters: serde_json::json!({"type": "object", "properties": {}}),
+                }],
+                settings: GenerationSettings::default(),
+            },
+        };
+        let encoded = swarmy_core::encode(&job).unwrap();
+        assert_eq!(swarmy_core::decode::<InferenceJob>(&encoded).unwrap(), job);
+    }
 }

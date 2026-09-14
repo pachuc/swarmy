@@ -396,6 +396,13 @@ pub struct WorkMessage<T> {
 }
 
 impl<T> WorkMessage<T> {
+    /// Delivery attempts start at one and include negative acknowledgements.
+    /// # Errors
+    /// Returns an error when `JetStream` delivery metadata is malformed.
+    pub fn delivery_count(&self) -> Result<i64, Error> {
+        self.message.info().map(|info| info.delivered).map_err(nats)
+    }
+
     /// Finish this delivery and wait for the server to confirm the acknowledgement.
     ///
     /// # Errors

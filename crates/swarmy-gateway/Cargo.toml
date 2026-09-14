@@ -1,0 +1,31 @@
+[package]
+name = "swarmy-gateway"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+futures.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+swarmy-bus.workspace = true
+swarmy-core.workspace = true
+swarmy-llm.workspace = true
+swarmy-store.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+async-nats.workspace = true
+blake3.workspace = true
+foundationdb.workspace = true
+tempfile.workspace = true

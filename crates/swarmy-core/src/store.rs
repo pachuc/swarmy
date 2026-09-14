@@ -6,6 +6,7 @@ use crate::SessionId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdempotencyState {
+    /// Work was requested or started and can be retried until Completed.
     Requested,
     Completed,
 }

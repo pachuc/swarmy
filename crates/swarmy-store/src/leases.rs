@@ -146,7 +146,7 @@ impl Store {
         .await
     }
 
-    async fn transition(
+    pub(crate) async fn transition(
         &self,
         trx: &Transaction,
         mut session: StoredSession,
