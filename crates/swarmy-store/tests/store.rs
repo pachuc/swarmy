@@ -86,6 +86,86 @@ impl TestStore {
 }
 
 #[tokio::test]
+async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let mut record = session();
+    record.state = SessionState::Idle;
+    let id = record.session_id;
+    test.store
+        .create_session(&record, timestamp(0))
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        test.store.wake_session(id, timestamp(1)),
+        test.store.wake_session(id, timestamp(1)),
+    );
+    let states = [first.unwrap(), second.unwrap()];
+    assert_eq!(
+        states.iter().filter(|&&s| s == SessionState::Idle).count(),
+        1
+    );
+    assert_eq!(
+        states
+            .iter()
+            .filter(|&&s| s == SessionState::Runnable)
+            .count(),
+        1
+    );
+    let scheduled = RunnableEntry {
+        session_id: id,
+        priority: 7,
+        wake_at: timestamp(100),
+    };
+    test.store.insert_runnable(&scheduled).await.unwrap();
+    test.store.wake_session(id, timestamp(2)).await.unwrap();
+    assert_eq!(
+        test.store
+            .scan_runnable(runnable_partition(id), None, 64)
+            .await
+            .unwrap(),
+        [scheduled]
+    );
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(50))
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.wake_session(id, timestamp(3)).await.unwrap(),
+        SessionState::Leased
+    );
+    test.store
+        .set_state(
+            id,
+            SessionState::WaitingInference,
+            Some(&lease),
+            timestamp(4),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.wake_session(id, timestamp(5)).await.unwrap(),
+        SessionState::WaitingInference
+    );
+    assert!(
+        test.store
+            .scan_runnable(runnable_partition(id), None, 64)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        test.store
+            .wake_session(SessionId::from_ulid(Ulid::generate()), timestamp(5))
+            .await,
+        Err(StoreError::SessionMissing)
+    ));
+    test.cleanup().await;
+}
+
+#[tokio::test]
 async fn events_are_contiguous_and_stale_appends_write_nothing() {
     let Some(test) = TestStore::memory() else {
         return;

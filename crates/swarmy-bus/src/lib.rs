@@ -26,7 +26,7 @@
 
 pub mod subjects;
 
-use std::{marker::PhantomData, time::Duration};
+use std::{future::Future, marker::PhantomData, time::Duration};
 
 use async_nats::jetstream::{
     self,
@@ -35,7 +35,7 @@ use async_nats::jetstream::{
 };
 use futures_util::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
-use swarmy_core::{EncodingError, NodeId, SessionId, decode, encode};
+use swarmy_core::{EncodingError, NodeId, SessionId, WakeReply, WakeRequest, decode, encode};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -48,6 +48,8 @@ pub enum Error {
     Encoding(#[from] EncodingError),
     #[error("NATS operation failed: {0}")]
     Nats(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("scheduler wake request failed: {0}")]
+    Scheduler(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 fn nats(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
@@ -222,6 +224,73 @@ pub struct Bus {
 }
 
 impl Bus {
+    /// Wake an idle session using core NATS request-reply, without work streams.
+    /// # Errors
+    /// Returns encoding errors, or an error naming the scheduler when no reply
+    /// arrives within `timeout`, no scheduler is listening, or transport fails.
+    pub async fn request_wake(
+        &self,
+        session_id: SessionId,
+        timeout: Duration,
+    ) -> Result<WakeReply, Error> {
+        let payload = encode(&WakeRequest { session_id })?;
+        let request = self.client.send_request(
+            self.config.subject(subjects::SCHED_WAKE),
+            async_nats::Request::new()
+                .payload(payload.into())
+                .timeout(Some(timeout)),
+        );
+        let reply = tokio::time::timeout(timeout, request)
+            .await
+            .map_err(|error| Error::Scheduler(error.into()))?
+            .map_err(|error| Error::Scheduler(error.into()))?;
+        Ok(decode(&reply.payload)?)
+    }
+
+    /// Serve wake requests in a queue group shared by scheduler instances.
+    /// Dropping this future unsubscribes. Malformed requests are ignored and
+    /// reply failures are logged so later requests can still be served.
+    /// # Errors
+    /// Returns subscription errors or an error if the subscription closes.
+    pub async fn serve_wake_requests<F, Fut>(&self, handler: F) -> Result<(), Error>
+    where
+        F: Fn(WakeRequest) -> Fut,
+        Fut: Future<Output = WakeReply>,
+    {
+        let mut requests = self
+            .client
+            .queue_subscribe(
+                self.config.subject(subjects::SCHED_WAKE),
+                self.config.subject("scheduler"),
+            )
+            .await
+            .map_err(nats)?;
+        while let Some(message) = requests.next().await {
+            let Some(reply_subject) = message.reply else {
+                continue;
+            };
+            let request = match decode::<WakeRequest>(&message.payload) {
+                Ok(request) => request,
+                Err(error) => {
+                    tracing::warn!(%error, "invalid scheduler wake request");
+                    continue;
+                }
+            };
+            let reply = handler(request).await;
+            let result = async {
+                self.client
+                    .publish(reply_subject, encode(&reply)?.into())
+                    .await
+                    .map_err(nats)
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(session_id = %request.session_id, %error, "wake reply failed");
+            }
+        }
+        Err(Error::Scheduler("wake subscription closed".into()))
+    }
+
     /// # Errors
     /// Rejects zero deadlines, nonpositive delivery limits, and connection failures.
     pub async fn connect(url: &str, config: Config) -> Result<Self, Error> {
