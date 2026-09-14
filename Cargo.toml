@@ -45,6 +45,7 @@ ulid = { version = "3", features = ["serde"] }
 swarmy-core = { path = "crates/swarmy-core" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-llm = { path = "crates/swarmy-llm" }
+swarmy-harness = { path = "crates/swarmy-harness" }
 
 [profile.dev.package."*"]
 opt-level = 3
