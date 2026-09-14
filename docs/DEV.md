@@ -177,3 +177,66 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 The Ubuntu CI job installs these pinned versions, starts the stack, and copies
 the exported settings into `GITHUB_ENV` so subsequent test steps inherit them.
 Its cleanup step runs even if an earlier step fails.
+
+## Session failure injection
+
+The slice 1 acceptance program builds and launches scheduler, worker, and gateway
+binaries, then creates sessions through the same store and scheduler wake APIs
+as `swarmy run`. It starts the development stack if needed and sources `.dev/env`
+in a child process. No provider credentials are needed.
+
+```sh
+cargo run --locked -p swarmy-chaos -- --sessions 20 --steps 5 --kills 15
+```
+
+Defaults are twenty concurrent sessions, five inference steps per session,
+fifteen SIGKILL/restart pairs, and two processes of each service kind. Each
+intermediate response calls `get_time`; the last response is the fixed answer
+`chaos session complete`. Each gateway handles one call at a time, making the
+allowed cost of each gateway kill at most one additional provider call.
+
+Use `--schedulers`, `--workers`, and `--gateways` to change process counts.
+`--min-interval-ms` and `--max-interval-ms` set the inclusive random interval range
+(default 100 to 350 ms). `--latency-ms` delays each fake delta (default 100 ms,
+two deltas per response). The program fails if sessions finish before all kills
+are injected; increase latency or shorten intervals for very small workloads.
+Every killed slot is immediately restarted with its original environment.
+
+The program prints its seed, every victim and interval, call totals, and elapsed
+time, excluding builds and stack startup. Pass `--seed NUMBER` to replay the random choices; process and database
+scheduling still vary. `--session-timeout-secs` defaults to 120 and covers waking
+and observing each session. Failures identify the session, last observed state,
+and last eight events. Script, call log, and service logs are retained in a
+reported temporary directory on failure.
+
+Each run uses a fresh ULID for its FoundationDB directory and NATS prefix. It
+stops its service children and removes recorded snapshots, directory, streams, and
+temporary files at the end. The development stack stays running for reuse.
+Stored events and inference inputs use the libraries' versioned encoding.
+Logs must have contiguous sequence numbers from one, unique request ids and
+step ids, and one request per inference completion. A second pending request
+fails immediately, including when it uses a different id. Completed sessions
+must be Idle, have the expected number of requests and clock results, and carry
+the expected final answer in their last inference completion. The synced fake
+call log must contain between `sessions * steps` and that total plus gateway
+kills, inclusive.
+
+For an already running stack, export its settings and use `--no-start-stack`.
+The reduced CI command is:
+
+```sh
+scripts/dev-stack.sh start
+source .dev/env
+scripts/chaos-ci.sh
+```
+
+This runs five sessions, three steps, and four kills with seed 1. The GitHub
+Actions workflow runs it after the lint and test steps, with the stack already
+started. The script accepts additional runner arguments, such as `--latency-ms 200`.
+`--bin-dir PATH` uses prebuilt binaries without rebuilding, for experiments with
+instrumented services. Otherwise the runner builds services beside its own
+executable using the active Cargo target directory and debug or release profile.
+
+To add another killable service in a later slice, add its `Kind` variant and
+binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
+count and environment at startup. Restart and health checks remain shared.
