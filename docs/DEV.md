@@ -230,9 +230,9 @@ source .dev/env
 scripts/chaos-ci.sh
 ```
 
-This runs five sessions, three steps, and four kills with seed 1. The orchestrator
-will add this script to the GitHub Actions workflow after stack startup. The
-script accepts additional runner arguments, such as `--latency-ms 200`.
+This runs five sessions, three steps, and four kills with seed 1. The GitHub
+Actions workflow runs it after the lint and test steps, with the stack already
+started. The script accepts additional runner arguments, such as `--latency-ms 200`.
 `--bin-dir PATH` uses prebuilt binaries without rebuilding, for experiments with
 instrumented services. Otherwise the runner builds services beside its own
 executable using the active Cargo target directory and debug or release profile.
