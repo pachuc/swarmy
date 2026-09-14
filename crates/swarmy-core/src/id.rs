@@ -39,6 +39,15 @@ ulid_id!(
     SessionId
 );
 
+ulid_id!(
+    /// Identifies a worker incarnation holding a lease, not a durable worker identity.
+    LeaseOwnerId
+);
+ulid_id!(
+    /// Identifies a message within a session log.
+    MessageId
+);
+
 /// Idempotency key for an inference request or tool call: `blake3(session_id, seq)`.
 ///
 /// Deterministic from the session and step, so a retried step produces the same key and
@@ -99,5 +108,19 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, format!("\"{id}\""));
         assert_eq!(serde_json::from_str::<AgentId>(&json).unwrap(), id);
+    }
+
+    #[test]
+    fn request_id_survives_input_serialization() {
+        for step in [0, 7, u64::MAX] {
+            let inputs = (SessionId::from_ulid(Ulid::from_parts(5, 6)), step);
+            let bytes = crate::encode(&inputs).unwrap();
+            let decoded: (SessionId, u64) = crate::decode(&bytes).unwrap();
+            assert_eq!(inputs, decoded);
+            assert_eq!(
+                RequestId::for_step(inputs.0, inputs.1),
+                RequestId::for_step(decoded.0, decoded.1)
+            );
+        }
     }
 }
