@@ -40,6 +40,11 @@ ulid_id!(
 );
 
 ulid_id!(
+    /// Identifies a host running the node agent and receiving sandbox tool calls.
+    NodeId
+);
+
+ulid_id!(
     /// Identifies a worker incarnation holding a lease, not a durable worker identity.
     LeaseOwnerId
 );
