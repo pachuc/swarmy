@@ -179,19 +179,21 @@ impl SseParser {
                 if response["status"] == "failed" {
                     return Err(provider_error(&response["error"]));
                 }
-                let parts: Vec<Part> = if let Some(output) = response["output"].as_array() {
-                    output
+                // The Codex backend sends an empty output array in the terminal
+                // event; the items already collected from output_item.done are
+                // authoritative in that case.
+                let parts: Vec<Part> = match response["output"].as_array() {
+                    Some(output) if !output.is_empty() => output
                         .iter()
                         .map(item_parts)
                         .collect::<Result<Vec<_>, _>>()?
                         .into_iter()
                         .flatten()
-                        .collect()
-                } else {
-                    std::mem::take(&mut self.output)
+                        .collect(),
+                    _ => std::mem::take(&mut self.output)
                         .into_values()
                         .flatten()
-                        .collect()
+                        .collect(),
                 };
                 let stop_reason = if event["type"] == "response.incomplete"
                     || response["status"] == "incomplete"

@@ -63,9 +63,14 @@ impl Provider for ChatGptProvider {
                 response = provider.send(&body, &credentials).await?;
             }
             if !response.status().is_success() { Err(Error::Status(response.status()))?; }
-            if !response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.split(';').next().is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))) {
-                Err(Error::Protocol("expected text/event-stream".into()))?;
+            // The live backend streams events without any Content-Type header, so
+            // only an explicit non-stream type is rejected here; the parser rejects
+            // bodies that are not event streams.
+            let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.split(';').next().unwrap_or_default().trim().to_ascii_lowercase());
+            if let Some(mime) = content_type.filter(|mime| mime != "text/event-stream") {
+                Err(Error::Protocol(format!("expected text/event-stream, got {mime}")))?;
             }
             let mut bytes = response.bytes_stream();
             let mut parser = SseParser::default();

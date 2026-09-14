@@ -241,3 +241,20 @@ async fn fake_scripts_and_counter_work_through_dyn_provider() {
     );
     assert_eq!(fake.call_count(), 3);
 }
+
+#[test]
+fn empty_output_in_the_terminal_event_falls_back_to_streamed_items() {
+    // The live Codex backend reports "output": [] in response.completed.
+    let fixture = include_str!("fixtures/text.sse");
+    let start = fixture.find("\"output\": [").unwrap();
+    let end = start + fixture[start..].find("]}}").unwrap() + 1;
+    let emptied = format!("{}\"output\": []{}", &fixture[..start], &fixture[end..]);
+    assert_ne!(emptied, fixture);
+    for chunk_size in [1, 7, 4096] {
+        let deltas = parse(&emptied, chunk_size);
+        assert_eq!(
+            deltas.last(),
+            Some(&completed(vec![text("Hello 🌍")], StopReason::EndTurn))
+        );
+    }
+}
