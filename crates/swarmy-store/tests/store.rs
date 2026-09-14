@@ -940,6 +940,145 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
 }
 
 #[tokio::test]
+async fn worker_writes_are_fenced_after_renewal_expiry_and_replacement() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let old = test
+        .store
+        .claim_lease(id, owner(), timestamp(10))
+        .await
+        .unwrap();
+    let lease = test
+        .store
+        .renew_lease(id, &old, timestamp(1), timestamp(20))
+        .await
+        .unwrap();
+    let request_id = RequestId::for_step(id, 1);
+    let record = InflightRecord {
+        session_id: id,
+        seq: 1,
+        provider: "fake".into(),
+        key_id: String::new(),
+    };
+    for (token, now) in [(&old, timestamp(2)), (&lease, timestamp(20))] {
+        assert!(matches!(
+            test.store
+                .append_events_leased(id, 0, &[event("stale")], token, now)
+                .await,
+            Err(StoreError::LeaseMismatch)
+        ));
+        assert!(matches!(
+            test.store
+                .put_inference_input(id, 0, token, now, &"stale")
+                .await,
+            Err(StoreError::LeaseMismatch)
+        ));
+        assert!(matches!(
+            test.store
+                .put_inflight_leased(request_id, &record, token, now)
+                .await,
+            Err(StoreError::LeaseMismatch)
+        ));
+    }
+    test.store
+        .put_inference_input(id, 0, &lease, timestamp(2), &"original prompt")
+        .await
+        .unwrap();
+    test.store
+        .append_events_leased(id, 0, &[event("valid")], &lease, timestamp(2))
+        .await
+        .unwrap();
+    assert!(matches!(
+        test.store
+            .put_inference_input(id, 0, &lease, timestamp(2), &"changed prompt")
+            .await,
+        Err(StoreError::StaleSequence { .. })
+    ));
+    assert_eq!(
+        test.store
+            .get_inference_input::<String>(request_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("original prompt")
+    );
+    test.store
+        .reap_lease(id, &lease, timestamp(21))
+        .await
+        .unwrap();
+    let replacement = test
+        .store
+        .claim_lease(id, owner(), timestamp(40))
+        .await
+        .unwrap();
+    assert_ne!(replacement.owner, lease.owner);
+    assert!(matches!(
+        test.store
+            .append_events_leased(id, 1, &[event("stale")], &lease, timestamp(22))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        test.store
+            .put_inflight_leased(request_id, &record, &lease, timestamp(22))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.store
+        .put_inflight_leased(request_id, &record, &replacement, timestamp(22))
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.get_inflight(request_id).await.unwrap(),
+        Some(record)
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn inflight_scan_pages_without_skips_or_duplicates() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let mut expected = Vec::new();
+    for seq in 0..67 {
+        let id = session().session_id;
+        let record = InflightRecord {
+            session_id: id,
+            seq,
+            provider: "fake".into(),
+            key_id: String::new(),
+        };
+        test.store
+            .put_inflight(RequestId::for_step(id, seq), &record)
+            .await
+            .unwrap();
+        expected.push(record);
+    }
+    expected.sort_by_key(|record| *RequestId::for_step(record.session_id, record.seq).as_bytes());
+    let first = test.store.scan_inflight(None, 64).await.unwrap();
+    assert_eq!(first, expected[..64]);
+    let last = first.last().unwrap();
+    let cursor = RequestId::for_step(last.session_id, last.seq);
+    let rest = test.store.scan_inflight(Some(cursor), 64).await.unwrap();
+    assert_eq!(rest, expected[64..]);
+    let last = rest.last().unwrap();
+    assert!(
+        test.store
+            .scan_inflight(Some(RequestId::for_step(last.session_id, last.seq)), 64)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        test.store.scan_inflight(None, 0).await,
+        Err(StoreError::InvalidLimit)
+    ));
+}
+
+#[tokio::test]
 async fn session_listing_pages_by_id_and_hydrates_snapshots() {
     let Some(test) = TestStore::memory() else {
         return;

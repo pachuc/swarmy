@@ -354,6 +354,32 @@ impl Store {
         expected_head: u64,
         events: &[Event],
     ) -> Result<u64> {
+        self.append_events_inner(id, expected_head, events, None)
+            .await
+    }
+
+    /// Append under a live lease, fencing workers that were reaped or replaced.
+    /// # Errors
+    /// Returns append errors or `LeaseMismatch` for a stale or expired token.
+    pub async fn append_events_leased(
+        &self,
+        id: SessionId,
+        expected_head: u64,
+        events: &[Event],
+        lease: &swarmy_core::Lease,
+        now: jiff::Timestamp,
+    ) -> Result<u64> {
+        self.append_events_inner(id, expected_head, events, Some((lease, now)))
+            .await
+    }
+
+    async fn append_events_inner(
+        &self,
+        id: SessionId,
+        expected_head: u64,
+        events: &[Event],
+        fence: Option<(&swarmy_core::Lease, jiff::Timestamp)>,
+    ) -> Result<u64> {
         let head = expected_head
             .checked_add(u64::try_from(events.len()).map_err(|_| StoreError::TooLarge)?)
             .ok_or(StoreError::SequenceOverflow)?;
@@ -382,6 +408,9 @@ impl Store {
         self.transaction(|trx| {
             let prepared = &prepared;
             async move {
+                if let Some((lease, now)) = fence {
+                    self.check_worker_lease(&trx, id, lease, now).await?;
+                }
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
                     return Err(StoreError::StaleSequence {

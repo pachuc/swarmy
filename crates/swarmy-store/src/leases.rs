@@ -86,7 +86,7 @@ impl Store {
         .await
     }
 
-    async fn verify_lease(
+    pub(crate) async fn verify_lease(
         &self,
         trx: &Transaction,
         id: SessionId,
@@ -240,5 +240,22 @@ impl Store {
                 .await
         })
         .await
+    }
+}
+
+impl Store {
+    pub(crate) async fn check_worker_lease(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        lease: &Lease,
+        now: Timestamp,
+    ) -> Result<()> {
+        if self.verify_lease(trx, id, lease).await?.expires_at <= now
+            || self.session(trx, id).await?.state != SessionState::Leased
+        {
+            return Err(StoreError::LeaseMismatch);
+        }
+        Ok(())
     }
 }

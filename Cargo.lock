@@ -2380,6 +2380,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "blake3",
+ "foundationdb",
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "swarmy-bus",
+ "swarmy-core",
+ "swarmy-harness",
+ "swarmy-llm",
+ "swarmy-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

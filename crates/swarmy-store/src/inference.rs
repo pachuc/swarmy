@@ -194,3 +194,117 @@ impl Store {
             .await
     }
 }
+
+impl Store {
+    /// Save the exact inference input before its request event is appended.
+    /// A replacement worker can resume submission without rebuilding the prompt.
+    /// # Errors
+    /// Rejects stale leases, heads, and storage failures.
+    pub async fn put_inference_input<T: Serialize>(
+        &self,
+        session_id: SessionId,
+        expected_head: u64,
+        lease: &swarmy_core::Lease,
+        now: Timestamp,
+        input: &T,
+    ) -> Result<()> {
+        let step = expected_head
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        let request_id = RequestId::for_step(session_id, step);
+        let value = self.prepare(input).await?;
+        self.transaction(|trx| {
+            let value = &value;
+            async move {
+                self.check_worker_lease(&trx, session_id, lease, now)
+                    .await?;
+                let session = self.session(&trx, session_id).await?;
+                if session.head_seq != expected_head {
+                    return Err(StoreError::StaleSequence {
+                        expected: expected_head,
+                        actual: session.head_seq,
+                    });
+                }
+                trx.set(&self.inference_key("inference_input", request_id), value);
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    /// Read the input saved before a request event. The caller supplies its type.
+    /// # Errors
+    /// Returns storage, blob, or decoding errors.
+    pub async fn get_inference_input<T: DeserializeOwned>(
+        &self,
+        id: RequestId,
+    ) -> Result<Option<T>> {
+        self.get_payload(self.inference_key("inference_input", id))
+            .await
+    }
+
+    /// Scan in-flight requests in request-id order, strictly after the cursor.
+    /// The cursor is derived from the last record's session id and sequence.
+    /// # Errors
+    /// Rejects invalid limits, inconsistent request keys, and storage failures.
+    pub async fn scan_inflight(
+        &self,
+        after: Option<RequestId>,
+        limit: usize,
+    ) -> Result<Vec<InflightRecord>> {
+        crate::check_limit(limit)?;
+        let values = self
+            .transaction(|trx| async move {
+                let space = self.root.subspace(&("inflight",));
+                let mut begin = space.range().0;
+                if let Some(id) = after {
+                    begin = self.inference_key("inflight", id);
+                    begin.push(0);
+                }
+                crate::scan(&trx, (begin, space.range().1), limit).await
+            })
+            .await?;
+        let mut records = Vec::with_capacity(values.len());
+        for (key, value) in values {
+            let record: InflightRecord = self.hydrate(&value).await?;
+            if key
+                != self.inference_key(
+                    "inflight",
+                    RequestId::for_step(record.session_id, record.seq),
+                )
+            {
+                return Err(StoreError::Corrupt);
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+
+impl Store {
+    /// Record submission progress only while the worker still owns the session.
+    /// # Errors
+    /// Rejects mismatched request ids, stale leases, and storage failures.
+    pub async fn put_inflight_leased(
+        &self,
+        id: RequestId,
+        record: &InflightRecord,
+        lease: &swarmy_core::Lease,
+        now: Timestamp,
+    ) -> Result<()> {
+        if RequestId::for_step(record.session_id, record.seq) != id {
+            return Err(StoreError::InvalidState);
+        }
+        let value = self.prepare(record).await?;
+        self.transaction(|trx| {
+            let value = &value;
+            async move {
+                self.check_worker_lease(&trx, record.session_id, lease, now)
+                    .await?;
+                trx.set(&self.inference_key("inflight", id), value);
+                Ok(())
+            }
+        })
+        .await
+    }
+}
