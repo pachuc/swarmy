@@ -4,6 +4,14 @@
 //! crate defines the identifiers, events, and state machines those services agree on.
 //! See `docs/DESIGN.md` for the design this crate implements.
 
+mod encoding;
+mod event;
 mod id;
+mod message;
+mod session;
 
-pub use id::{AgentId, RequestId, SessionId};
+pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
+pub use event::Event;
+pub use id::{AgentId, LeaseOwnerId, MessageId, RequestId, SessionId};
+pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
+pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
