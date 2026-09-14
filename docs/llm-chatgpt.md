@@ -152,3 +152,9 @@ successes and failures. The report establishes only the tested models' availabil
 at that time. It does not enumerate the account's entire catalog. Without the auth
 environment variable it skips cleanly. This test was intentionally not run in the
 sandbox, so no real account model availability is claimed.
+
+## Request headers and reasoning replay
+
+Every request carries the bearer access token, the chatgpt-account-id header, and the same client identification headers Codex sends: OpenAI-Beta set to responses=experimental, originator set to codex_cli_rs, and a matching User-Agent. The backend uses these to decide which features a request may use; a bare request without them has not been verified against the live service.
+
+Reasoning parts are replayed into a request only when they carry the reasoning item this backend returned, stored under the chatgpt key of the part metadata. Reasoning produced by another provider, such as the fake provider in tests, is skipped rather than rejected, so a session that switches providers keeps working.

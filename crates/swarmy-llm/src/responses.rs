@@ -5,13 +5,22 @@ use std::collections::BTreeMap;
 use swarmy_core::{MessageRole, Part, ToolCallId, ToolResult};
 
 /// Convert core parts into ordered Responses input items.
+///
+/// Reasoning parts are replayed only when they carry the provider metadata this
+/// backend returned; reasoning produced elsewhere is skipped, since the backend
+/// cannot verify it.
 /// # Errors
-/// Rejects text with a tool role, which requires a correlated tool result,
-/// and reasoning without the provider metadata needed for replay.
+/// Rejects text with a tool role, which requires a correlated tool result.
 pub fn request_json(request: &Request) -> Result<Value, Error> {
     let mut input = Vec::new();
     for message in &request.messages {
         for part in &message.parts {
+            if let Part::Reasoning { metadata, .. } = part {
+                if let Some(item) = metadata.get("chatgpt").filter(|v| v["type"] == "reasoning") {
+                    input.push(item.clone());
+                }
+                continue;
+            }
             input.push(match part {
                 Part::Text { text } => {
                     let (role, kind) = match message.role {
@@ -30,8 +39,7 @@ pub fn request_json(request: &Request) -> Result<Value, Error> {
                     };
                     json!({"type": "function_call_output", "call_id": call_id.0, "output": output})
                 }
-                Part::Reasoning { metadata, .. } => metadata.get("chatgpt").filter(|v| v["type"] == "reasoning").cloned()
-                    .ok_or_else(|| Error::Protocol("reasoning replay requires ChatGPT metadata".into()))?,
+                Part::Reasoning { .. } => continue,
             });
         }
     }
