@@ -7,8 +7,9 @@ those binaries installed, run these commands from a clean checkout. The commands
 work in Bash and fish without sourcing an environment file.
 
 ```sh
-cargo build --workspace --locked
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
 ./target/debug/swarmy dev up
+./target/debug/swarmy doctor
 ./target/debug/swarmy run "hello"
 ./target/debug/swarmy dev status
 ./target/debug/swarmy dev down
@@ -18,10 +19,10 @@ cargo build --workspace --locked
 scheduler, worker, and gateway under a background CLI supervisor. It returns
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
-from startup; build again after changing Rust code. All four binaries must live
+from startup; build again after changing Rust code. The CLI, its `swarmy-session` companion, and all three services must live
 in the same directory. You can add `target/debug` to your shell's executable
-search path to use `swarmy` directly. The FoundationDB client library must be
-installed in the system library path as shown below.
+search path to use `swarmy` directly. When using a system client library, omit `SWARMY_FDB_LIB_DIR`. With a custom
+install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
 ./target/debug/swarmy dev logs           # follow all three service logs
@@ -87,96 +88,80 @@ for a login. Never share a refresh writer with a running Codex login.
 
 ## Backing service installation
 
-Run FoundationDB, NATS with JetStream, and SeaweedFS as background processes on
-Linux. The script uses Bash, curl 7.75 or newer (for AWS request signing), standard
-Linux utilities, and the service binaries. It does not need a container runtime
-or root privileges. Installation requires root privileges.
+The supported no-root installation path targets Linux x86-64. It needs Bash,
+curl, tar, sha256sum, and install. Building Rust also needs a C/C++ toolchain,
+pkg-config, and clang/libclang for bindgen. The stack uses curl 7.75 or newer for
+AWS request signing. These prerequisites must already be available.
 
-Use these exact versions, matching `.daytona/Dockerfile` and CI:
+From the checkout:
 
-| Service | Version | Binaries |
+```sh
+scripts/install-dev-tools.sh
+```
+
+The script verifies FoundationDB release SHA-256 files, installs the backing
+executables into `~/.local/bin` and `libfdb_c.so` into `~/.local/lib`, and prints
+a one-line command that installs the CLI and services. Run it in Bash:
+
+```bash
+for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo install --locked --path "crates/swarmy-$crate"; done
+```
+
+Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another location,
+then run its printed command. The build embeds that library directory in the
+runtime search path and uses it at link time. The shared build script also adds
+existing `/usr/lib`, `/usr/local/lib`, and `/usr/lib/x86_64-linux-gnu` directories.
+It emits the same rpath option on macOS, where the library is `libfdb_c.dylib`;
+the installer and process supervisor currently target Linux.
+
+swarmy searches the caller's PATH first, then the build-time install prefix's
+`bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
+No shell profile changes or `LD_LIBRARY_PATH` exports are needed. To call a
+backing tool directly, use its full path or add its bin directory to your PATH.
+
+Versions match `.daytona/Dockerfile` and the backing stack:
+
+| Service | Version | Installed files |
 | --- | --- | --- |
-| FoundationDB | 7.3.79 | `fdbserver`, `fdbcli`, and the client library |
+| FoundationDB | 7.3.79 | `fdbserver`, `fdbcli`, `libfdb_c.so` |
 | NATS | 2.14.6 | `nats-server` |
 | SeaweedFS | 4.47 | `weed` |
 
-The installation commands below target x86-64 machines. Release assets come from
-[FoundationDB](https://github.com/apple/foundationdb/releases/tag/7.3.79),
-[NATS](https://github.com/nats-io/nats-server/releases/tag/v2.14.6), and
-[SeaweedFS](https://github.com/seaweedfs/seaweedfs/releases/tag/4.47).
-
-### Ubuntu
-
-Run this in Bash. Extract the verified FoundationDB Debian packages to install
-their binaries, headers, and client library without package hooks starting a
-system service. This is also how the development image and CI install them.
+For machines with these dependencies installed system-wide, including CI's
+Ubuntu runner, the checkout installation needs no variable:
 
 ```bash
-set -euo pipefail
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl tar
-install_dir=$(mktemp -d)
-cd "$install_dir"
-FDB_VERSION=7.3.79
-for pkg in clients server; do
-  deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
-  curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
-  curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
-  sha256sum -c "${deb}.sha256"
-  sudo dpkg-deb -x "$deb" /
-done
-sudo ldconfig
-cd -
-rm -rf -- "$install_dir"
+cargo install --locked --path crates/swarmy-cli
+for crate in scheduler worker gateway; do cargo install --locked --path "crates/swarmy-$crate"; done
 ```
 
-Then install NATS and SeaweedFS using the shared instructions below.
+Cargo puts all executables in `~/.cargo/bin` by default. Use `swarmy` after
+rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
+because `swarmy dev` uses `scripts/dev-stack.sh` from it.
 
-### Arch Linux
+### Diagnose an installation
 
-Install the pinned upstream FoundationDB binaries and client library instead of
-relying on the version currently packaged by Arch or the AUR. Run this in Bash:
-
-```bash
-set -euo pipefail
-sudo pacman -S --needed ca-certificates curl tar
-install_dir=$(mktemp -d)
-cd "$install_dir"
-FDB_VERSION=7.3.79
-for asset in fdbserver.x86_64 fdbcli.x86_64 libfdb_c.x86_64.so; do
-  curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${asset}"
-  curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${asset}.sha256"
-  sha256sum -c "${asset}.sha256"
-done
-sudo install -Dm755 fdbserver.x86_64 /usr/local/bin/fdbserver
-sudo install -Dm755 fdbcli.x86_64 /usr/local/bin/fdbcli
-sudo install -Dm755 libfdb_c.x86_64.so /usr/local/lib/libfdb_c.so
-printf '/usr/local/lib\n' | sudo tee /etc/ld.so.conf.d/swarmy-fdb.conf >/dev/null
-sudo ldconfig
-cd -
-rm -rf -- "$install_dir"
+```sh
+swarmy dev up
+swarmy doctor
+swarmy doctor --json
 ```
 
-### NATS and SeaweedFS on either distribution
+Doctor checks the effective configuration, the FoundationDB client library and
+API version, each backing executable and its version, the installed companion
+and services, and ChatGPT credential validity when that provider is selected.
+It reads credentials without refreshing them or printing their contents.
+Once `.dev` exists it probes the configured FoundationDB coordinator, NATS, and
+S3 ports with timeouts. Port connectivity does not verify database or S3
+permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
+Before initialization, doctor asks for the missing config and tells you that the
+stack has not been initialized. Each failure includes a fix and causes exit 1.
+JSON output is one object containing `ok` and a `checks` array; each check has
+`name`, `ok`, `detail`, and an optional `fix`.
 
-```bash
-set -euo pipefail
-install_dir=$(mktemp -d)
-cd "$install_dir"
-NATS_VERSION=2.14.6
-SEAWEEDFS_VERSION=4.47
-curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
-sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
-curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
-sudo install -m 0755 weed /usr/local/bin/weed
-cd -
-rm -rf -- "$install_dir"
-export PATH="$PATH:/usr/sbin"
-fdbserver --version
-fdbcli --version
-nats-server --version
-weed version
-```
+The public CLI loads the client only for its doctor probe. Database commands
+run through the installed `swarmy-session` companion, so doctor can still name
+a missing `libfdb_c` even when the database commands cannot start.
 
 ## Manual reference
 

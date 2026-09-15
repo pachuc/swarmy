@@ -2301,7 +2301,9 @@ dependencies = [
  "fs2",
  "futures-util",
  "jiff",
+ "libloading",
  "rustix",
+ "serde",
  "serde_json",
  "swarmy-bus",
  "swarmy-config",
@@ -2312,6 +2314,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "ulid",
+ "url",
 ]
 
 [[package]]

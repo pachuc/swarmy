@@ -1,4 +1,5 @@
 [package]
+build = "../swarmy-store/build.rs"
 name = "swarmy-worker"
 version.workspace = true
 edition.workspace = true

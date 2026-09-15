@@ -141,6 +141,7 @@ fn write_private(path: &Path, content: &str) -> Result<()> {
 async fn stack(layout: &Layout, action: &str) -> Result<String> {
     let output = Process::new(layout.repo.join("scripts/dev-stack.sh"))
         .process_group(0)
+        .env("PATH", crate::tools::search_path()?)
         .arg(action)
         .output()
         .await?;

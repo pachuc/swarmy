@@ -1,7 +1,6 @@
 use std::{collections::HashSet, io::Write, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use clap::Subcommand;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
@@ -15,13 +14,7 @@ use ulid::Ulid;
 const WAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Subcommand)]
-pub enum Command {
-    /// Print the session's events in sequence order
-    Show { session_id: Ulid },
-    /// List stored sessions in id order
-    List,
-}
+pub use crate::session_command::Command;
 
 async fn store() -> Result<Store> {
     let settings = swarmy_config::Settings::load()?.settings;
