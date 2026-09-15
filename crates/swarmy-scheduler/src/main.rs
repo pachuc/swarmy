@@ -3,7 +3,6 @@ mod scheduler;
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use swarmy_bus::{Bus, SubjectToken};
 use swarmy_store::{Store, blob::ObjectBlobStore};
 use tracing_subscriber::EnvFilter;
@@ -14,25 +13,26 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let config = config::Config::from_env()?;
-    let cluster =
-        std::env::var("SWARMY_FDB_CLUSTER_FILE").context("SWARMY_FDB_CLUSTER_FILE must be set")?;
-    let url = std::env::var("SWARMY_NATS_URL").context("SWARMY_NATS_URL must be set")?;
-    let directory: Vec<String> = config::setting("SWARMY_STORE_DIRECTORY", "swarmy")?
+    let settings = swarmy_config::Settings::load()?.settings;
+    let cluster = settings.fdb_cluster_file;
+    let url = settings.nats_url;
+    let directory: Vec<String> = settings
+        .store_directory
         .split('/')
         .map(str::to_owned)
         .collect();
     anyhow::ensure!(
         directory.iter().all(|part| !part.is_empty()),
-        "SWARMY_STORE_DIRECTORY must contain nonempty path components"
+        "empty store directory component"
     );
-    let prefix = config::setting("SWARMY_BUS_PREFIX", "")?;
     let bus_config = swarmy_bus::Config {
-        prefix: if prefix.is_empty() {
+        prefix: if settings.bus_prefix.is_empty() {
             None
         } else {
-            Some(SubjectToken::new(prefix)?)
+            Some(SubjectToken::new(settings.bus_prefix)?)
         },
-        ..Default::default()
+        ack_wait: std::time::Duration::from_millis(settings.bus_ack_wait_ms),
+        max_deliver: settings.bus_max_deliver,
     };
     let blobs = Arc::new(ObjectBlobStore::from_env()?);
     let _network = swarmy_store::boot();

@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use futures::StreamExt;
 use serde::Deserialize;
 use swarmy_bus::{Config as BusConfig, SubjectToken};
@@ -23,47 +23,41 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let class = env::var("SWARMY_PROVIDER").context("SWARMY_PROVIDER is required")?;
+        let settings = swarmy_config::Settings::load()?.settings;
+        let class = settings.provider.clone();
         let provider: Arc<dyn Provider> = match class.as_str() {
-            "fake" => Arc::new(FileFake::from_env()?),
+            "fake" => Arc::new(FileFake::from_settings(&settings)?),
             "chatgpt" => Arc::new(ChatGptProvider::new(Arc::new(FileCredentialStore::new(
-                env::var("SWARMY_CHATGPT_AUTH").context("SWARMY_CHATGPT_AUTH is required")?,
+                &settings.credential_file,
             )))?),
             _ => bail!("unsupported SWARMY_PROVIDER: {class}"),
         };
-        let concurrency = setting("SWARMY_GATEWAY_CONCURRENCY", 4_usize)?;
-        let ack_wait = Duration::from_millis(setting("SWARMY_BUS_ACK_WAIT_MS", 30_000_u64)?);
+        let concurrency = settings.gateway_concurrency;
+        let ack_wait = Duration::from_millis(settings.bus_ack_wait_ms);
         if concurrency == 0 || ack_wait < Duration::from_millis(30) {
             bail!("concurrency must be positive and ack wait at least 30 ms");
         }
         Ok(Self {
-            cluster: env::var("SWARMY_FDB_CLUSTER_FILE")?,
-            directory: env::var("SWARMY_STORE_DIRECTORY")
-                .unwrap_or_else(|_| "swarmy".into())
+            cluster: settings.fdb_cluster_file,
+            directory: settings
+                .store_directory
                 .split('/')
                 .map(str::to_owned)
                 .collect(),
-            nats: env::var("SWARMY_NATS_URL")?,
+            nats: settings.nats_url,
             bus: BusConfig {
-                prefix: env::var("SWARMY_BUS_PREFIX")
-                    .ok()
-                    .map(SubjectToken::new)
-                    .transpose()?,
+                prefix: if settings.bus_prefix.is_empty() {
+                    None
+                } else {
+                    Some(SubjectToken::new(settings.bus_prefix)?)
+                },
                 ack_wait,
-                max_deliver: setting("SWARMY_BUS_MAX_DELIVER", 5_i64)?,
+                max_deliver: settings.bus_max_deliver,
             },
             class: SubjectToken::new(class)?,
             concurrency,
             provider,
         })
-    }
-}
-
-fn setting<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
-    match env::var(name) {
-        Ok(value) => value.parse().map_err(|_| anyhow::anyhow!("invalid {name}")),
-        Err(env::VarError::NotPresent) => Ok(default),
-        Err(error) => Err(error.into()),
     }
 }
 
@@ -141,9 +135,8 @@ struct FileFake {
 }
 
 impl FileFake {
-    fn from_env() -> Result<Self> {
-        let script: Script =
-            serde_json::from_slice(&std::fs::read(env::var("SWARMY_FAKE_SCRIPT")?)?)?;
+    fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
+        let script: Script = serde_json::from_slice(&std::fs::read(&settings.fake.script)?)?;
         if let Some(mode) = &script.request_based {
             mode.validate()?;
             anyhow::ensure!(
@@ -156,7 +149,7 @@ impl FileFake {
         // Delay each emitted delta in the wrapper so tests can kill a partial stream.
         Ok(Self {
             provider: Arc::new(provider),
-            log: env::var("SWARMY_FAKE_CALL_LOG")?.into(),
+            log: settings.fake.call_log.clone().into(),
             fail: script.fail,
             request_based: script.request_based,
             latency: Duration::from_millis(script.latency_ms),

@@ -36,7 +36,12 @@ fn main() -> Result<()> {
         .init();
     let config = config::Config::from_env()?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(config))
+    tokio::runtime::Runtime::new()?.block_on(async {
+        tokio::select! {
+            result = run(config) => result,
+            result = tokio::signal::ctrl_c() => Ok(result?),
+        }
+    })
 }
 
 async fn run(config: config::Config) -> Result<()> {

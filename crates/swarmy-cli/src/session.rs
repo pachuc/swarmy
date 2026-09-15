@@ -1,4 +1,4 @@
-use std::{collections::HashSet, env, io::Write, sync::Arc, time::Duration};
+use std::{collections::HashSet, io::Write, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -24,10 +24,10 @@ pub enum Command {
 }
 
 async fn store() -> Result<Store> {
-    let cluster =
-        env::var("SWARMY_FDB_CLUSTER_FILE").context("SWARMY_FDB_CLUSTER_FILE is required")?;
-    let directory: Vec<_> = env::var("SWARMY_STORE_DIRECTORY")
-        .unwrap_or_else(|_| "swarmy".into())
+    let settings = swarmy_config::Settings::load()?.settings;
+    let cluster = settings.fdb_cluster_file;
+    let directory: Vec<_> = settings
+        .store_directory
         .split('/')
         .map(str::to_owned)
         .collect();
@@ -92,13 +92,16 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
 }
 
 async fn bus() -> Result<Bus> {
-    let url = env::var("SWARMY_NATS_URL").context("SWARMY_NATS_URL is required")?;
+    let settings = swarmy_config::Settings::load()?.settings;
+    let url = settings.nats_url;
     let config = Config {
-        prefix: env::var("SWARMY_BUS_PREFIX")
-            .ok()
-            .map(SubjectToken::new)
-            .transpose()?,
-        ..Default::default()
+        prefix: if settings.bus_prefix.is_empty() {
+            None
+        } else {
+            Some(SubjectToken::new(settings.bus_prefix)?)
+        },
+        ack_wait: Duration::from_millis(settings.bus_ack_wait_ms),
+        max_deliver: settings.bus_max_deliver,
     };
     let bus = tokio::time::timeout(WAKE_TIMEOUT, Bus::connect(&url, config))
         .await

@@ -13,6 +13,9 @@ name = "swarmy"
 path = "src/main.rs"
 
 [dependencies]
+fs2.workspace = true
+rustix.workspace = true
+swarmy-config.workspace = true
 clap.workspace = true
 swarmy-core.workspace = true
 anyhow.workspace = true
@@ -26,6 +29,7 @@ ulid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 async-nats.workspace = true
 foundationdb.workspace = true
 futures-util.workspace = true
