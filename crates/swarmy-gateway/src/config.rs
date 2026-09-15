@@ -79,6 +79,8 @@ struct RequestScript {
     steps: usize,
     tool_steps: Vec<usize>,
     final_answer: String,
+    #[serde(default)]
+    bash_command: Option<String>,
 }
 
 impl RequestScript {
@@ -112,8 +114,16 @@ impl RequestScript {
             parts: vec![if tool {
                 Part::ToolCall {
                     call_id: ToolCallId(format!("clock-{step}")),
-                    tool: "get_time".into(),
-                    input: serde_json::json!({}),
+                    tool: if self.bash_command.is_some() {
+                        "bash"
+                    } else {
+                        "get_time"
+                    }
+                    .into(),
+                    input: self.bash_command.as_ref().map_or_else(
+                        || serde_json::json!({}),
+                        |command| serde_json::json!({"command": command, "timeout_ms": 120_000}),
+                    ),
                 }
             } else {
                 Part::Text {

@@ -1,5 +1,6 @@
 mod check;
 mod config;
+mod disk;
 mod process;
 
 use std::{
@@ -69,6 +70,7 @@ struct Fixture {
     files: TempDir,
     processes: Vec<Process>,
     sessions: Vec<SessionId>,
+    image: Option<swarmy_core::ManifestId>,
 }
 
 impl Fixture {
@@ -96,18 +98,59 @@ impl Fixture {
             files: tempfile::tempdir()?,
             processes: Vec::new(),
             sessions: Vec::new(),
+            image: None,
         })
+    }
+
+    async fn import_image(&mut self, image: &str) -> Result<()> {
+        let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
+        let settings = swarmy_config::Settings::load()?.settings;
+        let directory: Vec<_> = settings
+            .store_directory
+            .split('/')
+            .map(str::to_owned)
+            .collect();
+        let images = Store::open(
+            Some(&settings.fdb_cluster_file),
+            Some(&directory),
+            Arc::new(ObjectBlobStore::from_env()?),
+        )
+        .await?;
+        let manifest = images
+            .get_image(name, &swarmy_core::ImageTag(tag.into()))
+            .await?
+            .context("build the image before running chaos")?;
+        self.store
+            .put_manifest(
+                manifest,
+                &images
+                    .get_manifest(manifest)
+                    .await?
+                    .context("image header missing")?,
+            )
+            .await?;
+        self.store
+            .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest)
+            .await?;
+        self.image = Some(manifest);
+        Ok(())
     }
 
     async fn start(&mut self, config: &Config, binaries: &Path) -> Result<()> {
         self.bus.setup(&[]).await?;
+        if let Some(image) = &config.image {
+            self.import_image(image).await?;
+        }
+        std::fs::create_dir_all(self.files.path().join(".swarmy"))?;
+        std::fs::write(self.files.path().join(".swarmy/config.toml"), "")?;
         std::fs::write(self.files.path().join("calls"), "")?;
         std::fs::write(
             self.files.path().join("script.json"),
             serde_json::to_vec(&serde_json::json!({
                 "latency_ms": config.latency_ms,
                 "request_based": {"steps": config.steps, "tool_steps": (0..config.steps-1).collect::<Vec<_>>(),
-                    "final_answer": check::ANSWER}
+                    "final_answer": check::ANSWER,
+                    "bash_command": config.image.as_ref().map(|_| "printf 'swarmy\\n' >> /root/swarmy-lines; sleep 2; cat /root/swarmy-lines") }
             }))?,
         )?;
         let mut environment: Vec<(OsString, OsString)> = [
@@ -151,6 +194,7 @@ impl Fixture {
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
             (Kind::Gateway, config.gateways),
+            (Kind::Node, usize::from(config.image.is_some())),
         ] {
             for index in 0..count {
                 self.processes.push(Process::start(
@@ -207,6 +251,11 @@ impl Fixture {
                     Timestamp::now(),
                 )
                 .await?;
+            if self.image.is_some() {
+                self.store
+                    .set_session_image(id, "chaos", &swarmy_core::ImageTag("test".into()))
+                    .await?;
+            }
             self.store
                 .append_events(
                     id,
@@ -261,6 +310,16 @@ impl Fixture {
             let mut events = Vec::new();
             read_through(&self.store, *id, &mut events, session.head_seq).await?;
             check::finished(&session, &events, config.steps)?;
+            if let Some(image) = self.image {
+                disk::verify(&self.store, &events, *id, image, self.files.path()).await?;
+            }
+        }
+        if config.kill_node_mid_command {
+            let log = std::fs::read_to_string(self.files.path().join("swarmyd-0.log"))?;
+            ensure!(
+                log.matches("executing sandbox command").count() == 2,
+                "expected exactly two command attempts"
+            );
         }
         let calls = call_count(self.files.path())?;
         check::calls(calls, config.sessions * config.steps, gateway_kills)?;
@@ -325,7 +384,12 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
         .context("cleanup timed out")
         .and_then(std::convert::identity);
     if result.is_err() || cleanup.is_err() {
-        let path = fixture.files.keep();
+        for process in &mut fixture.processes {
+            process.kill_now();
+        }
+        disk::cleanup(&fixture.files.path().join(".swarmy/node"));
+        let replacement = tempfile::tempdir()?;
+        let path = std::mem::replace(&mut fixture.files, replacement).keep();
         tracing::error!(seed, logs = %path.display(), "chaos failed; retained script, call log, and service logs");
     }
     if let Err(error) = cleanup {
@@ -361,6 +425,9 @@ async fn inject(
     seed: u64,
     finished: &AtomicBool,
 ) -> Result<usize> {
+    if config.kill_node_mid_command {
+        disk::kill_mid_command(processes, files).await?;
+    }
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut gateway_kills = 0;
     // Do not spend the kill budget on process startup before inference begins.
@@ -385,7 +452,14 @@ async fn inject(
         for process in &mut *processes {
             process.check()?;
         }
-        let victim = rng.random_range(0..processes.len());
+        let victim = if kill == 1 && config.image.is_some() {
+            processes
+                .iter()
+                .position(|process| process.kind == Kind::Node)
+                .context("node slot missing")?
+        } else {
+            rng.random_range(0..processes.len())
+        };
         let process = &mut processes[victim];
         process.restart().await?;
         gateway_kills += usize::from(process.kind == Kind::Gateway);
@@ -463,4 +537,15 @@ async fn read_through(
         );
     }
     Ok(())
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        for process in &mut self.processes {
+            process.kill_now();
+        }
+        if self.image.is_some() {
+            disk::cleanup(&self.files.path().join(".swarmy/node"));
+        }
+    }
 }

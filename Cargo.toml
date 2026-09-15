@@ -66,6 +66,7 @@ swarmy-llm = { path = "crates/swarmy-llm" }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }
 swarmy-store = { path = "crates/swarmy-store" }
+swarmy-tools = { path = "crates/swarmy-tools" }
 swarmy-harness = { path = "crates/swarmy-harness" }
 
 [profile.dev.package."*"]

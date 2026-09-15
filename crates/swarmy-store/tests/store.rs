@@ -1556,3 +1556,6 @@ async fn assert_volume_listing(store: &Store, head: ManifestId) {
             .all(|(_, record)| record.head_manifest == head)
     );
 }
+
+#[path = "store/tools.rs"]
+mod tools;

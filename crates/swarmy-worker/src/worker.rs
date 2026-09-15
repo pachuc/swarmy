@@ -4,8 +4,9 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId, SessionId,
-    SessionRecord, SessionState, SnapshotRef, ToolCallRecord, decode, encode,
+    BashArguments, Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, PlaceReply,
+    RequestId, SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob,
+    decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::InferenceJob;
@@ -211,8 +212,12 @@ impl Worker {
                         .collect();
                     self.append(&mut session, lease, &mut events, &batch)
                         .await?;
-                    self.execute_pending(&mut session, lease, &mut events)
-                        .await?;
+                    if self
+                        .execute_pending(&mut session, lease, &mut events)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 Action::FoldResults(message) => {
                     self.append(
@@ -233,8 +238,12 @@ impl Worker {
                             .finish(&mut session, lease, &snapshot, &mut events)
                             .await;
                     }
-                    self.execute_pending(&mut session, lease, &mut events)
-                        .await?;
+                    if self
+                        .execute_pending(&mut session, lease, &mut events)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 Action::EndTurn => {
                     return self
@@ -295,9 +304,51 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &ActiveLease,
         events: &mut Vec<Event>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let mut jobs = Vec::new();
         for (request_id, call) in pending_tools(events) {
             let result = match self.config.harness.tools.get(&call.tool) {
+                Some(tool)
+                    if tool.sandbox_bound()
+                        && self
+                            .store
+                            .session_image(session.session_id)
+                            .await?
+                            .is_none() =>
+                {
+                    Err(
+                        "bash requires a disk; start the session with swarmy run --image NAME:TAG"
+                            .into(),
+                    )
+                }
+                Some(tool) if tool.sandbox_bound() => {
+                    match serde_json::from_value::<BashArguments>(call.arguments.clone()) {
+                        Ok(arguments) if arguments.valid() => {
+                            let step = events
+                                .iter()
+                                .find_map(|event| match event {
+                                    Event::ToolCallRequested {
+                                        seq,
+                                        request_id: requested,
+                                        ..
+                                    } if *requested == request_id => Some(*seq),
+                                    _ => None,
+                                })
+                                .context("tool request missing")?;
+                            jobs.push(ToolJob {
+                                session_id: session.session_id,
+                                request_id,
+                                call_id: call.call_id,
+                                step,
+                                arguments,
+                            });
+                            continue;
+                        }
+                        _ => Err(
+                            "bash expects a command and timeout_ms between 1 and 3600000".into(),
+                        ),
+                    }
+                }
                 Some(tool) => tool.execute(call.arguments).await,
                 None => Err(format!("unknown tool: {}", call.tool)),
             };
@@ -314,7 +365,85 @@ impl Worker {
             )
             .await?;
         }
-        Ok(())
+        if jobs.is_empty() {
+            return Ok(false);
+        }
+        // Placement happens before release so an unavailable scheduler leaves a
+        // recoverable worker step. Tool inputs and WaitingTools commit together.
+        let node = self.place(session.session_id).await?;
+        {
+            let mut token = lease.lock().await;
+            self.store
+                .dispatch_tool_jobs(
+                    session.session_id,
+                    token.as_ref().context("lease released")?,
+                    &jobs,
+                )
+                .await?;
+            *token = None;
+        }
+        self.kill("after_release");
+        for job in jobs {
+            self.bus
+                .publish_work(&WorkQueue::NodeTools(node), &job)
+                .await?;
+        }
+        Ok(true)
+    }
+
+    async fn place(&self, id: SessionId) -> Result<swarmy_core::NodeId> {
+        if let Some(sandbox) = self.store.get_sandbox(id).await?
+            && self
+                .store
+                .get_node(sandbox.node_id)
+                .await?
+                .is_some_and(|node| {
+                    node.last_heartbeat
+                        >= Timestamp::now()
+                            .checked_sub(std::time::Duration::from_secs(30))
+                            .unwrap_or(Timestamp::MIN)
+                })
+        {
+            return Ok(sandbox.node_id);
+        }
+        match self
+            .bus
+            .request_place(id, std::time::Duration::from_secs(5))
+            .await?
+        {
+            PlaceReply::Placed(record) => Ok(record.node_id),
+            PlaceReply::Failed(error) => anyhow::bail!("sandbox placement failed: {error}"),
+        }
+    }
+
+    async fn recover_tools(&self) -> Result<()> {
+        let mut after = None;
+        loop {
+            let jobs = self.store.scan_tool_jobs(after, MAX_SCAN_LIMIT).await?;
+            if jobs.is_empty() {
+                return Ok(());
+            }
+            for job in jobs {
+                after = Some(job.request_id);
+                if self
+                    .config
+                    .partitions
+                    .contains(&runnable_partition(job.session_id))
+                {
+                    let result = async {
+                        let node = self.place(job.session_id).await?;
+                        self.bus
+                            .publish_work(&WorkQueue::NodeTools(node), &job)
+                            .await?;
+                        Ok::<_, anyhow::Error>(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        tracing::warn!(%error, request_id = %job.request_id, "tool recovery failed");
+                    }
+                }
+            }
+        }
     }
 
     async fn submit(&self, job: &InferenceJob, lease: &ActiveLease) -> Result<()> {
@@ -428,6 +557,9 @@ impl Worker {
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
+            if let Err(error) = self.recover_tools().await {
+                tracing::warn!(%error, "tool recovery scan failed");
+            }
             if let Err(error) = self.recover().await {
                 tracing::warn!(%error, "inference recovery scan failed");
             }

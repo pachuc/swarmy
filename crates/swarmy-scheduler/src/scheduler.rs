@@ -29,6 +29,12 @@ impl Scheduler {
         tokio::select! {
             () = self.scan_loop() => {},
             () = self.reaper_loop() => {},
+            result = self.bus.serve_place_requests(|request| async move {
+                match self.store.place_sandbox(request.session_id, Timestamp::now()).await {
+                    Ok(record) => swarmy_core::PlaceReply::Placed(record),
+                    Err(error) => swarmy_core::PlaceReply::Failed(error.to_string()),
+                }
+            }) => result?,
             result = self.bus.serve_wake_requests(|request| self.wake(request)) => result?,
         }
         Ok(())

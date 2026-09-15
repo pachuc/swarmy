@@ -76,10 +76,35 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
     let mut tools = 0;
     for event in events {
         if let Event::ToolCallCompleted { result, .. } = event {
-            let ToolResult::Completed { output, .. } = result else {
+            let ToolResult::Completed {
+                output,
+                title,
+                metadata,
+            } = result
+            else {
                 anyhow::bail!("session {id}: failed get_time: {result:?}");
             };
-            output.parse::<jiff::Timestamp>()?;
+            if title == "bash" {
+                ensure!(
+                    metadata["exit_code"] == 0 && metadata["stderr"] == "",
+                    "session {id}: bash failed: {result:?}"
+                );
+                ensure!(
+                    metadata["stdout"] == "swarmy\n".repeat(tools + 1),
+                    "session {id}: disk contains missing or duplicated writes: {output:?}"
+                );
+                ensure!(
+                    serde_json::from_str::<serde_json::Value>(output)?
+                        == serde_json::json!(metadata),
+                    "session {id}: provider output lost tool metadata"
+                );
+                ensure!(
+                    metadata.contains_key("manifest_id"),
+                    "session {id}: manifest missing"
+                );
+            } else {
+                output.parse::<jiff::Timestamp>()?;
+            }
             tools += 1;
         }
     }

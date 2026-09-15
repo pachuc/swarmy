@@ -19,6 +19,7 @@ futures.workspace = true
 jiff.workspace = true
 object_store.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 swarmy-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

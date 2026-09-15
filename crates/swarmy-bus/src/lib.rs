@@ -35,7 +35,10 @@ use async_nats::jetstream::{
 };
 use futures_util::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
-use swarmy_core::{EncodingError, NodeId, SessionId, WakeReply, WakeRequest, decode, encode};
+use swarmy_core::{
+    EncodingError, NodeId, PlaceReply, PlaceRequest, SessionId, WakeReply, WakeRequest, decode,
+    encode,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -289,6 +292,73 @@ impl Bus {
             }
         }
         Err(Error::Scheduler("wake subscription closed".into()))
+    }
+
+    /// Request sandbox placement using core NATS request-reply.
+    /// # Errors
+    /// Returns encoding errors, or an error naming the scheduler when no reply
+    /// arrives within `timeout`, no scheduler is listening, or transport fails.
+    pub async fn request_place(
+        &self,
+        session_id: SessionId,
+        timeout: Duration,
+    ) -> Result<PlaceReply, Error> {
+        let payload = encode(&PlaceRequest { session_id })?;
+        let request = self.client.send_request(
+            self.config.subject(subjects::SCHED_PLACE),
+            async_nats::Request::new()
+                .payload(payload.into())
+                .timeout(Some(timeout)),
+        );
+        let reply = tokio::time::timeout(timeout, request)
+            .await
+            .map_err(|error| Error::Scheduler(error.into()))?
+            .map_err(|error| Error::Scheduler(error.into()))?;
+        Ok(decode(&reply.payload)?)
+    }
+
+    /// Serve place requests in a queue group shared by scheduler instances.
+    /// Dropping this future unsubscribes. Malformed requests are ignored and
+    /// reply failures are logged so later requests can still be served.
+    /// # Errors
+    /// Returns subscription errors or an error if the subscription closes.
+    pub async fn serve_place_requests<F, Fut>(&self, handler: F) -> Result<(), Error>
+    where
+        F: Fn(PlaceRequest) -> Fut,
+        Fut: Future<Output = PlaceReply>,
+    {
+        let mut requests = self
+            .client
+            .queue_subscribe(
+                self.config.subject(subjects::SCHED_PLACE),
+                self.config.subject("scheduler"),
+            )
+            .await
+            .map_err(nats)?;
+        while let Some(message) = requests.next().await {
+            let Some(reply_subject) = message.reply else {
+                continue;
+            };
+            let request = match decode::<PlaceRequest>(&message.payload) {
+                Ok(request) => request,
+                Err(error) => {
+                    tracing::warn!(%error, "invalid scheduler place request");
+                    continue;
+                }
+            };
+            let reply = handler(request).await;
+            let result = async {
+                self.client
+                    .publish(reply_subject, encode(&reply)?.into())
+                    .await
+                    .map_err(nats)
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(session_id = %request.session_id, %error, "place reply failed");
+            }
+        }
+        Err(Error::Scheduler("place subscription closed".into()))
     }
 
     /// # Errors
