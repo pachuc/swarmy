@@ -1,5 +1,92 @@
 # Local development
 
+## Quick start
+
+Install the pinned backing services using the instructions below. With Rust and
+those binaries installed, run these commands from a clean checkout. The commands
+work in Bash and fish without sourcing an environment file.
+
+```sh
+cargo build --workspace --locked
+./target/debug/swarmy dev up
+./target/debug/swarmy run "hello"
+./target/debug/swarmy dev status
+./target/debug/swarmy dev down
+```
+
+`up` starts FoundationDB, NATS, and SeaweedFS when needed, then starts one
+scheduler, worker, and gateway under a background CLI supervisor. It returns
+when their logs report readiness and prints process ids. The default fake
+provider replies `Hello from swarmy!` without credentials. Builds are separate
+from startup; build again after changing Rust code. All four binaries must live
+in the same directory. You can add `target/debug` to your shell's executable
+search path to use `swarmy` directly. The FoundationDB client library must be
+installed in the system library path as shown below.
+
+```sh
+./target/debug/swarmy dev logs           # follow all three service logs
+./target/debug/swarmy dev logs worker    # follow one service; Ctrl-C ends tailing
+./target/debug/swarmy dev logs supervisor
+```
+
+`status` shows the backing stack, services, and supervisor with pids and uptime.
+`down` stops them all and preserves data. Repeating `up` reports and replaces
+recorded processes, including survivors of a supervisor killed with SIGKILL.
+It reloads configuration, so edits take effect on the next `up`. An unexpected
+service exit stops the other services; inspect the logs and run `up` again.
+PID records contain Linux process start times to guard against PID reuse.
+
+## Shared configuration
+
+Every binary searches upward from its current directory for
+`.swarmy/config.toml`, then checks `$XDG_CONFIG_HOME/swarmy/config.toml` or
+`$HOME/.config/swarmy/config.toml`. The nearest project file wins.
+Environment variables override the file, and omitted fields use local defaults.
+Relative filesystem paths in a project file are relative to the directory
+containing `.swarmy`; paths in the user file are relative to its directory.
+Relative environment paths remain relative to the invoking directory.
+
+`dev up` creates the project file if absent, imports connection settings from
+`.dev/env` as data, and saves the file with private permissions. It updates the
+stack connection fields on each start and preserves other settings. Environment
+overrides are passed to children but are not saved. Service logs, pid records,
+and the default fake script and call log live in `.swarmy/dev/`.
+
+The generated file contains every setting. This partial example shows the
+common choices (store directories are FoundationDB directory names):
+
+```toml
+store_directory = "swarmy"
+bus_prefix = ""
+provider = "fake"
+model = "gpt-5"
+reasoning_effort = "medium"
+credential_file = "/home/me/.swarmy/auth.json"
+worker_partitions = "0-255"
+scheduler_partitions = "0-255"
+
+[fake]
+script = ".swarmy/dev/fake.json"
+call_log = ".swarmy/dev/calls.log"
+```
+
+The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
+`s3_access_key`, `s3_secret_key`, `s3_bucket`, and `s3_region`. Additional settings
+are `scheduler_scan_interval_ms`, `scheduler_resend_interval_ms`,
+`worker_lease_ms`, `worker_recovery_interval_ms`, `bus_ack_wait_ms`,
+`bus_max_deliver`, `gateway_concurrency`, and `system_prompt`. The optional
+`worker_kill_point` retains the worker failure-injection setting. Existing
+`SWARMY_*` names still work: uppercase the key and add `SWARMY_`. Exceptions
+are `credential_file` (`SWARMY_CHATGPT_AUTH`), `[fake].script`
+(`SWARMY_FAKE_SCRIPT`), and `[fake].call_log` (`SWARMY_FAKE_CALL_LOG`).
+
+To use ChatGPT, set `provider = "chatgpt"`, choose the model and effort, and set
+`credential_file` to a dedicated credential file. `swarmy auth login` and the
+gateway read that same path. `swarmy auth --auth-file PATH login` overrides it
+for a login. Never share a refresh writer with a running Codex login.
+
+## Backing service installation
+
 Run FoundationDB, NATS with JetStream, and SeaweedFS as background processes on
 Linux. The script uses Bash, curl 7.75 or newer (for AWS request signing), standard
 Linux utilities, and the service binaries. It does not need a container runtime
@@ -18,7 +105,7 @@ The installation commands below target x86-64 machines. Release assets come from
 [NATS](https://github.com/nats-io/nats-server/releases/tag/v2.14.6), and
 [SeaweedFS](https://github.com/seaweedfs/seaweedfs/releases/tag/4.47).
 
-## Install on Ubuntu
+### Ubuntu
 
 Run this in Bash. Extract the verified FoundationDB Debian packages to install
 their binaries, headers, and client library without package hooks starting a
@@ -45,7 +132,7 @@ rm -rf -- "$install_dir"
 
 Then install NATS and SeaweedFS using the shared instructions below.
 
-## Install on Arch Linux
+### Arch Linux
 
 Install the pinned upstream FoundationDB binaries and client library instead of
 relying on the version currently packaged by Arch or the AUR. Run this in Bash:
@@ -70,7 +157,7 @@ cd -
 rm -rf -- "$install_dir"
 ```
 
-## Install NATS and SeaweedFS on either distribution
+### NATS and SeaweedFS on either distribution
 
 ```bash
 set -euo pipefail
@@ -91,7 +178,9 @@ nats-server --version
 weed version
 ```
 
-## Run the stack
+## Manual reference
+
+### Run only the backing stack
 
 From the repository root:
 
@@ -147,9 +236,10 @@ killed with SIGKILL, first verify no `start` or `stop` invocation is still runni
 then remove the stale lock with `rmdir .dev/lock` and run `stop` before retrying.
 To reset all local data, stop successfully and then remove `.dev/`.
 
-## Environment and tests
+### Environment and tests
 
-Source `.dev/env` in every shell that runs services or integration tests. Its
+When using the manual flow without a configuration file, source `.dev/env` in
+every Bash shell that runs integration tests. Its
 exports are inherited by child processes; starting the stack alone cannot change
 the calling shell's environment.
 

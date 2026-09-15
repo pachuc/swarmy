@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use std::{collections::BTreeSet, env, time::Duration};
+use std::{collections::BTreeSet, time::Duration};
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_harness::{GetTime, Harness, ToolRegistry};
 use swarmy_llm::{GenerationSettings, ReasoningEffort};
@@ -20,12 +20,14 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let provider = setting("SWARMY_PROVIDER", "fake")?;
+        let settings = swarmy_config::Settings::load()?.settings;
+        let provider = settings.provider;
         ensure!(
             matches!(provider.as_str(), "fake" | "chatgpt"),
             "unsupported SWARMY_PROVIDER"
         );
-        let directory: Vec<_> = setting("SWARMY_STORE_DIRECTORY", "swarmy")?
+        let directory: Vec<_> = settings
+            .store_directory
             .split('/')
             .map(str::to_owned)
             .collect();
@@ -33,8 +35,8 @@ impl Config {
             directory.iter().all(|part| !part.is_empty()),
             "empty store directory component"
         );
-        let prefix = setting("SWARMY_BUS_PREFIX", "")?;
-        let effort = match setting("SWARMY_REASONING_EFFORT", "medium")?.as_str() {
+        let prefix = settings.bus_prefix;
+        let effort = match settings.reasoning_effort.as_str() {
             "none" => ReasoningEffort::None,
             "minimal" => ReasoningEffort::Minimal,
             "low" => ReasoningEffort::Low,
@@ -43,7 +45,7 @@ impl Config {
             "xhigh" => ReasoningEffort::Xhigh,
             _ => bail!("invalid SWARMY_REASONING_EFFORT"),
         };
-        let kill_point = env::var("SWARMY_WORKER_KILL_POINT").ok();
+        let kill_point = settings.worker_kill_point;
         ensure!(
             kill_point.as_deref().is_none_or(|value| matches!(
                 value,
@@ -54,29 +56,26 @@ impl Config {
         let mut tools = ToolRegistry::default();
         tools.register(Box::new(GetTime));
         Ok(Self {
-            cluster: env::var("SWARMY_FDB_CLUSTER_FILE")?,
+            cluster: settings.fdb_cluster_file,
             directory,
-            nats: env::var("SWARMY_NATS_URL")?,
+            nats: settings.nats_url,
             bus: BusConfig {
                 prefix: if prefix.is_empty() {
                     None
                 } else {
                     Some(SubjectToken::new(prefix)?)
                 },
-                ack_wait: duration("SWARMY_BUS_ACK_WAIT_MS", "30000")?,
-                max_deliver: setting("SWARMY_BUS_MAX_DELIVER", "5")?.parse()?,
+                ack_wait: duration(settings.bus_ack_wait_ms)?,
+                max_deliver: settings.bus_max_deliver,
             },
-            partitions: parse_partitions(&setting("SWARMY_WORKER_PARTITIONS", "0-255")?)?,
+            partitions: parse_partitions(&settings.worker_partitions)?,
             provider,
-            lease_duration: duration("SWARMY_WORKER_LEASE_MS", "30000")?,
-            recovery_interval: duration("SWARMY_WORKER_RECOVERY_INTERVAL_MS", "5000")?,
+            lease_duration: duration(settings.worker_lease_ms)?,
+            recovery_interval: duration(settings.worker_recovery_interval_ms)?,
             harness: Harness {
-                system_prompt_template: setting(
-                    "SWARMY_SYSTEM_PROMPT",
-                    "You are a helpful assistant. Use tools when needed.",
-                )?,
+                system_prompt_template: settings.system_prompt,
                 settings: GenerationSettings {
-                    model: setting("SWARMY_MODEL", "gpt-5")?,
+                    model: settings.model,
                     reasoning_effort: Some(effort),
                     ..Default::default()
                 },
@@ -87,17 +86,8 @@ impl Config {
     }
 }
 
-fn setting(name: &str, default: &str) -> Result<String> {
-    match env::var(name) {
-        Ok(value) => Ok(value),
-        Err(env::VarError::NotPresent) => Ok(default.into()),
-        Err(error) => Err(error).with_context(|| format!("invalid {name}")),
-    }
-}
-
-fn duration(name: &str, default: &str) -> Result<Duration> {
-    let millis: u64 = setting(name, default)?.parse()?;
-    ensure!(millis >= 30, "{name} must be at least 30 ms");
+fn duration(millis: u64) -> Result<Duration> {
+    ensure!(millis >= 30, "worker duration must be at least 30 ms");
     Ok(Duration::from_millis(millis))
 }
 

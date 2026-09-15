@@ -11,27 +11,17 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let settings = swarmy_config::Settings::load()?.settings;
         Ok(Self {
-            partitions: parse_partitions(&setting("SWARMY_SCHEDULER_PARTITIONS", "0-255")?)?,
-            scan_interval: interval("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", "1000")?,
-            resend_interval: interval("SWARMY_SCHEDULER_RESEND_INTERVAL_MS", "5000")?,
+            partitions: parse_partitions(&settings.scheduler_partitions)?,
+            scan_interval: interval(settings.scheduler_scan_interval_ms)?,
+            resend_interval: interval(settings.scheduler_resend_interval_ms)?,
         })
     }
 }
 
-pub fn setting(name: &str, default: &str) -> anyhow::Result<String> {
-    match std::env::var(name) {
-        Ok(value) => Ok(value),
-        Err(std::env::VarError::NotPresent) => Ok(default.to_owned()),
-        Err(error) => Err(error).with_context(|| format!("invalid {name}")),
-    }
-}
-
-fn interval(name: &str, default: &str) -> anyhow::Result<Duration> {
-    let millis: u64 = setting(name, default)?
-        .parse()
-        .with_context(|| format!("{name} must be a positive number of milliseconds"))?;
-    ensure!(millis > 0, "{name} must be positive");
+fn interval(millis: u64) -> anyhow::Result<Duration> {
+    ensure!(millis > 0, "scheduler interval must be positive");
     Ok(Duration::from_millis(millis))
 }
 

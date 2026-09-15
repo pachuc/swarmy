@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-config.workspace = true
 anyhow.workspace = true
 async-stream.workspace = true
 futures.workspace = true

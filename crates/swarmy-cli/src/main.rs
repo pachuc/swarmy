@@ -1,3 +1,4 @@
+mod dev;
 mod session;
 
 use clap::{Parser, Subcommand};
@@ -20,6 +21,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start and operate the local development system
+    Dev {
+        #[command(subcommand)]
+        command: dev::Command,
+    },
     /// Print the version of this CLI
     Version,
     /// Start a conversation and stream its output until idle
@@ -56,24 +62,24 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    if let Command::Dev { command } = cli.command {
+        return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
+    }
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run(cli))
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Run { prompt } => session::run(prompt, cli.json).await?,
         Command::Session { command } => session::inspect(command, cli.json).await?,
         Command::Auth { auth_file, command } => {
             let path = auth_file.map_or_else(
                 || {
-                    std::env::var_os("HOME")
-                        .map(|home| PathBuf::from(home).join(".swarmy/auth.json"))
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "set --auth-file or SWARMY_CHATGPT_AUTH when HOME is unset"
-                            )
-                        })
+                    Ok::<_, anyhow::Error>(PathBuf::from(
+                        swarmy_config::Settings::load()?.settings.credential_file,
+                    ))
                 },
                 Ok,
             )?;

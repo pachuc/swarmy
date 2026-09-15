@@ -10,6 +10,7 @@ workspace = true
 
 # The FoundationDB network boot function is the only local unsafe-code exception.
 [dependencies]
+swarmy-config.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true

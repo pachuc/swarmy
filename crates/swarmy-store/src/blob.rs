@@ -12,6 +12,8 @@ pub enum BlobError {
     Missing(String),
     #[error(transparent)]
     ObjectStore(#[from] object_store::Error),
+    #[error(transparent)]
+    Configuration(#[from] swarmy_config::Error),
     #[error("missing or invalid environment variable {0}")]
     Environment(&'static str),
 }
@@ -59,19 +61,17 @@ impl ObjectBlobStore {
         Self { inner }
     }
 
-    /// Read the five `SWARMY_S3_*` settings used by the dev stack.
+    /// Read shared S3 settings, including `SWARMY_S3_*` overrides.
     /// # Errors
-    /// Returns an error for missing settings or an invalid S3 configuration.
+    /// Returns an error for an unreadable configuration or invalid S3 settings.
     pub fn from_env() -> Result<Self, BlobError> {
-        fn setting(name: &'static str) -> Result<String, BlobError> {
-            std::env::var(name).map_err(|_| BlobError::Environment(name))
-        }
+        let settings = swarmy_config::Settings::load()?.settings;
         let inner = AmazonS3Builder::new()
-            .with_endpoint(setting("SWARMY_S3_ENDPOINT")?)
-            .with_access_key_id(setting("SWARMY_S3_ACCESS_KEY")?)
-            .with_secret_access_key(setting("SWARMY_S3_SECRET_KEY")?)
-            .with_bucket_name(setting("SWARMY_S3_BUCKET")?)
-            .with_region(setting("SWARMY_S3_REGION")?)
+            .with_endpoint(settings.s3_endpoint)
+            .with_access_key_id(settings.s3_access_key)
+            .with_secret_access_key(settings.s3_secret_key)
+            .with_bucket_name(settings.s3_bucket)
+            .with_region(settings.s3_region)
             .with_allow_http(true)
             .with_virtual_hosted_style_request(false)
             .build()?;

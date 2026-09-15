@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-config.workspace = true
 anyhow.workspace = true
 jiff.workspace = true
 swarmy-bus.workspace = true

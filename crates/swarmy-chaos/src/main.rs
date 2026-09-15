@@ -3,7 +3,6 @@ mod config;
 mod process;
 
 use std::{
-    env,
     ffi::OsString,
     path::Path,
     sync::{
@@ -76,13 +75,13 @@ impl Fixture {
     async fn new() -> Result<Self> {
         let prefix = format!("chaos_{}", Ulid::generate());
         let store = Store::open(
-            Some(&env::var("SWARMY_FDB_CLUSTER_FILE")?),
+            Some(&swarmy_config::Settings::load()?.settings.fdb_cluster_file),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env()?),
         )
         .await?;
         let bus = Bus::connect(
-            &env::var("SWARMY_NATS_URL")?,
+            &swarmy_config::Settings::load()?.settings.nats_url,
             BusConfig {
                 prefix: Some(SubjectToken::new(&prefix)?),
                 ack_wait: Duration::from_millis(1200),
@@ -130,6 +129,14 @@ impl Fixture {
         .into_iter()
         .map(|(key, value)| (key.into(), value.into()))
         .collect();
+        let mut shared = swarmy_config::Settings::load()?
+            .settings
+            .environment()
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect::<Vec<(OsString, OsString)>>();
+        shared.append(&mut environment);
+        environment = shared;
         environment.extend([
             (
                 "SWARMY_FAKE_SCRIPT".into(),
@@ -274,7 +281,9 @@ impl Fixture {
             }
         }
         // Like the service integration fixtures, remove only this run's directory and streams.
-        let db = Database::new(Some(&env::var("SWARMY_FDB_CLUSTER_FILE")?))?;
+        let db = Database::new(Some(
+            &swarmy_config::Settings::load()?.settings.fdb_cluster_file,
+        ))?;
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;
@@ -286,8 +295,9 @@ impl Fixture {
             }
         })
         .await?;
-        let context =
-            async_nats::jetstream::new(async_nats::connect(env::var("SWARMY_NATS_URL")?).await?);
+        let context = async_nats::jetstream::new(
+            async_nats::connect(swarmy_config::Settings::load()?.settings.nats_url).await?,
+        );
         for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{stream}", self.prefix))
