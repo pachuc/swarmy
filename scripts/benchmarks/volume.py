@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Run as root on a disposable benchmark VM with cloud SWARMY_* settings.
 
-Use a fresh working directory on the cache disk and put the CLI binaries on
-PATH. Results are JSON lines on stdout; command diagnostics go to stderr.
+Build with cargo build --release --workspace --locked, then use a fresh working
+directory on the cache disk and select --target-dir. Every sample gets an isolated
+object prefix so earlier installations cannot supply deduplicated chunks. Results
+are JSON lines on stdout; command diagnostics go to stderr.
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -13,13 +16,14 @@ import shlex
 import shutil
 import subprocess
 import time
+import uuid
 
 
 def run(*args, capture=False):
     return subprocess.run(
         args, check=True, text=True,
         stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-        stderr=None, timeout=1800,
+        stderr=None, timeout=7200,
     ).stdout
 
 
@@ -42,7 +46,8 @@ def clear_cache():
 
 
 class Attached:
-    def __init__(self, volume):
+    def __init__(self, volume, background=False):
+        self.background = background
         self.volume = volume
         self.mount = Path.cwd() / "mounted"
         self.mount.mkdir(exist_ok=True)
@@ -51,7 +56,8 @@ class Attached:
 
     def __enter__(self):
         self.process = subprocess.Popen(
-            ["swarmy", "--json", "vol", "attach", self.volume],
+            ["swarmy", "--json", "vol", "attach", self.volume]
+            + (["--background"] if self.background else []),
             stdout=subprocess.PIPE, text=True,
         )
         try:
@@ -99,9 +105,95 @@ def shell_trial(kind, trial):
         report(f"shell_{kind}", start, trial=trial)
 
 
+def seconds(duration):
+    return duration["secs"] + duration["nanos"] / 1e9
+
+
+def install_trial(background, trial, profile):
+    volume = cli("vol", "create", "bench-base:v1")["volume_id"]
+    # Give both modes the same warm base cache before starting the writer.
+    with Attached(volume) as attached:
+        run("dd", f"if={attached.device}", "of=/dev/null", "bs=4M",
+            "iflag=direct", "status=none")
+    with Attached(volume, background) as attached:
+        attached.mount_disk()
+        shutil.copyfile("/etc/resolv.conf", attached.mount / "etc/resolv.conf")
+        assert subprocess.run(["chroot", str(attached.mount), "dpkg-query", "-W", "build-essential"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
+        mounted = []
+        try:
+            for name in ("dev", "proc", "sys"):
+                run("mount", "--rbind", f"/{name}", str(attached.mount / name))
+                mounted.append(name)
+                run("mount", "--make-rslave", str(attached.mount / name))
+            update_start = time.monotonic()
+            run("chroot", str(attached.mount), "apt-get", "update")
+            update_seconds = time.monotonic() - update_start
+            install_start = time.monotonic()
+            run("chroot", str(attached.mount), "env", "DEBIAN_FRONTEND=noninteractive",
+                "apt-get", "install", "-y", "build-essential")
+            install_seconds = time.monotonic() - install_start
+        finally:
+            for name in reversed(mounted):
+                run("umount", "-R", str(attached.mount / name))
+        start = time.monotonic()
+        flushed = cli("vol", "flush", volume, "--mount", str(attached.mount))
+        report("install_and_flush", start, profile=profile, background=background,
+               trial=trial, apt_update_seconds=update_seconds,
+               install_seconds=install_seconds, frozen_seconds=seconds(flushed["frozen"]),
+               freeze_wait_seconds=seconds(flushed["freeze_wait"]), flush=flushed)
+        run("chroot", str(attached.mount), "gcc", "--version")
+    clone = cli("vol", "clone", volume)["volume_id"]
+    clear_cache()
+    with Attached(clone) as attached:
+        attached.mount_disk()
+        run("chroot", str(attached.mount), "gcc", "--version")
+    print(json.dumps({"metric": "compiler_persisted", "profile": profile,
+                      "background": background, "trial": trial}), flush=True)
+    return volume
+
+
+def options():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-dir", type=Path,
+                        default=Path(__file__).resolve().parents[2] / "target",
+                        help="Cargo target directory; selects binaries from PROFILE below it")
+    parser.add_argument("--profile", choices=("debug", "release"), default="release")
+    parser.add_argument("--background", choices=("on", "off", "both"), default="both")
+    parser.add_argument("--install-only", action="store_true",
+                        help="skip the older shell and sequential-read measurements")
+    parser.add_argument("--trials", type=int, default=1)
+    args = parser.parse_args()
+    if args.trials < 1:
+        parser.error("--trials must be positive")
+    binary_dir = args.target_dir.resolve() / args.profile
+    assert (binary_dir / "swarmy").is_file(), f"build {binary_dir / 'swarmy'} first"
+    os.environ["PATH"] = str(binary_dir) + os.pathsep + os.environ["PATH"]
+    return args
+
+
 def main():
+    args = options()
     assert os.geteuid() == 0, "run as root on a disposable VM"
-    assert not (Path.cwd() / ".swarmy").exists(), "use a fresh working directory"
+    root = Path.cwd()
+    bucket = os.environ["SWARMY_S3_BUCKET"]
+    modes = (False, True) if args.background == "both" else (args.background == "on",)
+    for trial in range(args.trials):
+        for background in modes:
+            directory = root / f"{args.profile}-{'on' if background else 'off'}-{trial}"
+            directory.mkdir()
+            os.chdir(directory)
+            # The production client uses path-style S3 URLs; a bucket suffix
+            # isolates objects without changing the upload implementation.
+            os.environ["SWARMY_S3_BUCKET"] = bucket + "/sample-" + uuid.uuid4().hex
+            try:
+                measurement(args, background, trial)
+            finally:
+                os.chdir(root)
+                os.environ["SWARMY_S3_BUCKET"] = bucket
+
+
+def measurement(args, background, trial):
     recipe = Path.cwd() / "bench-base"
     recipe.mkdir()
     # The standard base image already has build-essential. This variant leaves
@@ -117,33 +209,20 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
     print(json.dumps({"image": cli("image", "build", str(recipe), "--tag", "v1")}), flush=True)
     cli("image", "show", "bench-base:v1")
     run("swarmy", "image", "ls")
-    for trial in range(3):
-        shell_trial("cold", trial)
-    volume = cli("vol", "create", "bench-base:v1")["volume_id"]
-    with Attached(volume) as attached:
-        run("dd", f"if={attached.device}", "of=/dev/null", "bs=4M", "iflag=direct", "status=none")
-    for trial in range(3):
-        shell_trial("warm", trial)
+    if not args.install_only:
+        for trial_index in range(3):
+            shell_trial("cold", trial_index)
+        volume = cli("vol", "create", "bench-base:v1")["volume_id"]
+        with Attached(volume) as attached:
+            run("dd", f"if={attached.device}", "of=/dev/null", "bs=4M",
+                "iflag=direct", "status=none")
+        for trial_index in range(3):
+            shell_trial("warm", trial_index)
+    volume = install_trial(background, trial, args.profile)
+    if args.install_only:
+        return
     with Attached(volume) as attached:
         attached.mount_disk()
-        shutil.copyfile("/etc/resolv.conf", attached.mount / "etc/resolv.conf")
-        assert subprocess.run(["chroot", str(attached.mount), "dpkg-query", "-W", "build-essential"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
-        for name in ("dev", "proc", "sys"):
-            run("mount", "--rbind", f"/{name}", str(attached.mount / name))
-            run("mount", "--make-rslave", str(attached.mount / name))
-        try:
-            run("chroot", str(attached.mount), "apt-get", "update")
-            run("chroot", str(attached.mount), "env", "DEBIAN_FRONTEND=noninteractive",
-                "apt-get", "install", "-y", "build-essential")
-        finally:
-            for name in ("sys", "proc", "dev"):
-                run("umount", "-R", str(attached.mount / name))
-        # Include sync and filesystem freeze in the flush measurement.
-        start = time.monotonic()
-        flushed = cli("vol", "flush", volume, "--mount", str(attached.mount))
-        report("flush_build_essential", start, manifest=flushed["manifest_id"])
-        run("chroot", str(attached.mount), "gcc", "--version")
         run("dd", "if=/dev/urandom", f"of={attached.mount}/sequential.bin",
             "bs=1M", "count=128", "conv=fsync", "status=none")
         cli("vol", "flush", volume, "--mount", str(attached.mount))

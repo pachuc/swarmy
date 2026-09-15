@@ -1,0 +1,666 @@
+{
+  "date": "2026-09-15",
+  "cloud": "AWS",
+  "machine_type": "m6id.xlarge",
+  "zone": "us-east-1a",
+  "cache_disk": "220.7 GiB local NVMe, ext4, /dev/nvme0n1",
+  "object_store_region": "us-east-1",
+  "request_samples": [
+    {
+      "operation": "head_missing",
+      "sample": 0,
+      "seconds": 0.03038298
+    },
+    {
+      "operation": "put_256k",
+      "sample": 0,
+      "seconds": 0.086328081
+    },
+    {
+      "operation": "head_existing",
+      "sample": 0,
+      "seconds": 0.012761677
+    },
+    {
+      "operation": "head_missing",
+      "sample": 1,
+      "seconds": 0.009054625
+    },
+    {
+      "operation": "put_256k",
+      "sample": 1,
+      "seconds": 0.05811072
+    },
+    {
+      "operation": "head_existing",
+      "sample": 1,
+      "seconds": 0.010857527
+    },
+    {
+      "operation": "head_missing",
+      "sample": 2,
+      "seconds": 0.009655571
+    },
+    {
+      "operation": "put_256k",
+      "sample": 2,
+      "seconds": 0.044396351
+    },
+    {
+      "operation": "head_existing",
+      "sample": 2,
+      "seconds": 0.011390312
+    },
+    {
+      "operation": "head_missing",
+      "sample": 3,
+      "seconds": 0.011543509
+    },
+    {
+      "operation": "put_256k",
+      "sample": 3,
+      "seconds": 0.038401017
+    },
+    {
+      "operation": "head_existing",
+      "sample": 3,
+      "seconds": 0.011392694
+    },
+    {
+      "operation": "head_missing",
+      "sample": 4,
+      "seconds": 0.012366625
+    },
+    {
+      "operation": "put_256k",
+      "sample": 4,
+      "seconds": 0.02940597
+    },
+    {
+      "operation": "head_existing",
+      "sample": 4,
+      "seconds": 0.012521446
+    },
+    {
+      "operation": "head_missing",
+      "sample": 5,
+      "seconds": 0.012117044
+    },
+    {
+      "operation": "put_256k",
+      "sample": 5,
+      "seconds": 0.036568739
+    },
+    {
+      "operation": "head_existing",
+      "sample": 5,
+      "seconds": 0.010722505
+    },
+    {
+      "operation": "head_missing",
+      "sample": 6,
+      "seconds": 0.00981065
+    },
+    {
+      "operation": "put_256k",
+      "sample": 6,
+      "seconds": 0.037761647
+    },
+    {
+      "operation": "head_existing",
+      "sample": 6,
+      "seconds": 0.011106486
+    },
+    {
+      "operation": "head_missing",
+      "sample": 7,
+      "seconds": 0.011355243
+    },
+    {
+      "operation": "put_256k",
+      "sample": 7,
+      "seconds": 0.038672632
+    },
+    {
+      "operation": "head_existing",
+      "sample": 7,
+      "seconds": 0.013502842
+    },
+    {
+      "operation": "head_missing",
+      "sample": 8,
+      "seconds": 0.01039505
+    },
+    {
+      "operation": "put_256k",
+      "sample": 8,
+      "seconds": 0.033909033
+    },
+    {
+      "operation": "head_existing",
+      "sample": 8,
+      "seconds": 0.010252086
+    },
+    {
+      "operation": "head_missing",
+      "sample": 9,
+      "seconds": 0.008566001
+    },
+    {
+      "operation": "put_256k",
+      "sample": 9,
+      "seconds": 0.051288684
+    },
+    {
+      "operation": "head_existing",
+      "sample": 9,
+      "seconds": 0.011868507
+    },
+    {
+      "operation": "head_missing",
+      "sample": 10,
+      "seconds": 0.008606734
+    },
+    {
+      "operation": "put_256k",
+      "sample": 10,
+      "seconds": 0.032417165
+    },
+    {
+      "operation": "head_existing",
+      "sample": 10,
+      "seconds": 0.010805107
+    },
+    {
+      "operation": "head_missing",
+      "sample": 11,
+      "seconds": 0.013469465
+    },
+    {
+      "operation": "put_256k",
+      "sample": 11,
+      "seconds": 0.050943402
+    },
+    {
+      "operation": "head_existing",
+      "sample": 11,
+      "seconds": 0.014190546
+    },
+    {
+      "operation": "head_missing",
+      "sample": 12,
+      "seconds": 0.013056754
+    },
+    {
+      "operation": "put_256k",
+      "sample": 12,
+      "seconds": 0.034300056
+    },
+    {
+      "operation": "head_existing",
+      "sample": 12,
+      "seconds": 0.009416999
+    },
+    {
+      "operation": "head_missing",
+      "sample": 13,
+      "seconds": 0.01014993
+    },
+    {
+      "operation": "put_256k",
+      "sample": 13,
+      "seconds": 0.060403868
+    },
+    {
+      "operation": "head_existing",
+      "sample": 13,
+      "seconds": 0.012869505
+    },
+    {
+      "operation": "head_missing",
+      "sample": 14,
+      "seconds": 0.012207646
+    },
+    {
+      "operation": "put_256k",
+      "sample": 14,
+      "seconds": 0.036397403
+    },
+    {
+      "operation": "head_existing",
+      "sample": 14,
+      "seconds": 0.019506565
+    },
+    {
+      "operation": "head_missing",
+      "sample": 15,
+      "seconds": 0.010470784
+    },
+    {
+      "operation": "put_256k",
+      "sample": 15,
+      "seconds": 0.07616056
+    },
+    {
+      "operation": "head_existing",
+      "sample": 15,
+      "seconds": 0.01363765
+    },
+    {
+      "operation": "head_missing",
+      "sample": 16,
+      "seconds": 0.012062249
+    },
+    {
+      "operation": "put_256k",
+      "sample": 16,
+      "seconds": 0.050176535
+    },
+    {
+      "operation": "head_existing",
+      "sample": 16,
+      "seconds": 0.011887295
+    },
+    {
+      "operation": "head_missing",
+      "sample": 17,
+      "seconds": 0.009471932
+    },
+    {
+      "operation": "put_256k",
+      "sample": 17,
+      "seconds": 0.029689193
+    },
+    {
+      "operation": "head_existing",
+      "sample": 17,
+      "seconds": 0.012302002
+    },
+    {
+      "operation": "head_missing",
+      "sample": 18,
+      "seconds": 0.01159825
+    },
+    {
+      "operation": "put_256k",
+      "sample": 18,
+      "seconds": 0.097039802
+    },
+    {
+      "operation": "head_existing",
+      "sample": 18,
+      "seconds": 0.01347617
+    },
+    {
+      "operation": "head_missing",
+      "sample": 19,
+      "seconds": 0.013317871
+    },
+    {
+      "operation": "put_256k",
+      "sample": 19,
+      "seconds": 0.040572234
+    },
+    {
+      "operation": "head_existing",
+      "sample": 19,
+      "seconds": 0.019055219
+    }
+  ],
+  "measurements": [
+    {
+      "image": {
+        "chunks_stored": 464,
+        "chunks_total": 32768,
+        "chunks_uploaded": 463,
+        "event": "image_built",
+        "header": {
+          "chunk_size": 262144,
+          "root_hash": [
+            16,
+            108,
+            177,
+            67,
+            237,
+            99,
+            34,
+            245,
+            81,
+            94,
+            130,
+            250,
+            189,
+            183,
+            4,
+            168,
+            89,
+            157,
+            248,
+            171,
+            255,
+            64,
+            210,
+            149,
+            211,
+            98,
+            54,
+            178,
+            221,
+            234,
+            104,
+            251
+          ],
+          "size": 8589934592
+        },
+        "manifest_id": "01M2KEFSVNG75ARMKQBQXHYWRD",
+        "name": "bench-base",
+        "size": 8589934592,
+        "tag": "v1"
+      }
+    },
+    {
+      "metric": "install_and_flush",
+      "seconds": 140.36620718300003,
+      "profile": "release",
+      "background": false,
+      "trial": 0,
+      "apt_update_seconds": 0.5148991070000193,
+      "install_seconds": 11.338728709999941,
+      "frozen_seconds": 140.236582074,
+      "freeze_wait_seconds": 0.096138515,
+      "flush": {
+        "detached": false,
+        "device_total": {
+          "bytes_uploaded": 586940683,
+          "chunks_uploaded": 2238,
+          "dirty_lock_wait": {
+            "nanos": 4162139,
+            "secs": 0
+          },
+          "object_store_requests": 4489,
+          "object_store_time": {
+            "nanos": 159314601,
+            "secs": 135
+          }
+        },
+        "elapsed": {
+          "nanos": 332721058,
+          "secs": 140
+        },
+        "freeze_wait": {
+          "nanos": 96138515,
+          "secs": 0
+        },
+        "frozen": {
+          "nanos": 236582074,
+          "secs": 140
+        },
+        "manifest_id": "01M2KEGKSPRBYMJ6PWBW0W6TW5",
+        "uploads": {
+          "bytes_uploaded": 586940683,
+          "chunks_uploaded": 2238,
+          "dirty_lock_wait": {
+            "nanos": 41137,
+            "secs": 0
+          },
+          "object_store_requests": 4485,
+          "object_store_time": {
+            "nanos": 81743712,
+            "secs": 135
+          }
+        },
+        "volume_id": "01M2KEFT2VHZ0XV9D95VR48PM3"
+      }
+    },
+    {
+      "metric": "compiler_persisted",
+      "profile": "release",
+      "background": false,
+      "trial": 0
+    },
+    {
+      "image": {
+        "chunks_stored": 464,
+        "chunks_total": 32768,
+        "chunks_uploaded": 463,
+        "event": "image_built",
+        "header": {
+          "chunk_size": 262144,
+          "root_hash": [
+            16,
+            108,
+            177,
+            67,
+            237,
+            99,
+            34,
+            245,
+            81,
+            94,
+            130,
+            250,
+            189,
+            183,
+            4,
+            168,
+            89,
+            157,
+            248,
+            171,
+            255,
+            64,
+            210,
+            149,
+            211,
+            98,
+            54,
+            178,
+            221,
+            234,
+            104,
+            251
+          ],
+          "size": 8589934592
+        },
+        "manifest_id": "01M2KEQKQ6SSCR03CDAG0V4YHF",
+        "name": "bench-base",
+        "size": 8589934592,
+        "tag": "v1"
+      }
+    },
+    {
+      "metric": "install_and_flush",
+      "seconds": 6.776172512999892,
+      "profile": "release",
+      "background": true,
+      "trial": 0,
+      "apt_update_seconds": 1.6169254449999926,
+      "install_seconds": 181.5259085670001,
+      "frozen_seconds": 5.17354669,
+      "freeze_wait_seconds": 1.5678549259999999,
+      "flush": {
+        "detached": false,
+        "device_total": {
+          "bytes_uploaded": 716177675,
+          "chunks_uploaded": 2731,
+          "dirty_lock_wait": {
+            "nanos": 760159348,
+            "secs": 178
+          },
+          "object_store_requests": 5488,
+          "object_store_time": {
+            "nanos": 805912797,
+            "secs": 171
+          }
+        },
+        "elapsed": {
+          "nanos": 741402014,
+          "secs": 6
+        },
+        "freeze_wait": {
+          "nanos": 567854926,
+          "secs": 1
+        },
+        "frozen": {
+          "nanos": 173546690,
+          "secs": 5
+        },
+        "manifest_id": "01M2KEXPA5DSW76AARDR06FY27",
+        "uploads": {
+          "bytes_uploaded": 23331083,
+          "chunks_uploaded": 88,
+          "dirty_lock_wait": {
+            "nanos": 460992419,
+            "secs": 6
+          },
+          "object_store_requests": 188,
+          "object_store_time": {
+            "nanos": 491065239,
+            "secs": 6
+          }
+        },
+        "volume_id": "01M2KEQKYGX7FPN98D32YAH23N"
+      }
+    },
+    {
+      "metric": "compiler_persisted",
+      "profile": "release",
+      "background": true,
+      "trial": 0
+    },
+    {
+      "image": {
+        "chunks_stored": 464,
+        "chunks_total": 32768,
+        "chunks_uploaded": 463,
+        "event": "image_built",
+        "header": {
+          "chunk_size": 262144,
+          "root_hash": [
+            16,
+            108,
+            177,
+            67,
+            237,
+            99,
+            34,
+            245,
+            81,
+            94,
+            130,
+            250,
+            189,
+            183,
+            4,
+            168,
+            89,
+            157,
+            248,
+            171,
+            255,
+            64,
+            210,
+            149,
+            211,
+            98,
+            54,
+            178,
+            221,
+            234,
+            104,
+            251
+          ],
+          "size": 8589934592
+        },
+        "manifest_id": "01M2KFBAXYRAWSJ4DGXGM4JTWF",
+        "name": "bench-base",
+        "size": 8589934592,
+        "tag": "v1"
+      }
+    },
+    {
+      "metric": "install_and_flush",
+      "seconds": 139.37110489199995,
+      "profile": "debug",
+      "background": false,
+      "trial": 0,
+      "apt_update_seconds": 1.2159441549999883,
+      "install_seconds": 11.387077278000106,
+      "frozen_seconds": 139.221613214,
+      "freeze_wait_seconds": 0.118087795,
+      "flush": {
+        "detached": false,
+        "device_total": {
+          "bytes_uploaded": 587202827,
+          "chunks_uploaded": 2239,
+          "dirty_lock_wait": {
+            "nanos": 26461126,
+            "secs": 0
+          },
+          "object_store_requests": 4491,
+          "object_store_time": {
+            "nanos": 989671074,
+            "secs": 133
+          }
+        },
+        "elapsed": {
+          "nanos": 339702228,
+          "secs": 139
+        },
+        "freeze_wait": {
+          "nanos": 118087795,
+          "secs": 0
+        },
+        "frozen": {
+          "nanos": 221613214,
+          "secs": 139
+        },
+        "manifest_id": "01M2KFCD3AK5S8S3YPKFFJ8ZKV",
+        "uploads": {
+          "bytes_uploaded": 587202827,
+          "chunks_uploaded": 2239,
+          "dirty_lock_wait": {
+            "nanos": 304290,
+            "secs": 0
+          },
+          "object_store_requests": 4487,
+          "object_store_time": {
+            "nanos": 879115731,
+            "secs": 133
+          }
+        },
+        "volume_id": "01M2KFBB5964VMY5RWRPKQN4ZQ"
+      }
+    },
+    {
+      "metric": "compiler_persisted",
+      "profile": "debug",
+      "background": false,
+      "trial": 0
+    }
+  ],
+  "cleanup": {
+    "verified_at": "2026-09-15T21:29:21.927664+00:00",
+    "instances": [
+      {
+        "Id": "i-0b1dd2396ec6f2bcd",
+        "State": "terminated"
+      }
+    ],
+    "volumes": [],
+    "key_pairs": [],
+    "bucket_versioning": {
+      "Status": null,
+      "MFADelete": null
+    },
+    "versions": {
+      "Versions": 0,
+      "DeleteMarkers": 0,
+      "IsTruncated": false
+    },
+    "objects": {
+      "KeyCount": 0,
+      "IsTruncated": false
+    }
+  }
+}

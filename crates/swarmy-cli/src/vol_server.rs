@@ -25,12 +25,11 @@ async fn config() -> Result<ServerConfig> {
 }
 
 pub async fn control(id: VolumeId, mount: Option<PathBuf>, detach: bool, json: bool) -> Result<()> {
-    let manifest = server::control(&config().await?, id, mount, detach).await?;
-    crate::vol::output(
-        &serde_json::json!({"volume_id": id, "manifest_id": manifest, "detached": detach}),
-        &manifest.to_string(),
-        json,
-    )
+    let flushed = server::control_flush(&config().await?, id, mount, detach).await?;
+    let mut value = serde_json::to_value(&flushed)?;
+    value["volume_id"] = serde_json::to_value(id)?;
+    value["detached"] = serde_json::json!(detach);
+    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)
 }
 
 pub async fn attach(

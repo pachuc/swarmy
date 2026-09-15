@@ -1,4 +1,4 @@
-use super::{ChunkStore, Manifest, VolumeDevice, VolumeWriter, kernel::Attachment};
+use super::{ChunkStore, FlushResult, Manifest, VolumeDevice, VolumeWriter, kernel::Attachment};
 pub use error::{Error, Result};
 mod error;
 
@@ -31,7 +31,7 @@ struct Request {
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
-    manifest_id: Option<ManifestId>,
+    flush: Option<FlushResult>,
     error: Option<String>,
 }
 
@@ -53,6 +53,18 @@ pub async fn control(
     mount: Option<PathBuf>,
     detach: bool,
 ) -> Result<ManifestId> {
+    Ok(control_flush(config, id, mount, detach).await?.manifest_id)
+}
+
+/// Send a control request and return publication timings and counters.
+/// # Errors
+/// Returns transport, publication, or attachment errors.
+pub async fn control_flush(
+    config: &ServerConfig,
+    id: VolumeId,
+    mount: Option<PathBuf>,
+    detach: bool,
+) -> Result<FlushResult> {
     let request = Request {
         node: config.node,
         mount,
@@ -70,7 +82,7 @@ pub async fn control(
         return Err(Error::Message(error));
     }
     reply
-        .manifest_id
+        .flush
         .ok_or_else(|| Error::Message("attach server returned no manifest".into()))
 }
 
@@ -288,14 +300,14 @@ async fn handle(
     let (reply, detached) = match result {
         Ok((manifest, detached)) => (
             Reply {
-                manifest_id: Some(manifest),
+                flush: Some(manifest),
                 error: None,
             },
             detached,
         ),
         Err(error) => (
             Reply {
-                manifest_id: None,
+                flush: None,
                 error: Some(format!("{error:#}")),
             },
             attachment.is_none(),
@@ -346,7 +358,7 @@ async fn finish(
     path: &Path,
     writer: &VolumeWriter,
     attachment: &mut Option<Attachment>,
-) -> Result<ManifestId> {
+) -> Result<FlushResult> {
     if let Some(mount) = mountpoint(path).await? {
         let output = tokio::process::Command::new("umount")
             .arg("--")

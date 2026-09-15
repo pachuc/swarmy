@@ -289,3 +289,327 @@ allowing its propagation before final deletion. Future runs should create the
 temporary bucket with `--soft-delete-duration=0` before any tests, and verify
 that policy. The four earlier retained objects are an explicit cleanup
 exception, not claimed as permanently removed.
+
+## 2026-09-15: instrumented release flush and tool-boundary budget
+
+This run measures the existing serial upload strategy before changing its
+concurrency or dirty-store locking. The benchmark now selects binaries explicitly,
+measures installation separately from freeze acquisition and frozen publication,
+and can run `--background on`, `off`, or `both`. Each sample has a fresh volume,
+base image, cache directory, and object prefix. In particular, an earlier package
+installation cannot make a later sample look faster through deduplication.
+The base is read into the chunk cache before each installation. After publishing,
+the harness clones the volume, clears the cache, and checks `gcc --version`.
+
+### Machines and reproduction
+
+| Setting | AWS | Google Cloud |
+| --- | --- | --- |
+| Machine | `m6id.xlarge`, 4 vCPUs, 16 GiB | `n2-standard-4`, 4 vCPUs, 16 GiB |
+| Zone | `us-east-1a` | `us-east1-b` |
+| CPU | Xeon Platinum 8375C, 2.90 GHz | Xeon, family 6/model 85, 2.80 GHz |
+| Image | Ubuntu 24.04, `ami-025d99823a4caad37` | `ubuntu-2404-lts-amd64`, `ubuntu-os-cloud` |
+| Kernel | `7.0.0-1012-aws` | `7.0.0-1011-gcp` |
+| Boot disk | 50 GiB gp3, auto-delete | 50 GB persistent disk, auto-delete |
+| Cache disk | 220.7 GiB local NVMe, `/dev/nvme0n1` | 375 GiB local NVMe, `/dev/nvme0n1` |
+| Object storage location | S3 `us-east-1` | GCS `us-central1`, XML S3-compatible API |
+
+Local SSD capacity failed in `us-central1-a`, `-b`, `-c`, and `-f` with
+`ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS`. The next attempt, `us-east1-b`,
+succeeded with `--local-ssd interface=nvme`; no persistent-SSD fallback was used.
+The GCP VM and bucket are therefore in different regions. These results describe
+that placement, not same-region GCS performance. The earlier GCP run also used a
+different cache medium. Both stock kernel modules loaded successfully.
+
+Provision with a fresh run name and a temporary SSH key. AWS uses the private
+IP and the supplied subnet/security group. Import the public key with
+`managed-by=codex-launcher` and `Name` tags, and pass those same tags for both
+`instance` and `volume` in `run-instances`. The creation options for this run
+were equivalent to:
+
+```sh
+ami=$(aws ssm get-parameter \
+  --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+  --query Parameter.Value --output text)
+aws ec2 run-instances --image-id "$ami" --instance-type m6id.xlarge \
+  --subnet-id "$SWARMY_BENCH_SUBNET" --security-group-ids "$SWARMY_BENCH_SECURITY_GROUP" \
+  --key-name "$run_name" \
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+  --tag-specifications \
+  "ResourceType=instance,Tags=[{Key=managed-by,Value=codex-launcher},{Key=Name,Value=$run_name}]" \
+  "ResourceType=volume,Tags=[{Key=managed-by,Value=codex-launcher},{Key=Name,Value=$run_name}]"
+gcloud compute instances create "$run_name" --zone "$zone" \
+  --machine-type n2-standard-4 --image-family ubuntu-2404-lts-amd64 \
+  --image-project ubuntu-os-cloud --boot-disk-size 50GB \
+  --local-ssd interface=nvme --metadata-from-file ssh-keys="$ssh_metadata_file"
+```
+
+The SSH metadata file contains `ubuntu:` followed by the temporary public key.
+Try the central zones listed above, then east/west zones until local SSD is
+available; only fall back to an auto-deleting `pd-ssd` if those attempts fail.
+Record the successful zone and actual disk before formatting it. The run name
+in the evidence below is `swarmy-flush-20260915-205911`.
+
+AWS settings used the existing bucket with run prefix
+`swarmy-flush-20260915-205911/`. GCP used a temporary bucket of that name and a
+temporary HMAC key. Both clients use path-style requests. The harness adds a
+unique `sample-...` suffix to the configured bucket/prefix for each trial.
+Create and verify the GCP policy **before** writing any data:
+
+```sh
+gcloud storage buckets create gs://swarmy-flush-20260915-205911 \
+  --location us-central1 --soft-delete-duration=0
+gcloud storage buckets describe gs://swarmy-flush-20260915-205911 --format=json
+# soft_delete_policy: {"retentionDurationSeconds": "0"}
+```
+
+Create a temporary GCP HMAC key for the S3-compatible API. Save the response in
+an owner-readable private file, then use its `metadata.accessId` and `secret`
+for `SWARMY_S3_ACCESS_KEY` and `SWARMY_S3_SECRET_KEY` in the private environment:
+
+```sh
+(umask 077; gcloud storage hmac create swarmy@swarmy-508717.iam.gserviceaccount.com \
+  --format=json > "$private_hmac_file")
+```
+
+Reuse the installation procedure above: dependencies, pinned Rust toolchain,
+FoundationDB/NATS/SeaweedFS, and the verified unused cache disk mounted at
+`/mnt/bench`. Build as the Ubuntu user. This run used:
+
+```sh
+export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
+export CARGO_TARGET_DIR=/mnt/bench/target
+cargo build --release --workspace --locked
+cargo build --release --locked -p swarmy-volume --example cloud-object-requests
+scripts/dev-stack.sh start
+. .dev/env
+. "$HOME/bench.env" # private cloud S3 settings, never checked in
+export TMPDIR=/mnt/bench/tmp
+/mnt/bench/target/release/examples/cloud-object-requests > "$HOME/requests.jsonl"
+mkdir -p /mnt/bench/run/release
+cd /mnt/bench/run/release
+sudo -E env TMPDIR="$TMPDIR" python3 "$HOME/swarmy/scripts/benchmarks/volume.py" \
+  --target-dir /mnt/bench/target --profile release --background both --install-only \
+  > "$HOME/release.jsonl"
+```
+
+After release measurements finished on AWS, build and run the debug comparison
+on the same machine, with the same cache disk and isolated sample prefix:
+
+```sh
+cd "$HOME/swarmy"
+cargo build --workspace --locked
+cd /mnt/bench/run
+mkdir debug
+cd debug
+sudo -E env TMPDIR="$TMPDIR" python3 "$HOME/swarmy/scripts/benchmarks/volume.py" \
+  --target-dir /mnt/bench/target --profile debug --background off --install-only \
+  > "$HOME/debug.jsonl"
+```
+
+### Counter and timing definitions
+
+All durations in CLI JSON are `{secs, nanos}`. `uploads` counts device activity
+between entry to freeze acquisition and completion of thaw. `device_total`
+includes earlier background activity and foreground reads on that attachment.
+Chunks are successful chunk PUTs, not dirty chunk indices: zeros and existing
+objects do not count as uploads. Bytes count successful PUT payloads, including
+manifest objects. Requests count attempted HEAD/GET/PUT API calls, including
+manifest I/O; internal HTTP retries are not visible at this interface.
+
+Lock wait is summed across dirty-store acquisitions by reads, writes, uploaders,
+and publication. Several waiting operations can overlap, so this sum can exceed
+wall time. The object-store timer sums HEAD/GET/PUT call durations, excludes GET
+body consumption, and includes client processing. The residual is local I/O,
+hashing/copying, scheduling, freeze/thaw, and FoundationDB work; it is not a direct
+CPU measurement. Frozen time starts after the freeze command succeeds and ends
+after thaw; freeze acquisition includes kernel writeback. CLI round-trip time
+also includes CLI startup and control transport.
+
+### Results and interpretation
+
+Each installation mode has one sample. These runs establish a baseline, not
+percentiles or scaling guarantees. The raw measurements, image build records,
+request samples, and teardown queries are in
+[AWS JSON](benchmarks/volume-flush-20260915-aws.json) and
+[GCP JSON](benchmarks/volume-flush-20260915-gcp.json). Installation time excludes
+`apt-get update`, which is reported separately. The last timing column adds
+update, installation, and CLI flush; it excludes image construction, cache
+warming, auxiliary mount setup/teardown, and the subsequent persistence check.
+
+| Cloud / build / background | apt update (s) | Install (s) | Freeze acquisition (s) | Frozen (s) | CLI flush (s) | Update + install + flush (s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AWS / release / off | 0.515 | 11.339 | 0.096 | 140.237 | 140.366 | 152.220 |
+| AWS / release / on | 1.617 | 181.526 | 1.568 | 5.174 | 6.776 | 189.919 |
+| AWS / debug / off | 1.216 | 11.387 | 0.118 | 139.222 | 139.371 | 151.974 |
+| GCP / release / off | 0.715 | 15.296 | 0.111 | 889.606 | 889.749 | 905.760 |
+| GCP / release / on | 3.370 | 1233.974 | 9.532 | 22.422 | 31.982 | 1269.326 |
+
+| Cloud / build / background | Scope | Chunks uploaded | Storage requests | Bytes uploaded | Lock wait (s) | Storage call time (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| AWS / release / off | flush | 2,238 | 4,485 | 586,940,683 | 0.000041 | 135.082 |
+| AWS / release / off | attachment | 2,238 | 4,489 | 586,940,683 | 0.004162 | 135.159 |
+| AWS / release / on | flush | 88 | 188 | 23,331,083 | 6.460992 | 6.491 |
+| AWS / release / on | attachment | 2,731 | 5,488 | 716,177,675 | 178.760159 | 171.806 |
+| AWS / debug / off | flush | 2,239 | 4,487 | 587,202,827 | 0.000304 | 133.879 |
+| AWS / debug / off | attachment | 2,239 | 4,491 | 587,202,827 | 0.026461 | 133.990 |
+| GCP / release / off | flush | 2,238 | 4,485 | 586,940,683 | 0.000050 | 884.333 |
+| GCP / release / off | attachment | 2,238 | 4,489 | 586,940,683 | 0.004620 | 884.659 |
+| GCP / release / on | flush | 76 | 164 | 20,185,355 | 31.682961 | 31.572 |
+| GCP / release / on | attachment | 3,138 | 6,322 | 822,870,283 | 1256.260064 | 1248.562 |
+
+| Request | AWS (ms) | GCP (ms) |
+| --- | ---: | ---: |
+| head_missing | 11.355 [8.566, 13.469] | 280.716 [175.582, 292.957] |
+| put_256k | 38.673 [29.406, 97.040] | 245.760 [223.870, 288.195] |
+| head_existing | 11.887 [9.417, 19.507] | 72.737 [63.439, 85.490] |
+
+Request timings are median [minimum, maximum] over 19 serial requests using a
+reused client. Sample zero is retained in the raw data but excluded here; its
+missing HEAD took 30.383 ms on AWS and 191.129 ms on GCP, including connection
+setup. Each new 256 KiB object requires a missing HEAD and a conditional PUT.
+The sums of the medians are 50.028 ms on AWS and 526.476 ms on GCP, implying
+serial rates of approximately 5.0 and 0.475 MiB/s before local work and metadata.
+This short probe is not a stable latency guarantee: the longer flushes achieved
+about 4.0 and 0.63 MiB/s respectively. Request latency varied between the probe
+and the sustained upload. GET/manifest calls are also included in flush totals.
+
+**Release does not remove the serial network cost.** AWS uploaded almost the
+same amount in release and debug: 2,238 versus 2,239 chunks. Frozen time was
+140.237 s versus 139.222 s, a 0.7% difference in the opposite direction to an
+assumed release improvement. Storage call time was 135.082 s versus 133.879 s;
+subtracting it from server-side elapsed time leaves about 5.25 s versus 5.46 s.
+These single samples do not resolve a build-mode effect beyond request
+variability. The workspace
+already sets `[profile.dev.package."*"].opt-level = 3`, so dependency code,
+including blake3, is optimized in both builds.
+
+GCP release/off uploaded exactly the same number of chunks and bytes as AWS
+release/off, but froze for 889.606 s, with 884.333 s in storage calls. The
+server-side elapsed time outside measured storage calls was about 5.38 s. This
+is not a controlled comparison to the earlier 443.670 s GCP debug run: the VM moved from the central region to
+the east region to obtain local SSD, while the bucket stayed in the central
+region; the cache disk and request latencies also differ. The data does not
+support attributing that regression to release mode or to local SSD.
+
+**Background uploading moves work into the installation and can repeat it.**
+On AWS it reduced frozen time to 5.174 s and CLI flush to 6.776 s, but installation
+rose to 181.526 s from 11.339 s. The full measured update/install/flush sum rose
+from 152.220 s to 189.919 s. The attachment uploaded 2,731 chunks instead of 2,238
+and accumulated 178.760 s of dirty-lock waiting. The existing uploader keeps the
+mutex while waiting on the object store, so a short freeze is not enough to
+claim a faster tool boundary. The counter records aggregate waiting, including
+background waiters; it cannot by itself assign every second to one caller.
+
+GCP showed the same tradeoff more strongly: frozen time fell to 22.422 s, but
+freeze acquisition added 9.532 s and CLI flush took 31.982 s. Installation rose
+to 1,233.974 s; the measured update/install/flush sum rose from 905.760 s to
+1,269.326 s. The attachment uploaded 3,138 chunks, 900 more than background-off,
+and accumulated 1,256.260 s of dirty-lock waiting. Both clouds retained the
+installed compiler after flush, clone, cache clearing, and reattachment.
+
+The [proposed budget in the design](DESIGN.md#74-proposed-tool-boundary-latency-budget)
+uses the measured request costs, a 32-upload concurrency assumption, conservative
+planning throughput, and explicit metadata/freeze allowances. It targets both
+unstaged completion latency and avoidance of installation regressions. Neither
+parallel throughput nor p95 compliance is established by these measurements;
+those are acceptance work for the following tasks. The upload loop in this PR
+remains serial and retains its existing locking and durability behavior.
+
+### Validation on the launcher
+
+With the dev stack running and `.dev/env` sourced:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test -p swarmy-volume --locked --no-run --message-format=json
+cargo test -p swarmy-cli --test vol --locked --no-run --message-format=json
+cargo test --workspace --locked --no-run --message-format=json
+```
+
+The three CI commands passed; the workspace run reported 173 passing tests.
+The JSON compiler artifacts supplied executable paths to a runner which invoked
+each volume test binary, the CLI `vol` and `image` binaries, the node test,
+and the bash chaos test with
+`sudo -E BINARY --nocapture --test-threads=1`. All 28 distinct tests passed as
+root, including NBD/fio, publication counters, ext4, shell and OCI recipes,
+durability, clone isolation, crash recovery, fencing, history, and CLI JSON
+counter/timing assertions. The additional node and bash tests used
+`SWARMY_TEST_CLI=/home/ubuntu/workspace/target/debug/swarmy` and
+`SWARMY_TEST_IMAGE=base-ubuntu:test`; normal execution, a mid-command node kill,
+and twelve process kills all passed. The OCI recipe test initially skipped
+because `skopeo` was absent; after installing `skopeo` and `umoci`, all five image tests
+were repeated successfully. No NBD device remained attached afterward.
+
+The initial workspace test run failed the existing doctor mock-tools test when
+`SWARMY_FDB_LIB_DIR=$HOME/.local/lib` made the compiled tool search path prefer
+real tools over its fake HOME. Installing the client library in
+`/usr/local/lib`, running `ldconfig`, and rebuilding without that override
+resolved the environment conflict. No test, lint, or CI setting was weakened.
+Python argument parsing and syntax checks passed; the actual cloud runs exercise
+the benchmark and its cleanup paths. No cloud backend or upload strategy changed.
+
+### Cleanup proof
+
+AWS cleanup was verified at `2026-09-15T21:29:21Z`, immediately after its debug
+comparison. The instance, boot volume, and imported key pair were removed. The
+pre-existing bucket remains. Current objects, versions, and delete markers under
+this run's prefix are all absent. Unlike the earlier run, the supplied policy
+permitted the version-history audit here.
+
+```sh
+aws ec2 describe-instances --filters Name=tag:Name,Values=swarmy-flush-20260915-205911 \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
+# [{"Id":"i-0b1dd2396ec6f2bcd","State":"terminated"}]
+aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-flush-20260915-205911 \
+  --query 'Volumes[].{Id:VolumeId,State:State}' --output json
+# []
+aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-flush-20260915-205911 \
+  --query KeyPairs --output json
+# []
+aws s3api get-bucket-versioning --bucket swarmy-bench-815638500196 \
+  --query '{Status:Status,MFADelete:MFADelete}' --output json
+# {"Status":null,"MFADelete":null}
+aws s3api list-object-versions --bucket swarmy-bench-815638500196 \
+  --prefix swarmy-flush-20260915-205911/ --max-keys 1 --no-paginate \
+  --query '{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}' \
+  --output json
+# {"Versions":0,"DeleteMarkers":0,"IsTruncated":false}
+aws s3api list-objects-v2 --bucket swarmy-bench-815638500196 \
+  --prefix swarmy-flush-20260915-205911/ --max-keys 1 --no-paginate \
+  --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}' --output json
+# {"KeyCount":0,"IsTruncated":false}
+```
+
+Cleanup commands were `aws ec2 terminate-instances`, `aws ec2 delete-key-pair`,
+and `aws s3 rm s3://BUCKET/swarmy-flush-20260915-205911/ --recursive --only-show-errors`.
+All returned zero, as did the provider verification commands above.
+
+GCP cleanup was verified at `2026-09-15T21:59:35Z`. Instance deletion, recursive
+bucket deletion, and HMAC deactivation/deletion all returned zero. Soft delete
+was disabled from bucket creation onward, so this run did not create the retained
+objects seen in the earlier run. The live bucket no longer exists:
+
+```sh
+gcloud compute instances list --filter=name=swarmy-flush-20260915-205911 --format=json
+# []
+gcloud compute disks list --filter=name~swarmy-flush-20260915-205911 --format=json
+# []
+gcloud storage buckets list --filter=name=swarmy-flush-20260915-205911 --format=json
+# []
+gcloud storage buckets describe gs://swarmy-flush-20260915-205911
+# not found: 404 (exit 1, as expected)
+gcloud storage hmac describe "$HMAC_ACCESS_ID" --format='value(state)'
+# DELETED
+```
+
+The cleanup commands were:
+
+```sh
+gcloud compute instances delete swarmy-flush-20260915-205911 --zone us-east1-b --quiet
+gcloud storage rm --recursive gs://swarmy-flush-20260915-205911 --quiet
+gcloud storage hmac update "$HMAC_ACCESS_ID" --deactivate --quiet
+gcloud storage hmac delete "$HMAC_ACCESS_ID" --quiet
+```

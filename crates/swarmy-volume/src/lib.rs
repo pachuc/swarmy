@@ -1,7 +1,9 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
 mod device;
+mod metrics;
+pub use metrics::UploadStats;
 mod flush;
-pub use flush::{BackgroundUploader, VolumeWriter};
+pub use flush::{BackgroundUploader, FlushResult, VolumeWriter};
 pub mod image;
 #[cfg(target_os = "linux")]
 pub mod kernel;

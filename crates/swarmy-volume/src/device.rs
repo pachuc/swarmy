@@ -7,6 +7,9 @@ use std::{
     },
 };
 
+use std::time::Instant;
+
+use crate::metrics::{MeteredStore, UploadCounters, UploadStats};
 use bytes::Bytes;
 use swarmy_core::{CHUNK_SIZE, ContentHash, encode};
 use tokio::{
@@ -65,6 +68,7 @@ pub struct VolumeDevice {
     readahead: Arc<Mutex<()>>,
     readahead_chunks: u32,
     counters: Counters,
+    uploads: Arc<UploadCounters>,
 }
 
 impl VolumeDevice {
@@ -131,8 +135,14 @@ impl VolumeDevice {
         }
         data.set_len(manifest.header().size).await?;
         let dirty_bytes = present.iter().copied().map(u64::from).sum::<u64>() * BLOCK_SIZE;
+        let uploads = Arc::new(UploadCounters::default());
+        let store = ChunkStore::new(Arc::new(MeteredStore {
+            inner: store.inner,
+            counters: uploads.clone(),
+        }));
         Ok(Arc::new(Self {
             store,
+            uploads,
             manifest: manifest.clone(),
             cache_dir,
             dirty: Mutex::new(Dirty {
@@ -179,6 +189,19 @@ impl VolumeDevice {
         }
     }
 
+    /// Cumulative activity since this device was opened, including background work.
+    #[must_use]
+    pub fn upload_stats(&self) -> UploadStats {
+        self.uploads.snapshot()
+    }
+
+    async fn lock_dirty(&self) -> tokio::sync::MutexGuard<'_, Dirty> {
+        let start = Instant::now();
+        let guard = self.dirty.lock().await;
+        self.uploads.record_lock_wait(start);
+        guard
+    }
+
     pub(crate) fn validate(&self, offset: u64, length: usize) -> Result<()> {
         if length > MAX_REQUEST {
             return Err(VolumeError::InvalidRequest);
@@ -203,7 +226,7 @@ impl VolumeDevice {
     /// Rejects invalid ranges and propagates local or remote storage errors.
     pub async fn read(self: &Arc<Self>, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.validate(offset, length)?;
-        let mut dirty = self.dirty.lock().await;
+        let mut dirty = self.lock_dirty().await;
         let mut result = vec![0; length];
         let mut chunk = None;
         for (index, output) in result.chunks_mut(4096).enumerate() {
@@ -239,7 +262,7 @@ impl VolumeDevice {
     /// Rejects invalid ranges and propagates local storage errors.
     pub async fn write(&self, offset: u64, bytes: &[u8]) -> Result<()> {
         self.validate(offset, bytes.len())?;
-        let mut dirty = self.dirty.lock().await;
+        let mut dirty = self.lock_dirty().await;
         // Invalidate before writing: a partial failed write must never retain
         // an uploaded hash for bytes that are no longer present locally.
         for number in offset / u64::from(CHUNK_SIZE)
@@ -296,7 +319,7 @@ impl VolumeDevice {
     /// # Errors
     /// Returns local synchronization failures.
     pub async fn flush(&self) -> Result<()> {
-        let mut dirty = self.dirty.lock().await;
+        let mut dirty = self.lock_dirty().await;
         dirty.data.flush().await?;
         dirty.data.sync_all().await?;
         dirty.map.flush().await?;
@@ -310,13 +333,15 @@ impl VolumeDevice {
     /// # Errors
     /// Returns local read or object storage errors. A later call retries failures.
     pub async fn upload_dirty(&self) -> Result<()> {
-        let pending: Vec<_> = self.dirty.lock().await.pending.iter().copied().collect();
+        let before = self.upload_stats();
+        let pending: Vec<_> = self.lock_dirty().await.pending.iter().copied().collect();
         for number in pending {
-            let mut dirty = self.dirty.lock().await;
+            let mut dirty = self.lock_dirty().await;
             if dirty.pending.contains(&number) {
                 self.upload(&mut dirty, number).await?;
             }
         }
+        tracing::debug!(stats = ?self.upload_stats().since(before), "background upload complete");
         Ok(())
     }
 
@@ -350,7 +375,7 @@ impl VolumeDevice {
         F: FnOnce(swarmy_core::ManifestHeader) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let mut dirty = self.dirty.lock().await;
+        let mut dirty = self.lock_dirty().await;
         let pending: Vec<_> = dirty.pending.iter().copied().collect();
         let mut builder = ManifestBuilder::new(self.store.inner.clone(), dirty.published.clone());
         for number in pending {
@@ -451,6 +476,65 @@ impl VolumeDevice {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+
+    #[tokio::test]
+    async fn publication_counts_new_deduplicated_zero_and_staged_chunks() {
+        use futures::TryStreamExt;
+        use object_store::ObjectStore;
+
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let device = VolumeDevice::open(
+            ChunkStore::new(objects.clone()),
+            Manifest::empty(4 * u64::from(CHUNK_SIZE)).unwrap(),
+            dir.path().join("cache"),
+            dir.path().join("dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        // Two distinct chunks, a duplicate, and a zero chunk require five HEAD/PUT
+        // calls for data and four for the new manifest's leaf and root.
+        for (number, byte) in [7, 8, 7, 0].into_iter().enumerate() {
+            device
+                .write(
+                    number as u64 * u64::from(CHUNK_SIZE),
+                    &vec![byte; CHUNK_SIZE as usize],
+                )
+                .await
+                .unwrap();
+        }
+        device.publish(|_| async { Ok(()) }).await.unwrap();
+        let stats = device.upload_stats();
+        assert_eq!(stats.chunks_uploaded, 2);
+        assert_eq!(stats.object_store_requests, 9);
+        let stored = objects.list(None).try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(
+            stats.bytes_uploaded,
+            stored.iter().map(|object| object.size).sum::<u64>()
+        );
+        assert!(stats.dirty_lock_wait > std::time::Duration::ZERO);
+        assert!(stats.object_store_time > std::time::Duration::ZERO);
+        device.publish(|_| async { Ok(()) }).await.unwrap();
+        assert_eq!(device.upload_stats().object_store_requests, 9);
+
+        device.write(0, &[9; 4096]).await.unwrap();
+        device.upload_dirty().await.unwrap();
+        let staged = device.upload_stats();
+        assert_eq!(staged.chunks_uploaded, 3);
+        // A failed commit retains the staged hash; retry must not upload again.
+        assert!(
+            device
+                .publish(|_| async { Err(VolumeError::InvalidRequest) })
+                .await
+                .is_err()
+        );
+        device.publish(|_| async { Ok(()) }).await.unwrap();
+        assert_eq!(
+            device.upload_stats().chunks_uploaded,
+            staged.chunks_uploaded
+        );
+    }
 
     #[tokio::test]
     async fn snapshots_reuse_leaves_and_retry_rejected_publications() {

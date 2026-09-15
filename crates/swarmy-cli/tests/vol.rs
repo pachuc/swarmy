@@ -226,6 +226,13 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         &["flush", volume, "--mount", node_a.mount.to_str().unwrap()],
     );
     assert!(flushed["manifest_id"].is_string());
+    let stats: swarmy_volume::FlushResult = serde_json::from_value(flushed.clone()).unwrap();
+    assert!(stats.device_total.chunks_uploaded > 0);
+    assert!(stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded);
+    assert!(stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE));
+    assert!(stats.device_total.dirty_lock_wait > Duration::ZERO);
+    assert!(stats.frozen > Duration::ZERO);
+    assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
     fixture.json(&fixture.node_a, &["detach", volume]);
     node_a.stopped();
     let mut node_b = fixture.attach(&fixture.node_b, volume, "b");
