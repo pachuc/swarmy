@@ -43,6 +43,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 libloading = "0.8"
+libc = "0.2"
 url = "2"
 jiff = { version = "0.2", features = ["serde"] }
 foundationdb = { version = "0.9", default-features = false, features = ["fdb-7_3", "embedded-fdb-include"] }

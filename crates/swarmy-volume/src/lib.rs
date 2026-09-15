@@ -1,6 +1,11 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
+mod device;
 pub mod image;
+#[cfg(target_os = "linux")]
+pub mod kernel;
 mod manifest;
+pub mod nbd;
+pub use device::{BLOCK_SIZE, DeviceStats, VolumeDevice};
 
 use std::sync::Arc;
 
@@ -12,6 +17,10 @@ pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VolumeError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("request is unaligned, too large, or outside the disk")]
+    InvalidRequest,
     #[error(transparent)]
     ObjectStore(#[from] object_store::Error),
     #[error(transparent)]

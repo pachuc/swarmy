@@ -2918,7 +2918,9 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "fs2",
  "futures",
+ "libc",
  "object_store",
  "serde",
  "swarmy-core",
@@ -2927,6 +2929,8 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]
