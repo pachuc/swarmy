@@ -2904,9 +2904,24 @@ dependencies = [
  "serde",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-volume",
  "thiserror 2.0.20",
  "tokio",
  "ulid",
+]
+
+[[package]]
+name = "swarmy-volume"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "futures",
+ "object_store",
+ "serde",
+ "swarmy-core",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

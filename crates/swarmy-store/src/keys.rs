@@ -1,6 +1,6 @@
 use foundationdb::{Transaction, tuple::Subspace};
 use jiff::Timestamp;
-use swarmy_core::{RunnableEntry, SessionId, SessionState};
+use swarmy_core::{ImageTag, ManifestId, RunnableEntry, SessionId, SessionState, VolumeId};
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
@@ -13,6 +13,25 @@ pub fn runnable_partition(id: SessionId) -> u16 {
 }
 
 impl Store {
+    pub(crate) fn volume_key(&self, id: VolumeId) -> Vec<u8> {
+        self.root
+            .pack(&("volume", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    pub(crate) fn manifest_key(&self, id: ManifestId) -> Vec<u8> {
+        self.root
+            .pack(&("manifest", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    pub(crate) fn image_key(&self, name: &str, tag: &ImageTag) -> Vec<u8> {
+        self.root.pack(&("image", name, tag.0.as_str()))
+    }
+
+    pub(crate) fn volume_lease_seq_key(&self, id: VolumeId) -> Vec<u8> {
+        self.root
+            .pack(&("volume_lease_seq", id.as_ulid().to_bytes().as_slice()))
+    }
+
     pub(crate) fn session_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("session", id.as_ulid().to_bytes().as_slice()))

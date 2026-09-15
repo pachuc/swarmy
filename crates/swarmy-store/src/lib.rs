@@ -12,6 +12,7 @@ mod inference;
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 mod leases;
+mod volumes;
 
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
 
@@ -47,6 +48,16 @@ pub enum StoreError {
     Encoding(#[from] EncodingError),
     #[error(transparent)]
     Blob(#[from] BlobError),
+    #[error("volume does not exist")]
+    VolumeMissing,
+    #[error("volume already exists")]
+    VolumeExists,
+    #[error("manifest does not exist")]
+    ManifestMissing,
+    #[error("manifest id already refers to a different header")]
+    ManifestExists,
+    #[error("invalid manifest dimensions")]
+    InvalidManifest,
     #[error("session does not exist")]
     SessionMissing,
     #[error("session already exists")]
