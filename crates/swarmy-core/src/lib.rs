@@ -11,13 +11,18 @@ mod message;
 mod scheduler;
 mod session;
 mod store;
+mod volume;
 
 pub use encoding::json;
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
-pub use id::{AgentId, LeaseOwnerId, MessageId, NodeId, RequestId, SessionId};
+pub use id::{
+    AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId, SessionId, VolumeId,
+};
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, WakeReply, WakeRequest};
 pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
+
+pub use volume::{CHUNK_SIZE, ContentHash, ManifestHeader, VolumeRecord};

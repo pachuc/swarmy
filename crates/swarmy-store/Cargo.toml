@@ -24,4 +24,5 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+swarmy-volume.workspace = true
 ulid.workspace = true

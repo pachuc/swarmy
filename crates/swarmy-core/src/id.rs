@@ -53,6 +53,20 @@ ulid_id!(
     MessageId
 );
 
+ulid_id!(
+    /// Identifies a persistent virtual disk.
+    VolumeId
+);
+ulid_id!(
+    /// Identifies an immutable disk manifest header.
+    ManifestId
+);
+
+/// A human-readable version of a named base image.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ImageTag(pub String);
+
 /// Idempotency key for an inference request or tool call: `blake3(session_id, seq)`.
 ///
 /// Deterministic from the session and step, so a retried step produces the same key and

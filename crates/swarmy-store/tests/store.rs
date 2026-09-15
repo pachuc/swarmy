@@ -3,9 +3,10 @@ use std::sync::{Arc, OnceLock};
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId, Message,
-    MessageId, MessageRole, Part, RequestId, RunnableEntry, SessionId, SessionRecord, SessionState,
-    SnapshotRef, encode,
+    AgentId, CHUNK_SIZE, ContentHash, Event, IdempotencyRecord, IdempotencyState, ImageTag,
+    InflightRecord, LeaseOwnerId, ManifestHeader, ManifestId, Message, MessageId, MessageRole,
+    Part, RequestId, RunnableEntry, SessionId, SessionRecord, SessionState, SnapshotRef, VolumeId,
+    VolumeRecord, encode,
 };
 use swarmy_store::{
     Store, StoreError,
@@ -1129,5 +1130,260 @@ async fn session_listing_pages_by_id_and_hydrates_snapshots() {
             .unwrap()
             .is_empty()
     );
+    test.cleanup().await;
+}
+
+fn manifest_id() -> ManifestId {
+    ManifestId::from_ulid(Ulid::generate())
+}
+
+fn volume_id() -> VolumeId {
+    VolumeId::from_ulid(Ulid::generate())
+}
+
+fn manifest_header(size: u64) -> ManifestHeader {
+    ManifestHeader {
+        size,
+        chunk_size: CHUNK_SIZE,
+        root_hash: ContentHash([7; 32]),
+    }
+}
+
+#[tokio::test]
+async fn volume_records_images_and_immutable_headers_round_trip() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = manifest_id();
+    let volume = volume_id();
+    let header = manifest_header(32 * 1024 * 1024 * 1024);
+    let tag = ImageTag("stable".into());
+    assert_eq!(test.store.get_manifest(manifest).await.unwrap(), None);
+    assert_eq!(test.store.get_volume(volume).await.unwrap(), None);
+    assert_eq!(test.store.get_image("base", &tag).await.unwrap(), None);
+    assert!(matches!(
+        test.store.create_volume(volume, manifest).await,
+        Err(StoreError::ManifestMissing)
+    ));
+    assert!(matches!(
+        test.store.put_image("base", &tag, manifest).await,
+        Err(StoreError::ManifestMissing)
+    ));
+    test.store.put_manifest(manifest, &header).await.unwrap();
+    test.store.put_manifest(manifest, &header).await.unwrap();
+    assert_eq!(
+        test.store.get_manifest(manifest).await.unwrap(),
+        Some(header.clone())
+    );
+    let conflicting = ManifestHeader {
+        root_hash: ContentHash([8; 32]),
+        ..header
+    };
+    assert!(matches!(
+        test.store.put_manifest(manifest, &conflicting).await,
+        Err(StoreError::ManifestExists)
+    ));
+    assert!(matches!(
+        test.store
+            .put_manifest(manifest_id(), &manifest_header(1))
+            .await,
+        Err(StoreError::InvalidManifest)
+    ));
+    test.store.put_image("base", &tag, manifest).await.unwrap();
+    assert_eq!(
+        test.store.get_image("base", &tag).await.unwrap(),
+        Some(manifest)
+    );
+    assert_eq!(
+        test.store
+            .get_image("base", &ImageTag("other".into()))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(test.store.get_image("other", &tag).await.unwrap(), None);
+    test.store.create_volume(volume, manifest).await.unwrap();
+    assert_eq!(
+        test.store.get_volume(volume).await.unwrap(),
+        Some(VolumeRecord {
+            head_manifest: manifest,
+            writer_lease: None,
+            parent: None
+        })
+    );
+    assert!(matches!(
+        test.store.create_volume(volume, manifest).await,
+        Err(StoreError::VolumeExists)
+    ));
+    assert!(matches!(
+        test.store.clone_volume(volume_id(), volume_id()).await,
+        Err(StoreError::VolumeMissing)
+    ));
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn cloning_has_constant_metadata_cost_for_small_and_large_manifests() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    // Disk sizes differ by over 100 million blocks; the records have equal size.
+    // Object storage is held separately and is never passed to the metadata store.
+    let mut record_sizes = Vec::new();
+    for size in [u64::from(CHUNK_SIZE), 32 * 1024 * 1024 * 1024 * 1024] {
+        let manifest = manifest_id();
+        let objects = Arc::new(object_store::memory::InMemory::new());
+        let mut builder = swarmy_volume::ManifestBuilder::new(
+            objects.clone(),
+            swarmy_volume::Manifest::empty(size).unwrap(),
+        );
+        builder
+            .set_chunk(size / u64::from(CHUNK_SIZE) - 1, ContentHash([1; 32]))
+            .unwrap();
+        let built = builder.build().await.unwrap();
+        assert_eq!(
+            built.leaf_hashes().len() as u64,
+            (size / u64::from(CHUNK_SIZE)).div_ceil(4096)
+        );
+        test.store
+            .put_manifest(manifest, built.header())
+            .await
+            .unwrap();
+        // Dropping the only object store makes accidental object access impossible.
+        drop(objects);
+        let source = volume_id();
+        test.store.create_volume(source, manifest).await.unwrap();
+        let lease = test
+            .store
+            .acquire_writer_lease(source, owner(), timestamp(1), timestamp(10))
+            .await
+            .unwrap();
+        let destination = volume_id();
+        let started = std::time::Instant::now();
+        test.store.clone_volume(source, destination).await.unwrap();
+        eprintln!("clone of {size}-byte disk: {:?}", started.elapsed());
+        let cloned = test.store.get_volume(destination).await.unwrap().unwrap();
+        assert_eq!(
+            cloned,
+            VolumeRecord {
+                head_manifest: manifest,
+                writer_lease: None,
+                parent: Some(source)
+            }
+        );
+        record_sizes.push(encode(&cloned).unwrap().len());
+        assert_eq!(
+            test.store
+                .get_volume(source)
+                .await
+                .unwrap()
+                .unwrap()
+                .writer_lease,
+            Some(lease)
+        );
+        assert!(matches!(
+            test.store.clone_volume(source, destination).await,
+            Err(StoreError::VolumeExists)
+        ));
+        assert!(matches!(
+            test.store.clone_volume(source, source).await,
+            Err(StoreError::VolumeExists)
+        ));
+    }
+    assert_eq!(record_sizes[0], record_sizes[1]);
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisition() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = manifest_id();
+    test.store
+        .put_manifest(manifest, &manifest_header(u64::from(CHUNK_SIZE)))
+        .await
+        .unwrap();
+    let volume = volume_id();
+    test.store.create_volume(volume, manifest).await.unwrap();
+    let (a, b) = tokio::join!(
+        test.store
+            .acquire_writer_lease(volume, owner(), timestamp(1), timestamp(10)),
+        test.store
+            .acquire_writer_lease(volume, owner(), timestamp(1), timestamp(10)),
+    );
+    let (winner, loser) = match (a, b) {
+        (Ok(lease), Err(error)) | (Err(error), Ok(lease)) => (lease, error),
+        other => panic!("expected one winner, got {other:?}"),
+    };
+    assert!(matches!(loser, StoreError::LeaseMismatch));
+    let mut wrong = winner.clone();
+    wrong.owner = owner();
+    assert!(matches!(
+        test.store
+            .release_writer_lease(volume, &wrong, timestamp(2))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.store
+        .release_writer_lease(volume, &winner, timestamp(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store
+            .get_volume(volume)
+            .await
+            .unwrap()
+            .unwrap()
+            .writer_lease,
+        None
+    );
+    // Reusing owner and expiry still produces a distinct fencing token.
+    let next = test
+        .store
+        .acquire_writer_lease(volume, winner.owner, timestamp(2), winner.expires_at)
+        .await
+        .unwrap();
+    assert_eq!(next.seq, winner.seq + 1);
+    assert!(matches!(
+        test.store
+            .release_writer_lease(volume, &winner, timestamp(3))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        test.store
+            .release_writer_lease(volume, &next, timestamp(10))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let replacement = test
+        .store
+        .acquire_writer_lease(volume, owner(), timestamp(10), timestamp(20))
+        .await
+        .unwrap();
+    assert_eq!(replacement.seq, next.seq + 1);
+    assert!(matches!(
+        test.store
+            .release_writer_lease(volume, &next, timestamp(11))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.store
+        .release_writer_lease(volume, &replacement, timestamp(11))
+        .await
+        .unwrap();
+    assert!(matches!(
+        test.store
+            .acquire_writer_lease(volume, owner(), timestamp(12), timestamp(12))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        test.store
+            .acquire_writer_lease(volume_id(), owner(), timestamp(12), timestamp(20))
+            .await,
+        Err(StoreError::VolumeMissing)
+    ));
     test.cleanup().await;
 }
