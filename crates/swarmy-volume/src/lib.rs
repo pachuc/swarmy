@@ -7,6 +7,7 @@ pub mod image;
 pub mod kernel;
 mod manifest;
 pub mod nbd;
+pub mod server;
 pub use device::{BLOCK_SIZE, DeviceStats, VolumeDevice};
 
 use std::sync::Arc;

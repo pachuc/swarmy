@@ -25,6 +25,9 @@ pub enum Error {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub node_id: Option<swarmy_core::NodeId>,
+    pub node_roles: Vec<swarmy_core::NodeRole>,
+    pub node_capacity: swarmy_core::NodeCapacity,
+    pub node_heartbeat_interval_ms: u64,
     pub fdb_cluster_file: String,
     pub nats_url: String,
     pub s3_endpoint: String,
@@ -70,6 +73,17 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             node_id: None,
+            node_roles: vec![
+                swarmy_core::NodeRole::Sandbox,
+                swarmy_core::NodeRole::Volume,
+            ],
+            node_capacity: swarmy_core::NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1_073_741_824,
+                disk_bytes: 34_359_738_368,
+                sandboxes: 1,
+            },
+            node_heartbeat_interval_ms: 5000,
             fdb_cluster_file: ".dev/fdb.cluster".into(),
             nats_url: "nats://127.0.0.1:4222".into(),
             s3_endpoint: "http://127.0.0.1:8333".into(),
@@ -251,13 +265,7 @@ impl Settings {
         &mut self,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
-        if let Some(value) = environment.get("SWARMY_NODE_ID") {
-            self.node_id = Some(swarmy_core::NodeId::from_ulid(
-                value
-                    .parse()
-                    .map_err(|_| Error::Environment("SWARMY_NODE_ID".into()))?,
-            ));
-        }
+        self.apply_node_environment(environment)?;
         if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
             self.fdb_cluster_file.clone_from(value);
         }
@@ -353,6 +361,55 @@ impl Settings {
         Ok(())
     }
 
+    fn apply_node_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_NODE_ROLES") {
+            self.node_roles = value
+                .split(',')
+                .map(|role| match role.trim() {
+                    "sandbox" => Ok(swarmy_core::NodeRole::Sandbox),
+                    "volume" => Ok(swarmy_core::NodeRole::Volume),
+                    _ => Err(Error::Environment("SWARMY_NODE_ROLES".into())),
+                })
+                .collect::<Result<_, _>>()?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_HEARTBEAT_INTERVAL_MS") {
+            self.node_heartbeat_interval_ms = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_NODE_HEARTBEAT_INTERVAL_MS".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_CPU_MILLIS") {
+            self.node_capacity.cpu_millis = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_NODE_CPU_MILLIS".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_MEMORY_BYTES") {
+            self.node_capacity.memory_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_NODE_MEMORY_BYTES".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_DISK_BYTES") {
+            self.node_capacity.disk_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_NODE_DISK_BYTES".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_SANDBOXES") {
+            self.node_capacity.sandboxes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_NODE_SANDBOXES".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_ID") {
+            self.node_id = Some(swarmy_core::NodeId::from_ulid(
+                value
+                    .parse()
+                    .map_err(|_| Error::Environment("SWARMY_NODE_ID".into()))?,
+            ));
+        }
+        Ok(())
+    }
+
     /// Pass the same effective settings to child processes without mutating globals.
     #[must_use]
     pub fn environment(&self) -> BTreeMap<String, String> {
@@ -420,13 +477,48 @@ impl Settings {
             ("SWARMY_FAKE_CALL_LOG".into(), self.fake.call_log.clone()),
         ]
         .into();
-        if let Some(value) = &self.node_id {
-            environment.insert("SWARMY_NODE_ID".into(), value.to_string());
-        }
+        self.node_environment(&mut environment);
         if let Some(value) = &self.worker_kill_point {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
         environment
+    }
+
+    fn node_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "SWARMY_NODE_ROLES".into(),
+            self.node_roles
+                .iter()
+                .map(|role| match role {
+                    swarmy_core::NodeRole::Sandbox => "sandbox",
+                    swarmy_core::NodeRole::Volume => "volume",
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        environment.insert(
+            "SWARMY_NODE_HEARTBEAT_INTERVAL_MS".into(),
+            self.node_heartbeat_interval_ms.to_string(),
+        );
+        environment.insert(
+            "SWARMY_NODE_CPU_MILLIS".into(),
+            self.node_capacity.cpu_millis.to_string(),
+        );
+        environment.insert(
+            "SWARMY_NODE_MEMORY_BYTES".into(),
+            self.node_capacity.memory_bytes.to_string(),
+        );
+        environment.insert(
+            "SWARMY_NODE_DISK_BYTES".into(),
+            self.node_capacity.disk_bytes.to_string(),
+        );
+        environment.insert(
+            "SWARMY_NODE_SANDBOXES".into(),
+            self.node_capacity.sandboxes.to_string(),
+        );
+        if let Some(value) = &self.node_id {
+            environment.insert("SWARMY_NODE_ID".into(), value.to_string());
+        }
     }
 
     /// Anchor filesystem paths so invocation from subdirectories is consistent.
@@ -447,6 +539,45 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_settings_round_trip_and_reject_invalid_roles() {
+        let mut settings = Settings::default();
+        let environment = BTreeMap::from([
+            ("SWARMY_NODE_ROLES".into(), "volume".into()),
+            ("SWARMY_NODE_CPU_MILLIS".into(), "4000".into()),
+            ("SWARMY_NODE_MEMORY_BYTES".into(), "16106127360".into()),
+            ("SWARMY_NODE_DISK_BYTES".into(), "96636764160".into()),
+            ("SWARMY_NODE_SANDBOXES".into(), "12".into()),
+            ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS".into(), "250".into()),
+        ]);
+        settings.apply_environment(&environment).unwrap();
+        assert_eq!(settings.node_roles, [swarmy_core::NodeRole::Volume]);
+        assert_eq!(settings.node_capacity.cpu_millis, 4000);
+        assert_eq!(settings.node_capacity.sandboxes, 12);
+        for (key, value) in environment {
+            assert_eq!(settings.environment()[&key], value);
+        }
+        let encoded = settings.to_toml().unwrap();
+        let decoded: Settings = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.environment(), settings.environment());
+        assert!(
+            settings
+                .apply_environment(&BTreeMap::from([(
+                    "SWARMY_NODE_ROLES".into(),
+                    "unknown".into()
+                )]))
+                .is_err()
+        );
+        assert!(
+            settings
+                .apply_environment(&BTreeMap::from([(
+                    "SWARMY_NODE_CPU_MILLIS".into(),
+                    "-1".into()
+                )]))
+                .is_err()
+        );
+    }
 
     #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {

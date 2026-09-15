@@ -1,0 +1,25 @@
+[package]
+name = "swarmy-sandbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+build = "../swarmy-store/build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+swarmy-core.workspace = true
+swarmy-volume.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+fs2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+ulid.workspace = true

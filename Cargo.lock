@@ -2877,6 +2877,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-sandbox"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fs2",
+ "serde",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-volume",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-scheduler"
 version = "0.1.0"
 dependencies = [
@@ -2927,6 +2944,7 @@ dependencies = [
  "libc",
  "object_store",
  "serde",
+ "serde_json",
  "swarmy-core",
  "swarmy-store",
  "tempfile",
@@ -2956,6 +2974,27 @@ dependencies = [
  "swarmy-harness",
  "swarmy-llm",
  "swarmy-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
+name = "swarmyd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "object_store",
+ "serde",
+ "serde_json",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-sandbox",
+ "swarmy-store",
+ "swarmy-volume",
  "tempfile",
  "tokio",
  "tracing",

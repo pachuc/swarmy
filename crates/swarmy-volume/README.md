@@ -228,3 +228,15 @@ The test's cleanup guards unmount and stop servers on failure. The crash test
 waits for the real writer lease to expire before reattaching. Unit tests use
 `InMemory` object storage to check partial-chunk uploads, background invalidation,
 failed-publication retry, trim, and untouched-leaf reuse.
+
+### Shared attachment service
+
+`server::attach` is the shared foreground service used by the CLI and swarmyd.
+It accepts `ServerConfig` (node id, local directory, store, and object storage),
+a volume id, an optional device path, a background-upload flag, a readiness
+callback, and a shutdown future. Readiness follows kernel capacity publication.
+`server::control` returns the manifest id after flush or detach. The service
+owns the local lock, control socket, overlay, kernel attachment, background
+uploader, and renewal task for its whole lifetime. Callers supply shutdown
+policy and presentation; the CLI supplies signals and prints readiness, while
+the sandbox runtime mounts the ready device and controls detach itself.

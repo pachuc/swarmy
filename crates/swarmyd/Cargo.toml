@@ -1,0 +1,29 @@
+[package]
+name = "swarmyd"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+build = "../swarmy-store/build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+swarmy-core.workspace = true
+swarmy-config.workspace = true
+swarmy-store.workspace = true
+swarmy-volume.workspace = true
+swarmy-sandbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+object_store.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+ulid.workspace = true
