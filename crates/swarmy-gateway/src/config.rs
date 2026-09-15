@@ -95,9 +95,13 @@ impl RequestScript {
     }
 
     fn response(&self, request: &Request) -> Result<Response, swarmy_llm::Error> {
+        // Count the assistant messages since the last user message, so every
+        // user turn in a multi-turn conversation starts the script again.
         let step = request
             .messages
             .iter()
+            .rev()
+            .take_while(|message| message.role != MessageRole::User)
             .filter(|message| message.role == MessageRole::Assistant)
             .count();
         if step >= self.steps {
@@ -250,6 +254,36 @@ mod tests {
                 .lines()
                 .count(),
             6
+        );
+    }
+
+    #[test]
+    fn request_based_scripts_restart_on_each_user_turn() {
+        let script: RequestScript = serde_json::from_value(serde_json::json!({
+            "steps": 1, "tool_steps": [], "final_answer": "hi"
+        }))
+        .unwrap();
+        let text = |role, text: &str| swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+            role,
+            parts: vec![swarmy_core::Part::Text { text: text.into() }],
+        };
+        let mut request = Request {
+            system_prompt: String::new(),
+            messages: vec![text(MessageRole::User, "one")],
+            tools: Vec::new(),
+            settings: swarmy_llm::GenerationSettings::default(),
+        };
+        assert!(script.response(&request).is_ok());
+        request.messages.push(text(MessageRole::Assistant, "hi"));
+        assert!(
+            script.response(&request).is_err(),
+            "no second step within one turn"
+        );
+        request.messages.push(text(MessageRole::User, "two"));
+        assert!(
+            script.response(&request).is_ok(),
+            "a new user turn restarts the script"
         );
     }
 }
