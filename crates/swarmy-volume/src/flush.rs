@@ -3,13 +3,27 @@ use jiff::Timestamp;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use swarmy_core::{Lease, ManifestId, VolumeId};
 use swarmy_store::Store;
 use tokio::sync::Mutex;
 
-use crate::{Result, VolumeDevice, VolumeError};
+use crate::{Result, UploadStats, VolumeDevice, VolumeError};
+
+/// Publication timings and device activity during this call and over its lifetime.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FlushResult {
+    pub manifest_id: ManifestId,
+    /// Includes freeze acquisition, publication, and thaw, excluding writer queueing.
+    pub elapsed: Duration,
+    /// Time acquiring the filesystem freeze, including kernel writeback.
+    pub freeze_wait: Duration,
+    /// From successful freeze acquisition through successful thaw; zero without a mount.
+    pub frozen: Duration,
+    pub uploads: UploadStats,
+    pub device_total: UploadStats,
+}
 
 /// Owns a writer's fencing token and committed head. Renew independently of
 /// uploads so a large flush does not let the writer lease expire.
@@ -44,9 +58,13 @@ impl VolumeWriter {
     /// replay its journal when this point-in-time block image is mounted.
     /// # Errors
     /// Returns freeze, storage, or lease errors. Always attempts to unfreeze.
-    pub async fn flush(&self, mount: Option<&Path>) -> Result<ManifestId> {
+    pub async fn flush(&self, mount: Option<&Path>) -> Result<FlushResult> {
         let mut head = self.head.lock().await;
+        let start = Instant::now();
+        let before = self.device.upload_stats();
         let frozen = FrozenMount::freeze(mount).await?;
+        let freeze_wait = start.elapsed();
+        let frozen_start = Instant::now();
         let next = ManifestId::from_ulid(ulid::Ulid::generate());
         let previous = *head;
         let result = self
@@ -80,7 +98,33 @@ impl VolumeWriter {
         let thaw = frozen.unfreeze();
         result?;
         thaw?;
-        Ok(next)
+        let frozen_time = frozen_start.elapsed();
+        let device_total = self.device.upload_stats();
+        let result = FlushResult {
+            manifest_id: next,
+            elapsed: start.elapsed(),
+            freeze_wait,
+            frozen: if mount.is_some() {
+                frozen_time
+            } else {
+                Duration::ZERO
+            },
+            uploads: device_total.since(before),
+            device_total,
+        };
+        tracing::info!(
+            volume = %self.id,
+            chunks_uploaded = result.uploads.chunks_uploaded,
+            object_store_requests = result.uploads.object_store_requests,
+            bytes_uploaded = result.uploads.bytes_uploaded,
+            dirty_lock_wait_seconds = result.uploads.dirty_lock_wait.as_secs_f64(),
+            elapsed_seconds = result.elapsed.as_secs_f64(),
+            freeze_wait_seconds = result.freeze_wait.as_secs_f64(),
+            frozen_seconds = result.frozen.as_secs_f64(),
+            device_total = ?result.device_total,
+            "volume flush complete"
+        );
+        Ok(result)
     }
 
     /// Extend the live lease. Call periodically while the NBD server is active.

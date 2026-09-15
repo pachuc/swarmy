@@ -282,6 +282,66 @@ sandbox. Attaching elsewhere requires the lease to expire or be released.
 - Root privileges on nodes. `swarmyd` runs as root. Acceptable on our own VMs
   and in privileged pods.
 
+### 7.4 Proposed tool-boundary latency budget
+
+The following tasks that change upload concurrency and dirty-store locking are
+measured against this target. It is a proposed p95 budget for the extra time
+between a tool finishing and its durable manifest being acknowledged, including
+freeze acquisition, publication, and thaw. It is not a claim that the current
+implementation meets it. Collect repeated samples before claiming p95 compliance.
+
+Count changed data as the total coverage of distinct dirty 256 KiB chunks,
+including filesystem metadata. A 4 KiB write in each of 64 chunks counts as
+16 MiB here. Assume new, nonzero content, a warm base cache and connection, a
+healthy colocated FoundationDB, and at most two changed manifest leaves plus
+the root, as in the installation workload. Background staging may reduce the
+remaining work, but the unstaged case must also meet the budget.
+
+| Chunk coverage changed by the step | AWS added latency | GCP added latency |
+| --- | ---: | ---: |
+| No dirty chunks | 250 ms | 250 ms |
+| Up to 256 KiB | 500 ms | 3 s |
+| Up to 1 MiB | 500 ms | 3 s |
+| Up to 16 MiB | 750 ms | 4 s |
+| Up to 64 MiB | 1.25 s | 8 s |
+| Up to 256 MiB | 3 s | 25 s |
+| Up to 1 GiB | 12 s | 90 s |
+
+Reasoning comes from the [2026-09-15 instrumented cloud measurements](volume-benchmarks.md#2026-09-15-instrumented-release-flush-and-tool-boundary-budget).
+A missing-object HEAD followed by a 256 KiB PUT costs about 50 ms on AWS and
+526 ms on the tested GCP placement. With 32 concurrent chunk uploads, the
+optimistic request-limited rates are 160 and 15.2 MiB/s. The measured AWS serial
+installation flush achieves 4.0 MiB/s; multiplying by 32 gives 128 MiB/s before
+contention or bandwidth limits. GCP achieved 0.63 MiB/s serially, or about
+20 MiB/s under the same optimistic scaling assumption. Use lower planning rates
+of 100 MiB/s on AWS and 12 MiB/s on GCP to leave room for local I/O, hashing,
+and scheduling. Linear scaling is an assumption to test, not a measured
+concurrent throughput result.
+
+For nonempty changes, estimate a fixed allowance of 350 ms on AWS or 2 s on
+GCP for manifest calls, database commit, and freeze/thaw, plus the larger of
+`ceil(chunk_count / 32) * (HEAD + PUT)` and `changed_MiB / planning_MiB_per_second`.
+The table rounds that estimate up. An extra changed manifest leaf needs another
+GET and HEAD/PUT sequence if metadata publication remains serial; account for
+that separately for scattered writes. A no-change publication needs no object
+requests and gets only the database/freeze allowance.
+
+The GCP VM used local SSD in `us-east1-b` after central-region capacity failures;
+its bucket was in `us-central1`. The GCP column budgets this measured
+cross-region placement. Remeasure colocated storage before setting a tighter
+GCP deployment budget. The AWS bucket and VM were both in `us-east-1`.
+
+A shorter freeze must not hide an equally long delay inside the tool. On AWS,
+background uploading reduced frozen time from 140.24 s to 5.17 s, but increased
+installation from 11.34 s to 181.53 s and accumulated 178.76 s of dirty-lock
+waiting. On GCP, frozen time fell from 889.61 s to 22.42 s while installation
+rose from 15.30 s to 1,233.97 s, with 1,256.26 s of lock waiting. Following tasks
+must report installation time, total step-plus-flush time, upload amplification,
+and lock waiting alongside frozen time. Background
+mode must not regress total step-plus-flush time against background-off under
+the same workload and placement. This task changes instrumentation only; the
+current serial uploader and fenced commit remain the durability baseline.
+
 ## 8. Sandboxes
 
 ### 8.1 Runtime

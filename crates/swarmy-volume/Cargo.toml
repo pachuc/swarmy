@@ -11,6 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 swarmy-core.workspace = true
 swarmy-store.workspace = true
 jiff.workspace = true

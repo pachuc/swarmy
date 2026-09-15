@@ -240,3 +240,35 @@ owns the local lock, control socket, overlay, kernel attachment, background
 uploader, and renewal task for its whole lifetime. Callers supply shutdown
 policy and presentation; the CLI supplies signals and prints readiness, while
 the sandbox runtime mounts the ready device and controls detach itself.
+
+### Flush measurements
+
+`VolumeDevice::upload_stats()` returns cumulative counters for an attachment.
+The device counts successful chunk PUTs, successfully uploaded bytes (including
+manifest objects), and attempted object-store HEAD, GET, and PUT calls. Zero
+chunks do not issue storage requests; deduplicated chunks issue HEAD without a
+PUT. Internal HTTP retries inside `object_store` are not separately counted.
+Initial manifest loading before the device opens is outside these counters.
+
+`dirty_lock_wait` is a `Duration` summed across dirty-store lock acquisitions,
+including reads, writes, background staging, and publication. It is aggregate
+waiting time and can exceed elapsed time when callers overlap.
+`object_store_time` sums HEAD/GET/PUT call time; GET body consumption is outside
+that timer. It includes client work and network/service latency, so subtracting
+it from wall time does not produce a CPU profile.
+
+`VolumeWriter::flush()` returns `FlushResult`. `swarmy --json vol flush` prints
+its manifest id, `elapsed`, `freeze_wait`, `frozen`, `uploads`, and `device_total`.
+Durations use serde's `{ "secs": ..., "nanos": ... }` representation.
+`uploads` is the counter difference from just before freeze acquisition through
+thaw; `device_total` includes prior background work. Activity from concurrent
+background uploads or readahead in that interval is included. `elapsed` excludes
+waiting for another writer flush; CLI round-trip timing includes that wait.
+`frozen` measures from freeze command completion through thaw completion and is
+zero for an unmounted device. It excludes freeze acquisition and kernel
+writeback, which are reported as `freeze_wait`. Successful flushes emit an info
+tracing event, and background batches emit a debug event with their counters.
+
+For release and debug installation measurements and serial request latency,
+see `scripts/benchmarks/volume.py --help`, the `cloud-object-requests` example,
+and the dated procedure in `docs/volume-benchmarks.md`.
