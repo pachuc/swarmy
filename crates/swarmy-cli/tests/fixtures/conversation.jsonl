@@ -1,0 +1,13 @@
+{"message_appended":{"seq":1,"message":{"id":"00000000000000000000000001","role":"user","parts":[{"text":{"text":"What time is it?"}}]}}}
+{"inference_requested":{"seq":2,"request_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"step":1}}
+{"inference_completed":{"seq":3,"request_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"message":{"id":"00000000000000000000000002","role":"assistant","parts":[{"text":{"text":"I will check."}}]}}}
+{"message_appended":{"seq":4,"message":{"id":"00000000000000000000000002","role":"assistant","parts":[{"text":{"text":"I will check."}}]}}}
+{"tool_call_requested":{"seq":5,"request_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"call":{"call_id":"clock","tool":"get_time","arguments":{},"result":null}}}
+{"tool_call_completed":{"seq":6,"request_id":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"call_id":"clock","result":{"completed":{"output":"2026-09-15T12:00:00Z","title":"Current time","metadata":{}}}}}
+{"message_appended":{"seq":7,"message":{"id":"00000000000000000000000003","role":"assistant","parts":[{"text":{"text":"It is noon UTC."}}]}}}
+{"state_changed":{"seq":8,"from":"leased","to":"idle"}}
+{"message_appended":{"seq":9,"message":{"id":"00000000000000000000000004","role":"user","parts":[{"text":{"text":"And now?"}}]}}}
+{"tool_call_requested":{"seq":10,"request_id":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"call":{"call_id":"clock","tool":"get_time","arguments":{},"result":null}}}
+{"tool_call_completed":{"seq":11,"request_id":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"call_id":"clock","result":{"error":{"error":"clock unavailable\ntry again"}}}}
+{"message_appended":{"seq":12,"message":{"id":"00000000000000000000000005","role":"assistant","parts":[{"text":{"text":"The clock is unavailable."}}]}}}
+{"state_changed":{"seq":13,"from":"leased","to":"idle"}}

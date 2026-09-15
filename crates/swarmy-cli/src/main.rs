@@ -1,3 +1,5 @@
+mod chat;
+mod conversation;
 mod dev;
 mod session;
 
@@ -30,6 +32,8 @@ enum Command {
     Version,
     /// Start a conversation and stream its output until idle
     Run { prompt: String },
+    /// Open a terminal conversation, or resume a session
+    Chat { session_id: Option<ulid::Ulid> },
     /// Inspect stored sessions
     Session {
         #[command(subcommand)]
@@ -55,13 +59,19 @@ enum AuthCommand {
 
 // The network guard must outlive the runtime and all database operations.
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    // Background service logs must not overwrite the full-screen transcript.
+    let writer = if matches!(cli.command, Command::Chat { .. }) {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
+    } else {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stderr)
+    };
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(writer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    let cli = Cli::parse();
     if let Command::Dev { command } = cli.command {
         return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
     }
@@ -73,6 +83,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Run { prompt } => session::run(prompt, cli.json).await?,
+        Command::Chat { session_id } => {
+            anyhow::ensure!(
+                !cli.json,
+                "chat is a terminal interface and does not support --json"
+            );
+            chat::run(session_id.map(swarmy_core::SessionId::from_ulid)).await?;
+        }
         Command::Session { command } => session::inspect(command, cli.json).await?,
         Command::Auth { auth_file, command } => {
             let path = auth_file.map_or_else(
