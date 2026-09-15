@@ -1,36 +1,13 @@
-use std::{collections::HashSet, io::Write, sync::Arc, time::Duration};
+use std::{collections::HashSet, io::Write};
 
 use anyhow::{Context, Result, bail};
-use jiff::Timestamp;
-use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
-use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Part, SessionId, SessionRecord, SessionState,
-    WakeReply,
-};
+use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState};
 use swarmy_llm::Delta;
-use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
-use ulid::Ulid;
+use swarmy_store::MAX_SCAN_LIMIT;
 
-const WAKE_TIMEOUT: Duration = Duration::from_secs(3);
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+use crate::conversation::{Conversation, Notification, TranscriptEvent, store};
 
 pub use crate::session_command::Command;
-
-async fn store() -> Result<Store> {
-    let settings = swarmy_config::Settings::load()?.settings;
-    let cluster = settings.fdb_cluster_file;
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    Ok(Store::open(
-        Some(&cluster),
-        Some(&directory),
-        Arc::new(ObjectBlobStore::from_env()?),
-    )
-    .await?)
-}
 
 pub async fn inspect(command: Command, json: bool) -> Result<()> {
     let store = store().await?;
@@ -84,55 +61,9 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn bus() -> Result<Bus> {
-    let settings = swarmy_config::Settings::load()?.settings;
-    let url = settings.nats_url;
-    let config = Config {
-        prefix: if settings.bus_prefix.is_empty() {
-            None
-        } else {
-            Some(SubjectToken::new(settings.bus_prefix)?)
-        },
-        ack_wait: Duration::from_millis(settings.bus_ack_wait_ms),
-        max_deliver: settings.bus_max_deliver,
-    };
-    let bus = tokio::time::timeout(WAKE_TIMEOUT, Bus::connect(&url, config))
-        .await
-        .context("cannot reach scheduler: NATS connection timed out")?
-        .context("cannot reach scheduler over NATS")?;
-    Ok(bus)
-}
-
 pub async fn run(prompt: String, json: bool) -> Result<()> {
-    let store = store().await?;
-    let bus = bus().await?;
-    let id = SessionId::from_ulid(Ulid::generate());
-    store
-        .create_session(
-            &SessionRecord {
-                session_id: id,
-                agent_id: AgentId::from_ulid(Ulid::generate()),
-                state: SessionState::Idle,
-                head_seq: 0,
-                snapshot_ref: None,
-            },
-            Timestamp::now(),
-        )
-        .await?;
-    store
-        .append_events(
-            id,
-            0,
-            &[Event::MessageAppended {
-                seq: 0,
-                message: Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: MessageRole::User,
-                    parts: vec![Part::Text { text: prompt }],
-                },
-            }],
-        )
-        .await?;
+    let mut conversation = Conversation::open(None).await?;
+    let id = conversation.id;
     let mut output = Output::new(json);
     if json {
         println!(
@@ -143,62 +74,32 @@ pub async fn run(prompt: String, json: bool) -> Result<()> {
         eprintln!("Session {id}");
     }
     std::io::stdout().flush()?;
-    // Both registrations are confirmed before the scheduler can dispatch work.
-    let (mut events, mut deltas) = tokio::time::timeout(WAKE_TIMEOUT, async {
-        let events = bus
-            .subscribe_live::<Event>(LiveFeed::SessionEvents(id))
-            .await?;
-        let deltas = bus
-            .subscribe_live::<Delta>(LiveFeed::ModelDeltas(id))
-            .await?;
-        Ok::<_, swarmy_bus::Error>((events, deltas))
-    })
-    .await
-    .context("cannot reach scheduler: live subscription timed out")??;
-    match bus.request_wake(id, WAKE_TIMEOUT).await? {
-        WakeReply::Runnable => {}
-        WakeReply::Unchanged(state) => bail!("scheduler did not wake session: {state:?}"),
-        WakeReply::NotFound => bail!("scheduler could not find session {id}"),
-        WakeReply::Failed(error) => bail!("scheduler failed to wake session: {error}"),
-    }
-    let mut poll = tokio::time::interval(POLL_INTERVAL);
-    let mut previous_head = None;
+    conversation.send(prompt).await?;
+    let mut idle_event = false;
     loop {
-        tokio::select! {
-            // Drain buffered text before processing an Idle notification from a
-            // different publisher, which can arrive at the same time.
-            biased;
-            delta = deltas.next() => {
-                output.delta(&delta.context("model output feed closed")??)?;
-                continue;
-            }
-            event = events.next() => {
-                event.context("session event feed closed")??;
-            }
-            _ = poll.tick() => {}
-        }
-        if output.catch_up(&store, id).await? {
-            break;
-        }
-        let session = store
-            .fetch_session(id)
-            .await?
-            .context("session disappeared")?;
-        // The wake was acknowledged. Two equal heads avoid treating the initial
-        // Idle record or an actively growing log as a finished turn.
-        if session.state == SessionState::Idle
-            && previous_head == Some(session.head_seq)
-            && output.after == session.head_seq
-        {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"event": "session_idle", "session_id": id})
+        match conversation.next().await? {
+            Notification::Log(event) => {
+                idle_event = matches!(
+                    event,
+                    Event::StateChanged {
+                        to: SessionState::Idle,
+                        ..
+                    }
                 );
+                output.event(&event)?;
             }
-            break;
+            Notification::Delta(delta) => output.delta(&delta)?,
+            Notification::Transcript(TranscriptEvent::SessionIdle) => {
+                if json && !idle_event {
+                    println!(
+                        "{}",
+                        serde_json::json!({"event": "session_idle", "session_id": id})
+                    );
+                }
+                break;
+            }
+            Notification::Transcript(_) => {}
         }
-        previous_head = Some(session.head_seq);
     }
     output.finish_line();
     Ok(())
@@ -206,7 +107,6 @@ pub async fn run(prompt: String, json: bool) -> Result<()> {
 
 struct Output {
     json: bool,
-    after: u64,
     streamed: String,
     messages: HashSet<MessageId>,
     mid_line: bool,
@@ -216,7 +116,6 @@ impl Output {
     fn new(json: bool) -> Self {
         Self {
             json,
-            after: 0,
             streamed: String::new(),
             messages: HashSet::new(),
             mid_line: false,
@@ -251,28 +150,6 @@ impl Output {
             self.streamed.push_str(text);
         }
         Ok(())
-    }
-
-    async fn catch_up(&mut self, store: &Store, id: SessionId) -> Result<bool> {
-        loop {
-            let events = store.read_events(id, self.after, MAX_SCAN_LIMIT).await?;
-            if events.is_empty() {
-                return Ok(false);
-            }
-            for event in events {
-                self.event(&event)?;
-                self.after = event.seq();
-                if matches!(
-                    event,
-                    Event::StateChanged {
-                        to: SessionState::Idle,
-                        ..
-                    }
-                ) {
-                    return Ok(true);
-                }
-            }
-        }
     }
 
     fn event(&mut self, event: &Event) -> Result<()> {

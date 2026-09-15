@@ -34,6 +34,8 @@ enum Command {
     Version,
     /// Start a conversation and stream its output until idle
     Run { prompt: String },
+    /// Open a terminal conversation, or resume a session
+    Chat { session_id: Option<ulid::Ulid> },
     /// Inspect stored sessions
     Session {
         #[command(subcommand)]
@@ -58,17 +60,26 @@ enum AuthCommand {
 }
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    // Background service logs must not overwrite the full-screen transcript.
+    let writer = if matches!(cli.command, Command::Chat { .. }) {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
+    } else {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stderr)
+    };
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(writer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    let cli = Cli::parse();
     if let Command::Dev { command } = cli.command {
         return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
     }
-    if matches!(cli.command, Command::Run { .. } | Command::Session { .. }) {
+    if matches!(
+        cli.command,
+        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. }
+    ) {
         use std::os::unix::process::CommandExt;
         let runtime = std::env::current_exe()?.with_file_name("swarmy-session");
         let error = std::process::Command::new(runtime)
@@ -84,7 +95,7 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Run { .. } | Command::Session { .. } => unreachable!(),
+        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. } => unreachable!(),
         Command::Doctor => {
             if !doctor::run(cli.json).await? {
                 std::process::exit(1);

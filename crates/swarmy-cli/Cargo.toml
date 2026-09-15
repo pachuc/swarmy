@@ -20,6 +20,10 @@ path = "src/runtime.rs"
 
 # Doctor alone loads the FoundationDB library through a small, documented FFI boundary.
 [dependencies]
+ratatui.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+futures-util.workspace = true
 libloading.workspace = true
 url.workspace = true
 serde.workspace = true
@@ -39,7 +43,8 @@ ulid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+portable-pty.workspace = true
+vt100.workspace = true
 tempfile.workspace = true
 async-nats.workspace = true
 foundationdb.workspace = true
-futures-util.workspace = true

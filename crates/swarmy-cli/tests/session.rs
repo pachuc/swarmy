@@ -1,3 +1,6 @@
+#[path = "session/chat.rs"]
+mod chat;
+
 use std::{
     future::Future,
     panic::AssertUnwindSafe,

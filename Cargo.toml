@@ -21,6 +21,11 @@ needless_collect = "deny"
 large_stack_frames = "deny"
 
 [workspace.dependencies]
+portable-pty = "0.9"
+vt100 = "0.16"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+unicode-width = "0.2"
 anyhow = "1"
 async-nats = "0.49"
 async-stream = "0.3"

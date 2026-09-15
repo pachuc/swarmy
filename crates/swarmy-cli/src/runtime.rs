@@ -1,4 +1,6 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
+mod chat;
+mod conversation;
 mod session;
 mod session_command;
 
@@ -17,6 +19,9 @@ struct Cli {
 enum Command {
     Run {
         prompt: String,
+    },
+    Chat {
+        session_id: Option<ulid::Ulid>,
     },
     Session {
         #[command(subcommand)]
@@ -37,6 +42,13 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
             Command::Run { prompt } => session::run(prompt, cli.json).await,
+            Command::Chat { session_id } => {
+                anyhow::ensure!(
+                    !cli.json,
+                    "chat is a terminal interface and does not support --json"
+                );
+                chat::run(session_id.map(swarmy_core::SessionId::from_ulid)).await
+            }
             Command::Session { command } => session::inspect(command, cli.json).await,
         }
     })
