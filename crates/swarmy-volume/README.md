@@ -47,6 +47,7 @@ Shared ids, hashes, headers, and volume records live in `swarmy-core`.
 
 - `("manifest", id)` holds `{ size, chunk_size, root_hash }`. An id cannot be
   replaced with a different header.
+- `("manifest_parent", id)` links a published manifest to its predecessor.
 - `("volume", id)` holds `{ head_manifest, writer_lease, parent }`.
 - `("image", name, tag)` maps an image name and string `ImageTag` to a manifest id.
 - `("volume_lease_seq", id)` retains the last writer grant sequence even after
@@ -60,8 +61,7 @@ root, leaves, or chunks, so its work is independent of manifest size.
 `acquire_writer_lease` accepts caller-supplied time and expiry and succeeds only
 when the writer is absent or expired. Every grant increments the fencing
 sequence. `release_writer_lease` requires the complete matching, live `Lease`,
-as session lease release does. Future head updates must also check that token;
-head advancement, upload flush, and CLI commands are later tasks.
+as session lease release does. Head advancement checks both the token and the expected previous manifest.
 
 ## Local block device
 
@@ -80,7 +80,8 @@ verify cached chunks by hash, and fetch missing or corrupt cache entries from
 object storage. Cache files are named by content hash and replaced atomically,
 so devices can share a cache directory. After contiguous reads, one background
 task concurrently fetches the next configured number of chunks (capped at 32). Zero disables
-readahead. Cache eviction and dirty-chunk uploads are later work.
+readahead. Cache eviction is later work; background dirty-chunk uploads are
+described below.
 
 `stats()` returns `DeviceStats`: cache hits, foreground cold reads, readahead
 hits, speculative object fetches, and bytes currently covered by dirty blocks.
@@ -138,3 +139,92 @@ after reopening the dirty store, runs 4 KiB random writes and reads with fio,
 checks detach and reuse, and compares direct sequential reads with readahead
 zero and four over an object-backed manifest. A cleanup guard unmounts and
 detaches on failure. Statistics and fio summaries are emitted through tracing.
+
+## Durable flush and attachment control
+
+`VolumeWriter` holds the volume id, writer lease, and current manifest id.
+`flush(mount)` freezes a known filesystem with `fsfreeze --freeze`, blocks local
+writes while it uploads pending chunks and builds a manifest, then records the
+header, predecessor link, and volume head in one FoundationDB transaction.
+The transaction checks the complete live writer token and expected head on every
+attempt. The mount is unfrozen after success or failure, with a Drop fallback.
+Without a mount, the write lock captures a single point in the block request
+stream; ext4 replays its journal on the next mount.
+
+`background(interval)` uploads pending chunks continuously. It releases the
+write lock between chunks. A write invalidates that chunk's uploaded hash, so
+flush only uploads chunks that have changed since their background upload.
+Errors retain pending changes for retry. Untouched manifest leaves are reused.
+Background uploads alone do not advance the durability boundary.
+
+The local overlay remains the read source until detach, even after publication;
+`dirty_bytes` measures this local overlay, not the outstanding upload backlog.
+Each fresh CLI attachment uses a new dirty directory and the committed head.
+After a crash, abandoned local directories can be removed once their server is
+dead. They are never replayed by a new CLI attachment. Direct callers of
+`VolumeDevice::open` can still explicitly resume local data as before.
+
+The public `swarmy` binary forwards these commands to `swarmy-session`:
+
+```sh
+swarmy vol create base-ubuntu:stable
+sudo -E swarmy vol attach VOLUME --background
+# The command prints /dev/nbdX and remains in the foreground.
+# In another terminal:
+sudo mount /dev/nbdX /mnt/agent
+sudo -E swarmy vol flush VOLUME --mount /mnt/agent
+sudo -E swarmy vol snapshot VOLUME
+swarmy vol clone VOLUME
+sudo -E swarmy vol detach VOLUME
+swarmy vol ls
+swarmy vol show VOLUME
+```
+
+Every command accepts `--json`. Attach emits one ready record; list emits one
+record per volume; show includes the complete manifest chain, newest first.
+Snapshot flushes a live local writer and returns its immutable manifest id.
+For an unattached volume it returns the last committed manifest id. Clone
+always uses the last committed manifest; snapshot first to include local writes.
+Clones begin unleased and share immutable objects, with independent local writes.
+Their history includes the source's predecessors up to the point of cloning.
+
+Attach selects an unused `/dev/nbd0` through `/dev/nbd15`, or accepts `--device`.
+It renews a 60-second writer lease every 15 seconds. Flush, snapshot, and detach
+send requests to `.swarmy/volumes/VOLUME.sock` under the discovered configuration
+root. Invoke commands with the same configuration root and node id; root-created
+sockets generally require sudo for control commands too. A local lock protects
+socket replacement when cleaning up a dead server. Mounts are discovered with
+`findmnt`; an explicit `--mount` must match the attached device. Multiple mounts
+must be reduced to one before control operations.
+
+Detach unmounts the filesystem, performs a final durable flush, disconnects the
+kernel device, and releases the writer lease. SIGINT and SIGTERM use the same
+sequence. An unmount or flush error is reported; a failed control request leaves
+the foreground server available for retry. SIGKILL loses changes since the last
+completed flush. Another node can attach after the old lease expires.
+
+Shared configuration accepts `node_id` or `SWARMY_NODE_ID` (a ULID). Otherwise it
+creates and reuses `.swarmy/node-id` under a file lock. Two servers on one host
+can represent different nodes by setting different `SWARMY_NODE_ID` values.
+The control socket rejects a request from a different node, and FoundationDB
+independently fences every durable publication with the full lease token.
+
+### Durability acceptance test
+
+The CLI test uses the real dev stack's FoundationDB and SeaweedFS through
+`SWARMY_FDB_CLUSTER_FILE` and `SWARMY_S3_*`. It formats a small ext4 base, starts
+separate foreground servers, and tests cross-node recovery, simultaneous clone
+writes, SIGKILL rollback, lease rejection, and list/history output. It skips
+without root or the required environment. Build without sudo:
+
+```sh
+scripts/dev-stack.sh start
+source .dev/env
+cargo test -p swarmy-cli --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
+sudo -E "$(jq -r 'select(.executable != null and .target.name == "vol") | .executable' /tmp/swarmy-vol-build.json)" --nocapture
+```
+
+The test's cleanup guards unmount and stop servers on failure. The crash test
+waits for the real writer lease to expire before reattaching. Unit tests use
+`InMemory` object storage to check partial-chunk uploads, background invalidation,
+failed-publication retry, trim, and untouched-leaf reuse.

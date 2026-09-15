@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -15,7 +15,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, Result, VolumeError};
+use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, ManifestBuilder, Result, VolumeError};
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
@@ -46,12 +46,14 @@ struct Dirty {
     directory: fs::File,
     present: Vec<u8>,
     previous_end: Option<u64>,
+    pending: BTreeSet<u64>,
+    uploaded: HashMap<u64, ContentHash>,
+    published: Manifest,
     // Hold an exclusive advisory lock for the lifetime of this writer.
     _lock: std::fs::File,
 }
 
-/// A single local writer over an immutable manifest. Keep the dirty directory
-/// until its contents have been uploaded by a future snapshot implementation.
+/// A single local writer over an immutable manifest and a persistent overlay.
 pub struct VolumeDevice {
     store: ChunkStore,
     manifest: Manifest,
@@ -131,12 +133,20 @@ impl VolumeDevice {
         let dirty_bytes = present.iter().copied().map(u64::from).sum::<u64>() * BLOCK_SIZE;
         Ok(Arc::new(Self {
             store,
-            manifest,
+            manifest: manifest.clone(),
             cache_dir,
             dirty: Mutex::new(Dirty {
                 data,
                 map,
                 directory: fs::File::open(dirty_dir).await?,
+                pending: present
+                    .chunks(CHUNK_SIZE as usize / 4096)
+                    .enumerate()
+                    .filter(|(_, blocks)| blocks.contains(&1))
+                    .map(|(index, _)| index as u64)
+                    .collect(),
+                uploaded: HashMap::new(),
+                published: manifest,
                 present,
                 previous_end: None,
                 _lock: lock,
@@ -230,6 +240,14 @@ impl VolumeDevice {
     pub async fn write(&self, offset: u64, bytes: &[u8]) -> Result<()> {
         self.validate(offset, bytes.len())?;
         let mut dirty = self.dirty.lock().await;
+        // Invalidate before writing: a partial failed write must never retain
+        // an uploaded hash for bytes that are no longer present locally.
+        for number in offset / u64::from(CHUNK_SIZE)
+            ..(offset + bytes.len() as u64).div_ceil(u64::from(CHUNK_SIZE))
+        {
+            dirty.pending.insert(number);
+            dirty.uploaded.remove(&number);
+        }
         dirty.data.seek(std::io::SeekFrom::Start(offset)).await?;
         dirty.data.write_all(bytes).await?;
         // Complete Tokio's buffered write before publishing the dirty bits so
@@ -285,6 +303,68 @@ impl VolumeDevice {
         dirty.map.sync_all().await?;
         dirty.directory.sync_all().await?;
         Ok(())
+    }
+
+    /// Upload pending chunks without publishing a snapshot. Writes can proceed
+    /// between chunks; a subsequent write invalidates that chunk's uploaded hash.
+    /// # Errors
+    /// Returns local read or object storage errors. A later call retries failures.
+    pub async fn upload_dirty(&self) -> Result<()> {
+        let pending: Vec<_> = self.dirty.lock().await.pending.iter().copied().collect();
+        for number in pending {
+            let mut dirty = self.dirty.lock().await;
+            if dirty.pending.contains(&number) {
+                self.upload(&mut dirty, number).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn upload(&self, dirty: &mut Dirty, number: u64) -> Result<()> {
+        if dirty.uploaded.contains_key(&number) {
+            return Ok(());
+        }
+        let mut bytes = self.chunk(number, false).await?.to_vec();
+        let first = usize::try_from(number).map_err(|_| VolumeError::InvalidBlock(number))?
+            * (CHUNK_SIZE as usize / 4096);
+        for (index, block) in bytes.chunks_mut(4096).enumerate() {
+            if dirty.present[first + index] == 1 {
+                dirty
+                    .data
+                    .seek(std::io::SeekFrom::Start(
+                        (first + index) as u64 * BLOCK_SIZE,
+                    ))
+                    .await?;
+                dirty.data.read_exact(block).await?;
+            }
+        }
+        let hash = self.store.put_chunk(&bytes).await?.hash;
+        dirty.uploaded.insert(number, hash);
+        Ok(())
+    }
+
+    /// Hold writes across the snapshot and publication so journal fallback is a
+    /// single point in the block stream. On failure all changes remain pending.
+    pub(crate) async fn publish<F, Fut>(&self, commit: F) -> Result<Manifest>
+    where
+        F: FnOnce(swarmy_core::ManifestHeader) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let mut dirty = self.dirty.lock().await;
+        let pending: Vec<_> = dirty.pending.iter().copied().collect();
+        let mut builder = ManifestBuilder::new(self.store.inner.clone(), dirty.published.clone());
+        for number in pending {
+            self.upload(&mut dirty, number).await?;
+            builder.set_chunk(number, dirty.uploaded[&number])?;
+        }
+        let manifest = builder.build().await?;
+        commit(manifest.header().clone()).await?;
+        dirty.published = manifest.clone();
+        dirty.pending.clear();
+        dirty.uploaded.clear();
+        // The original manifest remains the read baseline. Retain the overlay
+        // until detach; new attachments start from the committed manifest.
+        Ok(manifest)
     }
 
     async fn hash(&self, number: u64) -> Result<ContentHash> {
@@ -371,6 +451,74 @@ impl VolumeDevice {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+
+    #[tokio::test]
+    async fn snapshots_reuse_leaves_and_retry_rejected_publications() {
+        let objects = Arc::new(InMemory::new());
+        let store = ChunkStore::new(objects.clone());
+        let size = 2 * BLOCKS_PER_LEAF as u64 * u64::from(CHUNK_SIZE);
+        let mut builder = ManifestBuilder::new(objects.clone(), Manifest::empty(size).unwrap());
+        let untouched = store
+            .put_chunk(&vec![3; CHUNK_SIZE as usize])
+            .await
+            .unwrap()
+            .hash;
+        builder
+            .set_chunk(BLOCKS_PER_LEAF as u64, untouched)
+            .unwrap();
+        let base = builder.build().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let device = VolumeDevice::open(
+            store.clone(),
+            base.clone(),
+            dir.path().join("cache"),
+            dir.path().join("dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        device.write(0, &[7; 4096]).await.unwrap();
+        device.upload_dirty().await.unwrap();
+        assert_eq!(device.dirty.lock().await.uploaded.len(), 1);
+        device.write(4096, &[9; 4096]).await.unwrap();
+        assert!(device.dirty.lock().await.uploaded.is_empty());
+        assert!(
+            device
+                .publish(|_| async { Err(VolumeError::InvalidRequest) })
+                .await
+                .is_err()
+        );
+        assert_eq!(device.dirty.lock().await.pending.len(), 1);
+        let first = device.publish(|_| async { Ok(()) }).await.unwrap();
+        assert_eq!(first.leaf_hashes()[1], base.leaf_hashes()[1]);
+        assert!(device.dirty.lock().await.pending.is_empty());
+        device
+            .write(u64::from(CHUNK_SIZE), &[11; 4096])
+            .await
+            .unwrap();
+        let second = device.publish(|_| async { Ok(()) }).await.unwrap();
+        let reopened = VolumeDevice::open(
+            store,
+            second,
+            dir.path().join("new-cache"),
+            dir.path().join("new-dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened.read(0, 4096).await.unwrap(), vec![7; 4096]);
+        assert_eq!(reopened.read(4096, 4096).await.unwrap(), vec![9; 4096]);
+        assert_eq!(
+            reopened.read(u64::from(CHUNK_SIZE), 4096).await.unwrap(),
+            vec![11; 4096]
+        );
+        device.trim(0, 4096).await.unwrap();
+        let trimmed = device.publish(|_| async { Ok(()) }).await.unwrap();
+        let hash = trimmed.chunk_hash(&*objects, 0).await.unwrap();
+        let chunk = ChunkStore::new(objects).get_chunk(hash).await.unwrap();
+        assert_eq!(&chunk[..4096], &[0; 4096]);
+        assert_eq!(&chunk[4096..8192], &[9; 4096]);
+    }
 
     #[tokio::test]
     async fn delayed_write_errors_do_not_publish_dirty_blocks() {
