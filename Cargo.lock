@@ -2767,9 +2767,11 @@ dependencies = [
  "fs2",
  "futures-util",
  "jiff",
+ "libloading",
  "portable-pty",
  "ratatui",
  "rustix",
+ "serde",
  "serde_json",
  "swarmy-bus",
  "swarmy-config",
@@ -2781,6 +2783,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "unicode-width",
+ "url",
  "vt100",
 ]
 

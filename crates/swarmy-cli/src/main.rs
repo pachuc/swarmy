@@ -1,7 +1,7 @@
-mod chat;
-mod conversation;
 mod dev;
-mod session;
+mod doctor;
+mod session_command;
+mod tools;
 
 use clap::{Parser, Subcommand};
 use std::{io::Write, path::PathBuf};
@@ -28,6 +28,8 @@ enum Command {
         #[command(subcommand)]
         command: dev::Command,
     },
+    /// Check installation, configuration, credentials, and local connectivity
+    Doctor,
     /// Print the version of this CLI
     Version,
     /// Start a conversation and stream its output until idle
@@ -37,7 +39,7 @@ enum Command {
     /// Inspect stored sessions
     Session {
         #[command(subcommand)]
-        command: session::Command,
+        command: session_command::Command,
     },
     /// Manage `ChatGPT` subscription credentials
     Auth {
@@ -57,7 +59,6 @@ enum AuthCommand {
     Import { source: PathBuf },
 }
 
-// The network guard must outlive the runtime and all database operations.
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Background service logs must not overwrite the full-screen transcript.
@@ -75,22 +76,31 @@ fn main() -> anyhow::Result<()> {
     if let Command::Dev { command } = cli.command {
         return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
     }
-    let _network = swarmy_store::boot();
+    if matches!(
+        cli.command,
+        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. }
+    ) {
+        use std::os::unix::process::CommandExt;
+        let runtime = std::env::current_exe()?.with_file_name("swarmy-session");
+        let error = std::process::Command::new(runtime)
+            .args(std::env::args_os().skip(1))
+            .exec();
+        return Err(anyhow::anyhow!(
+            "cannot start database commands: {error}; reinstall swarmy-cli"
+        ));
+    }
     tokio::runtime::Runtime::new()?.block_on(run(cli))
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Run { prompt } => session::run(prompt, cli.json).await?,
-        Command::Chat { session_id } => {
-            anyhow::ensure!(
-                !cli.json,
-                "chat is a terminal interface and does not support --json"
-            );
-            chat::run(session_id.map(swarmy_core::SessionId::from_ulid)).await?;
+        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. } => unreachable!(),
+        Command::Doctor => {
+            if !doctor::run(cli.json).await? {
+                std::process::exit(1);
+            }
         }
-        Command::Session { command } => session::inspect(command, cli.json).await?,
         Command::Auth { auth_file, command } => {
             let path = auth_file.map_or_else(
                 || {

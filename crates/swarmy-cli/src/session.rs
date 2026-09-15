@@ -1,21 +1,13 @@
 use std::{collections::HashSet, io::Write};
 
 use anyhow::{Context, Result, bail};
-use clap::Subcommand;
 use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState};
 use swarmy_llm::Delta;
 use swarmy_store::MAX_SCAN_LIMIT;
-use ulid::Ulid;
 
 use crate::conversation::{Conversation, Notification, TranscriptEvent, store};
 
-#[derive(Subcommand)]
-pub enum Command {
-    /// Print the session's events in sequence order
-    Show { session_id: Ulid },
-    /// List stored sessions in id order
-    List,
-}
+pub use crate::session_command::Command;
 
 pub async fn inspect(command: Command, json: bool) -> Result<()> {
     let store = store().await?;
