@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-15",
+  "gcp": {
+    "exit_code": 0,
+    "reports": [
+      {
+        "phase": "run",
+        "provider": "gcp",
+        "bucket": "swarmy-bench-c79f4ffac8604cb696d7d19929fa9926",
+        "prefix": "swarmy-bench-c79f4ffac8604cb696d7d19929fa9926/",
+        "retention_allowance": false
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "preflight",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "probe_cleanup",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "No cloud VM creation attempted",
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design",
+          "GCS bucket deleted and verified absent after version and soft-delete audits"
+        ],
+        "live_resources": [],
+        "phase": "cleanup",
+        "retained_versions": []
+      }
+    ]
+  },
+  "aws": {
+    "exit_code": 1,
+    "reports": [
+      {
+        "phase": "run",
+        "provider": "aws",
+        "bucket": "swarmy-bench-815638500196",
+        "prefix": "swarmy-bench-99a9789359a645cdbc17006097b42e41/",
+        "retention_allowance": false
+      },
+      {
+        "audit_failures": [
+          "s3:GetBucketVersioning: command failed; check the documented permissions",
+          "s3:ListBucketVersions: command failed; check the documented permissions",
+          "s3:ListBucketMultipartUploads: command failed; check the documented permissions"
+        ],
+        "evidence": [],
+        "live_resources": [],
+        "phase": "preflight",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [
+          "s3:GetBucketVersioning: command failed; check the documented permissions",
+          "s3:ListBucketVersions before deletion: command failed; check the documented permissions",
+          "S3 multipart listing: command failed; check the documented permissions",
+          "S3 multipart verification: command failed; check the documented permissions",
+          "S3 retained-version verification (s3:ListBucketVersions): command failed; check the documented permissions",
+          "preflight refused; no probe writes or machines created"
+        ],
+        "evidence": [
+          "No cloud VM creation attempted"
+        ],
+        "live_resources": [],
+        "phase": "cleanup",
+        "retained_versions": []
+      }
+    ]
+  },
+  "limits": [
+    "No cloud virtual machines or HMAC keys created.",
+    "AWS refused before writes; versioned S3 success and retained-object fixtures tested offline.",
+    "No retention allowance used."
+  ]
+}

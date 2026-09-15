@@ -47,6 +47,189 @@ measures the production `ChunkStore::get_chunk` path, including hash verificatio
   package downloads are outside the timer. Verify `gcc` again after cloning
   and attaching from a cleared cache.
 
+## Storage preflight and managed lifecycle
+
+For new runs, start with [cloud.py](../scripts/benchmarks/cloud.py) on the
+control host. It performs storage preflight before any VM creation, writes two
+tiny probe objects at the same key, deletes that key, and verifies cleanup.
+The default is storage-only. `--vm` explicitly enables paid compute through
+[cloud_vm.py](../scripts/benchmarks/cloud_vm.py). `volume.py` remains the
+measurement program run inside the prepared VM.
+
+Install and authenticate the cloud CLIs using private credential files. Keep
+shell tracing disabled. The Python tools use the existing CLI authentication;
+they capture provider output and emit only selected resource metadata and fixed
+error messages. They never change an existing bucket's policy.
+
+```sh
+sudo snap install google-cloud-cli --classic
+sudo snap install aws-cli --classic
+gcloud auth activate-service-account --key-file ~/.config/swarmy-bench/gcp-service-account.json
+gcloud config set project swarmy-508717
+set -a
+. ~/.config/swarmy-bench/aws.env
+set +a
+
+# Choose fresh state paths outside the checkout. The tool creates mode-0600 files.
+python3 scripts/benchmarks/cloud.py run --provider gcp \
+  --state /tmp/swarmy-gcp-storage.json
+python3 scripts/benchmarks/cloud.py run --provider aws --delete-versions \
+  --state /tmp/swarmy-aws-storage.json
+```
+
+### Storage rules
+
+GCS buckets have generated names and an ownership label set in the same atomic
+JSON API creation request as `softDeletePolicy.retentionDurationSeconds=0`.
+This is the API equivalent of `gcloud storage buckets create ...
+--soft-delete-duration=0`. The CLI cannot set the ownership label during
+creation, which would otherwise require a second metadata update. Preflight
+reads the effective policy before writing and refuses retention policies,
+default holds, or object versioning. Only a bucket owned by this run can be
+cleaned. The tool never enables soft delete to perform an audit.
+
+GCS rejects `softDeleted=true` listings when soft delete is disabled. In that
+specific case, the tool requires a bucket created with soft delete disabled,
+matching creation time, and metageneration still equal to 1. Every bucket
+metadata edit increments metageneration, including changing soft delete and
+changing it back. This establishes that the new bucket never had an enabled
+policy; it is independent of the ordinary object listing. If the metadata has
+changed, cleanup reports an audit failure and keeps the bucket for review.
+When soft-delete listing is supported, all pages are read and each residual's
+`hardDeleteTime` is reported. Existing retained objects cannot be made to expire
+sooner by disabling the policy. See the
+[object listing API](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/list)
+and [soft-delete policy rules](https://docs.cloud.google.com/storage/docs/soft-delete).
+
+S3 uses the existing bucket and a generated `swarmy-bench-<uuid>/` prefix.
+Both `Enabled` and `Suspended` versioning require `--delete-versions`;
+suspending versioning does not remove its history. Even an unversioned bucket
+requires a separate successful version listing. With `--delete-versions`,
+cleanup deletes each exact version ID and delete marker, then lists again.
+It also aborts incomplete multipart uploads under the run prefix and verifies
+that none remain. Every listing follows pagination and validates each returned
+key before any deletion. It never deletes the AWS bucket or changes versioning,
+Object Lock, lifecycle rules, or retention settings. Failed deletes leave
+versions in the residual report. S3 version listings do not include a scheduled
+hard-delete deadline, so the report explicitly says the deadline is unknown.
+See [ListObjectVersions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html).
+
+The AWS identity needs these permissions, supplied by the bucket administrator:
+
+- `s3:GetBucketVersioning` on the benchmark bucket.
+- `s3:ListBucket` and `s3:ListBucketVersions` on that bucket, restricted using
+  `s3:prefix` to the generated run prefix (or the dedicated benchmark prefix
+  family for repeated runs).
+- `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, and, for versioned runs,
+  `s3:DeleteObjectVersion`, restricted to object ARNs under that prefix.
+- `s3:ListBucketMultipartUploads` on the benchmark bucket and
+  `s3:AbortMultipartUpload` on object ARNs under the prefix. Requests always
+  include the run prefix; no account-wide bucket discovery is used.
+
+No retention-bypass or bucket-policy editing permission is needed. The tiny
+probe tests actual deletion before paid compute, including deletion of versions
+created by an overwrite and the marker created by an ordinary delete. An Object
+Lock or MFA Delete configuration that prevents complete cleanup is refused.
+
+### Reports, recovery, and retention allowance
+
+Stdout is JSON lines with `preflight`, `probe_cleanup`, and `cleanup` phases.
+Each report separates:
+
+- `live_resources`: current objects, incomplete uploads, buckets, machines,
+  disks, or key pairs still present. Held GCS objects include their retention
+  expiration time and hold flags.
+- `retained_versions`: GCS soft-deleted or noncurrent generations and S3
+  versions/delete markers, with known deadlines or an explicit unknown value.
+- `audit_failures`: denied permissions, failed operations, incomplete listings,
+  and configurations for which absence cannot be proved.
+- `evidence`: the successful independent checks, including the GCS creation
+  policy proof when soft-delete listing is unavailable.
+
+Empty arrays mean no residuals were observed in those categories; they never
+override `audit_failures`. Exit 0 requires every category to be clear. A
+`--allow-retention` flag is an explicit operator acceptance of residual or
+unknown retention. It allows a run past failed policy/audit checks and is
+recorded in stdout and state, but it never converts an incomplete audit into a
+successful run. It does not bypass resource ownership checks or grant cloud
+permissions. Do not use it for an ordinary temporary run that needs immediate
+complete deletion.
+
+The state file journals resource intent before provisioning. Preserve it until
+cleanup is complete; do not edit it or run concurrent writers on the run prefix.
+After a crash or timeout, retry:
+
+```sh
+python3 scripts/benchmarks/cloud.py cleanup --state /tmp/swarmy-gcp-storage.json
+python3 scripts/benchmarks/cloud.py cleanup --state /tmp/swarmy-aws-storage.json
+```
+
+Machine termination runs before the storage audit, even after provisioning or
+workload failure. SIGTERM and Ctrl-C unwind through cleanup. SIGKILL, host loss,
+or expired cloud credentials require a later `cleanup` invocation. Termination
+and verification errors remain in the report while independent cleanup steps
+continue. GCS bucket deletion uses a metageneration precondition after auditing
+all object generations and soft delete. Buckets with residuals remain available
+for investigation and deadline-based follow-up.
+
+### Optional VM provisioning
+
+Once storage-only validation passes, add `--vm --workload /absolute/path/to/run`
+to the same `run` command. AWS also requires `--ssh-public-key /path/to/key.pub`
+and the private `SWARMY_BENCH_SUBNET` and `SWARMY_BENCH_SECURITY_GROUP` environment
+settings. The tool imports a generated key-pair name and tags the key pair,
+instance, and boot volume with `managed-by=codex-launcher` and the run's Name.
+GCP tries N2 with NVMe local SSD in the central, east, and west zones before
+falling back to a 500 GB `pd-ssd`; stdout and state record which cache was used.
+Both providers use the stock Ubuntu 24.04 configuration in the installation
+section below and auto-delete attached disks.
+
+The workload is a synchronous control-host executable with a two-hour timeout.
+It receives `SWARMY_BENCH_STATE`, `SWARMY_S3_BUCKET` (including the run prefix),
+and `SWARMY_S3_REGION` in its environment. State contains the GCP machine name
+and zone, or the AWS instance ID and private IP. The executable waits for SSH
+and cloud-init, performs the installation below, copies private S3 settings,
+runs the tests and `volume.py`, and fetches measurement files. Its stdout and
+stderr are captured and discarded to keep credentials out of lifecycle logs;
+it must save any desired measurements itself. No SSH private key or HMAC secret
+is stored in lifecycle state. HMAC creation is not part of this tool: if the
+workload creates an HMAC key for GCS's XML API, it must deactivate and delete
+that exact key in its own finally/trap block and verify deletion, as in the
+historical procedure below. Existing authentication keys are never modified.
+
+### Storage-only validation of this change
+
+On 2026-09-15 the real GCS create/write/overwrite/delete/verify cycle passed
+with zero retained generations and the bucket verified absent. A preliminary
+CLI-label attempt failed before bucket creation; a second run discovered GCS's
+actual `invalid` error reason for disabled soft delete, refused writes, and its
+empty bucket was removed by a successful cleanup retry after fixing the parser.
+The final run passed without an allowance. Real AWS preflight exited 1 before
+writing or creating machines: the identity denied `s3:GetBucketVersioning`,
+`s3:ListBucketVersions`, and `s3:ListBucketMultipartUploads`. The live prefix
+listing was empty, but the tool correctly did not certify version cleanup.
+No retention allowance was used. No cloud VM or HMAC key was created.
+
+[Storage validation output](benchmarks/storage-preflight.json) records the final
+provider reports. The log scan checked the actual local credential values
+without printing them; none appeared. GCS mutations were confined to the new
+owned buckets. AWS performed read-only, prefix-filtered storage requests and a
+bucket versioning check. No existing bucket configuration was changed.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/benchmarks -p 'test_*.py' -v
+```
+
+The offline provider tests cover both normal cycles, versioned S3 cleanup,
+locked S3 residuals, GCS soft-delete deadlines and holds, changed policies,
+ownership mismatch, pagination, credential-safe errors, preflight refusal,
+explicit allowance, and compute teardown failures. They do not substitute for
+live versioned S3 validation: the current AWS identity cannot authorize that
+check. Retention fixtures are simulated so this validation does not deliberately
+create another week of retained cloud data. VM provisioning and a full benchmark
+run were not exercised in this change, as requested.
+
 ## Machines and installation
 
 | Item | Google Cloud | AWS |

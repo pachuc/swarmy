@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -11,6 +12,7 @@ use std::time::Instant;
 
 use crate::metrics::{MeteredStore, UploadCounters, UploadStats};
 use bytes::Bytes;
+use futures::{StreamExt, stream::FuturesUnordered};
 use swarmy_core::{CHUNK_SIZE, ContentHash, encode};
 use tokio::{
     fs,
@@ -22,6 +24,7 @@ use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, ManifestBuilder, Result, Volu
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
+const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwrap();
 
 /// Counters are per device. Cold reads count foreground object fetches;
 /// readahead fetches count speculative object fetches separately.
@@ -32,6 +35,8 @@ pub struct DeviceStats {
     pub readahead_hits: u64,
     pub readahead_fetches: u64,
     pub dirty_bytes: u64,
+    /// Chunk uploads currently waiting for object storage, including existence checks.
+    pub uploads_in_flight: u64,
 }
 
 #[derive(Default)]
@@ -41,6 +46,16 @@ struct Counters {
     readahead_hits: AtomicU64,
     readahead_fetches: AtomicU64,
     dirty_bytes: AtomicU64,
+    uploads_in_flight: AtomicU64,
+}
+
+// Decrement on cancellation as well as success or failure.
+struct UploadGuard<'a>(&'a AtomicU64);
+
+impl Drop for UploadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 struct Dirty {
@@ -56,6 +71,16 @@ struct Dirty {
     _lock: std::fs::File,
 }
 
+impl Dirty {
+    fn pending_uploads(&self) -> Vec<u64> {
+        self.pending
+            .iter()
+            .filter(|&number| !self.uploaded.contains_key(number))
+            .copied()
+            .collect()
+    }
+}
+
 /// A single local writer over an immutable manifest and a persistent overlay.
 pub struct VolumeDevice {
     store: ChunkStore,
@@ -69,6 +94,7 @@ pub struct VolumeDevice {
     readahead_chunks: u32,
     counters: Counters,
     uploads: Arc<UploadCounters>,
+    upload_concurrency: NonZeroUsize,
 }
 
 impl VolumeDevice {
@@ -82,6 +108,30 @@ impl VolumeDevice {
         cache_dir: impl AsRef<Path>,
         dirty_dir: impl AsRef<Path>,
         readahead_chunks: u32,
+    ) -> Result<Arc<Self>> {
+        Self::open_with_upload_concurrency(
+            store,
+            manifest,
+            cache_dir,
+            dirty_dir,
+            readahead_chunks,
+            DEFAULT_UPLOAD_CONCURRENCY,
+        )
+        .await
+    }
+
+    /// Open with a maximum number of concurrent chunk uploads. The default in
+    /// `open` is 32, limiting prepared chunk data to 8 MiB per batch. Object
+    /// storage may allocate additional request buffers.
+    /// # Errors
+    /// Returns storage errors, mismatched dirty metadata, or a busy writer lock.
+    pub async fn open_with_upload_concurrency(
+        store: ChunkStore,
+        manifest: Manifest,
+        cache_dir: impl AsRef<Path>,
+        dirty_dir: impl AsRef<Path>,
+        readahead_chunks: u32,
+        upload_concurrency: NonZeroUsize,
     ) -> Result<Arc<Self>> {
         let cache_dir = cache_dir.as_ref().to_owned();
         let dirty_dir = dirty_dir.as_ref();
@@ -166,6 +216,7 @@ impl VolumeDevice {
             fills: std::array::from_fn(|_| Mutex::new(())),
             readahead: Arc::new(Mutex::new(())),
             readahead_chunks: readahead_chunks.min(32),
+            upload_concurrency,
             counters: Counters {
                 dirty_bytes: AtomicU64::new(dirty_bytes),
                 ..Counters::default()
@@ -186,6 +237,7 @@ impl VolumeDevice {
             readahead_hits: self.counters.readahead_hits.load(Ordering::Relaxed),
             readahead_fetches: self.counters.readahead_fetches.load(Ordering::Relaxed),
             dirty_bytes: self.counters.dirty_bytes.load(Ordering::Relaxed),
+            uploads_in_flight: self.counters.uploads_in_flight.load(Ordering::Relaxed),
         }
     }
 
@@ -329,26 +381,56 @@ impl VolumeDevice {
     }
 
     /// Upload pending chunks without publishing a snapshot. Writes can proceed
-    /// between chunks; a subsequent write invalidates that chunk's uploaded hash.
+    /// between batches; a subsequent write invalidates that chunk's uploaded hash.
     /// # Errors
     /// Returns local read or object storage errors. A later call retries failures.
     pub async fn upload_dirty(&self) -> Result<()> {
         let before = self.upload_stats();
-        let pending: Vec<_> = self.lock_dirty().await.pending.iter().copied().collect();
-        for number in pending {
+        let pending = self.lock_dirty().await.pending_uploads();
+        for batch in pending.chunks(self.upload_concurrency.get()) {
             let mut dirty = self.lock_dirty().await;
-            if dirty.pending.contains(&number) {
-                self.upload(&mut dirty, number).await?;
-            }
+            self.upload_batch(&mut dirty, batch).await?;
         }
         tracing::debug!(stats = ?self.upload_stats().since(before), "background upload complete");
         Ok(())
     }
 
-    async fn upload(&self, dirty: &mut Dirty, number: u64) -> Result<()> {
-        if dirty.uploaded.contains_key(&number) {
-            return Ok(());
+    async fn upload_batch(&self, dirty: &mut Dirty, numbers: &[u64]) -> Result<()> {
+        let mut prepared = Vec::with_capacity(numbers.len());
+        for &number in numbers {
+            if dirty.pending.contains(&number) && !dirty.uploaded.contains_key(&number) {
+                prepared.push((number, self.dirty_chunk(dirty, number).await?));
+            }
         }
+        // Read through the shared file cursor before starting the requests.
+        // Only this bounded batch owns chunk bytes; the rest remain on disk.
+        let mut uploads: FuturesUnordered<_> = prepared
+            .into_iter()
+            .map(|(number, bytes)| async move {
+                self.counters
+                    .uploads_in_flight
+                    .fetch_add(1, Ordering::Relaxed);
+                let _guard = UploadGuard(&self.counters.uploads_in_flight);
+                (number, self.store.put_chunk(&bytes).await)
+            })
+            .collect();
+        let mut failure = None;
+        while let Some((number, result)) = uploads.next().await {
+            match result {
+                Ok(result) => {
+                    dirty.uploaded.insert(number, result.hash);
+                }
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        // Drain the batch even on failure so acknowledged chunks are remembered
+        // and a retry only uploads the remaining versions.
+        failure.map_or(Ok(()), Err)
+    }
+
+    async fn dirty_chunk(&self, dirty: &mut Dirty, number: u64) -> Result<Vec<u8>> {
         let mut bytes = self.chunk(number, false).await?.to_vec();
         let first = usize::try_from(number).map_err(|_| VolumeError::InvalidBlock(number))?
             * (CHUNK_SIZE as usize / 4096);
@@ -363,9 +445,7 @@ impl VolumeDevice {
                 dirty.data.read_exact(block).await?;
             }
         }
-        let hash = self.store.put_chunk(&bytes).await?.hash;
-        dirty.uploaded.insert(number, hash);
-        Ok(())
+        Ok(bytes)
     }
 
     /// Hold writes across the snapshot and publication so journal fallback is a
@@ -376,10 +456,12 @@ impl VolumeDevice {
         Fut: Future<Output = Result<()>>,
     {
         let mut dirty = self.lock_dirty().await;
-        let pending: Vec<_> = dirty.pending.iter().copied().collect();
+        let pending = dirty.pending_uploads();
+        for batch in pending.chunks(self.upload_concurrency.get()) {
+            self.upload_batch(&mut dirty, batch).await?;
+        }
         let mut builder = ManifestBuilder::new(self.store.inner.clone(), dirty.published.clone());
-        for number in pending {
-            self.upload(&mut dirty, number).await?;
+        for &number in &dirty.pending {
             builder.set_chunk(number, dirty.uploaded[&number])?;
         }
         let manifest = builder.build().await?;
@@ -471,6 +553,9 @@ impl VolumeDevice {
         });
     }
 }
+
+#[cfg(test)]
+mod upload_tests;
 
 #[cfg(test)]
 mod tests {
