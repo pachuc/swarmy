@@ -117,3 +117,20 @@ cargo test -p swarmy-cli --test session --locked
 ```
 
 These tests skip when `SWARMY_FDB_CLUSTER_FILE` or `SWARMY_NATS_URL` is absent.
+
+## Volumes
+
+`swarmy vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
+`snapshot VOLUME`, `clone VOLUME`, `detach VOLUME`, `ls`, and `show VOLUME`.
+All accept `--json`. Attach requires root and stays in the foreground, printing
+its `/dev/nbdX` device once ready. Use another terminal for mount and control
+commands. `attach --background` pre-uploads writes; `flush --mount PATH` freezes
+a known mount before publication. Detach unmounts, flushes, and disconnects.
+
+Use `node_id` in shared configuration or `SWARMY_NODE_ID` to select a node.
+Otherwise the CLI persists an id in `.swarmy/node-id`. Control commands use a
+Unix socket under `.swarmy/volumes` and must use the attached writer's node id.
+Show prints the manifest chain, newest first. Clone uses the last committed
+manifest; snapshot first to include pending local writes. See the
+[volume README](../swarmy-volume/README.md#durable-flush-and-attachment-control)
+for the full lifecycle, durability boundary, and root acceptance test.

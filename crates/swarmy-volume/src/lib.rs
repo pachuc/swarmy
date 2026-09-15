@@ -1,5 +1,7 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
 mod device;
+mod flush;
+pub use flush::{BackgroundUploader, VolumeWriter};
 pub mod image;
 #[cfg(target_os = "linux")]
 pub mod kernel;
@@ -17,6 +19,8 @@ pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VolumeError {
+    #[error("durable volume metadata: {0}")]
+    Store(#[from] swarmy_store::StoreError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("request is unaligned, too large, or outside the disk")]

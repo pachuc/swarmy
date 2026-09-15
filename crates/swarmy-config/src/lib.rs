@@ -24,6 +24,7 @@ pub enum Error {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub node_id: Option<swarmy_core::NodeId>,
     pub fdb_cluster_file: String,
     pub nats_url: String,
     pub s3_endpoint: String,
@@ -68,6 +69,7 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            node_id: None,
             fdb_cluster_file: ".dev/fdb.cluster".into(),
             nats_url: "nats://127.0.0.1:4222".into(),
             s3_endpoint: "http://127.0.0.1:8333".into(),
@@ -103,6 +105,46 @@ pub struct Loaded {
     pub path: Option<PathBuf>,
     pub root: PathBuf,
     pub settings: Settings,
+}
+
+impl Loaded {
+    /// Read the configured node id, or persist a generated id under `.swarmy`.
+    /// A file lock serializes concurrent CLI starts on this host.
+    /// # Errors
+    /// Returns filesystem errors or rejects an invalid persisted id.
+    pub fn node_id(&self) -> Result<swarmy_core::NodeId, Error> {
+        use std::io::{Read, Seek, Write};
+        if let Some(id) = self.settings.node_id {
+            return Ok(id);
+        }
+        let directory = self.root.join(".swarmy");
+        std::fs::create_dir_all(&directory)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join("node-id"))?;
+        fs2::FileExt::lock_exclusive(&file)?;
+        let mut value = String::new();
+        file.read_to_string(&mut value)?;
+        let id = if value.is_empty() {
+            let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
+            file.rewind()?;
+            file.write_all(id.to_string().as_bytes())?;
+            file.sync_all()?;
+            std::fs::File::open(directory)?.sync_all()?;
+            id
+        } else {
+            swarmy_core::NodeId::from_ulid(
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| Error::Environment("persisted node-id".into()))?,
+            )
+        };
+        Ok(id)
+    }
 }
 
 impl Settings {
@@ -209,6 +251,13 @@ impl Settings {
         &mut self,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_NODE_ID") {
+            self.node_id = Some(swarmy_core::NodeId::from_ulid(
+                value
+                    .parse()
+                    .map_err(|_| Error::Environment("SWARMY_NODE_ID".into()))?,
+            ));
+        }
         if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
             self.fdb_cluster_file.clone_from(value);
         }
@@ -371,6 +420,9 @@ impl Settings {
             ("SWARMY_FAKE_CALL_LOG".into(), self.fake.call_log.clone()),
         ]
         .into();
+        if let Some(value) = &self.node_id {
+            environment.insert("SWARMY_NODE_ID".into(), value.to_string());
+        }
         if let Some(value) = &self.worker_kill_point {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
@@ -395,6 +447,22 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_identity_persists_and_environment_can_select_another_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = Settings::load_from(dir.path(), &BTreeMap::new()).unwrap();
+        let first = loaded.node_id().unwrap();
+        assert_eq!(loaded.node_id().unwrap(), first);
+        let second = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
+        let environment = BTreeMap::from([("SWARMY_NODE_ID".into(), second.to_string())]);
+        let loaded = Settings::load_from(dir.path(), &environment).unwrap();
+        assert_eq!(loaded.node_id().unwrap(), second);
+        assert_eq!(
+            loaded.settings.environment()["SWARMY_NODE_ID"],
+            second.to_string()
+        );
+    }
 
     #[test]
     fn discovery_overrides_and_paths_are_consistent() {

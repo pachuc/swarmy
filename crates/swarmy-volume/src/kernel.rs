@@ -52,8 +52,8 @@ impl Attachment {
         let blocks = libc::c_ulong::try_from(size / BLOCK_SIZE)
             .map_err(|_| io::Error::other("disk too large for kernel"))?;
         let file = Arc::new(OpenOptions::new().read(true).write(true).open(path)?);
-        fs2::FileExt::try_lock_exclusive(&*file)?;
         let sysfs = sysfs_path(&file)?;
+        reserve(&file, &sysfs).await?;
         if sysfs.join("pid").exists()
             || tokio::fs::read_to_string(sysfs.join("size")).await?.trim() != "0"
         {
@@ -196,6 +196,28 @@ impl Drop for Attachment {
     fn drop(&mut self) {
         if let Err(error) = self.disconnect() {
             tracing::error!(%error, "NBD detach failed");
+        }
+    }
+}
+
+async fn reserve(file: &File, sysfs: &Path) -> io::Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match fs2::FileExt::try_lock_exclusive(file) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                // Device probes can briefly hold a shared lock after detach.
+                // Wait only while the device is disconnected; never steal a
+                // live writer's reservation or mutate its kernel settings.
+                if sysfs.join("pid").exists()
+                    || tokio::fs::read_to_string(sysfs.join("size")).await?.trim() != "0"
+                    || tokio::time::Instant::now() >= deadline
+                {
+                    return Err(error);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
         }
     }
 }

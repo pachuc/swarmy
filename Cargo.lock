@@ -2793,11 +2793,14 @@ dependencies = [
 name = "swarmy-config"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "serde",
  "shell-words",
+ "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "ulid",
 ]
 
 [[package]]
@@ -2920,10 +2923,12 @@ dependencies = [
  "bytes",
  "fs2",
  "futures",
+ "jiff",
  "libc",
  "object_store",
  "serde",
  "swarmy-core",
+ "swarmy-store",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

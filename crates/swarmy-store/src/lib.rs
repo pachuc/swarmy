@@ -58,6 +58,8 @@ pub enum StoreError {
     ManifestExists,
     #[error("invalid manifest dimensions")]
     InvalidManifest,
+    #[error("volume head changed since this writer opened it")]
+    VolumeHeadMismatch,
     #[error("session does not exist")]
     SessionMissing,
     #[error("session already exists")]

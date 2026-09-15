@@ -3,6 +3,7 @@ mod doctor;
 mod image_command;
 mod session_command;
 mod tools;
+mod vol_command;
 
 use clap::{Parser, Subcommand};
 use std::{io::Write, path::PathBuf};
@@ -24,6 +25,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create, attach, and snapshot durable volumes
+    Vol {
+        #[command(subcommand)]
+        command: vol_command::Command,
+    },
     /// Build and inspect base filesystem images
     Image {
         #[command(subcommand)]
@@ -87,6 +93,7 @@ fn main() -> anyhow::Result<()> {
         Command::Run { .. }
             | Command::Session { .. }
             | Command::Chat { .. }
+            | Command::Vol { .. }
             | Command::Image { .. }
     ) {
         use std::os::unix::process::CommandExt;
@@ -107,6 +114,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Run { .. }
         | Command::Session { .. }
         | Command::Chat { .. }
+        | Command::Vol { .. }
         | Command::Image { .. } => unreachable!(),
         Command::Doctor => {
             if !doctor::run(cli.json).await? {

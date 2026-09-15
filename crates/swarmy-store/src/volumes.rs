@@ -207,6 +207,129 @@ impl Store {
         .await
     }
 
+    /// Renew a live writer without changing its fencing sequence.
+    /// # Errors
+    /// Rejects expired or replaced tokens and non-increasing expiry times.
+    pub async fn renew_writer_lease(
+        &self,
+        id: VolumeId,
+        expected: &Lease,
+        expires_at: Timestamp,
+    ) -> Result<Lease> {
+        self.transaction(|trx| async move {
+            let mut volume = self.volume(&trx, id).await?;
+            if volume.writer_lease.as_ref() != Some(expected)
+                || expected.expires_at <= Timestamp::now()
+                || expires_at <= expected.expires_at
+            {
+                return Err(StoreError::LeaseMismatch);
+            }
+            let lease = Lease {
+                expires_at,
+                ..expected.clone()
+            };
+            volume.writer_lease = Some(lease.clone());
+            write(&trx, &self.volume_key(id), &volume)?;
+            Ok(lease)
+        })
+        .await
+    }
+
+    /// Publish an uploaded manifest, its predecessor, and the head atomically.
+    /// The clock is checked on each transaction attempt so retries cannot extend
+    /// a writer's authority beyond its expiry. The id makes commit retries safe.
+    /// # Errors
+    /// Rejects stale heads, invalid headers, reused ids, and absent or stale leases.
+    pub async fn advance_volume(
+        &self,
+        id: VolumeId,
+        expected: &Lease,
+        previous: ManifestId,
+        next: ManifestId,
+        header: &ManifestHeader,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            let mut volume = self.volume(&trx, id).await?;
+            if volume.writer_lease.as_ref() != Some(expected)
+                || expected.expires_at <= Timestamp::now()
+            {
+                return Err(StoreError::LeaseMismatch);
+            }
+            let parent_key = self.manifest_parent_key(next);
+            if volume.head_manifest == next
+                && read::<ManifestId>(&trx, &parent_key).await? == Some(previous)
+                && read::<ManifestHeader>(&trx, &self.manifest_key(next))
+                    .await?
+                    .as_ref()
+                    == Some(header)
+            {
+                return Ok(());
+            }
+            if volume.head_manifest != previous {
+                return Err(StoreError::VolumeHeadMismatch);
+            }
+            let old: ManifestHeader = read(&trx, &self.manifest_key(previous))
+                .await?
+                .ok_or(StoreError::ManifestMissing)?;
+            if header.size != old.size || header.chunk_size != old.chunk_size {
+                return Err(StoreError::InvalidManifest);
+            }
+            if read::<ManifestHeader>(&trx, &self.manifest_key(next))
+                .await?
+                .is_some()
+            {
+                return Err(StoreError::ManifestExists);
+            }
+            write(&trx, &self.manifest_key(next), header)?;
+            write(&trx, &parent_key, &previous)?;
+            volume.head_manifest = next;
+            write(&trx, &self.volume_key(id), &volume)
+        })
+        .await
+    }
+
+    /// Follow one immutable history link. Image manifests have no predecessor.
+    /// # Errors
+    /// Returns decoding and transaction errors.
+    pub async fn manifest_parent(&self, id: ManifestId) -> Result<Option<ManifestId>> {
+        self.transaction(|trx| async move { read(&trx, &self.manifest_parent_key(id)).await })
+            .await
+    }
+
+    /// List all volumes in id order with an exclusive cursor.
+    /// # Errors
+    /// Rejects invalid limits, malformed keys, and transaction failures.
+    pub async fn list_volumes(
+        &self,
+        after: Option<VolumeId>,
+        limit: usize,
+    ) -> Result<Vec<(VolumeId, VolumeRecord)>> {
+        self.transaction(|trx| async move {
+            let space = self.root.subspace(&("volume",));
+            let (mut begin, end) = space.range();
+            if let Some(id) = after {
+                begin = self.volume_key(id);
+                begin.push(0);
+            }
+            let mut volumes = Vec::new();
+            for (key, value) in scan(&trx, (begin, end), limit).await? {
+                let (bytes,): (Vec<u8>,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let bytes: [u8; 16] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+                volumes.push((
+                    VolumeId::from_ulid(u128::from_be_bytes(bytes).into()),
+                    swarmy_core::decode(&value)?,
+                ));
+            }
+            Ok(volumes)
+        })
+        .await
+    }
+
+    fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
+        self.root
+            .pack(&("manifest_parent", id.as_ulid().to_bytes().as_slice()))
+    }
+
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
         read::<ManifestHeader>(trx, &self.manifest_key(id))
             .await?

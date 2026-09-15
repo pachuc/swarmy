@@ -1445,3 +1445,114 @@ async fn image_listing_pages_by_name_and_tag() {
         Err(StoreError::InvalidLimit)
     ));
 }
+
+#[tokio::test]
+async fn volume_publication_fences_writers_and_preserves_history() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let base = ManifestId::from_ulid(Ulid::generate());
+    let next = ManifestId::from_ulid(Ulid::generate());
+    let id = VolumeId::from_ulid(Ulid::generate());
+    let header = ManifestHeader {
+        size: u64::from(CHUNK_SIZE),
+        chunk_size: CHUNK_SIZE,
+        root_hash: ContentHash::ZERO,
+    };
+    store.put_manifest(base, &header).await.unwrap();
+    store.create_volume(id, base).await.unwrap();
+    let now = Timestamp::now();
+    let lease = store
+        .acquire_writer_lease(
+            id,
+            owner(),
+            now,
+            now.checked_add(std::time::Duration::from_secs(60)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let before = store.get_volume(id).await.unwrap();
+    let wrong = swarmy_core::Lease {
+        owner: owner(),
+        ..lease.clone()
+    };
+    assert!(matches!(
+        store.advance_volume(id, &wrong, base, next, &header).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert_eq!(store.get_volume(id).await.unwrap(), before);
+    assert_eq!(store.get_manifest(next).await.unwrap(), None);
+    assert_eq!(store.manifest_parent(next).await.unwrap(), None);
+    let renewed = store
+        .renew_writer_lease(
+            id,
+            &lease,
+            lease
+                .expires_at
+                .checked_add(std::time::Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.advance_volume(id, &lease, base, next, &header).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    store
+        .advance_volume(id, &renewed, base, next, &header)
+        .await
+        .unwrap();
+    store
+        .advance_volume(id, &renewed, base, next, &header)
+        .await
+        .unwrap();
+    assert_eq!(store.manifest_parent(next).await.unwrap(), Some(base));
+    assert_eq!(store.manifest_parent(base).await.unwrap(), None);
+    let stale = ManifestId::from_ulid(Ulid::generate());
+    assert!(matches!(
+        store
+            .advance_volume(id, &renewed, base, stale, &header)
+            .await,
+        Err(StoreError::VolumeHeadMismatch)
+    ));
+    assert_eq!(store.get_manifest(stale).await.unwrap(), None);
+    let clone = VolumeId::from_ulid(Ulid::generate());
+    store.clone_volume(id, clone).await.unwrap();
+    assert_volume_listing(store, next).await;
+    store
+        .release_writer_lease(id, &renewed, Timestamp::now())
+        .await
+        .unwrap();
+    let replacement = store
+        .acquire_writer_lease(id, owner(), now, renewed.expires_at)
+        .await
+        .unwrap();
+    assert!(replacement.seq > renewed.seq);
+    assert!(matches!(
+        store
+            .advance_volume(id, &renewed, next, stale, &header)
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.cleanup().await;
+}
+
+async fn assert_volume_listing(store: &Store, head: ManifestId) {
+    let mut listed = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store.list_volumes(after, 1).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|(id, _)| *id);
+        listed.extend(page);
+    }
+    assert_eq!(listed.len(), 2);
+    assert!(
+        listed
+            .iter()
+            .all(|(_, record)| record.head_manifest == head)
+    );
+}

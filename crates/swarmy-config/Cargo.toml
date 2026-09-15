@@ -9,6 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-core.workspace = true
+ulid.workspace = true
+fs2.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

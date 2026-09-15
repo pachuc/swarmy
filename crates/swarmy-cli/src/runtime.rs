@@ -5,6 +5,9 @@ mod image;
 mod image_command;
 mod session;
 mod session_command;
+mod vol;
+mod vol_command;
+mod vol_server;
 
 use clap::{Parser, Subcommand};
 
@@ -19,6 +22,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create, attach, and snapshot durable volumes
+    Vol {
+        #[command(subcommand)]
+        command: vol_command::Command,
+    },
     /// Build and inspect base filesystem images
     Image {
         #[command(subcommand)]
@@ -48,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
             Command::Run { prompt } => session::run(prompt, cli.json).await,
             Command::Chat { session_id } => {
