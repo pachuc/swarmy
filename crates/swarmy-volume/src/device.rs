@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::metrics::{MeteredStore, UploadCounters, UploadStats};
 use bytes::Bytes;
@@ -17,7 +17,7 @@ use swarmy_core::{CHUNK_SIZE, ContentHash, encode};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
 };
 
 use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, ManifestBuilder, Result, VolumeError};
@@ -66,6 +66,10 @@ struct Dirty {
     previous_end: Option<u64>,
     pending: BTreeSet<u64>,
     uploaded: HashMap<u64, ContentHash>,
+    // Generations only fence in-flight requests. Reopening reuploads the overlay,
+    // so they need not change the persistent dirty-store format.
+    generations: HashMap<u64, u64>,
+    last_write: HashMap<u64, Instant>,
     published: Manifest,
     // Hold an exclusive advisory lock for the lifetime of this writer.
     _lock: std::fs::File,
@@ -87,6 +91,10 @@ pub struct VolumeDevice {
     manifest: Manifest,
     cache_dir: PathBuf,
     dirty: Mutex<Dirty>,
+    // Serialize upload batches, including publication, without excluding writes.
+    uploading: Mutex<()>,
+    // Publication also works without a filesystem mount (journal fallback).
+    writing: RwLock<()>,
     leaves: Mutex<HashMap<usize, Vec<ContentHash>>>,
     prefetched: Mutex<HashSet<ContentHash>>,
     fills: [Mutex<()>; 64],
@@ -206,11 +214,15 @@ impl VolumeDevice {
                     .map(|(index, _)| index as u64)
                     .collect(),
                 uploaded: HashMap::new(),
+                generations: HashMap::new(),
+                last_write: HashMap::new(),
                 published: manifest,
                 present,
                 previous_end: None,
                 _lock: lock,
             }),
+            uploading: Mutex::new(()),
+            writing: RwLock::new(()),
             leaves: Mutex::new(HashMap::new()),
             prefetched: Mutex::new(HashSet::new()),
             fills: std::array::from_fn(|_| Mutex::new(())),
@@ -312,14 +324,22 @@ impl VolumeDevice {
     /// Write aligned blocks to local disk without uploading them.
     /// # Errors
     /// Rejects invalid ranges and propagates local storage errors.
+    /// # Panics
+    /// Panics if a chunk exhausts its u64 generation counter in one attachment.
     pub async fn write(&self, offset: u64, bytes: &[u8]) -> Result<()> {
         self.validate(offset, bytes.len())?;
+        let _writing = self.writing.read().await;
         let mut dirty = self.lock_dirty().await;
         // Invalidate before writing: a partial failed write must never retain
         // an uploaded hash for bytes that are no longer present locally.
         for number in offset / u64::from(CHUNK_SIZE)
             ..(offset + bytes.len() as u64).div_ceil(u64::from(CHUNK_SIZE))
         {
+            let generation = dirty.generations.entry(number).or_default();
+            *generation = generation
+                .checked_add(1)
+                .expect("chunk generation exhausted");
+            dirty.last_write.insert(number, Instant::now());
             dirty.pending.insert(number);
             dirty.uploaded.remove(&number);
         }
@@ -380,72 +400,111 @@ impl VolumeDevice {
         Ok(())
     }
 
-    /// Upload pending chunks without publishing a snapshot. Writes can proceed
-    /// between batches; a subsequent write invalidates that chunk's uploaded hash.
+    /// Upload pending chunks without publishing a snapshot. Remote requests do
+    /// not hold the dirty-store lock; overwritten generations remain pending.
     /// # Errors
     /// Returns local read or object storage errors. A later call retries failures.
     pub async fn upload_dirty(&self) -> Result<()> {
+        self.upload_settled(Duration::ZERO).await
+    }
+
+    pub(crate) async fn upload_settled(&self, debounce: Duration) -> Result<()> {
         let before = self.upload_stats();
-        let pending = self.lock_dirty().await.pending_uploads();
+        let pending = {
+            let dirty = self.lock_dirty().await;
+            dirty
+                .pending_uploads()
+                .into_iter()
+                .filter(|number| {
+                    dirty
+                        .last_write
+                        .get(number)
+                        .is_none_or(|time| time.elapsed() >= debounce)
+                })
+                .collect::<Vec<_>>()
+        };
         for batch in pending.chunks(self.upload_concurrency.get()) {
-            let mut dirty = self.lock_dirty().await;
-            self.upload_batch(&mut dirty, batch).await?;
+            // Release between batches so a flush waits for at most one batch.
+            let _uploading = self.uploading.lock().await;
+            self.upload_batch(batch, debounce).await?;
         }
         tracing::debug!(stats = ?self.upload_stats().since(before), "background upload complete");
         Ok(())
     }
 
-    async fn upload_batch(&self, dirty: &mut Dirty, numbers: &[u64]) -> Result<()> {
-        let mut prepared = Vec::with_capacity(numbers.len());
-        for &number in numbers {
-            if dirty.pending.contains(&number) && !dirty.uploaded.contains_key(&number) {
-                prepared.push((number, self.dirty_chunk(dirty, number).await?));
-            }
-        }
-        // Read through the shared file cursor before starting the requests.
+    async fn upload_batch(&self, numbers: &[u64], debounce: Duration) -> Result<()> {
         // Only this bounded batch owns chunk bytes; the rest remain on disk.
-        let mut uploads: FuturesUnordered<_> = prepared
-            .into_iter()
-            .map(|(number, bytes)| async move {
-                self.counters
-                    .uploads_in_flight
-                    .fetch_add(1, Ordering::Relaxed);
-                let _guard = UploadGuard(&self.counters.uploads_in_flight);
-                (number, self.store.put_chunk(&bytes).await)
-            })
+        let mut uploads: FuturesUnordered<_> = numbers
+            .iter()
+            .map(|&number| self.upload_chunk(number, debounce))
             .collect();
         let mut failure = None;
-        while let Some((number, result)) = uploads.next().await {
-            match result {
-                Ok(result) => {
-                    dirty.uploaded.insert(number, result.hash);
-                }
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
+        while let Some(result) = uploads.next().await {
+            if let Err(error) = result {
+                failure.get_or_insert(error);
             }
         }
-        // Drain the batch even on failure so acknowledged chunks are remembered
-        // and a retry only uploads the remaining versions.
+        // Drain even on failure so a retry remembers acknowledged generations.
         failure.map_or(Ok(()), Err)
     }
 
-    async fn dirty_chunk(&self, dirty: &mut Dirty, number: u64) -> Result<Vec<u8>> {
+    async fn upload_chunk(&self, number: u64, debounce: Duration) -> Result<()> {
+        // Fetch immutable baseline data before locking the overlay: a cold GET
+        // must not block sandbox writes either.
         let mut bytes = self.chunk(number, false).await?.to_vec();
+        let generation = {
+            let mut dirty = self.lock_dirty().await;
+            if !dirty.pending.contains(&number)
+                || dirty.uploaded.contains_key(&number)
+                || dirty
+                    .last_write
+                    .get(&number)
+                    .is_some_and(|time| time.elapsed() < debounce)
+            {
+                return Ok(());
+            }
+            Self::dirty_chunk(&mut dirty, number, &mut bytes).await?;
+            *dirty.generations.get(&number).unwrap_or(&0)
+        };
+        self.counters
+            .uploads_in_flight
+            .fetch_add(1, Ordering::Relaxed);
+        let _guard = UploadGuard(&self.counters.uploads_in_flight);
+        let result = self.store.put_chunk(&bytes).await?;
+        let mut dirty = self.lock_dirty().await;
+        if dirty.generations.get(&number).copied().unwrap_or(0) == generation {
+            dirty.uploaded.insert(number, result.hash);
+        }
+        Ok(())
+    }
+
+    async fn dirty_chunk(dirty: &mut Dirty, number: u64, bytes: &mut [u8]) -> Result<()> {
         let first = usize::try_from(number).map_err(|_| VolumeError::InvalidBlock(number))?
             * (CHUNK_SIZE as usize / 4096);
-        for (index, block) in bytes.chunks_mut(4096).enumerate() {
-            if dirty.present[first + index] == 1 {
-                dirty
-                    .data
-                    .seek(std::io::SeekFrom::Start(
-                        (first + index) as u64 * BLOCK_SIZE,
-                    ))
-                    .await?;
-                dirty.data.read_exact(block).await?;
+        let mut index = 0;
+        while index < bytes.len() / 4096 {
+            if dirty.present[first + index] == 0 {
+                index += 1;
+                continue;
             }
+            let start = index;
+            while index < bytes.len() / 4096 && dirty.present[first + index] == 1 {
+                index += 1;
+            }
+            // Copy contiguous dirty blocks in one disk read to keep lock hold
+            // time proportional to data size rather than to Tokio dispatches.
+            dirty
+                .data
+                .seek(std::io::SeekFrom::Start(
+                    (first + start) as u64 * BLOCK_SIZE,
+                ))
+                .await?;
+            dirty
+                .data
+                .read_exact(&mut bytes[start * 4096..index * 4096])
+                .await?;
         }
-        Ok(bytes)
+        Ok(())
     }
 
     /// Hold writes across the snapshot and publication so journal fallback is a
@@ -455,17 +514,29 @@ impl VolumeDevice {
         F: FnOnce(swarmy_core::ManifestHeader) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let mut dirty = self.lock_dirty().await;
-        let pending = dirty.pending_uploads();
+        let _writing = self.writing.write().await;
+        let _uploading = self.uploading.lock().await;
+        let pending = self.lock_dirty().await.pending_uploads();
         for batch in pending.chunks(self.upload_concurrency.get()) {
-            self.upload_batch(&mut dirty, batch).await?;
+            self.upload_batch(batch, Duration::ZERO).await?;
         }
+        let dirty = self.lock_dirty().await;
         let mut builder = ManifestBuilder::new(self.store.inner.clone(), dirty.published.clone());
         for &number in &dirty.pending {
             builder.set_chunk(number, dirty.uploaded[&number])?;
         }
+        drop(dirty);
         let manifest = builder.build().await?;
         commit(manifest.header().clone()).await?;
+        let mut dirty = self.lock_dirty().await;
+        self.uploads.record_referenced(
+            dirty
+                .pending
+                .iter()
+                .filter(|number| dirty.uploaded[number] != ContentHash::ZERO)
+                .count() as u64
+                * u64::from(CHUNK_SIZE),
+        );
         dirty.published = manifest.clone();
         dirty.pending.clear();
         dirty.uploaded.clear();
@@ -592,6 +663,7 @@ mod tests {
         device.publish(|_| async { Ok(()) }).await.unwrap();
         let stats = device.upload_stats();
         assert_eq!(stats.chunks_uploaded, 2);
+        assert_eq!(stats.referenced_chunk_bytes, 3 * u64::from(CHUNK_SIZE));
         assert_eq!(stats.object_store_requests, 9);
         let stored = objects.list(None).try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(
@@ -614,10 +686,18 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert_eq!(
+            device.upload_stats().referenced_chunk_bytes,
+            staged.referenced_chunk_bytes
+        );
         device.publish(|_| async { Ok(()) }).await.unwrap();
         assert_eq!(
             device.upload_stats().chunks_uploaded,
             staged.chunks_uploaded
+        );
+        assert_eq!(
+            device.upload_stats().referenced_chunk_bytes,
+            staged.referenced_chunk_bytes + u64::from(CHUNK_SIZE)
         );
     }
 

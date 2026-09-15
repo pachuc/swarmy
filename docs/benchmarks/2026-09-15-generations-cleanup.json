@@ -1,0 +1,342 @@
+{
+  "aws": {
+    "machine": [
+      {
+        "Id": "i-0e5ab9e224d7dfacc",
+        "Image": "ami-025d99823a4caad37",
+        "Type": "m6id.xlarge",
+        "Zone": "us-east-1a",
+        "State": "running"
+      }
+    ],
+    "cleanup": {
+      "checked_at": "2026-09-15T22:45:45.601617+00:00",
+      "queries": [
+        {
+          "command": [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--filters",
+            "Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "--query",
+            "Reservations[].Instances[].{Id:InstanceId,State:State.Name}",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": [
+            {
+              "Id": "i-0e5ab9e224d7dfacc",
+              "State": "terminated"
+            }
+          ]
+        },
+        {
+          "command": [
+            "aws",
+            "ec2",
+            "describe-volumes",
+            "--filters",
+            "Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "--query",
+            "Volumes[].{Id:VolumeId,State:State}",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": []
+        },
+        {
+          "command": [
+            "aws",
+            "ec2",
+            "describe-key-pairs",
+            "--filters",
+            "Name=key-name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "--query",
+            "KeyPairs",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": []
+        },
+        {
+          "command": [
+            "aws",
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            "swarmy-bench-815638500196",
+            "--prefix",
+            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "--max-keys",
+            "1",
+            "--no-paginate",
+            "--query",
+            "{KeyCount:KeyCount,IsTruncated:IsTruncated}",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": {
+            "KeyCount": 0,
+            "IsTruncated": false
+          }
+        },
+        {
+          "command": [
+            "aws",
+            "s3api",
+            "list-object-versions",
+            "--bucket",
+            "swarmy-bench-815638500196",
+            "--prefix",
+            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "--max-keys",
+            "1",
+            "--no-paginate",
+            "--query",
+            "{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": {
+            "Versions": 0,
+            "DeleteMarkers": 0,
+            "IsTruncated": false
+          }
+        },
+        {
+          "command": [
+            "aws",
+            "s3api",
+            "list-multipart-uploads",
+            "--bucket",
+            "swarmy-bench-815638500196",
+            "--prefix",
+            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "--query",
+            "Uploads",
+            "--output",
+            "json",
+            "--no-cli-pager"
+          ],
+          "output": null
+        }
+      ]
+    },
+    "lifecycle": [
+      {
+        "phase": "run",
+        "provider": "aws",
+        "bucket": "swarmy-bench-815638500196",
+        "prefix": "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+        "retention_allowance": false
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "S3 versioning: Unversioned"
+        ],
+        "live_resources": [],
+        "phase": "preflight",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "S3 versions and delete markers: all pages audited"
+        ],
+        "live_resources": [],
+        "phase": "probe_cleanup",
+        "retained_versions": []
+      },
+      {
+        "phase": "machine",
+        "name": "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+        "cache_disk": "local NVMe SSD"
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "AWS describe-instances for run: terminated",
+          "AWS aws_key_pair for run: 0 remaining",
+          "AWS aws_volume for run: 0 remaining",
+          "S3 versions and delete markers: all pages audited"
+        ],
+        "live_resources": [],
+        "phase": "cleanup",
+        "retained_versions": []
+      }
+    ]
+  },
+  "gcp": {
+    "machine": {
+      "machineType": "https://www.googleapis.com/compute/v1/projects/swarmy-508717/zones/us-east1-b/machineTypes/n2-standard-4",
+      "name": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+      "zone": "https://www.googleapis.com/compute/v1/projects/swarmy-508717/zones/us-east1-b"
+    },
+    "cleanup": {
+      "checked_at": "2026-09-15T22:49:37.164510+00:00",
+      "queries": [
+        {
+          "command": [
+            "gcloud",
+            "compute",
+            "instances",
+            "list",
+            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--format=json"
+          ],
+          "output": []
+        },
+        {
+          "command": [
+            "gcloud",
+            "compute",
+            "disks",
+            "list",
+            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--format=json"
+          ],
+          "output": []
+        },
+        {
+          "command": [
+            "gcloud",
+            "storage",
+            "buckets",
+            "list",
+            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--format=json"
+          ],
+          "output": []
+        },
+        {
+          "command": [
+            "gcloud",
+            "storage",
+            "buckets",
+            "describe",
+            "gs://swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
+            "--format=json"
+          ],
+          "exit_code": 1,
+          "output": "404 not found"
+        },
+        {
+          "command": [
+            "gcloud",
+            "storage",
+            "buckets",
+            "describe",
+            "gs://swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+            "--format=json"
+          ],
+          "exit_code": 1,
+          "output": "404 not found"
+        }
+      ],
+      "hmac": {
+        "state": "DELETED"
+      }
+    },
+    "lifecycle": [
+      {
+        "phase": "run",
+        "provider": "gcp",
+        "bucket": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+        "prefix": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823/",
+        "retention_allowance": false
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "preflight",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "probe_cleanup",
+        "retained_versions": []
+      },
+      {
+        "phase": "machine",
+        "name": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+        "cache_disk": "local NVMe SSD"
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCP instances list for run: 0 remaining",
+          "GCP disks list for run: 0 remaining",
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design",
+          "GCS bucket deleted and verified absent after version and soft-delete audits"
+        ],
+        "live_resources": [],
+        "phase": "cleanup",
+        "retained_versions": []
+      }
+    ],
+    "image": {
+      "sizeGb": "50",
+      "sourceImage": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260906"
+    },
+    "setup_attempt_cleanup": [
+      {
+        "phase": "run",
+        "provider": "gcp",
+        "bucket": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
+        "prefix": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741/",
+        "retention_allowance": false
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "preflight",
+        "retained_versions": []
+      },
+      {
+        "audit_failures": [],
+        "evidence": [
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design"
+        ],
+        "live_resources": [],
+        "phase": "probe_cleanup",
+        "retained_versions": []
+      },
+      {
+        "phase": "machine",
+        "name": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
+        "cache_disk": "local NVMe SSD"
+      },
+      {
+        "audit_failures": [
+          "command failed; check the documented permissions"
+        ],
+        "evidence": [
+          "GCP instances list for run: 0 remaining",
+          "GCP disks list for run: 0 remaining",
+          "GCS soft delete disabled at creation; bucket metadata unchanged (metageneration 1); soft listing unavailable by API design",
+          "GCS bucket deleted and verified absent after version and soft-delete audits"
+        ],
+        "live_resources": [],
+        "phase": "cleanup",
+        "retained_versions": []
+      }
+    ]
+  }
+}

@@ -31,9 +31,12 @@ def provision(state, path, workload):
     state["compute_attempted"] = True
     save(path, state)
     if state["provider"] == "gcp":
-        zones = ["us-central1-" + suffix for suffix in "abcf"]
-        zones += ["us-east1-" + suffix for suffix in "bcd"]
-        zones += ["us-west1-" + suffix for suffix in "abc"]
+        # Storage preflight has already created the regional bucket. Never
+        # silently move compute to another region when capacity is unavailable.
+        zones = [zone["name"] for zone in gcloud(
+            state, "zones", "list", "--filter=region:" + state["region"])]
+        if not zones:
+            raise AuditError("no zones found in the bucket region")
         created = False
         for zone in zones:
             try:
@@ -48,7 +51,7 @@ def provision(state, path, workload):
                 if gcp_instances(state):
                     raise AuditError("GCP create returned ambiguously; terminate before retrying") from None
         if not created:
-            zone = "us-central1-a"
+            zone = zones[0]
             gcloud(state, "instances", "create", state["name"], "--zone=" + zone,
                    "--machine-type=n2-standard-4", "--image-family=ubuntu-2404-lts-amd64",
                    "--image-project=ubuntu-os-cloud", "--boot-disk-size=50GB",

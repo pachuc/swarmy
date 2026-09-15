@@ -179,8 +179,9 @@ to the same `run` command. AWS also requires `--ssh-public-key /path/to/key.pub`
 and the private `SWARMY_BENCH_SUBNET` and `SWARMY_BENCH_SECURITY_GROUP` environment
 settings. The tool imports a generated key-pair name and tags the key pair,
 instance, and boot volume with `managed-by=codex-launcher` and the run's Name.
-GCP tries N2 with NVMe local SSD in the central, east, and west zones before
-falling back to a 500 GB `pd-ssd`; stdout and state record which cache was used.
+GCP tries N2 with NVMe local SSD in each zone of the bucket region before
+falling back to a 500 GB `pd-ssd` in that region; stdout and state record which
+cache was used. Set `--region` to choose the colocated bucket and VM placement.
 Both providers use the stock Ubuntu 24.04 configuration in the installation
 section below and auto-delete attached disks.
 
@@ -796,3 +797,232 @@ gcloud storage rm --recursive gs://swarmy-flush-20260915-205911 --quiet
 gcloud storage hmac update "$HMAC_ACCESS_ID" --deactivate --quiet
 gcloud storage hmac delete "$HMAC_ACCESS_ID" --quiet
 ```
+
+
+## 2026-09-15 Generation-aware background uploads
+
+This run measures the generation-aware uploader in this PR: 256 KiB chunks,
+32 concurrent uploads, and a 250 ms quiet period before background staging.
+Chunk copies and generation checks hold the dirty-store lock; remote uploads
+do not. Flush waits for the active batch and uploads only the unstaged tail.
+The single-writer lease and fenced FoundationDB publication are unchanged.
+
+### Controlled release comparison
+
+Both clouds used the same release binaries, built on the Ubuntu 24.04 launcher
+with `cargo build --release --workspace --locked` and Rust 1.98.1, then copied
+to the benchmark machines. The `swarmy-session` SHA-256 was
+`0b0c95045e9aaf4bff1b7840ea78d14a8cb657679aad239f68cba10797cca5a4`.
+Each cloud ran two samples per mode on one machine, in off/on/off/on order.
+All four samples within each cloud produced the same base-image root hash.
+Every sample used a fresh object prefix, the same 8 GiB Noble recipe without
+build-essential, and a fully warmed base chunk cache. Image preparation and
+teardown are outside the timers. Compiler persistence passed after all eight
+flush/clone/cache-clear/reattach trials.
+
+| Placement | AWS | Google Cloud |
+| --- | --- | --- |
+| Machine | `m6id.xlarge`, 4 vCPUs, 16 GiB | `n2-standard-4`, 4 vCPUs, 16 GiB |
+| VM zone / bucket region | `us-east-1a` / `us-east-1` | `us-east1-b` / `us-east1` |
+| Cache | 220.7 GiB local NVMe | 375 GiB NVMe local SSD |
+| Boot disk | 50 GiB gp3 | 50 GB persistent disk |
+| Ubuntu 24.04 image | `ami-025d99823a4caad37` | `ubuntu-2404-noble-amd64-v20260906` |
+| Kernel | `7.0.0-1012-aws` | `7.0.0-1011-gcp` |
+
+GCP used the previously available east-region placement and obtained local SSD
+in the first requested zone. No persistent-SSD fallback was needed. Its bucket
+was created in **us-east1**, with soft delete disabled atomically at creation;
+the effective policy was checked before any write. The cloud helper now limits
+VM capacity attempts and any fallback to the bucket region, preventing the
+cross-region placement in the earlier instrumented run. Both clouds loaded
+`nbd` and `ublk_drv` on their stock kernels; these measurements use NBD.
+
+The machines used the installation procedure above. Backing-service binaries
+and the FoundationDB client library were copied from the launcher alongside
+the checkout and release binaries. Each VM ran its own FoundationDB and NATS.
+GCP used a temporary HMAC key with the XML/S3 API and path-style URLs; AWS used
+the existing bucket under a generated run prefix. After sourcing the dev stack
+and private cloud settings, the command on each machine was:
+
+```sh
+sudo -E TMPDIR=/mnt/bench/tmp python3 ../repo/scripts/benchmarks/volume.py \
+  --target-dir /mnt/bench/target --profile release --background both \
+  --install-only --trials 2
+```
+
+Raw samples: [AWS](benchmarks/2026-09-15-generations-aws.jsonl) and
+[GCP](benchmarks/2026-09-15-generations-gcp.jsonl). Times below are seconds.
+Total is apt update + package installation + CLI flush. Freeze wait includes
+kernel writeback; frozen time starts after freeze acquisition and ends after
+thaw. Frozen chunks count successful chunk PUTs completed in that window,
+including background requests already in flight when the filesystem froze.
+
+| Cloud | Background | Sample | Apt update | Install | CLI flush | Total | Freeze wait | Frozen | Frozen chunks |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| AWS | off | 1 | 1.166 | 9.634 | 9.289 | 20.090 | 0.107 | 9.149 | 2,238 |
+| AWS | on | 1 | 1.617 | 13.743 | 0.991 | 16.351 | 0.110 | 0.848 | 187 |
+| AWS | off | 2 | 1.617 | 10.537 | 9.845 | 21.998 | 0.108 | 9.704 | 2,238 |
+| AWS | on | 2 | 1.617 | 13.842 | 1.243 | 16.702 | 0.118 | 1.091 | 230 |
+| GCP | off | 1 | 1.468 | 17.154 | 8.925 | 27.546 | 0.152 | 8.730 | 2,239 |
+| GCP | on | 1 | 2.670 | 17.355 | 1.536 | 21.561 | 0.152 | 1.344 | 177 |
+| GCP | off | 2 | 1.467 | 17.355 | 8.609 | 27.430 | 0.174 | 8.398 | 2,238 |
+| GCP | on | 2 | 1.519 | 19.117 | 1.101 | 21.737 | 0.229 | 0.834 | 149 |
+
+The counters below cover the entire writing attachment, including background
+work. Uploaded bytes include manifest objects. Referenced bytes count nonzero
+dirty chunk coverage in the published manifest, including deduplicated chunks.
+Amplification is successful chunk PUT bytes (`chunks_uploaded * 262144`)
+divided by referenced chunk bytes, excluding manifest metadata from both sides.
+It can be slightly below one because of deduplication. Lock wait is summed over
+all dirty-lock acquisitions, including parallel uploaders waiting to copy local
+bytes; it is not the wall time for which sandbox writes were stalled.
+
+| Cloud | Background | Sample | Chunk PUTs | Uploaded bytes | Referenced chunk bytes | Amplification | Lock wait (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AWS | off | 1 | 2,238 | 586,940,683 | 586,940,416 | 0.9996 | 8.770 |
+| AWS | on | 1 | 2,466 | 646,709,515 | 586,940,416 | 1.1014 | 12.132 |
+| AWS | off | 2 | 2,238 | 586,940,683 | 586,940,416 | 0.9996 | 8.527 |
+| AWS | on | 2 | 2,450 | 642,515,211 | 587,202,560 | 1.0938 | 11.247 |
+| GCP | off | 1 | 2,239 | 587,202,827 | 587,202,560 | 0.9996 | 11.399 |
+| GCP | on | 1 | 2,494 | 654,049,547 | 586,940,416 | 1.1139 | 17.604 |
+| GCP | off | 2 | 2,238 | 586,940,683 | 586,940,416 | 0.9996 | 11.273 |
+| GCP | on | 2 | 2,529 | 663,224,587 | 586,940,416 | 1.1295 | 18.035 |
+
+**Both measured pairs on both clouds improve total step-plus-flush time.** AWS
+averaged 21.044 s off versus 16.526 s on (21.5% lower), while average frozen time
+fell from 9.427 s to 0.970 s. Installation rose from 10.086 s to 13.793 s, so the
+improvement is smaller than frozen time alone suggests. GCP averaged 27.488 s
+off versus 21.649 s on (21.2% lower); average frozen time fell from 8.564 s to
+1.089 s, while installation rose from 17.254 s to 18.236 s. Background upload
+amplification was 1.094–1.101 on AWS and 1.114–1.130 on GCP. The debounce limits
+repeated uploads but does not eliminate them.
+
+The workload changed about 560 MiB of chunk coverage, placing it in the design's
+up-to-1-GiB budget: 12 s on AWS and 90 s on GCP. Server-side added latency
+(freeze acquisition + publication + thaw) was 9.256–9.812 s off and
+0.958–1.209 s on for AWS; GCP was 8.571–8.881 s off and 1.063–1.496 s on.
+**The measured workload meets both the unstaged and background latency limits
+and the total-time nonregression rule.** Two samples per mode do not establish
+p95 compliance or validate the other changed-data rows in the budget. GCP is
+now colocated, so its improvement over the earlier cross-region run cannot be
+attributed solely to the dirty-lock change.
+
+### Cleanup proof for this run
+
+[Provider queries and lifecycle audits](benchmarks/2026-09-15-generations-cleanup.json)
+record full selected outputs and UTC verification times. Both machines are gone;
+no benchmark disks, key pairs, objects, retained versions, or incomplete uploads
+remain. The existing AWS bucket remains. The temporary GCP bucket and HMAC key
+were deleted. The storage-only preflight runs also passed their deletion audits.
+
+An initial GCP setup attempt used
+`swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741`. Its disk detector did not recognize
+the local SSD model `nvme_card`, so it stopped before formatting or benchmarking.
+The lifecycle wrapper deleted that VM, its disk, and its empty bucket; the retry
+used the verified local SSD model and completed all four samples. The queries
+below include both GCP attempts. No HMAC key was created for the failed attempt.
+
+After fetching results, run objects were bulk-deleted with
+`aws s3 rm s3://BUCKET/RUN_PREFIX/ --recursive --only-show-errors` and
+`gcloud storage rm --recursive gs://BUCKET/RUN_PREFIX/ --quiet`.
+The lifecycle parent was paused briefly during this bulk deletion to avoid
+starting its serial per-object deletion loop concurrently, then resumed to
+terminate compute and perform its independent version and retention audits.
+All bulk-delete and final audit commands returned zero. GCP's bucket metadata
+remained at metageneration 1 with soft delete disabled from creation through
+deletion. The HMAC key was deactivated, deleted, and independently read back as
+`DELETED` before the VM's lifecycle cleanup finished.
+
+AWS verification:
+
+```sh
+aws ec2 describe-instances \
+  --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
+# [{"Id":"i-0e5ab9e224d7dfacc","State":"terminated"}]
+aws ec2 describe-volumes \
+  --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --query 'Volumes[].{Id:VolumeId,State:State}' --output json
+# []
+aws ec2 describe-key-pairs \
+  --filters Name=key-name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --query KeyPairs --output json
+# []
+aws s3api list-objects-v2 --bucket swarmy-bench-815638500196 \
+  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
+  --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}' --output json
+# {"KeyCount":0,"IsTruncated":false}
+aws s3api list-object-versions --bucket swarmy-bench-815638500196 \
+  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
+  --query '{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}' \
+  --output json
+# {"Versions":0,"DeleteMarkers":0,"IsTruncated":false}
+aws s3api list-multipart-uploads --bucket swarmy-bench-815638500196 \
+  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --query Uploads --output json
+# null
+```
+
+GCP verification:
+
+```sh
+gcloud compute instances list \
+  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+# []
+gcloud compute disks list \
+  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+# []
+gcloud storage buckets list \
+  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+# []
+gcloud storage buckets describe gs://swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 --format=json
+# 404 not found (exit 1, expected)
+gcloud storage buckets describe gs://swarmy-bench-6226f3bce8b447fd9546e8fcaa658823 --format=json
+# 404 not found (exit 1, expected)
+```
+
+The HMAC verification used authenticated JSON API GET
+`storage/v1/projects/PROJECT/hmacKeys/ACCESS_ID`; only its `state: DELETED` result
+is retained in the evidence file. Authentication material is not recorded.
+
+### Launcher validation for this run
+
+With the dev stack running and `.dev/env` sourced, these commands passed:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --release --workspace --locked
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/benchmarks -p 'test_*.py' -v
+cargo test --workspace --locked --no-run --message-format=json
+```
+
+The workspace run passed 182 tests; the Python suite passed 19. The JSON compiler
+artifacts supplied executable paths to a temporary driver invoked as
+`python3 /tmp/swarmy-root-tests.py`. It selected all five swarmy-volume artifacts
+(library, device, image, nbd, volume), CLI image and vol, swarmyd node, and chaos
+bash. Each ran with `sudo -E BINARY --nocapture --test-threads=1`, after compilation
+as the ordinary user. The driver set
+`SWARMY_TEST_CLI=/home/ubuntu/workspace/target/debug/swarmy` and
+`SWARMY_TEST_IMAGE=base-ubuntu:test`. All 37 root tests passed with no skips,
+including OCI image import, ext4/fio/NBD, clone/durability/fencing/history,
+node recovery, and bash normal execution, a mid-command node kill, and twelve
+seeded process kills. Every NBD device was detached and unmounted afterward.
+
+The new deterministic upload tests block a PUT while overwriting its chunk,
+verify the write completes before that PUT is released, discard the old hash,
+and read the newer contents through the published manifest. Other tests cover
+failed uploads and selective retries, debounce, shared concurrency bounds,
+writer-lease revocation during a blocked flush with FoundationDB, and a child
+process exiting after chunk and manifest object uploads but before the head
+commit. Reopening the local overlay preserves dirty bytes; a fresh attachment
+from the authoritative baseline sees only the last publication.
+
+The first workspace run failed with NATS connection refusals because the backing
+processes had stopped; restarting the stack and rerunning passed. Root acceptance
+was kept separate from the dev lifecycle test that restarts shared services.
+Clippy initially required the generation-exhaustion panic to be documented; the
+final run passes without lint allowances. No CI, lint, or test requirement was
+weakened. The only unverified performance claim is p95 compliance across the full
+budget table, which needs more samples and workloads than this installation run.

@@ -141,7 +141,14 @@ def install_trial(background, trial, profile):
         report("install_and_flush", start, profile=profile, background=background,
                trial=trial, apt_update_seconds=update_seconds,
                install_seconds=install_seconds, frozen_seconds=seconds(flushed["frozen"]),
-               freeze_wait_seconds=seconds(flushed["freeze_wait"]), flush=flushed)
+               freeze_wait_seconds=seconds(flushed["freeze_wait"]),
+               frozen_chunks_uploaded=flushed["frozen_chunks_uploaded"],
+               total_seconds=update_seconds + install_seconds + time.monotonic() - start,
+               chunk_upload_amplification=(
+                   flushed["device_total"]["chunks_uploaded"] * 262144
+                   / flushed["uploads"]["referenced_chunk_bytes"]
+                   if flushed["uploads"]["referenced_chunk_bytes"] else None),
+               flush=flushed)
         run("chroot", str(attached.mount), "gcc", "--version")
     clone = cli("vol", "clone", volume)["volume_id"]
     clear_cache()
