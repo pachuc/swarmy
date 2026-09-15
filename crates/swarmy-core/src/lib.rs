@@ -25,4 +25,4 @@ pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transitio
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
-pub use volume::{CHUNK_SIZE, ContentHash, ManifestHeader, VolumeRecord};
+pub use volume::{CHUNK_SIZE, ContentHash, ImageRecord, ManifestHeader, VolumeRecord};

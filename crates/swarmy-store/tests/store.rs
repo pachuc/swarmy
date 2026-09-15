@@ -1387,3 +1387,61 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
     ));
     test.cleanup().await;
 }
+
+#[tokio::test]
+async fn image_listing_pages_by_name_and_tag() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = ManifestId::from_ulid(Ulid::generate());
+    test.store
+        .put_manifest(
+            manifest,
+            &ManifestHeader {
+                size: u64::from(CHUNK_SIZE),
+                chunk_size: CHUNK_SIZE,
+                root_hash: ContentHash::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+    for (name, tag) in [("ubuntu", "v2"), ("base", "v1"), ("ubuntu", "v1")] {
+        test.store
+            .put_image(name, &ImageTag(tag.into()), manifest)
+            .await
+            .unwrap();
+    }
+    let mut after = None;
+    let mut found = Vec::new();
+    loop {
+        let page = test
+            .store
+            .list_images(
+                after
+                    .as_ref()
+                    .map(|(name, tag): &(String, ImageTag)| (name.as_str(), tag)),
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(page.len() <= 1);
+        let Some(image) = page.into_iter().next() else {
+            break;
+        };
+        assert_eq!(image.manifest_id, manifest);
+        found.push((image.name.clone(), image.tag.0.clone()));
+        after = Some((image.name, image.tag));
+    }
+    assert_eq!(
+        found,
+        [
+            ("base".into(), "v1".into()),
+            ("ubuntu".into(), "v1".into()),
+            ("ubuntu".into(), "v2".into())
+        ]
+    );
+    assert!(matches!(
+        test.store.list_images(None, 0).await,
+        Err(StoreError::InvalidLimit)
+    ));
+}

@@ -1,5 +1,6 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
 mod device;
+pub mod image;
 #[cfg(target_os = "linux")]
 pub mod kernel;
 mod manifest;
