@@ -23,6 +23,7 @@ struct RecordingStore {
     timing: StdMutex<Vec<(Instant, Instant)>>,
     device: StdMutex<Weak<VolumeDevice>>,
     limit: u64,
+    gate: StdMutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 impl std::fmt::Display for RecordingStore {
@@ -49,6 +50,10 @@ impl ObjectStore for RecordingStore {
         let device = self.device.lock().unwrap().upgrade().unwrap();
         let reported = device.stats().uploads_in_flight;
         assert!(reported >= active && reported <= self.limit);
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
         tokio::time::sleep(self.delay).await;
         self.timing.lock().unwrap().push((started, Instant::now()));
         if self.failures.lock().unwrap().remove(path) {
@@ -130,6 +135,7 @@ async fn fixture(
         timing: StdMutex::new(Vec::new()),
         device: StdMutex::new(Weak::new()),
         limit: limit as u64,
+        gate: StdMutex::new(None),
     });
     let device = VolumeDevice::open_with_upload_concurrency(
         ChunkStore::new(objects.clone()),
@@ -326,4 +332,228 @@ async fn uploaded_versions_do_not_take_space_in_later_batches() {
         assert_eq!(objects.checks.lock().unwrap().values().sum::<usize>(), 20);
         assert_eq!(device.stats().uploads_in_flight, 0);
     }
+}
+
+#[tokio::test]
+async fn writes_proceed_during_upload_and_stale_generations_are_retried() {
+    let (dir, objects, device) = fixture(1, 1, Duration::ZERO).await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *objects.gate.lock().unwrap() = Some(gate.clone());
+    let uploading = device.clone();
+    let task = tokio::spawn(async move { uploading.upload_dirty().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while objects.active.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // The PUT cannot finish until we release the gate. A lock held across the
+    // request would make this write time out, regardless of network speed.
+    tokio::time::timeout(Duration::from_secs(2), device.write(0, &[9; 4096]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(objects.active.load(Ordering::Relaxed), 1);
+    gate.add_permits(1);
+    task.await.unwrap().unwrap();
+    {
+        let dirty = device.dirty.lock().await;
+        assert!(dirty.uploaded.is_empty());
+        assert!(dirty.pending.contains(&0));
+    }
+    gate.add_permits(1);
+    let manifest = device.publish(|_| async { Ok(()) }).await.unwrap();
+    assert_eq!(objects.checks.lock().unwrap().values().sum::<usize>(), 2);
+    let reopened = VolumeDevice::open(
+        ChunkStore::new(objects),
+        manifest,
+        dir.path().join("new-cache"),
+        dir.path().join("new-dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.read(0, 4096).await.unwrap(), vec![9; 4096]);
+}
+
+#[tokio::test]
+async fn debounce_defers_active_chunks_but_final_publication_drains_them() {
+    let (_dir, objects, device) = fixture(4, 2, Duration::ZERO).await;
+    device
+        .upload_settled(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert!(objects.checks.lock().unwrap().is_empty());
+    device.publish(|_| async { Ok(()) }).await.unwrap();
+    assert_eq!(objects.checks.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn process_death_after_uploads_preserves_overlay_and_published_baseline() {
+    const CHILD_DIR: &str = "SWARMY_UPLOAD_CRASH_TEST_DIR";
+    if let Ok(path) = std::env::var(CHILD_DIR) {
+        let dir = std::path::Path::new(&path);
+        let store = ChunkStore::new(Arc::new(
+            object_store::local::LocalFileSystem::new_with_prefix(dir.join("objects")).unwrap(),
+        ));
+        let device = VolumeDevice::open(
+            store,
+            Manifest::empty(u64::from(CHUNK_SIZE)).unwrap(),
+            dir.join("cache"),
+            dir.join("dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        device.write(0, &[19; 4096]).await.unwrap();
+        device.flush().await.unwrap();
+        device
+            .publish(|_| async {
+                // Exit after both chunks and manifest objects exist, before the
+                // authoritative head transaction. No Rust destructors run.
+                std::process::exit(77);
+            })
+            .await
+            .unwrap();
+        unreachable!();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("objects")).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "device::upload_tests::process_death_after_uploads_preserves_overlay_and_published_baseline"])
+        .env(CHILD_DIR, dir.path()).status().unwrap();
+    assert_eq!(status.code(), Some(77));
+    let objects = Arc::new(
+        object_store::local::LocalFileSystem::new_with_prefix(dir.path().join("objects")).unwrap(),
+    );
+    assert!(
+        objects
+            .list(Some(&ObjectPath::from("chunks")))
+            .count()
+            .await
+            > 0
+    );
+    let store = ChunkStore::new(objects);
+    let baseline = Manifest::empty(u64::from(CHUNK_SIZE)).unwrap();
+    let recovered = VolumeDevice::open(
+        store.clone(),
+        baseline.clone(),
+        dir.path().join("recovery-cache"),
+        dir.path().join("recovery-dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.read(0, 4096).await.unwrap(), vec![0; 4096]);
+    let resumed = VolumeDevice::open(
+        store.clone(),
+        baseline,
+        dir.path().join("cache"),
+        dir.path().join("dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.read(0, 4096).await.unwrap(), vec![19; 4096]);
+    let published = resumed.publish(|_| async { Ok(()) }).await.unwrap();
+    let committed = VolumeDevice::open(
+        store,
+        published,
+        dir.path().join("committed-cache"),
+        dir.path().join("committed-dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(committed.read(0, 4096).await.unwrap(), vec![19; 4096]);
+}
+
+#[tokio::test]
+async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
+    use jiff::Timestamp;
+    use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId};
+    use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
+
+    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        eprintln!("skipping lease loss during flush: SWARMY_FDB_CLUSTER_FILE is unset");
+        return;
+    };
+    let _network = swarmy_store::boot();
+    let store = Store::open(
+        Some(&cluster),
+        Some(&[format!("swarmy-upload-fencing-{}", ulid::Ulid::generate())]),
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let (dir, objects, device) = fixture(1, 1, Duration::ZERO).await;
+    let base = ManifestId::from_ulid(ulid::Ulid::generate());
+    let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+    store
+        .put_manifest(base, device.manifest.header())
+        .await
+        .unwrap();
+    store.create_volume(volume, base).await.unwrap();
+    let now = Timestamp::now();
+    let expiry = now.checked_add(Duration::from_secs(60)).unwrap();
+    let lease = store
+        .acquire_writer_lease(
+            volume,
+            LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            now,
+            expiry,
+        )
+        .await
+        .unwrap();
+    let writer =
+        crate::VolumeWriter::new(device.clone(), store.clone(), volume, lease.clone(), base);
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *objects.gate.lock().unwrap() = Some(gate.clone());
+    device.flush().await.unwrap();
+    let flushing = writer.clone();
+    let task = tokio::spawn(async move { flushing.flush(None).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while objects.active.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Revoke the token while the chunk PUT is waiting, then let upload finish.
+    store
+        .release_writer_lease(volume, &lease, Timestamp::now())
+        .await
+        .unwrap();
+    gate.add_permits(1);
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(VolumeError::Store(StoreError::LeaseMismatch))
+    ));
+    let record = store.get_volume(volume).await.unwrap().unwrap();
+    assert_eq!(record.head_manifest, base);
+    assert_eq!(device.read(0, 4096).await.unwrap(), vec![1; 4096]);
+    assert_eq!(device.dirty.lock().await.pending.len(), 1);
+    assert_eq!(device.dirty.lock().await.uploaded.len(), 1);
+    let recovered = VolumeDevice::open(
+        ChunkStore::new(objects.clone()),
+        device.manifest.clone(),
+        dir.path().join("recovered-cache"),
+        dir.path().join("recovered-dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.read(0, 4096).await.unwrap(), vec![0; 4096]);
+    let renewed = store
+        .acquire_writer_lease(volume, lease.owner, Timestamp::now(), expiry)
+        .await
+        .unwrap();
+    let retry = crate::VolumeWriter::new(device.clone(), store.clone(), volume, renewed, base);
+    let committed = retry.flush(None).await.unwrap();
+    assert_eq!(committed.frozen_chunks_uploaded, 0);
+    assert_eq!(committed.uploads.chunks_uploaded, 0);
+    let record = store.get_volume(volume).await.unwrap().unwrap();
+    assert_eq!(record.head_manifest, committed.manifest_id);
+    assert!(device.dirty.lock().await.pending.is_empty());
 }

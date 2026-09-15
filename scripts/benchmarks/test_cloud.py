@@ -314,6 +314,29 @@ class StorageTests(unittest.TestCase):
                 self.assertIn(self.state["name"], args["filters"])
                 self.assertIn("codex-launcher", args["filters"])
 
+    def test_gcp_capacity_fallback_stays_in_bucket_region(self):
+        self.gcp()
+        self.state["region"] = "us-east1"
+        calls = []
+        def api(state, *args):
+            calls.append(args)
+            if args[:2] == ("zones", "list"):
+                self.assertIn("--filter=region:us-east1", args)
+                return [{"name": "us-east1-b"}, {"name": "us-east1-c"}]
+            if args[:2] == ("instances", "list"):
+                return []
+            if "--local-ssd=interface=nvme" in args:
+                raise cloud.AuditError("no local SSD capacity")
+            return []
+        with patch.object(cloud_vm, "gcloud", api), patch.object(cloud_vm, "command"):
+            cloud_vm.provision(self.state, self.path, self.path)
+        attempts = [args for args in calls if args[:2] == ("instances", "create")]
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual([next(arg for arg in args if arg.startswith("--zone="))
+                          for args in attempts],
+                         ["--zone=us-east1-b", "--zone=us-east1-c", "--zone=us-east1-b"])
+        self.assertIn("pd-ssd", self.state["cache_disk"])
+
     def test_gcp_failed_termination_still_verifies_vm_and_disks(self):
         self.gcp()
         self.state["compute_attempted"] = True

@@ -24,6 +24,9 @@ pub struct UploadStats {
     pub chunks_uploaded: u64,
     pub object_store_requests: u64,
     pub bytes_uploaded: u64,
+    /// Nonzero dirty chunk bytes referenced by successful publications. Counts
+    /// logical chunk coverage, including deduplicated content, excluding metadata.
+    pub referenced_chunk_bytes: u64,
     /// Sum across dirty-store acquisitions, including reads and writes.
     pub dirty_lock_wait: Duration,
     /// Sum of HEAD/GET/PUT call durations; overlapping calls can exceed wall time.
@@ -36,6 +39,7 @@ impl UploadStats {
             chunks_uploaded: self.chunks_uploaded - before.chunks_uploaded,
             object_store_requests: self.object_store_requests - before.object_store_requests,
             bytes_uploaded: self.bytes_uploaded - before.bytes_uploaded,
+            referenced_chunk_bytes: self.referenced_chunk_bytes - before.referenced_chunk_bytes,
             dirty_lock_wait: self.dirty_lock_wait.saturating_sub(before.dirty_lock_wait),
             object_store_time: self
                 .object_store_time
@@ -49,6 +53,7 @@ pub(crate) struct UploadCounters {
     chunks: AtomicU64,
     requests: AtomicU64,
     bytes: AtomicU64,
+    referenced: AtomicU64,
     lock_wait_ns: AtomicU64,
     request_ns: AtomicU64,
 }
@@ -59,9 +64,14 @@ impl UploadCounters {
             chunks_uploaded: self.chunks.load(Ordering::Relaxed),
             object_store_requests: self.requests.load(Ordering::Relaxed),
             bytes_uploaded: self.bytes.load(Ordering::Relaxed),
+            referenced_chunk_bytes: self.referenced.load(Ordering::Relaxed),
             dirty_lock_wait: Duration::from_nanos(self.lock_wait_ns.load(Ordering::Relaxed)),
             object_store_time: Duration::from_nanos(self.request_ns.load(Ordering::Relaxed)),
         }
+    }
+
+    pub(crate) fn record_referenced(&self, bytes: u64) {
+        self.referenced.fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub(crate) fn record_lock_wait(&self, start: Instant) {

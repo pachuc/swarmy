@@ -257,10 +257,22 @@ Read path: local NVMe chunk cache, then object storage, with readahead. Base
 image chunks are shared by every agent on a node so they stay hot. Per-agent
 diffs are small and cold reads are rare after warmup.
 
-Write path: writes land in a local dirty block store on NVMe. Flush uploads
-dirty chunks by hash, skipping ones the store already has, writes a new
-manifest, and transactionally advances the volume head. Flush is triggered at
-tool call boundaries and on sandbox pause.
+Write path: writes land in a local dirty block store on NVMe. Each write advances
+its chunks' generations and invalidates their staged hashes. The optional
+attachment background uploader selects chunks quiet for 250 ms, copies their
+bytes and generations under the dirty-store lock, and releases it before remote
+uploads. A completed hash is retained only if its generation is still current.
+Overwritten uploads are unreferenced objects, never published disk contents.
+By default, at most 32 uploads run concurrently across background work and publication.
+
+At a tool boundary or sandbox pause, flush freezes the filesystem, waits for
+the active upload batch, and uploads generations without a current hash. It
+builds the manifest, advances the volume head through the existing fenced
+FoundationDB transaction under the writer lease, and thaws. A separate write
+barrier gives unmounted flushes the same point-in-time block snapshot. Dirty
+bytes stay on local disk until publication and remain in the attachment overlay
+until detach; a new attachment after a crash starts at the last published
+manifest. Failed uploads and rejected commits retain pending data for retry.
 
 Consistency: before a flush the guest agent runs sync and a filesystem
 freeze, so every manifest is a clean ext4 state. Even without that, a
@@ -339,8 +351,20 @@ rose from 15.30 s to 1,233.97 s, with 1,256.26 s of lock waiting. Following task
 must report installation time, total step-plus-flush time, upload amplification,
 and lock waiting alongside frozen time. Background
 mode must not regress total step-plus-flush time against background-off under
-the same workload and placement. This task changes instrumentation only; the
-current serial uploader and fenced commit remain the durability baseline.
+the same workload and placement. The instrumented serial uploader above is the
+historical durability and latency baseline.
+
+The [2026-09-15 generation-aware release measurements](volume-benchmarks.md#2026-09-15-generation-aware-background-uploads)
+meet the budget for the measured roughly 560 MiB installation workload on both
+clouds. Two samples per mode measured added server latency of 9.256–9.812 s
+without background staging and 0.958–1.209 s with it on AWS, below the 12 s
+up-to-1-GiB limit. Colocated GCP measured 8.571–8.881 s off and 1.063–1.496 s on,
+below its 90 s limit. Mean frozen time with staging was 0.970 s on AWS and
+1.089 s on GCP. Total step-plus-flush time improved in every paired sample:
+means fell from 21.044 to 16.526 s on AWS and 27.488 to 21.649 s on GCP. This
+meets the measured nonregression rule, with 1.094–1.101 and 1.114–1.130 upload
+amplification respectively. These eight trials do not establish p95 compliance
+or validate the smaller changed-data rows; the table remains a proposed budget.
 
 ## 8. Sandboxes
 

@@ -232,6 +232,7 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     assert!(stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE));
     assert!(stats.device_total.dirty_lock_wait > Duration::ZERO);
     assert!(stats.frozen > Duration::ZERO);
+    assert!(stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded);
     assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
     fixture.json(&fixture.node_a, &["detach", volume]);
     node_a.stopped();

@@ -21,6 +21,9 @@ pub struct FlushResult {
     pub freeze_wait: Duration,
     /// From successful freeze acquisition through successful thaw; zero without a mount.
     pub frozen: Duration,
+    /// Successful chunk PUTs completed after freeze acquisition, including
+    /// background requests that were already in flight. Zero without a mount.
+    pub frozen_chunks_uploaded: u64,
     pub uploads: UploadStats,
     pub device_total: UploadStats,
 }
@@ -65,6 +68,7 @@ impl VolumeWriter {
         let frozen = FrozenMount::freeze(mount).await?;
         let freeze_wait = start.elapsed();
         let frozen_start = Instant::now();
+        let frozen_before = self.device.upload_stats();
         let next = ManifestId::from_ulid(ulid::Ulid::generate());
         let previous = *head;
         let result = self
@@ -109,6 +113,11 @@ impl VolumeWriter {
             } else {
                 Duration::ZERO
             },
+            frozen_chunks_uploaded: if mount.is_some() {
+                device_total.chunks_uploaded - frozen_before.chunks_uploaded
+            } else {
+                0
+            },
             uploads: device_total.since(before),
             device_total,
         };
@@ -121,6 +130,7 @@ impl VolumeWriter {
             elapsed_seconds = result.elapsed.as_secs_f64(),
             freeze_wait_seconds = result.freeze_wait.as_secs_f64(),
             frozen_seconds = result.frozen.as_secs_f64(),
+            frozen_chunks_uploaded = result.frozen_chunks_uploaded,
             device_total = ?result.device_total,
             "volume flush complete"
         );
@@ -154,14 +164,16 @@ impl VolumeWriter {
         Ok(())
     }
 
-    /// Continuously pre-upload local changes. Dropping the handle stops it.
+    /// Continuously pre-upload chunks quiet for at least `interval`, sleeping
+    /// between passes to debounce active writes and failed requests. Dropping
+    /// the handle stops it.
     #[must_use]
     pub fn background(self: &Arc<Self>, interval: Duration) -> BackgroundUploader {
         let device = self.device.clone();
         BackgroundUploader(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
-                if let Err(error) = device.upload_dirty().await {
+                if let Err(error) = device.upload_settled(interval).await {
                     tracing::warn!(%error, "background upload failed; final flush will retry");
                 }
             }
