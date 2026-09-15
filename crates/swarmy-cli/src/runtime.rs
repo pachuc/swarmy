@@ -34,6 +34,9 @@ enum Command {
     },
     Run {
         prompt: String,
+        /// Base image in NAME:TAG form for this session's disk.
+        #[arg(long)]
+        image: Option<String>,
     },
     Chat {
         session_id: Option<ulid::Ulid>,
@@ -58,7 +61,7 @@ fn main() -> anyhow::Result<()> {
         match cli.command {
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
-            Command::Run { prompt } => session::run(prompt, cli.json).await,
+            Command::Run { prompt, image } => session::run(prompt, image, cli.json).await,
             Command::Chat { session_id } => {
                 anyhow::ensure!(
                     !cli.json,

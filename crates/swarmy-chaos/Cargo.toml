@@ -10,6 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-sandbox.workspace = true
+swarmy-volume.workspace = true
+object_store.workspace = true
 swarmy-config.workspace = true
 anyhow.workspace = true
 async-nats.workspace = true

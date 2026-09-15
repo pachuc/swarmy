@@ -1,0 +1,16 @@
+[package]
+name = "swarmy-tools"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+swarmy-core.workspace = true
+swarmy-harness.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true

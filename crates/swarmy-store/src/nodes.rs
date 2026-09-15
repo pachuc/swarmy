@@ -2,7 +2,7 @@ use crate::{Result, Store, check_limit, read, scan, write};
 use swarmy_core::{NodeId, NodeRecord, decode};
 
 impl Store {
-    fn node_key(&self, id: NodeId) -> Vec<u8> {
+    pub(crate) fn node_key(&self, id: NodeId) -> Vec<u8> {
         self.root
             .pack(&("node", id.as_ulid().to_bytes().as_slice()))
     }

@@ -90,3 +90,35 @@ capabilities, installing jq, recreating a volume from the final manifest,
 pause/resume, separate output streams and exit codes, descendant timeout, and
 SIGKILL during exec followed by re-registration and committed-head recovery.
 Cleanup guards stop containers and unmount after a test failure.
+
+## Bash calls from sessions
+
+Start a disk-backed session with `swarmy run --image base-ubuntu:TAG "PROMPT"`.
+The CLI pins the image manifest before waking the session. The worker records
+bash request events, asks the scheduler for a live sandbox node, and atomically
+stores tool jobs while releasing the session into `WaitingTools`. A recovery
+scan republishes pending jobs if a process dies before publishing to NATS.
+
+The node claims each call with a renewable 30-second lease. Calls sharing a
+session disk are serialized. Each attempt starts a runc sandbox on a private
+copy-on-write volume pointing at the last committed manifest. At completion the
+node stops guest processes, unmounts, and flushes that volume. One fenced store
+transaction advances the session volume, appends stdout, stderr, exit status,
+timeout status and manifest id, clears the claim, and makes the session Runnable
+when its last pending call finishes. The harness retains these fields in the
+conversation's tool result metadata.
+
+Private attempt volumes keep a flush that precedes a crash from advancing the
+session disk without its event. Retries start from the recorded manifest, even
+if the previous attempt uploaded a newer one. Expired calls can move to another
+live node once the old node's heartbeat is more than 30 seconds old. A fresh
+sandbox is created for every attempt in this slice; background guest processes
+do not survive tool boundaries. Attempt volume records and unreachable objects
+remain available for future garbage collection.
+
+Run `scripts/test-bash.sh` as the ordinary build user on a root-capable host.
+It starts the dev stack, builds the base image once, and runs gated acceptance
+tests with sudo: a successful bash turn, a kill after a file write with exactly
+one retry, and a seeded chaos run including swarmyd kills. Each scenario checks
+a second sandbox created from the final manifest. The tests skip without root
+or the required environment settings. The CI workflow does not need to change.

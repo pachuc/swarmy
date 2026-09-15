@@ -2741,13 +2741,16 @@ dependencies = [
  "foundationdb",
  "futures",
  "jiff",
+ "object_store",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "serde_json",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-sandbox",
  "swarmy-store",
+ "swarmy-volume",
  "tempfile",
  "tokio",
  "tracing",
@@ -2924,12 +2927,24 @@ dependencies = [
  "jiff",
  "object_store",
  "serde",
+ "serde_json",
  "swarmy-config",
  "swarmy-core",
  "swarmy-volume",
  "thiserror 2.0.20",
  "tokio",
  "ulid",
+]
+
+[[package]]
+name = "swarmy-tools"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-harness",
 ]
 
 [[package]]
@@ -2974,6 +2989,7 @@ dependencies = [
  "swarmy-harness",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-tools",
  "tempfile",
  "tokio",
  "tracing",
@@ -2990,6 +3006,7 @@ dependencies = [
  "object_store",
  "serde",
  "serde_json",
+ "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
  "swarmy-sandbox",

@@ -10,6 +10,8 @@ build = "../swarmy-store/build.rs"
 workspace = true
 
 [dependencies]
+swarmy-bus.workspace = true
+ulid.workspace = true
 anyhow.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
@@ -26,4 +28,3 @@ jiff.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-ulid.workspace = true

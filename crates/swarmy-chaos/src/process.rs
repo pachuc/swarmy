@@ -8,6 +8,7 @@ pub enum Kind {
     Scheduler,
     Worker,
     Gateway,
+    Node,
 }
 
 impl Kind {
@@ -16,6 +17,7 @@ impl Kind {
             Self::Scheduler => "swarmy-scheduler",
             Self::Worker => "swarmy-worker",
             Self::Gateway => "swarmy-gateway",
+            Self::Node => "swarmyd",
         }
     }
 }
@@ -44,6 +46,7 @@ impl Process {
             .open(files.join(format!("{name}.log")))?;
         let mut command = Command::new(binaries.join(kind.binary()));
         command
+            .current_dir(files)
             .envs(environment.iter().cloned())
             .env_remove("SWARMY_WORKER_KILL_POINT")
             .stdin(Stdio::null())
@@ -81,9 +84,31 @@ impl Process {
         Ok(())
     }
 
+    pub fn kill_now(&mut self) {
+        let _ = self.child.start_kill();
+        for _ in 0..500 {
+            if self.child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     pub async fn stop(&mut self) -> Result<()> {
         if self.child.try_wait()?.is_none() {
-            self.child.kill().await?;
+            if self.kind == Kind::Node {
+                let status = std::process::Command::new("kill")
+                    .args([
+                        "-TERM",
+                        &self.child.id().context("node pid missing")?.to_string(),
+                    ])
+                    .status()?;
+                ensure!(status.success(), "node termination failed");
+                tokio::time::timeout(std::time::Duration::from_secs(45), self.child.wait())
+                    .await??;
+            } else {
+                self.child.kill().await?;
+            }
         }
         Ok(())
     }

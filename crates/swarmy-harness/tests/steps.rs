@@ -501,3 +501,34 @@ fn exhausted_inference_ends_the_turn_instead_of_retrying() {
     ];
     assert_eq!(step(&unrelated), Action::Wait);
 }
+
+#[test]
+fn disk_manifest_and_command_status_survive_folding_and_snapshot_replay() {
+    let result = swarmy_core::BashResult {
+        stdout: "written\n".into(),
+        stderr: "diagnostic\n".into(),
+        exit_code: 7,
+        timed_out: false,
+        manifest_id: swarmy_core::ManifestId::from_ulid(Ulid::generate()),
+    }
+    .tool_result();
+    let mut events = fixture();
+    if let Event::ToolCallCompleted { result: stored, .. } = &mut events[6] {
+        *stored = result.clone();
+    }
+    let Action::FoldResults(message) = step(&events) else {
+        panic!("expected fold");
+    };
+    assert_eq!(
+        message.parts[0],
+        result_part(ToolCallId("first".into()), result)
+    );
+    events.push(Event::MessageAppended {
+        seq: 8,
+        message: message.clone(),
+    });
+    let snapshot = Snapshot::default().replay(&events);
+    let bytes = swarmy_core::encode(&snapshot).unwrap();
+    let restored: Snapshot = swarmy_core::decode(&bytes).unwrap();
+    assert_eq!(restored.messages().last(), Some(&message));
+}

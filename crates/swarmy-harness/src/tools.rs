@@ -5,12 +5,15 @@ use serde_json::{Value, json};
 use swarmy_core::{Part, ToolCallId, ToolResult};
 use swarmy_llm::ToolDefinition;
 
-/// Worker-local tools expose stable descriptions and schemas for prompt assembly.
+/// Tools expose stable descriptions and schemas for prompt assembly.
 /// Only `execute` may perform effects or read the clock.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    fn sandbox_bound(&self) -> bool {
+        false
+    }
     fn execute(&self, arguments: Value) -> BoxFuture<'_, Result<String, String>>;
 }
 

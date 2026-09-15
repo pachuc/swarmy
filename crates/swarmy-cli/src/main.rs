@@ -45,7 +45,11 @@ enum Command {
     /// Print the version of this CLI
     Version,
     /// Start a conversation and stream its output until idle
-    Run { prompt: String },
+    Run {
+        prompt: String,
+        #[arg(long)]
+        image: Option<String>,
+    },
     /// Open a terminal conversation, or resume a session
     Chat { session_id: Option<ulid::Ulid> },
     /// Inspect stored sessions

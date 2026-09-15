@@ -180,6 +180,16 @@ impl RuncRuntime {
         Ok(handle)
     }
 
+    /// Clean up a previous attempt before reusing its agent identity.
+    /// # Errors
+    /// Returns stop, unmount, detach, or flush failures.
+    pub async fn discard_if_present(&self, id: AgentId) -> Result<()> {
+        if self.sandboxes.lock().await.contains_key(&id) {
+            self.remove(id).await?;
+        }
+        Ok(())
+    }
+
     /// Stop and flush every local sandbox before a graceful daemon exit.
     /// # Errors
     /// Returns the first cleanup error after attempting every sandbox.

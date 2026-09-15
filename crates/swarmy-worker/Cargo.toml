@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-tools.workspace = true
 swarmy-config.workspace = true
 anyhow.workspace = true
 blake3.workspace = true

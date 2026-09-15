@@ -8,6 +8,12 @@ use clap::Parser;
 pub struct Config {
     #[arg(long, default_value_t = 20)]
     pub sessions: usize,
+    /// Run bash disk checks and include swarmyd in the kill schedule (requires root).
+    #[arg(long)]
+    pub image: Option<String>,
+    /// Kill the node after the command writes its file, then require exactly one retry.
+    #[arg(long, requires = "image")]
+    pub kill_node_mid_command: bool,
     #[arg(long, default_value_t = 5)]
     pub steps: usize,
     #[arg(long, default_value_t = 15)]
@@ -56,6 +62,19 @@ impl Config {
             self.session_timeout_secs > 0,
             "session timeout must be positive"
         );
+        if self.image.is_some() {
+            ensure!(
+                std::process::Command::new("id").arg("-u").output()?.stdout == b"0\n",
+                "--image requires root; run the prebuilt binary with sudo"
+            );
+            ensure!(self.steps >= 2, "bash checks require at least two steps");
+        }
+        if self.kill_node_mid_command {
+            ensure!(
+                self.sessions == 1 && self.steps == 2 && self.kills == 0,
+                "deterministic node kill requires --sessions 1 --steps 2 --kills 0"
+            );
+        }
         self.sessions
             .checked_mul(self.steps)
             .and_then(|steps| steps.checked_add(self.kills))
@@ -81,6 +100,8 @@ impl Config {
             "swarmy-worker",
             "-p",
             "swarmy-gateway",
+            "-p",
+            "swarmyd",
         ]);
         if directory.file_name().is_some_and(|name| name == "release") {
             build.arg("--release");
