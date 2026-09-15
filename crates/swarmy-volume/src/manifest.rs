@@ -83,7 +83,11 @@ impl Manifest {
         usize::try_from(block).map_err(|_| VolumeError::InvalidBlock(block))
     }
 
-    async fn leaf(&self, store: &dyn ObjectStore, index: usize) -> Result<Vec<ContentHash>> {
+    pub(crate) async fn leaf(
+        &self,
+        store: &dyn ObjectStore,
+        index: usize,
+    ) -> Result<Vec<ContentHash>> {
         let hash = self.leaves[index];
         if hash == ContentHash::ZERO {
             return Ok(vec![ContentHash::ZERO; BLOCKS_PER_LEAF]);

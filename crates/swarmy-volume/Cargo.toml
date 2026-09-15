@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+# Only kernel.rs opts into unsafe code for Linux NBD ioctls.
 [lints]
 workspace = true
 
@@ -16,6 +17,13 @@ bytes.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-[dev-dependencies]
 tokio.workspace = true
+tracing.workspace = true
+fs2.workspace = true
+libc.workspace = true
+ulid.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true

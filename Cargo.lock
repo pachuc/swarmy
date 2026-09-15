@@ -2916,12 +2916,18 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "fs2",
  "futures",
+ "libc",
  "object_store",
  "serde",
  "swarmy-core",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]
