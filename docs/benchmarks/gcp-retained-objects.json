@@ -1,0 +1,30 @@
+[
+  {
+    "generation": "1789500200325198",
+    "hardDeleteTime": "2026-09-22T19:23:25.732000+00:00",
+    "name": "blobs/577c99d7767ffabb7cbb8a30460c6a2696bf0da14f0528a5cca80c1e5c2ac11a",
+    "size": "970",
+    "softDeleteTime": "2026-09-15T19:23:25.732000+00:00"
+  },
+  {
+    "generation": "1789500196236531",
+    "hardDeleteTime": "2026-09-22T19:23:25.671000+00:00",
+    "name": "blobs/689730149565cfacf9e5adf3bd48a8258351744e3d275a1f0df8a1356c74ddab",
+    "size": "970",
+    "softDeleteTime": "2026-09-15T19:23:25.671000+00:00"
+  },
+  {
+    "generation": "1789500107899372",
+    "hardDeleteTime": "2026-09-22T19:21:51.680000+00:00",
+    "name": "blobs/923b80a5adc7edd8806f81123c52460b4b52c2187f06b912f20ae8b946e6e948",
+    "size": "541",
+    "softDeleteTime": "2026-09-15T19:21:51.680000+00:00"
+  },
+  {
+    "generation": "1789500148670808",
+    "hardDeleteTime": "2026-09-22T19:22:32.263000+00:00",
+    "name": "blobs/960029c6e271e053fa0b6b483af4b6826ae8bdb347106e761fff87c2480fec24",
+    "size": "541",
+    "softDeleteTime": "2026-09-15T19:22:32.263000+00:00"
+  }
+]

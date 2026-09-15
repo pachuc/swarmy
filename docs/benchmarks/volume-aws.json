@@ -1,0 +1,209 @@
+{
+  "volume": [
+    {
+      "image": {
+        "chunks_stored": 464,
+        "chunks_total": 32768,
+        "chunks_uploaded": 423,
+        "event": "image_built",
+        "header": {
+          "chunk_size": 262144,
+          "root_hash": [
+            139,
+            6,
+            136,
+            94,
+            50,
+            91,
+            228,
+            229,
+            7,
+            254,
+            78,
+            13,
+            90,
+            100,
+            3,
+            34,
+            91,
+            193,
+            161,
+            218,
+            189,
+            187,
+            240,
+            61,
+            206,
+            66,
+            186,
+            58,
+            107,
+            183,
+            252,
+            56
+          ],
+          "size": 8589934592
+        },
+        "manifest_id": "01M2K7DJ1MHJ5SD8T1A5AFSFJN",
+        "name": "bench-base",
+        "size": 8589934592,
+        "tag": "v1"
+      }
+    },
+    {
+      "metric": "shell_cold",
+      "seconds": 3.3439895999999862,
+      "trial": 0
+    },
+    {
+      "metric": "shell_cold",
+      "seconds": 1.8909363620000477,
+      "trial": 1
+    },
+    {
+      "metric": "shell_cold",
+      "seconds": 1.805609380000078,
+      "trial": 2
+    },
+    {
+      "metric": "shell_warm",
+      "seconds": 0.7168006830002014,
+      "trial": 0
+    },
+    {
+      "metric": "shell_warm",
+      "seconds": 0.7333522779999839,
+      "trial": 1
+    },
+    {
+      "metric": "shell_warm",
+      "seconds": 0.7148752919999879,
+      "trial": 2
+    },
+    {
+      "metric": "flush_build_essential",
+      "seconds": 147.4689755710001,
+      "manifest": "01M2K7FAVQM6BE60PTV8RMHWNW"
+    },
+    {
+      "metric": "sequential_cold",
+      "seconds": 6.027135594999891,
+      "bytes": 134217728
+    },
+    {
+      "metric": "sequential_warm",
+      "seconds": 0.2643328459998884,
+      "bytes": 134217728
+    }
+  ],
+  "chunk_reads": [
+    {
+      "bytes": 262144,
+      "sample": 0,
+      "seconds": 0.038004129
+    },
+    {
+      "bytes": 262144,
+      "sample": 1,
+      "seconds": 0.032674825
+    },
+    {
+      "bytes": 262144,
+      "sample": 2,
+      "seconds": 0.026381761
+    },
+    {
+      "bytes": 262144,
+      "sample": 3,
+      "seconds": 0.017963463
+    },
+    {
+      "bytes": 262144,
+      "sample": 4,
+      "seconds": 0.020653859
+    },
+    {
+      "bytes": 262144,
+      "sample": 5,
+      "seconds": 0.025210337
+    },
+    {
+      "bytes": 262144,
+      "sample": 6,
+      "seconds": 0.029363921
+    },
+    {
+      "bytes": 262144,
+      "sample": 7,
+      "seconds": 0.021376387
+    },
+    {
+      "bytes": 262144,
+      "sample": 8,
+      "seconds": 0.033646807
+    },
+    {
+      "bytes": 262144,
+      "sample": 9,
+      "seconds": 0.030337367
+    }
+  ],
+  "root_tests": [
+    {
+      "package": "swarmy-volume",
+      "target": "swarmy_volume",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-volume",
+      "target": "volume",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-volume",
+      "target": "image",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-volume",
+      "target": "device",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-cli",
+      "target": "image",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-volume",
+      "target": "nbd",
+      "exit": 0
+    },
+    {
+      "package": "swarmy-cli",
+      "target": "vol",
+      "exit": 0
+    },
+    {
+      "package": "swarmyd",
+      "target": "node",
+      "exit": 0
+    }
+  ],
+  "cache_tests": [
+    {
+      "target": "nbd",
+      "exit": 0
+    },
+    {
+      "target": "vol",
+      "exit": 0
+    },
+    {
+      "target": "node",
+      "exit": 0
+    }
+  ],
+  "bash_test_exit": 0,
+  "volume_exit": 0
+}
