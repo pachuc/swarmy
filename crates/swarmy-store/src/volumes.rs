@@ -2,10 +2,11 @@
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    CHUNK_SIZE, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId, VolumeRecord,
+    CHUNK_SIZE, ImageRecord, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
+    VolumeRecord,
 };
 
-use crate::{Result, Store, StoreError, read, write};
+use crate::{Result, Store, StoreError, read, scan, write};
 
 impl Store {
     /// Register an immutable header after its objects have been uploaded.
@@ -111,6 +112,36 @@ impl Store {
     pub async fn get_image(&self, name: &str, tag: &ImageTag) -> Result<Option<ManifestId>> {
         self.transaction(|trx| async move { read(&trx, &self.image_key(name, tag)).await })
             .await
+    }
+
+    /// List image registrations in name/tag order with an exclusive cursor.
+    /// # Errors
+    /// Rejects invalid limits, malformed records, and transaction failures.
+    pub async fn list_images(
+        &self,
+        after: Option<(&str, &ImageTag)>,
+        limit: usize,
+    ) -> Result<Vec<ImageRecord>> {
+        self.transaction(|trx| async move {
+            let space = self.root.subspace(&("image",));
+            let (mut begin, end) = space.range();
+            if let Some((name, tag)) = after {
+                begin = self.image_key(name, tag);
+                begin.push(0);
+            }
+            let mut images = Vec::new();
+            for (key, value) in scan(&trx, (begin, end), limit).await? {
+                let (name, tag): (String, String) =
+                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                images.push(ImageRecord {
+                    name,
+                    tag: ImageTag(tag),
+                    manifest_id: swarmy_core::decode(&value)?,
+                });
+            }
+            Ok(images)
+        })
+        .await
     }
 
     /// Acquire only when no writer exists or the previous writer has expired.

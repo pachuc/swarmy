@@ -1,5 +1,6 @@
 mod dev;
 mod doctor;
+mod image_command;
 mod session_command;
 mod tools;
 
@@ -23,6 +24,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build and inspect base filesystem images
+    Image {
+        #[command(subcommand)]
+        command: image_command::Command,
+    },
     /// Start and operate the local development system
     Dev {
         #[command(subcommand)]
@@ -78,7 +84,10 @@ fn main() -> anyhow::Result<()> {
     }
     if matches!(
         cli.command,
-        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. }
+        Command::Run { .. }
+            | Command::Session { .. }
+            | Command::Chat { .. }
+            | Command::Image { .. }
     ) {
         use std::os::unix::process::CommandExt;
         let runtime = std::env::current_exe()?.with_file_name("swarmy-session");
@@ -95,7 +104,10 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Run { .. } | Command::Session { .. } | Command::Chat { .. } => unreachable!(),
+        Command::Run { .. }
+        | Command::Session { .. }
+        | Command::Chat { .. }
+        | Command::Image { .. } => unreachable!(),
         Command::Doctor => {
             if !doctor::run(cli.json).await? {
                 std::process::exit(1);

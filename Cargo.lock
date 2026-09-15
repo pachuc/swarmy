@@ -2768,6 +2768,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "libloading",
+ "object_store",
  "portable-pty",
  "ratatui",
  "rustix",
@@ -2778,6 +2779,7 @@ dependencies = [
  "swarmy-core",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-volume",
  "tempfile",
  "tokio",
  "tracing-subscriber",
@@ -2920,8 +2922,11 @@ dependencies = [
  "object_store",
  "serde",
  "swarmy-core",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -1,6 +1,8 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
 mod chat;
 mod conversation;
+mod image;
+mod image_command;
 mod session;
 mod session_command;
 
@@ -17,6 +19,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build and inspect base filesystem images
+    Image {
+        #[command(subcommand)]
+        command: image_command::Command,
+    },
     Run {
         prompt: String,
     },
@@ -41,6 +48,7 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Image { command } => image::run(command, cli.json).await,
             Command::Run { prompt } => session::run(prompt, cli.json).await,
             Command::Chat { session_id } => {
                 anyhow::ensure!(
