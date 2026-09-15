@@ -1,0 +1,380 @@
+{
+  "version": 1,
+  "design": {
+    "title": "swarmy architecture",
+    "description": "Goal 1 as built: stateless leased services around FoundationDB, NATS JetStream, and object storage, with ChatGPT subscription inference. Kill any process at any moment and every session still finishes."
+  },
+  "containers": [
+    {
+      "id": "bus",
+      "label": "Messaging",
+      "description": "NATS carries work between services and live output to observers. It never holds the truth about a session."
+    },
+    {
+      "id": "control",
+      "label": "Control plane",
+      "description": "Stateless processes. Any number of each can run, and any of them can be killed and restarted at any time."
+    },
+    {
+      "id": "state",
+      "label": "Durable state",
+      "description": "The truth about every session. Services hold nothing between steps."
+    }
+  ],
+  "nodes": [
+    {
+      "id": "auth",
+      "kind": "storage",
+      "label": "Credential file",
+      "description": "The Codex-compatible auth.json holding the ChatGPT id, access, and refresh tokens. Refreshes are serialized per account and written atomically with owner-only permissions.",
+      "tags": [
+        "crates/swarmy-llm"
+      ]
+    },
+    {
+      "id": "chaos",
+      "kind": "client",
+      "label": "swarmy-chaos",
+      "description": "The slice 1 acceptance program: starts schedulers, workers, and gateways, drives many sessions concurrently, kills random processes, and checks every log for exactly one request per step and the expected final answer.",
+      "tags": [
+        "crates/swarmy-chaos"
+      ]
+    },
+    {
+      "id": "chatgpt",
+      "kind": "external",
+      "label": "ChatGPT backend",
+      "description": "The Codex backend's Responses endpoint, called with a subscription access token and account id and answered as a server-sent event stream. The fake provider stands in for it in tests."
+    },
+    {
+      "id": "cli",
+      "kind": "client",
+      "label": "swarmy CLI",
+      "description": "swarmy run creates a session, appends the prompt, wakes it through the scheduler, and streams live output until the session is idle. swarmy session show and list read the durable log. swarmy auth login and import manage ChatGPT credentials.",
+      "tags": [
+        "crates/swarmy-cli"
+      ]
+    },
+    {
+      "id": "fdb",
+      "kind": "database",
+      "label": "FoundationDB",
+      "description": "The source of truth: session records, append-only event logs with contiguous sequence numbers, leases with an expiry index, the runnable index, idempotency records, in-flight inference records, and snapshot pointers. Values above 80 KiB are replaced by blob pointers.",
+      "tags": [
+        "crates/swarmy-store"
+      ],
+      "container": "state"
+    },
+    {
+      "id": "gateway",
+      "kind": "service",
+      "label": "Inference gateway",
+      "description": "Consumes inference jobs for one provider class. Claims the request's idempotency record, streams the model response, publishes every delta live, then commits the completion, clears the in-flight record, and sets the session Runnable in one transaction before acknowledging.",
+      "tags": [
+        "crates/swarmy-gateway",
+        "crates/swarmy-llm"
+      ],
+      "container": "control"
+    },
+    {
+      "id": "nats",
+      "kind": "queue",
+      "label": "NATS JetStream",
+      "description": "Four work queue streams (inference jobs, runnable nudges, remote tools, node tools) as durable pull consumers whose acknowledgement deadline acts as a delivery lease, plus core NATS subjects for live session events, model deltas, and the scheduler wake request-reply.",
+      "tags": [
+        "crates/swarmy-bus"
+      ],
+      "container": "bus"
+    },
+    {
+      "id": "objects",
+      "kind": "storage",
+      "label": "Object storage",
+      "description": "S3-compatible store for harness snapshots, large events, and large model responses, addressed by blake3 content hash. SeaweedFS in local development.",
+      "container": "state"
+    },
+    {
+      "id": "scheduler",
+      "kind": "service",
+      "label": "Scheduler",
+      "description": "Owns a set of the 256 runnable partitions. Scans the runnable index and publishes a nudge per due session, resending after an interval. Reaps expired leases back to Runnable. Serves wake requests over NATS request-reply.",
+      "tags": [
+        "crates/swarmy-scheduler"
+      ],
+      "container": "control"
+    },
+    {
+      "id": "worker",
+      "kind": "service",
+      "label": "Step worker",
+      "description": "Consumes nudges for its partitions, claims the session lease, loads the harness snapshot and event tail, runs one harness step, executes local tools such as get_time, and either submits an inference job or ends the turn. Renews the lease while working and holds nothing between steps.",
+      "tags": [
+        "crates/swarmy-worker",
+        "crates/swarmy-harness"
+      ],
+      "container": "control"
+    }
+  ],
+  "edges": [
+    {
+      "id": "chaos-kill",
+      "from": "chaos",
+      "to": "control",
+      "kind": "dependency",
+      "label": "Starts, kills, restarts processes"
+    },
+    {
+      "id": "chaos-store",
+      "from": "chaos",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Create sessions, verify logs"
+    },
+    {
+      "id": "chaos-wake",
+      "from": "chaos",
+      "to": "nats",
+      "kind": "sync",
+      "label": "Wake requests"
+    },
+    {
+      "id": "cli-auth",
+      "from": "cli",
+      "to": "auth",
+      "kind": "data",
+      "label": "auth login and import"
+    },
+    {
+      "id": "cli-live",
+      "from": "nats",
+      "to": "cli",
+      "kind": "async",
+      "label": "Live events and model deltas"
+    },
+    {
+      "id": "cli-store",
+      "from": "cli",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Create session, append prompt, read logs"
+    },
+    {
+      "id": "cli-wake",
+      "from": "cli",
+      "to": "nats",
+      "kind": "sync",
+      "label": "Wake request"
+    },
+    {
+      "id": "gateway-auth",
+      "from": "gateway",
+      "to": "auth",
+      "kind": "data",
+      "label": "Load and refresh tokens"
+    },
+    {
+      "id": "gateway-blobs",
+      "from": "gateway",
+      "to": "objects",
+      "kind": "data",
+      "label": "Large responses"
+    },
+    {
+      "id": "gateway-jobs",
+      "from": "nats",
+      "to": "gateway",
+      "kind": "async",
+      "label": "Inference jobs"
+    },
+    {
+      "id": "gateway-live",
+      "from": "gateway",
+      "to": "nats",
+      "kind": "async",
+      "label": "Model output deltas"
+    },
+    {
+      "id": "gateway-model",
+      "from": "gateway",
+      "to": "chatgpt",
+      "kind": "sync",
+      "label": "Responses API over SSE"
+    },
+    {
+      "id": "gateway-store",
+      "from": "gateway",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Claim idempotency, commit result"
+    },
+    {
+      "id": "sched-nudge",
+      "from": "scheduler",
+      "to": "nats",
+      "kind": "async",
+      "label": "Session nudges per partition"
+    },
+    {
+      "id": "sched-store",
+      "from": "scheduler",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Scan runnable, reap leases, wake sessions"
+    },
+    {
+      "id": "wake-serve",
+      "from": "nats",
+      "to": "scheduler",
+      "kind": "sync",
+      "label": "Wake requests and replies"
+    },
+    {
+      "id": "worker-blobs",
+      "from": "worker",
+      "to": "objects",
+      "kind": "data",
+      "label": "Harness snapshots and large payloads"
+    },
+    {
+      "id": "worker-jobs",
+      "from": "worker",
+      "to": "nats",
+      "kind": "async",
+      "label": "Inference jobs"
+    },
+    {
+      "id": "worker-live",
+      "from": "worker",
+      "to": "nats",
+      "kind": "async",
+      "label": "Live session events"
+    },
+    {
+      "id": "worker-nudge",
+      "from": "nats",
+      "to": "worker",
+      "kind": "async",
+      "label": "Session nudges"
+    },
+    {
+      "id": "worker-store",
+      "from": "worker",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Leases, events, snapshots, in-flight records"
+    }
+  ],
+  "notes": [
+    {
+      "id": "chaos-proof",
+      "text": "Twenty sessions, five steps, fifteen kills: passes with provider calls within steps plus gateway kills.",
+      "on": "chaos"
+    },
+    {
+      "id": "gateway-idempotent",
+      "text": "Killed mid-stream, the job is redelivered; the idempotency record makes the retry cost at most one extra provider call, never a lost session.",
+      "on": "gateway"
+    },
+    {
+      "id": "nats-lease",
+      "text": "At-least-once delivery only. Every consumer re-checks FoundationDB before acting.",
+      "on": "nats"
+    },
+    {
+      "id": "objects-dev",
+      "text": "Local development runs SeaweedFS from scripts/dev-stack.sh.",
+      "on": "objects"
+    },
+    {
+      "id": "worker-harness",
+      "text": "One step per claim: BuildInference, DispatchTools, FoldResults, or EndTurn. Killed mid-step, the lease expires and another worker replays the same step safely.",
+      "on": "worker"
+    }
+  ],
+  "layout": {
+    "auth": {
+      "x": 1500.0,
+      "y": 700.0
+    },
+    "bus": {
+      "x": 348.0,
+      "y": 148.0,
+      "size": {
+        "width": 304.0,
+        "height": 228.0
+      }
+    },
+    "chaos": {
+      "x": 60.0,
+      "y": 480.0
+    },
+    "chaos-proof": {
+      "x": 60.0,
+      "y": 560.0
+    },
+    "chatgpt": {
+      "x": 1500.0,
+      "y": 560.0
+    },
+    "cli": {
+      "x": 60.0,
+      "y": 200.0
+    },
+    "control": {
+      "x": 708.0,
+      "y": 28.0,
+      "size": {
+        "width": 304.0,
+        "height": 600.0
+      }
+    },
+    "fdb": {
+      "x": 1150.0,
+      "y": 200.0
+    },
+    "gateway": {
+      "x": 740.0,
+      "y": 500.0
+    },
+    "gateway-idempotent": {
+      "x": 980.0,
+      "y": 700.0
+    },
+    "nats": {
+      "x": 380.0,
+      "y": 180.0
+    },
+    "nats-lease": {
+      "x": 380.0,
+      "y": 260.0
+    },
+    "objects": {
+      "x": 1150.0,
+      "y": 400.0
+    },
+    "objects-dev": {
+      "x": 1150.0,
+      "y": 300.0
+    },
+    "scheduler": {
+      "x": 740.0,
+      "y": 60.0
+    },
+    "state": {
+      "x": 1118.0,
+      "y": 168.0,
+      "size": {
+        "width": 304.0,
+        "height": 328.0
+      }
+    },
+    "worker": {
+      "x": 740.0,
+      "y": 260.0
+    },
+    "worker-harness": {
+      "x": 708.0,
+      "y": 700.0
+    }
+  }
+}
