@@ -12,6 +12,7 @@ mod inference;
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 mod leases;
+mod nodes;
 mod volumes;
 
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};

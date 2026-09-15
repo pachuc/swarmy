@@ -26,3 +26,11 @@ pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transitio
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
 pub use volume::{CHUNK_SIZE, ContentHash, ImageRecord, ManifestHeader, VolumeRecord};
+
+mod node;
+pub use node::{NodeCapacity, NodeRecord, NodeRole};
+mod sandbox;
+pub use sandbox::{
+    BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
+    SandboxSpec,
+};

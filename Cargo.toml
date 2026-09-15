@@ -63,6 +63,7 @@ swarmy-config = { path = "crates/swarmy-config" }
 swarmy-core = { path = "crates/swarmy-core" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-llm = { path = "crates/swarmy-llm" }
+swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }
 swarmy-store = { path = "crates/swarmy-store" }
 swarmy-harness = { path = "crates/swarmy-harness" }
