@@ -7,8 +7,10 @@ between writers of the same content. Errors other than NotFound are propagated.
 `get_chunk` checks the decoded size and content hash.
 
 Chunks use `chunks/{hash[0:2]}/{hash}` with lowercase hexadecimal hashes.
-Payloads use `swarmy_core::encode` and `decode`, including chunk bytes, so every
-stored value carries the storage version. The all-zero 32-byte hash is reserved:
+Chunk objects hold the raw block bytes; the hash in the object name verifies
+them, and raw objects can be read by range and by other tools. Manifest objects
+use `swarmy_core::encode` and `decode`, so they carry the storage version. The
+all-zero 32-byte hash is reserved:
 zero blocks are never uploaded, and reads synthesize zeros without storage I/O.
 A nonzero block whose hash equals the sentinel is rejected.
 

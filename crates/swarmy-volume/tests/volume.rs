@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures::TryStreamExt;
 use object_store::{ObjectStore, memory::InMemory, path::Path};
-use swarmy_core::{CHUNK_SIZE, ContentHash, ManifestHeader, STORAGE_VERSION, encode};
+use swarmy_core::{CHUNK_SIZE, ContentHash, ManifestHeader};
 use swarmy_volume::{BLOCKS_PER_LEAF, ChunkStore, Manifest, ManifestBuilder, VolumeError};
 
 const DISK_SIZE: u64 = 32 * 1024 * 1024 * 1024;
@@ -46,7 +46,8 @@ async fn duplicate_chunk_does_not_upload_and_zero_chunks_need_no_object() {
         .bytes()
         .await
         .unwrap();
-    assert_eq!(stored[0], STORAGE_VERSION);
+    // Chunk objects are the raw block bytes, verified by the hash in their name.
+    assert_eq!(stored.as_ref(), data.as_slice());
 }
 
 #[tokio::test]
@@ -226,10 +227,7 @@ async fn invalid_dimensions_missing_objects_and_corruption_are_rejected() {
         .unwrap();
     let path = objects(&memory).await.pop().unwrap().location;
     memory
-        .put(
-            &path,
-            encode(&vec![4_u8; CHUNK_SIZE as usize]).unwrap().into(),
-        )
+        .put(&path, vec![4_u8; CHUNK_SIZE as usize].into())
         .await
         .unwrap();
     assert!(matches!(

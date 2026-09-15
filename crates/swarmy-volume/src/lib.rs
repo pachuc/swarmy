@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use object_store::{ObjectStore, PutMode, path::Path};
-use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError, decode, encode};
+use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError};
 
 pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
@@ -62,14 +62,16 @@ impl ChunkStore {
         }
         let hash = content_hash(bytes)?;
         let path = chunk_path(hash);
-        // Encoding is deferred until HEAD confirms an upload is needed.
         if exists(&*self.inner, &path).await? {
             return Ok(PutChunkResult {
                 hash,
                 uploaded: false,
             });
         }
-        let uploaded = create(&*self.inner, &path, encode(bytes)?).await?;
+        // Chunks are stored as raw block bytes: the content hash in the object
+        // name already verifies them, and raw objects can be read by range and
+        // by other tools without knowing our encoding.
+        let uploaded = create(&*self.inner, &path, bytes.to_vec()).await?;
         Ok(PutChunkResult { hash, uploaded })
     }
 
@@ -81,11 +83,10 @@ impl ChunkStore {
             return Ok(Bytes::from(vec![0; CHUNK_SIZE as usize]));
         }
         let bytes = self.inner.get(&chunk_path(hash)).await?.bytes().await?;
-        let decoded: Vec<u8> = decode(&bytes)?;
-        if decoded.len() != CHUNK_SIZE as usize || content_hash(&decoded)? != hash {
+        if bytes.len() != CHUNK_SIZE as usize || content_hash(&bytes)? != hash {
             return Err(VolumeError::Corrupt);
         }
-        Ok(decoded.into())
+        Ok(bytes)
     }
 }
 
