@@ -40,6 +40,14 @@ pub struct VolumeRecord {
     pub parent: Option<VolumeId>,
 }
 
+/// A registered name and tag pointing at an immutable manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRecord {
+    pub name: String,
+    pub tag: crate::ImageTag,
+    pub manifest_id: ManifestId,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

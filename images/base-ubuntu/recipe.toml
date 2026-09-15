@@ -1,0 +1,8 @@
+disk_size = 8589934592
+source_date_epoch = 1714003200
+
+[source]
+kind = "debootstrap"
+suite = "noble"
+mirror = "http://archive.ubuntu.com/ubuntu"
+packages = ["bash", "coreutils", "git", "curl", "ca-certificates", "python3", "build-essential"]

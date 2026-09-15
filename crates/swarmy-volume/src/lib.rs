@@ -1,4 +1,5 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
+pub mod image;
 mod manifest;
 
 use std::sync::Arc;
