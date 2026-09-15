@@ -1,5 +1,7 @@
 [package]
+build = "../swarmy-store/build.rs"
 name = "swarmy-cli"
+default-run = "swarmy"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -12,7 +14,15 @@ workspace = true
 name = "swarmy"
 path = "src/main.rs"
 
+[[bin]]
+name = "swarmy-session"
+path = "src/runtime.rs"
+
+# Doctor alone loads the FoundationDB library through a small, documented FFI boundary.
 [dependencies]
+libloading.workspace = true
+url.workspace = true
+serde.workspace = true
 fs2.workspace = true
 rustix.workspace = true
 swarmy-config.workspace = true

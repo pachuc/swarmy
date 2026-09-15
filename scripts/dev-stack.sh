@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Debian installs fdbserver outside the PATH used by some unprivileged shells.
-export PATH="$PATH:/usr/sbin"
+export PATH="$PATH:${HOME:?HOME must be set}/.local/bin:/usr/sbin"
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 dev_dir="$repo_dir/.dev"
 services=(fdb nats seaweed)

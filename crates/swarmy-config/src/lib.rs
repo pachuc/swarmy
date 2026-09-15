@@ -131,22 +131,7 @@ impl Settings {
     /// # Errors
     /// Fails for invalid settings or filesystem errors.
     pub fn load_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
-        let local = cwd
-            .ancestors()
-            .map(|dir| dir.join(".swarmy/config.toml"))
-            .find(|path| path.is_file());
-        let user = environment
-            .get("XDG_CONFIG_HOME")
-            .filter(|value| Path::new(value).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| {
-                environment
-                    .get("HOME")
-                    .map(|home| PathBuf::from(home).join(".config"))
-            })
-            .map(|dir| dir.join("swarmy/config.toml"))
-            .filter(|path| path.is_file());
-        let path = local.or(user);
+        let path = Self::discover_from(cwd, environment);
         let root = path.as_ref().and_then(|path| path.parent()).map_or_else(
             || cwd.to_owned(),
             |dir| {
@@ -179,6 +164,28 @@ impl Settings {
             root,
             settings,
         })
+    }
+
+    /// Discover the configuration path without parsing its contents.
+    /// This also lets diagnostics identify a file that cannot be loaded.
+    #[must_use]
+    pub fn discover_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Option<PathBuf> {
+        let local = cwd
+            .ancestors()
+            .map(|dir| dir.join(".swarmy/config.toml"))
+            .find(|path| path.is_file());
+        let user = environment
+            .get("XDG_CONFIG_HOME")
+            .filter(|value| Path::new(value).is_absolute())
+            .map(PathBuf::from)
+            .or_else(|| {
+                environment
+                    .get("HOME")
+                    .map(|home| PathBuf::from(home).join(".config"))
+            })
+            .map(|dir| dir.join("swarmy/config.toml"))
+            .filter(|path| path.is_file());
+        local.or(user)
     }
 
     /// Read a file without environment overrides or path resolution.
