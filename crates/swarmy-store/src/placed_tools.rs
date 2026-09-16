@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    BashResult, Event, ImageRecord, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId,
-    SessionState, ToolJob, VolumeId, VolumeRecord,
+    Event, ImageRecord, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState,
+    ToolJob, ToolResult, VolumeId, VolumeRecord,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -197,7 +197,7 @@ impl Store {
         &self,
         claim: &PlacedToolClaim,
         expected_head: u64,
-        result: &BashResult,
+        result: &ToolResult,
     ) -> Result<()> {
         let job = &claim.job;
         let head = expected_head
@@ -208,7 +208,7 @@ impl Store {
                 seq: head,
                 request_id: job.request_id,
                 call_id: job.call_id.clone(),
-                result: result.tool_result(),
+                result: result.clone(),
             })
             .await?;
         self.transaction(|trx| {

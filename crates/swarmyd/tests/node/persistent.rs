@@ -12,6 +12,26 @@ async fn dispatch(
     agent: AgentId,
     command: &str,
 ) -> ToolJob {
+    dispatch_arguments(
+        store,
+        bus,
+        node,
+        agent,
+        swarmy_core::SandboxArguments::Bash(BashArguments {
+            command: command.into(),
+            timeout_ms: 120_000,
+        }),
+    )
+    .await
+}
+
+async fn dispatch_arguments(
+    store: &Store,
+    bus: &Bus,
+    node: NodeId,
+    agent: AgentId,
+    arguments: swarmy_core::SandboxArguments,
+) -> ToolJob {
     let session = SessionRecord {
         session_id: SessionId::from_ulid(ulid::Ulid::generate()),
         agent_id: agent,
@@ -45,12 +65,9 @@ async fn dispatch(
     let job = ToolJob {
         session_id: id,
         request_id: RequestId::for_step(id, 1),
-        call_id: ToolCallId("bash".into()),
+        call_id: ToolCallId(arguments.name().into()),
         step: 1,
-        arguments: BashArguments {
-            command: command.into(),
-            timeout_ms: 120_000,
-        },
+        arguments,
     };
     store
         .append_events_leased(
@@ -61,8 +78,8 @@ async fn dispatch(
                 request_id: job.request_id,
                 call: ToolCallRecord {
                     call_id: job.call_id.clone(),
-                    tool: "bash".into(),
-                    arguments: serde_json::to_value(&job.arguments).unwrap(),
+                    tool: job.arguments.name().into(),
+                    arguments: job.arguments.parameters(),
                     result: None,
                 },
             }],
@@ -180,6 +197,7 @@ async fn start(settings: swarmy_config::Settings, store: &Store, base: ManifestI
 
 pub async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
     let (mut node, bus) = start(settings, store, base).await;
+    managed_tools(&node, store, &bus).await;
     let agent = AgentId::from_ulid(ulid::Ulid::generate());
     let volume = VolumeId::from_ulid(agent.as_ulid());
     let job = dispatch(
@@ -432,4 +450,202 @@ async fn written(node: &Node, agent: AgentId, name: &str) {
     })
     .await
     .expect("command did not reach its file write");
+}
+
+async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        while !store.tool_completed(job.request_id).await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("tool did not complete");
+    let events = store.read_events(job.session_id, 1, 10).await.unwrap();
+    let Event::ToolCallCompleted { result, .. } = &events[0] else {
+        panic!("missing result");
+    };
+    result.clone()
+}
+
+async fn invoke(
+    node: &Node,
+    store: &Store,
+    bus: &Bus,
+    agent: AgentId,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let job = dispatch_arguments(
+        store,
+        bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::parse(name, arguments).unwrap(),
+    )
+    .await;
+    let ToolResult::Completed { output, .. } = tool_result(store, &job).await else {
+        panic!("{name} failed");
+    };
+    serde_json::from_str(&output).unwrap()
+}
+
+async fn managed_tools(node: &Node, store: &Store, bus: &Bus) {
+    use serde_json::json;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let started = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        json!({"command": format!("exec python3 -u -m http.server {port} --bind 127.0.0.1")}),
+    )
+    .await;
+    let id = started["process_id"].clone();
+    assert!(
+        started["log_path"]
+            .as_str()
+            .unwrap()
+            .starts_with("/var/lib/swarmy/processes/")
+    );
+    let fetched = invoke(node, store, bus, agent, "bash", json!({"command":format!("curl --retry 10 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:{port}/ >/dev/null")})).await;
+    assert_eq!(fetched["exit_code"], 0);
+    let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        store.get_by_agent(agent).await.unwrap().unwrap().epoch,
+        placement.epoch,
+        "managed processes prevent idle eviction"
+    );
+    let listed = invoke(node, store, bus, agent, "process_list", json!({})).await;
+    assert_eq!(listed[0]["process_id"], id);
+    assert_eq!(listed[0]["status"], "running");
+    let log = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_log",
+        json!({"process_id":id}),
+    )
+    .await;
+    assert!(log["output"].as_str().unwrap().contains("GET /"));
+    let job = dispatch_arguments(
+        store,
+        bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::parse(
+            "bash",
+            json!({"command":"sleep 300 & wait", "timeout_ms":200}),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(tool_result(store, &job).await, ToolResult::Error { error } if error.contains("timed out"))
+    );
+    let fetched = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "bash",
+        json!({"command":format!("curl -fsS http://127.0.0.1:{port}/ >/dev/null")}),
+    )
+    .await;
+    assert_eq!(
+        fetched["exit_code"], 0,
+        "timeout must leave HTTP server alive"
+    );
+    check_log_and_checkpoint(node, store, bus, agent, &started).await;
+    stop_and_rebuild(node, store, bus, agent, id, port).await;
+}
+
+async fn check_log_and_checkpoint(
+    node: &Node,
+    store: &Store,
+    bus: &Bus,
+    agent: AgentId,
+    started: &serde_json::Value,
+) {
+    use serde_json::json;
+    let id = &started["process_id"];
+    let filled = invoke(node, store, bus, agent, "bash", json!({"command":format!("head -c 70000 /dev/zero | tr '\\0' x > {}", started["log_path"].as_str().unwrap())})).await;
+    assert_eq!(filled["exit_code"], 0);
+    let tail = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_log",
+        json!({"process_id":id}),
+    )
+    .await;
+    assert_eq!(tail["output"].as_str().unwrap().len(), 65536);
+    assert_eq!(tail["truncated"], true);
+    let snapshot = invoke(node, store, bus, agent, "checkpoint", json!({})).await;
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    assert_eq!(
+        snapshot["manifest_id"],
+        json!(
+            store
+                .get_volume(volume)
+                .await
+                .unwrap()
+                .unwrap()
+                .head_manifest
+        )
+    );
+}
+
+async fn stop_and_rebuild(
+    node: &Node,
+    store: &Store,
+    bus: &Bus,
+    agent: AgentId,
+    id: serde_json::Value,
+    port: u16,
+) {
+    use serde_json::json;
+    invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_stop",
+        json!({"process_id":id}),
+    )
+    .await;
+    let listed = invoke(node, store, bus, agent, "process_list", json!({})).await;
+    assert_eq!(listed[0]["status"], "exited");
+    let fetched = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "bash",
+        json!({"command":format!("curl --max-time 1 -fsS http://127.0.0.1:{port}/ >/dev/null")}),
+    )
+    .await;
+    assert_ne!(fetched["exit_code"], 0);
+    eprintln!(
+        "managed tools passed: background HTTP, later bash, list, logs, idle protection, isolated timeout, checkpoint head, and stop"
+    );
+    evicted(store, agent).await;
+    let job = dispatch_arguments(
+        store,
+        bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::parse("process_log", json!({"process_id":id})).unwrap(),
+    )
+    .await;
+    assert!(
+        matches!(tool_result(store, &job).await, ToolResult::Error { error } if error.contains("sandbox restarted"))
+    );
+    evicted(store, agent).await;
 }

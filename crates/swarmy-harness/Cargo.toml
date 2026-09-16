@@ -17,5 +17,6 @@ swarmy-core.workspace = true
 swarmy-llm.workspace = true
 
 [dev-dependencies]
+swarmy-tools.workspace = true
 tokio.workspace = true
 ulid.workspace = true

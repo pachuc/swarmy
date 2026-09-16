@@ -62,10 +62,10 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
             step,
             request_id: RequestId::for_step(id, step),
             call_id: ToolCallId(format!("bash-{step}")),
-            arguments: BashArguments {
+            arguments: swarmy_core::SandboxArguments::Bash(BashArguments {
                 command: "echo test".into(),
                 timeout_ms: 1000,
-            },
+            }),
         })
         .collect();
     let events: Vec<_> = jobs
@@ -76,7 +76,7 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
             call: ToolCallRecord {
                 call_id: job.call_id.clone(),
                 tool: "bash".into(),
-                arguments: serde_json::to_value(&job.arguments).unwrap(),
+                arguments: job.arguments.parameters(),
                 result: None,
             },
         })
@@ -86,7 +86,9 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
         .await
         .unwrap();
     let mut wrong = jobs.clone();
-    wrong[0].arguments.command = "different".into();
+    wrong[0].arguments =
+        swarmy_core::SandboxArguments::parse("bash", serde_json::json!({"command":"different"}))
+            .unwrap();
     assert!(store.dispatch_tool_jobs(id, &lease, &wrong).await.is_err());
     store.dispatch_tool_jobs(id, &lease, &jobs).await.unwrap();
     assert_eq!(
@@ -369,7 +371,7 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         manifest_id: image,
     };
     store
-        .complete_placed_tool(&claim, 2, &result)
+        .complete_placed_tool(&claim, 2, &result.tool_result())
         .await
         .unwrap();
     assert_eq!(store.list_volumes(None, 64).await.unwrap(), before);
@@ -388,7 +390,9 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         swarmy_core::PlacementChangeReason::Eviction
     );
     assert!(matches!(
-        store.complete_placed_tool(&claim, 3, &result).await,
+        store
+            .complete_placed_tool(&claim, 3, &result.tool_result())
+            .await,
         Err(StoreError::LeaseMismatch)
     ));
     assert!(matches!(
