@@ -2,13 +2,18 @@
   "version": 1,
   "design": {
     "title": "swarmy architecture",
-    "description": "Goal 1 as built: stateless leased services around FoundationDB, NATS JetStream, and object storage, with ChatGPT subscription inference. Kill any process at any moment and every session still finishes."
+    "description": "Swarmy control plane and persistent computer model. Placement leases and epochs fence one hosting node per agent; background upload and periodic snapshots establish disk durability. Node, snapshot, and collector flows describe the target for subsequent tasks."
   },
   "containers": [
     {
       "id": "bus",
       "label": "Messaging",
       "description": "NATS carries work between services and live output to observers. It never holds the truth about a session."
+    },
+    {
+      "id": "compute",
+      "label": "Agent computers",
+      "description": "Long-lived computers hosted under placement leases; local process state is lost on rebuild."
     },
     {
       "id": "control",
@@ -56,6 +61,13 @@
       ]
     },
     {
+      "id": "collector",
+      "kind": "service",
+      "label": "Garbage collector",
+      "description": "Planned collector: trace live heads, last ten snapshots, clones, images, and pinned checkpoints. Recheck references and coordinate with publication before deleting objects after a grace window.",
+      "container": "control"
+    },
+    {
       "id": "fdb",
       "kind": "database",
       "label": "FoundationDB",
@@ -87,11 +99,31 @@
       "container": "bus"
     },
     {
+      "id": "node",
+      "kind": "service",
+      "label": "Node agent (swarmyd)",
+      "description": "Hosts long-lived computers with registered capacity. Renews placement leases, fences tools by epoch, stages dirty chunks continuously, and checkpoints before eviction after thirty idle minutes.",
+      "container": "compute",
+      "tags": [
+        "crates/swarmyd"
+      ]
+    },
+    {
       "id": "objects",
       "kind": "storage",
       "label": "Object storage",
-      "description": "S3-compatible store for harness snapshots, large events, and large model responses, addressed by blake3 content hash. SeaweedFS in local development.",
+      "description": "Content-addressed volume chunks and manifests, retained disk snapshots, harness snapshots, and large event payloads. SeaweedFS in local development.",
       "container": "state"
+    },
+    {
+      "id": "placement",
+      "kind": "storage",
+      "label": "Placement record",
+      "description": "FoundationDB record per agent: node id, epoch, lease expiry, last change reason and time. Atomic capacity reservation and fenced takeover after expiry. Epoch counter survives release.",
+      "container": "state",
+      "tags": [
+        "crates/swarmy-store/src/placements.rs"
+      ]
     },
     {
       "id": "scheduler",
@@ -102,6 +134,13 @@
         "crates/swarmy-scheduler"
       ],
       "container": "control"
+    },
+    {
+      "id": "snapshot-loop",
+      "kind": "service",
+      "label": "Snapshot loop",
+      "description": "Planned node loop: publish a clean disk snapshot every ten minutes, keep the last ten, and support explicit checkpoint. Publication checks both placement epoch and writer lease.",
+      "container": "compute"
     },
     {
       "id": "worker",
@@ -166,6 +205,20 @@
       "label": "Wake request"
     },
     {
+      "id": "collector-objects",
+      "from": "collector",
+      "to": "objects",
+      "kind": "data",
+      "label": "Delete unreachable objects after grace window"
+    },
+    {
+      "id": "collector-roots",
+      "from": "collector",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Trace retained roots and coordinate deletion"
+    },
+    {
       "id": "gateway-auth",
       "from": "gateway",
       "to": "auth",
@@ -208,6 +261,41 @@
       "label": "Claim idempotency, commit result"
     },
     {
+      "id": "node-lease",
+      "from": "node",
+      "to": "placement",
+      "kind": "data",
+      "label": "Renew current epoch lease; release after eviction"
+    },
+    {
+      "id": "node-routing",
+      "from": "nats",
+      "to": "node",
+      "kind": "async",
+      "label": "Tool jobs routed by node and placement epoch"
+    },
+    {
+      "id": "node-snapshot",
+      "from": "node",
+      "to": "snapshot-loop",
+      "kind": "sync",
+      "label": "Periodic publication and explicit checkpoint"
+    },
+    {
+      "id": "node-upload",
+      "from": "node",
+      "to": "objects",
+      "kind": "data",
+      "label": "Continuously stage dirty chunks"
+    },
+    {
+      "id": "placement-store",
+      "from": "placement",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Transactional placement, node index, and capacity"
+    },
+    {
       "id": "sched-nudge",
       "from": "scheduler",
       "to": "nats",
@@ -215,11 +303,39 @@
       "label": "Session nudges per partition"
     },
     {
+      "id": "sched-placement",
+      "from": "scheduler",
+      "to": "placement",
+      "kind": "data",
+      "label": "Place or take over expired epoch"
+    },
+    {
       "id": "sched-store",
       "from": "scheduler",
       "to": "fdb",
       "kind": "data",
       "label": "Scan runnable, reap leases, wake sessions"
+    },
+    {
+      "id": "snapshot-objects",
+      "from": "snapshot-loop",
+      "to": "objects",
+      "kind": "data",
+      "label": "Upload remaining chunks and manifest"
+    },
+    {
+      "id": "snapshot-placement",
+      "from": "snapshot-loop",
+      "to": "placement",
+      "kind": "data",
+      "label": "Fence publication with current lease and epoch"
+    },
+    {
+      "id": "snapshot-store",
+      "from": "snapshot-loop",
+      "to": "fdb",
+      "kind": "data",
+      "label": "Publish head and retain last ten snapshots"
     },
     {
       "id": "wake-serve",
@@ -255,6 +371,13 @@
       "to": "worker",
       "kind": "async",
       "label": "Session nudges"
+    },
+    {
+      "id": "worker-placement",
+      "from": "worker",
+      "to": "placement",
+      "kind": "data",
+      "label": "Resolve node and epoch for tool routing"
     },
     {
       "id": "worker-store",
@@ -320,12 +443,24 @@
       "x": 60.0,
       "y": 200.0
     },
+    "collector": {
+      "x": 740.0,
+      "y": 840.0
+    },
+    "compute": {
+      "x": 1580.0,
+      "y": 28.0,
+      "size": {
+        "width": 360.0,
+        "height": 440.0
+      }
+    },
     "control": {
       "x": 708.0,
       "y": 28.0,
       "size": {
         "width": 304.0,
-        "height": 600.0
+        "height": 940.0
       }
     },
     "fdb": {
@@ -348,6 +483,10 @@
       "x": 380.0,
       "y": 260.0
     },
+    "node": {
+      "x": 1612.0,
+      "y": 60.0
+    },
     "objects": {
       "x": 1150.0,
       "y": 400.0
@@ -356,16 +495,24 @@
       "x": 1150.0,
       "y": 300.0
     },
+    "placement": {
+      "x": 1150.0,
+      "y": 520.0
+    },
     "scheduler": {
       "x": 740.0,
       "y": 60.0
+    },
+    "snapshot-loop": {
+      "x": 1612.0,
+      "y": 280.0
     },
     "state": {
       "x": 1118.0,
       "y": 168.0,
       "size": {
         "width": 304.0,
-        "height": 328.0
+        "height": 500.0
       }
     },
     "worker": {

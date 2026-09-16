@@ -39,3 +39,6 @@ mod tool;
 pub use tool::{
     BashArguments, BashResult, PlaceReply, PlaceRequest, SandboxRecord, ToolClaim, ToolJob,
 };
+
+mod placement;
+pub use placement::{PlacementChangeReason, PlacementRecord};
