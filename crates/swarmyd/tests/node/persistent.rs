@@ -170,10 +170,15 @@ async fn evicted(store: &Store, agent: AgentId) {
     .expect("idle placement was not released");
 }
 
-async fn start(settings: swarmy_config::Settings, store: &Store, base: ManifestId) -> (Node, Bus) {
+async fn start(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+    lease_seconds: u64,
+) -> (Node, Bus) {
     let mut settings = settings;
     settings.sandbox_idle_seconds = std::num::NonZeroU64::new(2).unwrap();
-    settings.placement_lease_seconds = std::num::NonZeroU64::new(3).unwrap();
+    settings.placement_lease_seconds = std::num::NonZeroU64::new(lease_seconds).unwrap();
     settings.bus_prefix = format!("persistent-{}", ulid::Ulid::generate());
     let bus = Bus::connect(
         &settings.nats_url,
@@ -196,7 +201,9 @@ async fn start(settings: swarmy_config::Settings, store: &Store, base: ManifestI
 }
 
 pub async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
-    let (mut node, bus) = start(settings, store, base).await;
+    Box::pin(differing_leases(settings.clone(), store, base, 30, 3)).await;
+    Box::pin(differing_leases(settings.clone(), store, base, 3, 30)).await;
+    let (mut node, bus) = start(settings, store, base, 3).await;
     managed_tools(&node, store, &bus).await;
     let agent = AgentId::from_ulid(ulid::Ulid::generate());
     let volume = VolumeId::from_ulid(agent.as_ulid());
@@ -278,6 +285,143 @@ pub async fn run(settings: swarmy_config::Settings, store: &Store, base: Manifes
     )
     .await;
     graceful(&mut node, store, &bus, base).await;
+}
+
+async fn differing_leases(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+    worker_seconds: u64,
+    node_seconds: u64,
+) {
+    use serde_json::json;
+    let (mut node, bus) = start(settings, store, base, node_seconds).await;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    // Reproduce the worker's initial store grant before handing off to the node.
+    let grant = store
+        .place(
+            agent,
+            node.id,
+            jiff::Timestamp::now()
+                .checked_add(Duration::from_secs(worker_seconds))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let process = invoke(
+        &node,
+        store,
+        &bus,
+        agent,
+        "process_start",
+        json!({"command": "exec sleep 300"}),
+    )
+    .await;
+    let current = store.get_by_agent(agent).await.unwrap().unwrap();
+    assert_eq!(current.epoch, grant.epoch);
+    assert!(current.expires_at > grant.expires_at);
+    survives_renewals(&node, store, &bus, current, &process).await;
+    eprintln!(
+        "placement renewal acceptance: worker/node durations {worker_seconds}/{node_seconds}s preserved the managed process across three renewals"
+    );
+    if node_seconds == 3 {
+        // Change the effective duration while the computer is resident. The
+        // next node renewal must observe this grant instead of its cached one.
+        let current = store.get_by_agent(agent).await.unwrap().unwrap();
+        let changed = store
+            .renew(
+                &current,
+                current
+                    .expires_at
+                    .checked_add(Duration::from_secs(30))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        survives_renewals(&node, store, &bus, changed, &process).await;
+        eprintln!(
+            "placement renewal acceptance: a longer resident grant preserved the managed process across three more renewals"
+        );
+        superseded_process(&node, store, &bus, agent).await;
+    }
+    node.stop().await;
+}
+
+async fn survives_renewals(
+    node: &Node,
+    store: &Store,
+    bus: &Bus,
+    mut placement: swarmy_core::PlacementRecord,
+    process: &serde_json::Value,
+) {
+    for _ in 0..3 {
+        let next = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let current = store
+                    .get_by_agent(placement.agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(current.epoch, placement.epoch);
+                assert_eq!(current.node_id, placement.node_id);
+                assert!(current.expires_at >= placement.expires_at);
+                if current.expires_at > placement.expires_at {
+                    break current;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("placement did not renew");
+        let listed = invoke(
+            node,
+            store,
+            bus,
+            placement.agent_id,
+            "process_list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(listed[0]["process_id"], process["process_id"]);
+        assert_eq!(listed[0]["status"], "running");
+        placement = next;
+    }
+}
+
+async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentId) {
+    // A host listener observes external effects even after the rootfs is gone.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        serde_json::json!({"command": format!("sleep 5; curl http://127.0.0.1:{port}/stale-effect")}),
+    )
+    .await;
+    let path = device(node, agent);
+    let old = store.get_by_agent(agent).await.unwrap().unwrap();
+    store.release(&old).await.unwrap();
+    let replacement = store.place(agent, node.id, old.expires_at).await.unwrap();
+    assert!(replacement.epoch > old.epoch);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    absent(node, agent, &path);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        store.get_by_agent(agent).await.unwrap().unwrap(),
+        replacement
+    );
+    store.release(&replacement).await.unwrap();
+    eprintln!(
+        "placement fencing acceptance: superseded resident process stopped before its delayed external effect"
+    );
 }
 
 async fn crash(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
