@@ -1,6 +1,7 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
 mod chat;
 mod conversation;
+mod gc;
 mod image;
 mod image_command;
 mod session;
@@ -22,6 +23,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Gc {
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Create, attach, and snapshot durable volumes
     Vol {
         #[command(subcommand)]
@@ -59,6 +64,7 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Gc { dry_run } => gc::run(dry_run, cli.json).await,
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
             Command::Run { prompt, image } => session::run(prompt, image, cli.json).await,

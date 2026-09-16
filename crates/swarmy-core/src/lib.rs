@@ -25,7 +25,7 @@ pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transitio
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
-pub use volume::{CHUNK_SIZE, ContentHash, ImageRecord, ManifestHeader, VolumeRecord};
+pub use volume::{CHUNK_SIZE, ContentHash, GcRun, ImageRecord, ManifestHeader, VolumeRecord};
 
 mod node;
 pub use node::{NodeCapacity, NodeRecord, NodeRole};

@@ -25,6 +25,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Collect unreferenced chunks older than the configured grace window
+    Gc {
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Create, attach, and snapshot durable volumes
     Vol {
         #[command(subcommand)]
@@ -99,6 +104,7 @@ fn main() -> anyhow::Result<()> {
             | Command::Chat { .. }
             | Command::Vol { .. }
             | Command::Image { .. }
+            | Command::Gc { .. }
     ) {
         use std::os::unix::process::CommandExt;
         let runtime = std::env::current_exe()?.with_file_name("swarmy-session");
@@ -119,7 +125,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         | Command::Session { .. }
         | Command::Chat { .. }
         | Command::Vol { .. }
-        | Command::Image { .. } => unreachable!(),
+        | Command::Image { .. }
+        | Command::Gc { .. } => unreachable!(),
         Command::Doctor => {
             if !doctor::run(cli.json).await? {
                 std::process::exit(1);
