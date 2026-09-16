@@ -62,6 +62,22 @@ pub fn command(node: &RemoteNode) -> Result<Command> {
     base(node)
 }
 
+/// Same-VPC launchers may be admitted only through the private interface.
+pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
+    for address in [&node.public_ip, &node.private_ip] {
+        let _: std::net::IpAddr = address.parse().context("invalid instance IP")?;
+        let result = timeout(
+            Duration::from_secs(7),
+            base(node)?.arg(address).arg("true").output(),
+        )
+        .await;
+        if result.is_ok_and(|output| output.is_ok_and(|output| output.status.success())) {
+            return Ok(address.clone());
+        }
+    }
+    bail!("SSH is unreachable at both instance addresses")
+}
+
 /// The interactive login command to print after provisioning.
 pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
     let mut args = vec!["ssh".to_owned()];
@@ -125,13 +141,17 @@ impl Ssh {
         let repo = cwd
             .ancestors()
             .find(|p| p.join("scripts/remote-provision.sh").is_file())
-            .context("run remote up from a swarmy repository checkout")?
+            .context("run remote provisioning from a swarmy repository checkout")?
             .to_owned();
         Ok(Self { repo })
     }
 
     /// Copy the checkout and run the provisioning script; returns the reachable address.
-    pub async fn provision(&self, node: &RemoteNode) -> Result<String> {
+    pub async fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> Result<String> {
         let address = wait_ssh(node).await?;
         checked(base(node)?.arg(&address)
             .arg("command -v rsync >/dev/null || (sudo cloud-init status --wait && sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
@@ -156,11 +176,43 @@ impl Ssh {
             "copy checkout with rsync",
         )
         .await?;
+        let service_ip: std::net::Ipv4Addr = primary
+            .unwrap_or(node)
+            .private_ip
+            .parse()
+            .context("private_ip must be an IPv4 address")?;
+        let mode = if let Some(primary) = primary {
+            let source = wait_ssh(primary).await?;
+            let cluster = base(primary)?
+                .arg(source)
+                .arg("cat swarmy/.dev/fdb.cluster")
+                .output()
+                .await?;
+            ensure!(cluster.status.success(), "read primary cluster file failed");
+            let cluster = String::from_utf8(cluster.stdout)?;
+            ensure!(
+                cluster
+                    .trim()
+                    .ends_with(&format!("@{service_ip}:{}", primary.ports.fdb)),
+                "primary cluster file does not advertise its private address; recreate this remote"
+            );
+            checked(
+                base(node)?.arg(&address).arg(format!(
+                    "mkdir -p swarmy/.dev && printf %s {} > swarmy/.dev/fdb.cluster",
+                    shell_words::quote(&cluster)
+                )),
+                "copy primary cluster file",
+            )
+            .await?;
+            "node"
+        } else {
+            "stack"
+        };
         println!("Provisioning node and building release binaries (this takes several minutes)");
         checked(
-            base(node)?
-                .arg(&address)
-                .arg("cd swarmy && bash scripts/remote-provision.sh"),
+            base(node)?.arg(&address).arg(format!(
+                "cd swarmy && bash scripts/remote-provision.sh {mode} {service_ip}"
+            )),
             "provision remote node",
         )
         .await?;

@@ -4,6 +4,12 @@ set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 [[ $repo_dir == /home/ubuntu/swarmy ]] || { echo 'Expected checkout at /home/ubuntu/swarmy' >&2; exit 1; }
 cd "$repo_dir"
+mode=${1:-stack}
+service_address=${2:-127.0.0.1}
+[[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
+[[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+stack_dependency=''
+if [[ $mode == stack ]]; then stack_dependency='swarmy-stack.service'; fi
 export DEBIAN_FRONTEND=noninteractive
 sudo cloud-init status --wait
 sudo apt-get update
@@ -66,16 +72,21 @@ if [[ ! -f .swarmy/remote-tools-version || $(<.swarmy/remote-tools-version) != "
     printf '%s\n' "$tools_hash" > .swarmy/remote-tools-version
 fi
 build_started=$SECONDS
-SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-    -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker
+if [[ $mode == stack ]]; then
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
+        -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker
+    sudo install -m 0755 target/release/{swarmy,swarmy-session,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker} /usr/local/bin/
+else
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd
+    sudo install -m 0755 target/release/swarmyd /usr/local/bin/
+fi
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
-sudo install -m 0755 target/release/{swarmy,swarmy-session,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker} /usr/local/bin/
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
 sudo tee /etc/swarmy/node.env >/dev/null <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
-SWARMY_NATS_URL=nats://127.0.0.1:4222
-SWARMY_S3_ENDPOINT=http://127.0.0.1:8333
+SWARMY_NATS_URL=nats://$service_address:4222
+SWARMY_S3_ENDPOINT=http://$service_address:8333
 SWARMY_S3_ACCESS_KEY=swarmy-dev
 SWARMY_S3_SECRET_KEY=swarmy-dev-secret
 SWARMY_S3_BUCKET=swarmy
@@ -86,6 +97,7 @@ SWARMY_NODE_DISK_BYTES=$(df -B1 --output=size "$local_mount" | tail -1 | tr -d '
 SWARMY_NODE_SANDBOXES=4
 LD_LIBRARY_PATH=/home/ubuntu/.local/lib
 ENV
+if [[ $mode == stack ]]; then
 sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy backing services (FoundationDB, NATS, SeaweedFS)
@@ -102,7 +114,7 @@ Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
 # systemd owns these processes, so stale state from an interrupted boot is safe to clear.
 ExecStartPre=/usr/bin/rm -f $repo_dir/.dev/fdb.pid $repo_dir/.dev/nats.pid $repo_dir/.dev/seaweed.pid
 ExecStartPre=-/usr/bin/rmdir $repo_dir/.dev/lock
-ExecStart=/bin/bash $repo_dir/scripts/dev-stack.sh start
+ExecStart=/bin/bash $repo_dir/scripts/dev-stack.sh start $service_address
 ExecStop=/bin/bash $repo_dir/scripts/dev-stack.sh stop
 TimeoutStartSec=300
 TimeoutStopSec=120
@@ -110,11 +122,13 @@ TimeoutStopSec=120
 [Install]
 WantedBy=multi-user.target
 UNIT
+fi
 sudo tee /etc/systemd/system/swarmyd.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy node agent
-Requires=swarmy-stack.service
-After=swarmy-stack.service systemd-modules-load.service
+Requires=$stack_dependency
+After=network-online.target $stack_dependency systemd-modules-load.service
+Wants=network-online.target
 RequiresMountsFor=$local_mount
 
 [Service]
@@ -129,14 +143,19 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable --now swarmy-stack.service
+if [[ $mode == stack ]]; then
+    sudo systemctl enable --now swarmy-stack.service
+else
+    [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
+fi
 sudo systemctl enable swarmyd.service
 sudo systemctl restart swarmyd.service
 invocation=$(sudo systemctl show -p InvocationID --value swarmyd)
 for _ in $(seq 1 60); do
     if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
-        sudo systemctl is-active swarmy-stack swarmyd
-        echo 'swarmyd registered and ready; backing services and node agent enabled at boot'
+        sudo systemctl is-active swarmyd
+        if [[ $mode == stack ]]; then sudo systemctl is-active swarmy-stack; fi
+        echo "swarmyd registered and ready; $mode mode enabled at boot"
         exit 0
     fi
     sleep 2

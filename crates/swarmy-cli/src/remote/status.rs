@@ -21,6 +21,29 @@ struct Status {
     tunnel: bool,
     registrations: Vec<Registration>,
     registration_error: Option<String>,
+    nodes: Vec<NodeStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodeStatus {
+    name: String,
+    instance_id: String,
+    instance_state: String,
+    private_ip: String,
+}
+
+async fn reachable(node: &RemoteNode) -> bool {
+    ssh::reachable_address(node).await.is_ok()
+}
+
+fn instance_state(reachable: bool) -> String {
+    // SSH cannot distinguish a stopped instance from a network failure.
+    if reachable {
+        "running (SSH reachable)"
+    } else {
+        "unknown (SSH unreachable)"
+    }
+    .into()
 }
 
 pub async fn run(json: bool) -> Result<()> {
@@ -49,19 +72,20 @@ pub async fn run(json: bool) -> Result<()> {
             Ok(profile) => ssh::healthy(&profile).await,
             Err(_) => false,
         };
-        let reachable = match ssh::command(&node) {
-            Ok(mut command) => timeout(
-                Duration::from_secs(7),
-                command.arg(&node.public_ip).arg("true").output(),
-            )
-            .await
-            .is_ok_and(|result| result.is_ok_and(|out| out.status.success())),
-            Err(_) => false,
-        };
-        let status = inspect(&node, tunnel, reachable, || {
+        let mut status = inspect(&node, tunnel, reachable(&node).await, || {
             registrations(&base, &node.name)
         })
         .await;
+        let mut pending: Vec<_> = node.nodes.iter().collect();
+        while let Some(child) = pending.pop() {
+            status.nodes.push(NodeStatus {
+                name: child.name.clone(),
+                instance_id: child.instance_id.clone(),
+                private_ip: child.private_ip.clone(),
+                instance_state: instance_state(reachable(child).await),
+            });
+            pending.extend(&child.nodes);
+        }
         statuses.push(status);
     }
     if json {
@@ -75,6 +99,12 @@ pub async fn run(json: bool) -> Result<()> {
                 status.instance_state,
                 if status.tunnel { "up" } else { "down" }
             );
+            for node in status.nodes {
+                println!(
+                    "  {} instance={} state={} private_ip={}",
+                    node.name, node.instance_id, node.instance_state, node.private_ip
+                );
+            }
             for record in status.registrations {
                 println!(
                     "  swarmyd {} heartbeat={}s {}",
@@ -99,13 +129,8 @@ where
     let mut status = Status {
         name: node.name.clone(),
         instance_id: node.instance_id.clone(),
-        // No cloud credentials are needed; SSH cannot distinguish stopped from unreachable.
-        instance_state: if reachable {
-            "running (SSH reachable)"
-        } else {
-            "unknown (SSH unreachable)"
-        }
-        .into(),
+        instance_state: instance_state(reachable),
+        nodes: Vec::new(),
         tunnel,
         registrations: Vec::new(),
         registration_error: None,

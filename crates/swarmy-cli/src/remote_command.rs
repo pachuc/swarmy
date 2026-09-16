@@ -4,7 +4,9 @@ use clap::Subcommand;
 pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
     Up { name: String },
-    /// Terminate a node and remove its key pair and local state
+    /// Join another node to a remote over its private network
+    AddNode { name: String },
+    /// Terminate all nodes and remove their key pairs and local state
     Down { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
     Connect { name: String },

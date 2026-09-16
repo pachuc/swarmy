@@ -36,6 +36,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         cleanup(&profile)?;
         std::fs::remove_file(&path)?;
     }
+    let address = ssh::reachable_address(&node).await?;
     // Reserve all three ports together so an ephemeral choice cannot be reused.
     let reservations = [
         reserve(node.ports.fdb)?,
@@ -61,7 +62,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         nats_url: format!("nats://127.0.0.1:{}", ports.nats),
         s3_endpoint: format!("http://127.0.0.1:{}", ports.s3),
     };
-    let (mut command, log_path) = tunnel_command(&node, &profile, state_dir)?;
+    let (mut command, log_path) = tunnel_command(&node, &profile, state_dir, &address)?;
     command.kill_on_drop(false);
     drop(reservations);
     let mut tunnel = StartingTunnel {
@@ -83,10 +84,19 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
             }
             sleep(Duration::from_millis(50)).await;
         }
-        state::write(
-            &profile.fdb_cluster_file,
-            format!("dev:dev@127.0.0.1:{}\n", ports.fdb).as_bytes(),
-        )?;
+        let cluster = if node.launch_settings.is_some() {
+            let output = ssh::command(&node)?
+                .arg(&address)
+                .arg("cat swarmy/.dev/fdb.cluster")
+                .output()
+                .await?;
+            ensure!(output.status.success(), "read remote cluster file failed");
+            rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
+        } else {
+            // Old single-node remotes used this fixed cluster identity and loopback listener.
+            format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
+        };
+        state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
         state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
         Ok::<_, anyhow::Error>(())
     })
@@ -108,8 +118,14 @@ fn tunnel_command(
     node: &swarmy_config::RemoteNode,
     profile: &RemoteProfile,
     state_dir: &Path,
+    address: &str,
 ) -> Result<(tokio::process::Command, std::path::PathBuf)> {
     let ports = profile.ports;
+    let destination: std::net::IpAddr = if node.launch_settings.is_some() {
+        node.private_ip.parse().context("invalid private IP")?
+    } else {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    };
     let mut command = ssh::command(node)?;
     command
         .args(["-N", "-M", "-S"])
@@ -123,16 +139,31 @@ fn tunnel_command(
         ensure!(remote != 0, "remote ports must be nonzero");
         command
             .arg("-L")
-            .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));
+            .arg(format!("127.0.0.1:{local}:{destination}:{remote}"));
     }
     let log_path = remote_path(state_dir, &profile.name, "ssh.log")?;
     state::write(&log_path, b"")?;
     command
-        .arg(&node.public_ip)
+        .arg(address)
         .stdout(Stdio::null())
         .stderr(std::fs::OpenOptions::new().append(true).open(&log_path)?)
         .process_group(0);
     Ok((command, log_path))
+}
+
+// Keep the cluster identity from the server while connecting through the local tunnel.
+fn rewrite_address(cluster: &str, port: u16) -> Result<String> {
+    let line = cluster
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .context("empty cluster file")?;
+    let (identity, address) = line.split_once('@').context("invalid cluster file")?;
+    ensure!(
+        identity.contains(':') && address.parse::<std::net::SocketAddr>().is_ok(),
+        "expected one coordinator address in remote cluster file"
+    );
+    Ok(format!("{identity}@127.0.0.1:{port}\n"))
 }
 
 fn reserve(preferred: u16) -> Result<TcpListener> {
@@ -180,6 +211,64 @@ pub(super) fn cleanup(profile: &RemoteProfile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn advertised_address_rewrite_preserves_cluster_identity() {
+        assert_eq!(
+            rewrite_address("# comment\nstack:secret@10.2.3.4:4500\n", 4500).unwrap(),
+            "stack:secret@127.0.0.1:4500\n"
+        );
+        assert_eq!(
+            rewrite_address("dev:dev@127.0.0.1:4500", 4500).unwrap(),
+            "dev:dev@127.0.0.1:4500\n"
+        );
+        for bad in [
+            "",
+            "dev",
+            "dev:dev@invalid",
+            "dev:dev@10.0.0.1:4500,10.0.0.2:4500",
+        ] {
+            assert!(rewrite_address(bad, 4500).is_err());
+        }
+    }
+
+    #[test]
+    fn new_tunnel_forwards_to_private_address_and_legacy_tunnel_to_loopback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("remote")).unwrap();
+        let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "test", "region": "test", "instance_id": "i-test",
+            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
+            "key_path": "key", "created_at": "now"
+        }))
+        .unwrap();
+        let profile = RemoteProfile {
+            name: "test".into(),
+            socket_path: dir.path().join("socket"),
+            pid: 0,
+            ports: RemotePorts::default(),
+            remote_ports: RemotePorts::default(),
+            fdb_cluster_file: dir.path().join("cluster"),
+            nats_url: String::new(),
+            s3_endpoint: String::new(),
+        };
+        for (settings, destination) in [
+            (None, "127.0.0.1"),
+            (Some(swarmy_config::RemoteSettings::default()), "10.0.0.1"),
+        ] {
+            node.launch_settings = settings;
+            let (command, _) =
+                tunnel_command(&node, &profile, dir.path(), &node.public_ip).unwrap();
+            let args: Vec<_> = command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            for port in [4500, 4222, 8333] {
+                assert!(args.contains(&format!("127.0.0.1:{port}:{destination}:{port}")));
+            }
+        }
+    }
+
     #[test]
     fn collision_chooses_another_port() {
         let occupied = reserve(0).unwrap();

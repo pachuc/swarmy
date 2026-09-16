@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, key_name, state::State};
@@ -11,10 +11,25 @@ pub async fn run(
     node: &RemoteNode,
     delay: Duration,
 ) -> Result<()> {
-    ensure!(
-        node.nodes.is_empty(),
-        "this version cannot remove a multi-node remote cluster"
-    );
+    let mut pending = vec![node];
+    let mut nodes = Vec::new();
+    while let Some(current) = pending.pop() {
+        pending.extend(&current.nodes);
+        nodes.push(current);
+    }
+    // Keep all local records and keys until every termination succeeds so down is retryable.
+    for current in nodes.iter().rev() {
+        terminate(cloud, current, delay).await?;
+    }
+    for current in nodes {
+        state.remove_key(current)?;
+    }
+    state.remove(node)?;
+    println!("Removed remote {}", node.name);
+    Ok(())
+}
+
+async fn terminate(cloud: &impl Cloud, node: &RemoteNode, delay: Duration) -> Result<()> {
     let key = key_name(node)?;
     let id = if node.instance_id.is_empty() {
         cloud.find_launch(key).await?
@@ -29,8 +44,6 @@ pub async fn run(
     }
     println!("Deleting key pair {key}");
     cloud.delete_key(key).await?;
-    state.remove(node)?;
-    println!("Removed remote node {}", node.name);
     Ok(())
 }
 
