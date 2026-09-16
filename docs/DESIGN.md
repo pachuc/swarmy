@@ -282,7 +282,81 @@ handles it.
 Single writer: the volume writer lease is held by the node hosting the
 sandbox. Attaching elsewhere requires the lease to expire or be released.
 
-### 7.3 Risks to retire in slice 2
+### 7.3 Chunk garbage collection
+
+`swarmy gc` marks retained snapshots of every volume, the head of every
+attached volume (including an expired writer until explicitly released), and
+every registered image. It reads the two-level roots and their leaves before
+sweeping canonical `chunks/{hh}/{hash}` objects. Manifest roots and leaves are
+outside the sweep namespace and remain available. The implicit zero hash is
+always protected. Missing or corrupt live metadata aborts marking before any
+deletions. Unretained provenance links do not keep chunks alive and are not
+restore points.
+
+The collector pages volume and image keys in groups of 64. Each volume's live
+roots and each immutable header are read in separate transactions. This avoids
+FoundationDB's five-second and ten-megabyte transaction limits. The pages are
+not one consistent fleet snapshot: publications between pages rely on the
+grace window, while unchanged data is protected by live predecessor manifests.
+
+A chunk is eligible only if it is absent from the reference filter and its
+object-store last-modified time is strictly older than the run's starting time
+minus the grace window. The cutoff never advances during a run. The default
+window is six hours, compared with the default ten-minute snapshot period.
+Keep it longer than the maximum time from background staging through successful
+publication, including upload time, retries, clock skew, and idle eviction.
+Pausing or evicting an idle sandbox must publish its pending disk changes before
+detaching; eviction must not leave staged data awaiting publication beyond the
+grace. A stalled publisher must retry its uploads before reusing staging older
+than that bound. Operators must not restore a pruned manifest or register it as
+an image without first restoring its data. Content deduplication does not make
+an unreferenced, old object a durable staging reference. For that reason,
+attached volume writers and image uploads record a reuse timestamp in the
+store before trusting an existing chunk. A collector reserves each candidate
+in a transaction that checks this timestamp against its fixed cutoff. Reuse
+and deletion reservations conflict: if deletion wins, the uploader waits for
+it to finish, checks existence again, and recreates the chunk if necessary.
+If reuse wins, this run keeps the object. New objects need no reuse row because
+their last-modified time already protects them. Reuse rows are one small record
+per reused hash and are removed when that chunk is collected. Standalone chunk
+uploaders targeting a managed bucket must use `ChunkStore::with_gc_protection`.
+
+A fixed-size Bloom filter holds chunk references, using 64 MiB by default and
+seven probes per hash. False positives only keep extra chunks; saturation
+reduces reclamation without permitting deletion of referenced data. Roots and
+leaves are always traversed, even if their hashes appear in the filter. Memory
+also includes one manifest root and leaf, one metadata page, and streaming
+object listing pages for at most sixteen of the 256 prefixes. It does not grow
+with the total number of chunk objects or live roots.
+
+A store lease admits one collector per metadata namespace, using the same
+complete-token and retained-sequence fencing as writer leases. It expires after
+120 seconds and renews every 30 seconds. Collection stops on renewal failure
+and cancels work before expiry, leaving 30 seconds for outstanding requests.
+After a crash, the next collector can acquire the expired lease. Each attempt
+records its start and, on completion or a recoverable error, its manifest and
+object counts, candidate bytes, deleted bytes, and elapsed milliseconds.
+Unfinished records identify interrupted attempts; their final counters are
+unknown. Object deletion is not transactional with accounting, so an interrupted
+run can reclaim bytes that its record does not report.
+
+`swarmy gc --dry-run` performs the same leased mark and listing and records
+candidate counts and bytes, while deleting nothing. `--json` emits the durable
+run summary. The scheduler attempts collection after each configured interval,
+waiting one full interval at startup and after every attempt. Competing
+schedulers skip a busy lease and retry next interval. A metadata namespace must
+have its own object namespace; collection cannot discover references belonging
+to another FoundationDB directory sharing the bucket.
+
+Configuration is under `[gc]`: `grace_seconds` defaults to 21600,
+`interval_seconds` to 3600, and `filter_bytes` to 67108864. All are positive.
+The corresponding environment overrides are `SWARMY_GC_GRACE_SECONDS`,
+`SWARMY_GC_INTERVAL_SECONDS`, and `SWARMY_GC_FILTER_BYTES`.
+
+The [local scale measurement](gc-benchmarks.md) covers 22,534 chunk objects,
+dry-run accounting, deletion, lease renewal, elapsed time, and peak memory.
+
+### 7.4 Risks to retire in slice 2
 
 - Kernel module availability on stock cloud images. Verify on GCP, AWS, and
   Azure Ubuntu LTS images. Both `nbd` and `ublk_drv` are present locally.
@@ -294,7 +368,7 @@ sandbox. Attaching elsewhere requires the lease to expire or be released.
 - Root privileges on nodes. `swarmyd` runs as root. Acceptable on our own VMs
   and in privileged pods.
 
-### 7.4 Proposed tool-boundary latency budget
+### 7.5 Proposed tool-boundary latency budget
 
 The following tasks that change upload concurrency and dirty-store locking are
 measured against this target. It is a proposed p95 budget for the extra time

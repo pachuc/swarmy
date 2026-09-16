@@ -1,4 +1,5 @@
 mod config;
+mod gc;
 mod scheduler;
 
 use std::sync::Arc;
@@ -35,15 +36,17 @@ async fn main() -> anyhow::Result<()> {
         max_deliver: settings.bus_max_deliver,
     };
     let blobs = Arc::new(ObjectBlobStore::from_env()?);
+    let objects = blobs.object_store();
     let _network = swarmy_store::boot();
     let store = Store::open(Some(&cluster), Some(&directory), blobs).await?;
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;
     tracing::info!(partitions = ?config.partitions, "scheduler started");
-    let scheduler = scheduler::Scheduler::new(store, bus, config);
+    let scheduler = scheduler::Scheduler::new(store.clone(), bus, config);
     tokio::select! {
         result = scheduler.run() => result?,
+        () = gc::run(&store, objects, settings.gc) => {},
         result = tokio::signal::ctrl_c() => result?,
     }
     Ok(())

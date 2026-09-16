@@ -346,13 +346,36 @@ pub struct ImageManifest {
 
 /// Upload an image's chunks and manifest objects before publishing its header.
 /// Zero chunks do not consume object storage. Counts describe data chunks only.
+/// For a bucket managed by GC, use `upload_image_protected` instead.
 /// # Errors
 /// Returns invalid dimensions, local read errors, or object storage failures.
 pub async fn upload_image(path: &Path, objects: Arc<dyn ObjectStore>) -> Result<ImageManifest> {
+    upload_image_inner(path, objects, None).await
+}
+
+/// Upload with reuse guards for a bucket managed by the chunk collector.
+/// # Errors
+/// Returns image, object storage, and metadata errors.
+pub async fn upload_image_protected(
+    path: &Path,
+    objects: Arc<dyn ObjectStore>,
+    metadata: swarmy_store::Store,
+) -> Result<ImageManifest> {
+    upload_image_inner(path, objects, Some(metadata)).await
+}
+
+async fn upload_image_inner(
+    path: &Path,
+    objects: Arc<dyn ObjectStore>,
+    metadata: Option<swarmy_store::Store>,
+) -> Result<ImageManifest> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
     let mut builder = ManifestBuilder::new(objects.clone(), Manifest::empty(size)?);
-    let chunks = ChunkStore::new(objects);
+    let chunks = match metadata {
+        Some(metadata) => ChunkStore::with_gc_protection(objects, metadata),
+        None => ChunkStore::new(objects),
+    };
     let chunks_total = size / u64::from(CHUNK_SIZE);
     let mut chunks_stored = 0;
     let mut chunks_uploaded = 0;

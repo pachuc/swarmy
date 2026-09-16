@@ -78,3 +78,21 @@ mod tests {
         assert_round_trip(&ImageTag("stable".into()));
     }
 }
+
+/// Durable accounting for one collector attempt. An unfinished record means the
+/// process stopped before it could persist its final counters.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GcRun {
+    pub owner: crate::LeaseOwnerId,
+    pub started_at: jiff::Timestamp,
+    pub dry_run: bool,
+    pub finished: bool,
+    pub error: Option<String>,
+    pub manifests: u64,
+    pub scanned: u64,
+    pub candidates: u64,
+    pub candidate_bytes: u64,
+    pub deleted: u64,
+    pub bytes_freed: u64,
+    pub duration_ms: u64,
+}

@@ -67,6 +67,7 @@ impl VolumeWriter {
         head: ManifestId,
         retention: std::num::NonZeroUsize,
     ) -> Arc<Self> {
+        device.protect_uploads(store.clone());
         Arc::new(Self {
             device,
             store,

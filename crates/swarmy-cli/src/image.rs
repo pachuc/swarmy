@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use object_store::aws::AmazonS3Builder;
 use swarmy_core::{ImageTag, ManifestId};
 use swarmy_store::MAX_SCAN_LIMIT;
-use swarmy_volume::image::{Recipe, build_ext4, upload_image, validate_label};
+use swarmy_volume::image::{Recipe, build_ext4, upload_image_protected, validate_label};
 
 use crate::{conversation::store, image_command::Command};
 
@@ -91,7 +91,7 @@ async fn build(
             .build()?,
     );
     let image = tokio::task::spawn_blocking(move || build_ext4(&recipe, &directory)).await??;
-    let built = upload_image(image.path(), objects).await?;
+    let built = upload_image_protected(image.path(), objects, store.clone()).await?;
     if let Some(output) = output {
         // Refuse to overwrite an existing image, including through a symlink.
         let destination = std::fs::OpenOptions::new()
