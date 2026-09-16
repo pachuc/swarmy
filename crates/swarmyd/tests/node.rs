@@ -16,6 +16,9 @@ use tokio::{
     net::UnixStream,
 };
 
+#[path = "node/persistent.rs"]
+mod persistent;
+
 struct Node {
     root: tempfile::TempDir,
     child: Option<Child>,
@@ -46,11 +49,18 @@ impl Node {
     }
 
     fn start(&mut self) {
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.path().join("node.log"))
+            .unwrap();
         self.child = Some(
             Command::new(env!("CARGO_BIN_EXE_swarmyd"))
                 .current_dir(self.root.path())
                 .envs(self.settings.environment())
                 .stdin(Stdio::null())
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
                 .spawn()
                 .unwrap(),
         );
@@ -161,6 +171,12 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "node log: {}",
+                std::fs::read_to_string(self.root.path().join("node.log")).unwrap_or_default()
+            );
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -194,12 +210,7 @@ impl Drop for Node {
                         .strip_prefix("/dev/nbd")
                         .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
                 }) {
-                    let _ = Command::new("nbd-client")
-                        .arg("-d")
-                        .arg(source)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
+                    let _ = swarmy_volume::kernel::cleanup_stale(Path::new(&source));
                 }
             }
         }
@@ -367,6 +378,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     pause_resume_timeout(&node, sandbox).await;
     crash_recovery(&mut node, &store, volume).await;
     node.stop().await;
+    persistent::run(node.settings.clone(), &store, base).await;
 }
 
 async fn registration(node: &Node, store: &Store) {

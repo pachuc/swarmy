@@ -3,8 +3,8 @@
 `swarmyd` registers a node in FoundationDB, refreshes its heartbeat, and hosts
 runc sandboxes and their NBD volume servers. It uses the same shared attachment
 service as `swarmy vol attach`, including writer fencing, lease renewal,
-background uploads, and final flush on detach. No scheduler placement or NATS
-tool dispatch is added in this slice.
+background uploads, periodic snapshots, and final checkpoint on detach. Calls
+arrive on the node tool queue and share one computer per agent.
 
 Run the binary as root after starting the dev stack:
 
@@ -28,6 +28,8 @@ advertise one CPU, 1 GiB memory, 32 GiB disk, and one sandbox.
 | `node_capacity.disk_bytes` | `SWARMY_NODE_DISK_BYTES` | `34359738368` |
 | `node_capacity.sandboxes` | `SWARMY_NODE_SANDBOXES` | `1` |
 | `node_heartbeat_interval_ms` | `SWARMY_NODE_HEARTBEAT_INTERVAL_MS` | `5000` |
+| `sandbox_idle_seconds` | `SWARMY_SANDBOX_IDLE_SECONDS` | `1800` |
+| `placement_lease_seconds` | `SWARMY_PLACEMENT_LEASE_SECONDS` | `30` |
 
 `Store::get_node` reads `("node", node_id)`. `scan_live_nodes` takes a minimum
 heartbeat timestamp, an exclusive node-id cursor, and a page size. It returns
@@ -42,8 +44,8 @@ configuration root. `swarmyd::{Request, Response}` defines its newline-delimited
 JSON protocol. Each connection carries one request, limited to 64 KiB. Create,
 exec, pause, resume, destroy, and capabilities are available. Exec sends bounded
 stdout/stderr frames as bytes, then an exit result. Callers should keep reading
-until the terminal response. This is a local administrative interface for this
-slice; the next slice adds tool dispatch.
+until the terminal response. This is a trusted local administrative interface;
+agent calls use the placement-fenced NATS path.
 
 The runtime permits one execution at a time per sandbox. It uses a writable
 ext4 root filesystem, private PID/mount/IPC/UTS/cgroup namespaces, and the host
@@ -64,7 +66,8 @@ execs, then destroy all local sandboxes with a final flush.
 
 On startup, an exclusive directory lock prevents a second daemon from taking
 over local state. Journals identify containers and mounts from a killed daemon;
-startup deletes those containers and unmounts their disks before registration.
+startup deletes those containers, unmounts their disks, and clears journaled NBD
+attachments before registration.
 A subsequent create uses the last committed head and a fresh local overlay.
 It must wait for the previous writer's 60-second lease to expire. Recovery does
 not publish the killed command's uncommitted writes or steal a live writer lease.
@@ -99,26 +102,41 @@ bash request events, asks the scheduler for a live sandbox node, and atomically
 stores tool jobs while releasing the session into `WaitingTools`. A recovery
 scan republishes pending jobs if a process dies before publishing to NATS.
 
-The node claims each call with a renewable 30-second lease. Calls sharing a
-session disk are serialized. Each attempt starts a runc sandbox on a private
-copy-on-write volume pointing at the last committed manifest. At completion the
-node stops guest processes, unmounts, and flushes that volume. One fenced store
-transaction advances the session volume, appends stdout, stderr, exit status,
-timeout status and manifest id, clears the claim, and makes the session Runnable
-when its last pending call finishes. The harness retains these fields in the
-conversation's tool result metadata.
+The node places an unplaced agent locally, accepts a live placement assigned to
+this node, or takes over an expired epoch. It refuses live placements on other
+nodes. A per-agent task records the placement, attached volume, container, and
+time since the last completed call. It serializes calls across sessions of that
+agent while other agents execute independently.
 
-Private attempt volumes keep a flush that precedes a crash from advancing the
-session disk without its event. Retries start from the recorded manifest, even
-if the previous attempt uploaded a newer one. Expired calls can move to another
-live node once the old node's heartbeat is more than 30 seconds old. A fresh
-sandbox is created for every attempt in this slice; background guest processes
-do not survive tool boundaries. Attempt volume records and unreachable objects
-remain available for future garbage collection.
+The home volume uses the agent ULID as its volume id. Until agent records own a
+volume reference, the first call initializes this volume from the session's
+pinned image (or imports the published head of its existing slice 2 sandbox).
+Subsequent sessions use that same volume. No attempt volume is created. Clone
+support remains in the volume library for explicit forks.
 
-Run `scripts/test-bash.sh` as the ordinary build user on a root-capable host.
-It starts the dev stack, builds the base image once, and runs gated acceptance
-tests with sudo: a successful bash turn, a kill after a file write with exactly
-one retry, and a seeded chaos run including swarmyd kills. Each scenario checks
-a second sandbox created from the final manifest. The tests skip without root
-or the required environment settings. The CI workflow does not need to change.
+The container and its processes survive successful calls. Each call has its own
+renewable tool lease, and completion checks both that lease and the placement
+epoch. Output completion does not freeze, flush, or advance the disk. The result's
+manifest id names the latest observed checkpoint; it does not assert durability
+of that call's writes. The attachment continuously stages chunks and publishes
+snapshots according to the shared volume snapshot settings.
+
+Placement renewal runs every third of the lease duration, including during boot,
+commands, and final checkpoints. Renewal failure or expiry cancels execution,
+stops guest processes, and discards the attachment without publishing. Writer
+acquisition, renewal, and publication also validate the bound placement epoch in
+FoundationDB. A restarted daemon cleans local state first and waits for old
+placement and writer leases to expire before rebuilding under a new epoch.
+
+After the idle window without a call, the node stops processes, unmounts,
+publishes a final checkpoint, detaches the device, and releases placement.
+The retained epoch counter makes the next placement report reason `eviction`.
+Graceful shutdown does the same for hosted agents, keeping renewal active during
+checkpointing. Idle time starts after a call finishes, so an active call cannot
+be evicted. Unmanaged background processes alone do not reset this timer; managed
+process activity is part of the future guest-agent interface.
+
+The root node suite also drives the NATS tool path across multiple sessions of
+one agent. It checks process persistence, renewal during a call, no publication
+on a trivial call with 64 MiB dirty, idle checkpoint and rehydration, SIGKILL
+cleanup, and refusal after another node takes over the epoch.

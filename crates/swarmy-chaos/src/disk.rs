@@ -51,7 +51,7 @@ pub async fn verify(
     image: ManifestId,
     files: &Path,
 ) -> Result<()> {
-    let mut manifests = Vec::new();
+    let mut expected = None;
     for event in events {
         if let Event::ToolCallCompleted {
             result: ToolResult::Completed {
@@ -63,27 +63,20 @@ pub async fn verify(
         {
             let manifest: ManifestId = serde_json::from_value(metadata["manifest_id"].clone())?;
             ensure!(
-                manifest != image,
-                "tool manifest still points to the base image"
+                store.get_manifest(manifest).await?.is_some(),
+                "tool references a missing checkpoint"
             );
-            manifests.push(manifest);
+            expected = Some(
+                metadata["stdout"]
+                    .as_str()
+                    .context("bash stdout missing")?
+                    .as_bytes()
+                    .to_vec(),
+            );
         }
     }
-    let final_manifest = *manifests.last().context("bash completion missing")?;
-    let record = store.get_sandbox(id).await?.context("sandbox missing")?;
-    ensure!(
-        record.manifest_id == final_manifest,
-        "sandbox and log disagree"
-    );
-    ensure!(
-        store
-            .get_volume(record.volume_id)
-            .await?
-            .context("disk missing")?
-            .head_manifest
-            == final_manifest,
-        "volume and log disagree"
-    );
+    let expected = expected.context("bash completion missing")?;
+    let final_manifest = final_checkpoint(store, id, image).await?;
     let volume_id = VolumeId::from_ulid(ulid::Ulid::generate());
     store.create_volume(volume_id, final_manifest).await?;
     let objects = objects()?;
@@ -131,8 +124,8 @@ pub async fn verify(
         );
         ensure!(exit?.exit_code == 0, "clone could not read the file");
         ensure!(
-            output == b"swarmy\n".repeat(manifests.len()),
-            "clone contains missing or repeated writes"
+            output == expected,
+            "final checkpoint differs from the last observed file contents"
         );
         Ok::<_, anyhow::Error>(())
     }
@@ -140,8 +133,34 @@ pub async fn verify(
     let cleanup = runtime.shutdown().await;
     result?;
     cleanup?;
-    tracing::info!(session_id = %id, %final_manifest, "clone contains exactly the committed writes");
+    tracing::info!(session_id = %id, %final_manifest, "final checkpoint reproduces the last observed file contents");
     Ok(())
+}
+
+async fn final_checkpoint(store: &Store, id: SessionId, image: ManifestId) -> Result<ManifestId> {
+    let agent = store
+        .fetch_session(id)
+        .await?
+        .context("session missing")?
+        .agent_id;
+    ensure!(
+        store.get_by_agent(agent).await?.is_none(),
+        "shutdown did not release placement"
+    );
+    let volume = store
+        .get_volume(VolumeId::from_ulid(agent.as_ulid()))
+        .await?
+        .context("agent disk missing")?;
+    ensure!(
+        volume.writer_lease.is_none(),
+        "shutdown did not detach the writer"
+    );
+    let final_manifest = volume.head_manifest;
+    ensure!(
+        final_manifest != image,
+        "shutdown did not publish a final checkpoint"
+    );
+    Ok(final_manifest)
 }
 
 pub struct Cleanup(pub PathBuf);

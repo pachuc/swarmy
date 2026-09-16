@@ -38,6 +38,15 @@ pub struct ToolClaim {
     pub attempt_volume: VolumeId,
 }
 
+/// A call on an agent's persistent computer, fenced by its placement epoch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacedToolClaim {
+    pub job: ToolJob,
+    pub owner: LeaseOwnerId,
+    pub placement: crate::PlacementRecord,
+    pub expires_at: jiff::Timestamp,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRecord {
     pub session_id: SessionId,

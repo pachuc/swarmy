@@ -64,7 +64,7 @@ impl Store {
         )
     }
 
-    async fn checked_placement(
+    pub(crate) async fn checked_placement(
         &self,
         trx: &Transaction,
         expected: &PlacementRecord,
@@ -77,6 +77,25 @@ impl Store {
             return Err(StoreError::LeaseMismatch);
         }
         Ok(current)
+    }
+
+    pub(crate) async fn check_live_placement(
+        &self,
+        trx: &Transaction,
+        expected: &PlacementRecord,
+    ) -> Result<()> {
+        if self.checked_placement(trx, expected).await?.expires_at <= Timestamp::now() {
+            return Err(StoreError::LeaseMismatch);
+        }
+        Ok(())
+    }
+
+    /// Validate the current epoch before local execution.
+    /// # Errors
+    /// Rejects stale or expired placements and storage failures.
+    pub async fn validate_placement(&self, expected: &PlacementRecord) -> Result<()> {
+        self.transaction(|trx| async move { self.check_live_placement(&trx, expected).await })
+            .await
     }
 
     /// Place an absent computer, advancing its retained epoch counter.

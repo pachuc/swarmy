@@ -180,6 +180,10 @@ impl Fixture {
             .collect::<Vec<(OsString, OsString)>>();
         shared.append(&mut environment);
         environment = shared;
+        environment.push((
+            "SWARMY_NODE_SANDBOXES".into(),
+            config.sessions.to_string().into(),
+        ));
         environment.extend([
             (
                 "SWARMY_FAKE_SCRIPT".into(),

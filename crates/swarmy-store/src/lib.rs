@@ -14,6 +14,7 @@ pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;
 mod leases;
 mod nodes;
+mod placed_tools;
 mod placements;
 mod tools;
 mod volumes;

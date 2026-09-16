@@ -185,6 +185,12 @@ impl Attachment {
                 .join()
                 .map_err(|_| io::Error::other("NBD kernel thread panicked"))?
         });
+        let clear = match clear {
+            Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
+                ioctl(&self.file, CLEAR_SOCK, 0)
+            }
+            result => result,
+        };
         // Release the local reservation before returning the device for reuse.
         let unlock = fs2::FileExt::unlock(&*self.file);
         self.connected = false;
@@ -229,4 +235,35 @@ fn sysfs_path(file: &File) -> io::Result<std::path::PathBuf> {
         libc::major(rdev),
         libc::minor(rdev)
     )))
+}
+
+/// Clear a crashed attachment recorded in this node's durable journal.
+/// The exclusive device reservation prevents touching another live attachment.
+/// Call only after stopping the old container and unmounting its filesystem.
+/// # Errors
+/// Returns reservation or kernel cleanup failures.
+pub fn cleanup_stale(path: &Path) -> io::Result<()> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let sysfs = sysfs_path(&file)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => break,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    && !sysfs.join("pid").exists()
+                    && std::fs::read_to_string(sysfs.join("size"))?.trim() == "0"
+                    && std::time::Instant::now() < deadline =>
+            {
+                // Device probes briefly hold a shared reservation after unmount.
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if sysfs.join("pid").exists() || std::fs::read_to_string(sysfs.join("size"))?.trim() != "0" {
+        ioctl(&file, DISCONNECT, 0)?;
+        ioctl(&file, CLEAR_SOCK, 0)?;
+    }
+    Ok(())
 }

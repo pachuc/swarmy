@@ -1,89 +1,89 @@
 use anyhow::{Context, Result};
 use std::{sync::Arc, time::Duration};
-use swarmy_bus::{Bus, WorkMessage, WorkQueue};
-use swarmy_core::{BashResult, LeaseOwnerId, NodeId, ToolClaim, ToolJob, VolumeId};
-use swarmy_sandbox::{
-    BlockDevice, ExecOutput, ExecRequest, RuncRuntime, SandboxRuntime, SandboxSpec,
+use swarmy_bus::{Bus, WorkQueue};
+use swarmy_core::{
+    BashResult, LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ToolJob, VolumeId,
 };
+use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime, SandboxRuntime};
 use swarmy_store::{Store, StoreError};
 use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
 
 pub async fn serve(
-    store: &Store,
     bus: &Bus,
     node: NodeId,
-    runtime: &Arc<RuncRuntime>,
+    hosting: &Arc<crate::hosting::Hosting>,
     ack_wait: Duration,
 ) -> Result<()> {
     let queue = WorkQueue::NodeTools(node);
     bus.setup(std::slice::from_ref(&queue)).await?;
     let mut messages = bus.consume::<ToolJob>(&queue).await?;
-    while let Some(delivery) = messages.next().await {
-        let message = delivery?;
-        if let Err(error) = handle(store, node, runtime, &message, ack_wait).await {
-            tracing::warn!(%error, request_id = %message.value.request_id, "sandbox tool failed; retrying after lease expiry");
-            message
-                .negative_acknowledge(Some(Duration::from_secs(2)))
-                .await?;
+    let mut calls = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            delivery = messages.next() => {
+                let message = delivery.context("node tool subscription closed")??;
+                let hosting = hosting.clone();
+                calls.spawn(async move {
+                    let result = tokio::select! {
+                        result = hosting.call(message.value.clone()) => result,
+                        result = async {
+                            loop {
+                                tokio::time::sleep(ack_wait / 3).await;
+                                if let Err(error) = message.extend_deadline().await { break Err(anyhow::Error::from(error)); }
+                            }
+                        } => result,
+                    };
+                    match result {
+                        Ok(()) => message.acknowledge().await?,
+                        Err(error) => {
+                            tracing::warn!(%error, request_id = %message.value.request_id, "sandbox tool refused or interrupted");
+                            message.negative_acknowledge(Some(Duration::from_secs(2))).await?;
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(())
+                });
+            }
+            Some(result) = calls.join_next(), if !calls.is_empty() => { result??; }
         }
     }
-    anyhow::bail!("node tool subscription closed")
 }
 
-async fn handle(
+pub async fn execute(
     store: &Store,
-    node: NodeId,
     runtime: &RuncRuntime,
-    message: &WorkMessage<ToolJob>,
-    ack_wait: Duration,
+    placement: &PlacementRecord,
+    job: ToolJob,
 ) -> Result<()> {
-    let claim = ToolClaim {
-        job: message.value.clone(),
+    if store.tool_completed(job.request_id).await? {
+        return Ok(());
+    }
+    store
+        .validate_placement(placement)
+        .await
+        .context("placement lease lost before execution")?;
+    let claim = PlacedToolClaim {
+        job,
         owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
-        node_id: node,
+        placement: placement.clone(),
         expires_at: jiff::Timestamp::now().checked_add(LEASE)?,
-        attempt_volume: VolumeId::from_ulid(ulid::Ulid::generate()),
     };
-    if store.tool_completed(claim.job.request_id).await? {
-        message.acknowledge().await?;
-        return Ok(());
-    }
-    if !store.claim_tool(&claim).await? {
-        message
-            .negative_acknowledge(Some(Duration::from_secs(2)))
-            .await?;
-        return Ok(());
-    }
-    tracing::info!(request_id = %claim.job.request_id, attempt = %claim.owner, "claimed sandbox tool");
+    anyhow::ensure!(
+        store.claim_placed_tool(&claim).await?,
+        "tool call already claimed"
+    );
     tokio::select! {
-        result = execute(store, runtime, &claim) => result?,
-        result = heartbeat(store, &claim, message, ack_wait) => result?,
+        result = run(store, runtime, &claim) => result,
+        result = heartbeat(store, &claim) => result,
     }
-    message.acknowledge().await?;
-    Ok(())
 }
 
-async fn execute(store: &Store, runtime: &RuncRuntime, claim: &ToolClaim) -> Result<()> {
-    let session = store
-        .fetch_session(claim.job.session_id)
-        .await?
-        .context("session missing")?;
-    // A failed attempt can leave a local sandbox. Its final flush affects only
-    // its private volume; every new attempt starts from the committed manifest.
-    runtime.discard_if_present(session.agent_id).await?;
-    let sandbox = runtime
-        .create(
-            SandboxSpec {
-                agent_id: session.agent_id,
-            },
-            BlockDevice {
-                volume_id: claim.attempt_volume,
-            },
-        )
-        .await?;
-    tracing::info!(request_id = %claim.job.request_id, "executing sandbox command");
+async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> Result<()> {
+    tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
+    let sandbox = swarmy_core::Sandbox {
+        agent_id: claim.placement.agent_id,
+    };
     let (send, mut receive) = mpsc::channel(16);
     let collect = async {
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -110,15 +110,11 @@ async fn execute(store: &Store, runtime: &RuncRuntime, claim: &ToolClaim) -> Res
         ),
         collect
     );
-    // Stop descendants and unmount before flushing. No guest process can change
-    // the manifest between this boundary and the fenced completion transaction.
-    let cleanup = runtime.destroy(sandbox).await;
     let exit = exit?;
-    cleanup?;
     let manifest_id = store
-        .get_volume(claim.attempt_volume)
+        .get_volume(VolumeId::from_ulid(claim.placement.agent_id.as_ulid()))
         .await?
-        .context("attempt volume missing")?
+        .context("agent volume missing")?
         .head_manifest;
     let result = BashResult {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
@@ -133,29 +129,30 @@ async fn execute(store: &Store, runtime: &RuncRuntime, claim: &ToolClaim) -> Res
             .await?
             .context("session missing")?
             .head_seq;
-        match store.complete_tool(claim, head, &result).await {
+        match store.complete_placed_tool(claim, head, &result).await {
             Ok(()) => break,
             Err(StoreError::StaleSequence { .. }) => {}
             Err(error) => return Err(error.into()),
         }
     }
-    tracing::info!(request_id = %claim.job.request_id, %manifest_id, "committed sandbox tool");
+    tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, %manifest_id, "committed sandbox tool output");
+    anyhow::ensure!(
+        !exit.timed_out,
+        "command timed out; sandbox processes stopped"
+    );
     Ok(())
 }
 
-async fn heartbeat(
-    store: &Store,
-    claim: &ToolClaim,
-    message: &WorkMessage<ToolJob>,
-    ack_wait: Duration,
-) -> Result<()> {
-    let mut ticks = tokio::time::interval((LEASE / 3).min(ack_wait / 3));
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
+    let mut expiry = claim.expires_at;
     loop {
-        ticks.tick().await;
-        store
-            .renew_tool(claim, jiff::Timestamp::now().checked_add(LEASE)?)
-            .await?;
-        message.extend_deadline().await?;
+        tokio::time::sleep(LEASE / 3).await;
+        let next = jiff::Timestamp::now().checked_add(LEASE)?;
+        let remaining = expiry
+            .duration_since(jiff::Timestamp::now())
+            .try_into()
+            .unwrap_or(Duration::ZERO);
+        tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
+        expiry = next;
     }
 }
