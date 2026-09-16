@@ -4,6 +4,11 @@ mod conversation;
 mod gc;
 mod image;
 mod image_command;
+mod remote_command;
+#[path = "remote/ssh.rs"]
+mod remote_ssh;
+#[path = "remote/status.rs"]
+mod remote_status;
 mod session;
 mod session_command;
 mod vol;
@@ -17,12 +22,18 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[arg(long, global = true)]
     json: bool,
+    #[arg(long, global = true)]
+    remote: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    Remote {
+        #[command(subcommand)]
+        command: remote_command::Command,
+    },
     Gc {
         #[arg(long)]
         dry_run: bool,
@@ -60,10 +71,15 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    remote_command::select(cli.remote.as_deref())?;
     // The network guard must outlive the runtime and all database operations.
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Remote {
+                command: remote_command::Command::Status,
+            } => remote_status::run(cli.json).await,
+            Command::Remote { .. } => anyhow::bail!("use swarmy for tunnel and log commands"),
             Command::Gc { dry_run } => gc::run(dry_run, cli.json).await,
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,

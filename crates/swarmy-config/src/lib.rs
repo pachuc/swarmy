@@ -1,5 +1,9 @@
 //! Shared configuration for services and command-line programs.
 mod exports;
+mod remote;
+pub use remote::{
+    RemoteNode, RemotePorts, RemoteProfile, RemoteSettings, remote_path, validate_remote_name,
+};
 mod object;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
@@ -11,6 +15,10 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("remote configuration: {0}")]
+    Remote(&'static str),
+    #[error("invalid remote JSON: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("invalid S3 namespace: {0}")]
     S3Namespace(&'static str),
     #[error(transparent)]
@@ -64,6 +72,8 @@ impl Default for GarbageCollection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub state_dir: String,
+    pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
     pub sandbox_idle_seconds: std::num::NonZeroU64,
     pub placement_lease_seconds: std::num::NonZeroU64,
@@ -117,6 +127,8 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            state_dir: ".swarmy".into(),
+            remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
             sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
@@ -216,6 +228,15 @@ impl Settings {
     /// # Errors
     /// Fails for unreadable files, invalid TOML, or invalid overrides.
     pub fn load() -> Result<Loaded, Error> {
+        let mut loaded = Self::load_base()?;
+        loaded.settings.apply_remote()?;
+        Ok(loaded)
+    }
+
+    /// Load configuration without opening the selected tunnel profile.
+    /// # Errors
+    /// Returns invalid configuration or filesystem errors.
+    pub fn load_base() -> Result<Loaded, Error> {
         let cwd = std::env::current_dir()?;
         let environment = std::env::vars_os()
             .map(|(key, value)| {
@@ -230,13 +251,31 @@ impl Settings {
             })
             .map(|(key, value)| value.map(|value| (key, value)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        Self::load_from(&cwd, &environment)
+        Self::load_base_from(&cwd, &environment)
     }
 
     /// Load with an explicit environment, without changing process globals.
     /// # Errors
     /// Fails for invalid settings or filesystem errors.
     pub fn load_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
+        let mut loaded = Self::load_base_from(cwd, environment)?;
+        loaded.settings.apply_remote()?;
+        Ok(loaded)
+    }
+
+    /// Apply the selected profile after environment overrides.
+    /// # Errors
+    /// Returns errors for missing or invalid profiles.
+    pub fn apply_remote(&mut self) -> Result<(), Error> {
+        if let Some(name) = &self.remote.profile {
+            let profile = RemoteProfile::read(Path::new(&self.state_dir), name)?;
+            profile.validate_fdb_port()?;
+            profile.apply(self);
+        }
+        Ok(())
+    }
+
+    fn load_base_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
         let path = Self::discover_from(cwd, environment);
         let root = path.as_ref().and_then(|path| path.parent()).map_or_else(
             || cwd.to_owned(),
@@ -368,18 +407,10 @@ impl Settings {
         &mut self,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
+        self.apply_connection_environment(environment);
         self.apply_node_environment(environment)?;
         self.apply_snapshot_environment(environment)?;
         self.apply_gc_environment(environment)?;
-        if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
-            self.fdb_cluster_file.clone_from(value);
-        }
-        if let Some(value) = environment.get("SWARMY_NATS_URL") {
-            self.nats_url.clone_from(value);
-        }
-        if let Some(value) = environment.get("SWARMY_S3_ENDPOINT") {
-            self.s3_endpoint.clone_from(value);
-        }
         if let Some(value) = environment.get("SWARMY_S3_ACCESS_KEY") {
             self.s3_access_key.clone_from(value);
         }
@@ -468,6 +499,24 @@ impl Settings {
             self.fake.call_log.clone_from(value);
         }
         Ok(())
+    }
+
+    fn apply_connection_environment(&mut self, environment: &BTreeMap<String, String>) {
+        if let Some(value) = environment.get("SWARMY_STATE_DIR") {
+            self.state_dir.clone_from(value);
+        }
+        if let Some(value) = environment.get("SWARMY_REMOTE") {
+            self.remote.profile = Some(value.clone());
+        }
+        if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
+            self.fdb_cluster_file.clone_from(value);
+        }
+        if let Some(value) = environment.get("SWARMY_NATS_URL") {
+            self.nats_url.clone_from(value);
+        }
+        if let Some(value) = environment.get("SWARMY_S3_ENDPOINT") {
+            self.s3_endpoint.clone_from(value);
+        }
     }
 
     fn apply_node_environment(
@@ -587,6 +636,10 @@ impl Settings {
             ("SWARMY_FAKE_CALL_LOG".into(), self.fake.call_log.clone()),
         ]
         .into();
+        environment.insert("SWARMY_STATE_DIR".into(), self.state_dir.clone());
+        if let Some(name) = &self.remote.profile {
+            environment.insert("SWARMY_REMOTE".into(), name.clone());
+        }
         self.node_environment(&mut environment);
         for (name, value) in [
             ("SWARMY_GC_GRACE_SECONDS", self.gc.grace_seconds.to_string()),
@@ -660,6 +713,7 @@ impl Settings {
     /// Anchor filesystem paths so invocation from subdirectories is consistent.
     pub fn resolve_paths(&mut self, root: &Path) {
         for value in [
+            &mut self.state_dir,
             &mut self.fdb_cluster_file,
             &mut self.credential_file,
             &mut self.fake.script,
