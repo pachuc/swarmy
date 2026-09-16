@@ -30,7 +30,15 @@ impl Check {
 }
 
 pub async fn run(json: bool) -> anyhow::Result<bool> {
-    let loaded = Settings::load();
+    let loaded = Settings::load_base().map(|mut loaded| {
+        if let Some(name) = &loaded.settings.remote.profile
+            && let Ok(profile) =
+                swarmy_config::RemoteProfile::read(Path::new(&loaded.settings.state_dir), name)
+        {
+            profile.apply(&mut loaded.settings);
+        }
+        loaded
+    });
     let mut checks = vec![Check::new(
         "config",
         match &loaded {
@@ -50,14 +58,19 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
     )];
     checks.push(Check::new("libfdb_c", client_library(),
         "Run scripts/install-dev-tools.sh and the printed cargo install command; keep libfdb_c.so (libfdb_c.dylib on macOS) in the directory selected by SWARMY_FDB_LIB_DIR at build time."));
-    for (name, argument) in [
-        ("fdbserver", "--version"),
-        ("fdbcli", "--version"),
-        ("nats-server", "--version"),
-        ("weed", "version"),
-    ] {
-        checks.push(Check::new(name, binary_version(name, argument).await,
+    let remote = loaded
+        .as_ref()
+        .is_ok_and(|loaded| loaded.settings.remote.profile.is_some());
+    if !remote {
+        for (name, argument) in [
+            ("fdbserver", "--version"),
+            ("fdbcli", "--version"),
+            ("nats-server", "--version"),
+            ("weed", "version"),
+        ] {
+            checks.push(Check::new(name, binary_version(name, argument).await,
             "Run scripts/install-dev-tools.sh. swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
+        }
     }
     for name in [
         "swarmy-session",
@@ -76,6 +89,7 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         if loaded.settings.provider == "chatgpt" {
             checks.push(credentials(&loaded.settings));
         }
+        checks.extend(remote_checks(loaded).await);
         checks.extend(stack(loaded).await);
     } else {
         for name in ["credentials", "dev stack"] {
@@ -99,6 +113,47 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         }
     }
     Ok(ok)
+}
+
+async fn remote_checks(loaded: &Loaded) -> Vec<Check> {
+    let mut checks = Vec::new();
+    if let Some(name) = &loaded.settings.remote.profile {
+        let profile =
+            match swarmy_config::RemoteProfile::read(Path::new(&loaded.settings.state_dir), name) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    return vec![Check::new(
+                        "remote tunnel",
+                        Err(format!("{name}: profile unavailable: {error}")),
+                        &format!(
+                            "Run swarmy remote connect {name}; repair an invalid profile if needed."
+                        ),
+                    )];
+                }
+            };
+        checks.push(Check::new(
+            "remote FoundationDB port",
+            profile
+                .validate_fdb_port()
+                .map(|()| "advertised port preserved".into())
+                .map_err(|error| error.to_string()),
+            "Disconnect, free the advertised FoundationDB port, and reconnect.",
+        ));
+        let result = if crate::remote::ssh::healthy(&profile).await {
+            Ok(format!(
+                "{name}: SSH control master healthy (pid {})",
+                profile.pid
+            ))
+        } else {
+            Err(format!("{name}: SSH control master is down"))
+        };
+        checks.push(Check::new(
+            "remote tunnel",
+            result,
+            &format!("Run swarmy remote connect {name}."),
+        ));
+    }
+    checks
 }
 
 fn invalid_config() -> String {
@@ -203,6 +258,15 @@ fn credentials(settings: &Settings) -> Check {
 
 async fn stack(loaded: &Loaded) -> Vec<Check> {
     let settings = &loaded.settings;
+    if let Some(name) = &settings.remote.profile
+        && swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).is_err()
+    {
+        return vec![Check::new(
+            "remote services",
+            Err("cannot check without a tunnel profile".into()),
+            &format!("Run swarmy remote connect {name}."),
+        )];
+    }
     let cluster = Path::new(&settings.fdb_cluster_file);
     if !loaded.root.join(".dev").exists() && !cluster.parent().is_some_and(Path::is_dir) {
         return vec![Check::new(
@@ -238,8 +302,13 @@ async fn stack(loaded: &Loaded) -> Vec<Check> {
             cluster.display()
         ))
     };
+    let label = if settings.remote.profile.is_some() {
+        "remote"
+    } else {
+        "dev stack"
+    };
     let mut checks = vec![Check::new(
-        "dev stack FoundationDB",
+        &format!("{label} FoundationDB"),
         fdb,
         "Run swarmy dev up; check fdb_cluster_file if the stack is remote.",
     )];
@@ -263,7 +332,7 @@ async fn stack(loaded: &Loaded) -> Vec<Check> {
             None => Err(format!("invalid {name} endpoint")),
         };
         checks.push(Check::new(
-            &format!("dev stack {name}"),
+            &format!("{label} {name}"),
             result,
             "Run swarmy dev up; check the configured endpoint if the stack is remote.",
         ));

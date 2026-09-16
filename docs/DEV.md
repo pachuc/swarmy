@@ -341,3 +341,117 @@ executable using the active Cargo target directory and debug or release profile.
 To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
 count and environment at startup. Restart and health checks remain shared.
+
+## Use a remote stack through SSH
+
+`swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
+SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
+defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
+can select another directory. Provisioning and tunnel commands share the
+`swarmy_config::RemoteNode` JSON contract. For an existing host, a state file
+can be written directly:
+
+```json
+{
+  "name": "test",
+  "region": "us-east-1",
+  "instance_id": "i-example",
+  "public_ip": "203.0.113.10",
+  "private_ip": "10.0.0.10",
+  "key_path": "/home/me/.ssh/test",
+  "ssh_user": "ubuntu",
+  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
+  "nodes": [],
+  "created_at": "2026-09-16T00:00:00Z"
+}
+```
+
+```sh
+swarmy remote connect test
+swarmy dev up --remote test
+swarmy doctor --remote test
+swarmy run --remote test 'what time is it'
+swarmy chat --remote test
+swarmy remote status
+swarmy remote logs test
+swarmy dev down
+swarmy remote disconnect test
+```
+
+Selection also works with `export SWARMY_REMOTE=test` or `profile = "test"`
+in the config's `[remote]` table. The flag takes precedence over the variable,
+which takes precedence over the config setting. The selected profile overrides
+the FoundationDB cluster file, NATS URL, and S3 endpoint after other environment
+overrides. Credentials, bucket, object prefix, and store directory retain their
+normal configuration. Scheduler, worker, and gateway binaries honor the same
+variable and config setting without additional flags.
+
+Remote `dev up` starts only scheduler, gateway, and worker. It records that
+choice so `dev down` leaves the backing services running, even without a remote
+flag. Disconnect stops only the SSH control master and removes its profile and
+cluster file; instance state and logs remain. Reconnecting a healthy tunnel is
+idempotent. SSH uses the configured identity, batch authentication, normal host
+key verification with first-use acceptance, and keepalives. SSH diagnostics are
+saved in `NAME.ssh.log`. `remote logs` follows the `swarmyd` systemd journal until
+interrupted; the SSH user needs permission to read that journal.
+
+Local ports prefer 4500, 4222, and 8333, with free ephemeral ports chosen on
+collision. All forwards bind only to `127.0.0.1`. The profile records the actual
+ports, PID, and control socket. Port selection and SSH binding cannot be atomic;
+if another process claims a selected port, SSH fails startup and no profile is
+published. Retry connect after resolving the collision.
+
+FoundationDB needs special care: the generated coordinator file uses the dev
+stack's `dev:dev` cluster identity. Its transport verifies that the connected
+port matches the server's advertised port. A remapped coordinator port fails
+that check even when the destination is localhost. It also discovers server
+addresses, so the advertised `127.0.0.1:4500` must reach the same remote database.
+Free that port before connecting, or use a separate network namespace. Connect
+still records and opens the alternative forward for inspection, but warns;
+doctor reports the mapping failure, and configuration loading rejects it before
+starting the native client. NATS and S3 support alternative ports normally.
+See the port assertion in [FoundationDB's transport source](https://github.com/apple/foundationdb/blob/7.3.63/fdbrpc/FlowTransport.actor.cpp).
+
+Status reports saved instance IDs and SSH reachability. An unreachable host has
+unknown instance state; this command does not query a cloud API. For each
+connected stack it scans all registered swarmyd nodes, including stale records,
+and shows heartbeat age (live means at most 30 seconds old). Registrations belong
+to the stack; they are not attributed to an instance because node records contain
+no instance address. Store failures and disconnected tunnels report unknown
+registration rather than claiming the node is absent. `--json` emits the same
+information for scripts.
+
+To run the SSH acceptance test on the launcher, authorize a temporary SSH key for
+`ubuntu@127.0.0.1`, then run:
+
+```sh
+cargo build --workspace --locked
+scripts/dev-stack.sh start
+SWARMY_REMOTE_TEST_KEY=/absolute/path/to/key scripts/test-remote.sh
+```
+
+The default run checks collisions against localhost, forwarded NATS traffic,
+profile recording, the FoundationDB mapping diagnostic, and disconnect. Full
+service acceptance needs a separate client network namespace, with the host's
+sshd reachable over a veth pair and port 4500 free in the client. For example, use an unused subnet and namespace name:
+
+```sh
+sudo ip netns add swarmy-remote-test
+sudo ip link add swarmy-host type veth peer name swarmy-client
+sudo ip link set swarmy-client netns swarmy-remote-test
+sudo ip addr add 10.253.117.1/30 dev swarmy-host
+sudo ip link set swarmy-host up
+sudo ip netns exec swarmy-remote-test ip addr add 10.253.117.2/30 dev swarmy-client
+sudo ip netns exec swarmy-remote-test ip link set swarmy-client up
+sudo ip netns exec swarmy-remote-test ip link set lo up
+sudo ip netns exec swarmy-remote-test sudo -u ubuntu env \
+  SWARMY_REMOTE_TEST_KEY=/absolute/path/to/key \
+  SWARMY_REMOTE_TEST_HOST=10.253.117.1 scripts/test-remote.sh
+sudo ip netns delete swarmy-remote-test
+```
+
+That run uses an isolated project, starts the three local services, runs the
+fake provider end to end, checks doctor and a live swarmyd registration, and
+verifies that backing process IDs remain unchanged. The script removes its
+services and tunnel on exit. Without `SWARMY_REMOTE_TEST_KEY` it skips cleanly.
+Remove the temporary authorized key and network namespace after testing.

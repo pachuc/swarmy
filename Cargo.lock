@@ -3578,6 +3578,7 @@ dependencies = [
  "fs2",
  "object_store",
  "serde",
+ "serde_json",
  "shell-words",
  "swarmy-core",
  "tempfile",

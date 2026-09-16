@@ -1,13 +1,13 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
-use swarmy_config::RemoteNode;
+use swarmy_config::{RemoteNode, validate_remote_name};
 
+/// The `remote` directory under the state directory: node records, keys, and the lock.
 pub struct State {
     pub directory: PathBuf,
 }
@@ -21,6 +21,7 @@ impl State {
         })
     }
 
+    /// Serialize every remote command on this state directory.
     pub fn lock(&self) -> Result<File> {
         let file = OpenOptions::new()
             .create(true)
@@ -32,9 +33,13 @@ impl State {
         Ok(file)
     }
 
+    fn path(&self, name: &str, extension: &str) -> Result<PathBuf> {
+        validate_remote_name(name)?;
+        Ok(self.directory.join(format!("{name}.{extension}")))
+    }
+
     pub fn read(&self, name: &str) -> Result<Option<RemoteNode>> {
-        validate_name(name)?;
-        match fs::read(self.directory.join(format!("{name}.json"))) {
+        match fs::read(self.path(name, "json")?) {
             Ok(bytes) => {
                 let node: RemoteNode = serde_json::from_slice(&bytes)?;
                 ensure!(
@@ -48,13 +53,16 @@ impl State {
         }
     }
 
+    pub fn require(&self, name: &str) -> Result<RemoteNode> {
+        self.read(name)?
+            .with_context(|| format!("no remote node named {name}; run swarmy remote up {name}"))
+    }
+
     pub fn save(&self, node: &RemoteNode) -> Result<()> {
-        validate_name(&node.name)?;
-        let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
-        serde_json::to_writer_pretty(&mut temporary, node)?;
-        temporary.write_all(b"\n")?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(self.directory.join(format!("{}.json", node.name)))?;
+        let path = self.path(&node.name, "json")?;
+        let mut bytes = serde_json::to_vec_pretty(node)?;
+        bytes.push(b'\n');
+        write(&path, &bytes)?;
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
@@ -69,7 +77,7 @@ impl State {
             node.key_path.clone(),
             node.key_path.with_extension("pub"),
             node.key_path.with_extension("known_hosts"),
-            self.directory.join(format!("{}.json", node.name)),
+            self.path(&node.name, "json")?,
         ] {
             match fs::remove_file(path) {
                 Ok(()) => {}
@@ -82,14 +90,12 @@ impl State {
     }
 }
 
-pub fn validate_name(name: &str) -> Result<()> {
-    ensure!(
-        !name.is_empty()
-            && name.len() <= 63
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-        "remote name must be 1-63 ASCII letters, digits, hyphens, or underscores"
-    );
+/// Replace a file atomically; the temporary file is private to this user.
+pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path)?;
     Ok(())
 }

@@ -18,11 +18,18 @@ pub async fn run(
         "remote node {name} already exists; run swarmy remote down {name} first"
     );
     ensure!(
-        !settings.region.is_empty()
-            && !settings.subnet.is_empty()
-            && !settings.security_group.is_empty(),
-        "configure remote.region, remote.subnet, and remote.security_group"
+        !settings.region.is_empty(),
+        "configure remote.region in config.toml before running swarmy remote up"
     );
+    for (field, value) in [
+        ("subnet", &settings.subnet),
+        ("security_group", &settings.security_group),
+    ] {
+        ensure!(
+            value.as_deref().is_some_and(|value| !value.is_empty()),
+            "remote.{field} is not configured; set [remote] {field} in config.toml before running swarmy remote up"
+        );
+    }
     ensure!(
         settings.disk_gb > 0
             && !settings.managed_by_tag.is_empty()
@@ -58,7 +65,7 @@ pub async fn run(
         "Remote node {name} ready in {:.1}s",
         started.elapsed().as_secs_f64()
     );
-    println!("{}", super::ssh::command_line(&node, &address));
+    println!("{}", super::ssh::command_line(&node, &address)?);
     Ok(())
 }
 

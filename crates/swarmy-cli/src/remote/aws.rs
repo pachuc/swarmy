@@ -42,48 +42,57 @@ fn tags(resource: ResourceType, name: &str, owner: &str) -> TagSpecification {
 fn launch_input(
     request: &Launch,
     root_device: &str,
-) -> aws_sdk_ec2::operation::run_instances::RunInstancesInput {
-    aws_sdk_ec2::operation::run_instances::RunInstancesInput::builder()
-        .image_id(&request.image)
-        .instance_type(InstanceType::from(request.settings.instance_type.as_str()))
-        .min_count(1)
-        .max_count(1)
-        .key_name(&request.key_name)
-        .client_token(&request.key_name)
-        .network_interfaces(
-            InstanceNetworkInterfaceSpecification::builder()
-                .device_index(0)
-                .subnet_id(&request.settings.subnet)
-                .groups(&request.settings.security_group)
-                .associate_public_ip_address(true)
-                .delete_on_termination(true)
-                .build(),
-        )
-        .block_device_mappings(
-            BlockDeviceMapping::builder()
-                .device_name(root_device)
-                .ebs(
-                    EbsBlockDevice::builder()
-                        .volume_size(request.settings.disk_gb)
-                        .volume_type(VolumeType::Gp3)
-                        .delete_on_termination(true)
-                        .encrypted(true)
-                        .build(),
-                )
-                .build(),
-        )
-        .tag_specifications(tags(
-            ResourceType::Instance,
-            &request.name,
-            &request.settings.managed_by_tag,
-        ))
-        .tag_specifications(tags(
-            ResourceType::Volume,
-            &request.name,
-            &request.settings.managed_by_tag,
-        ))
-        .build()
-        .expect("both instance counts are present")
+) -> Result<aws_sdk_ec2::operation::run_instances::RunInstancesInput> {
+    let disk_gb = i32::try_from(request.settings.disk_gb).context("remote.disk_gb is too large")?;
+    Ok(
+        aws_sdk_ec2::operation::run_instances::RunInstancesInput::builder()
+            .image_id(&request.image)
+            .instance_type(InstanceType::from(request.settings.instance_type.as_str()))
+            .min_count(1)
+            .max_count(1)
+            .key_name(&request.key_name)
+            .client_token(&request.key_name)
+            .network_interfaces(
+                InstanceNetworkInterfaceSpecification::builder()
+                    .device_index(0)
+                    .set_subnet_id(request.settings.subnet.clone())
+                    .set_groups(
+                        request
+                            .settings
+                            .security_group
+                            .clone()
+                            .map(|group| vec![group]),
+                    )
+                    .associate_public_ip_address(true)
+                    .delete_on_termination(true)
+                    .build(),
+            )
+            .block_device_mappings(
+                BlockDeviceMapping::builder()
+                    .device_name(root_device)
+                    .ebs(
+                        EbsBlockDevice::builder()
+                            .volume_size(disk_gb)
+                            .volume_type(VolumeType::Gp3)
+                            .delete_on_termination(true)
+                            .encrypted(true)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .tag_specifications(tags(
+                ResourceType::Instance,
+                &request.name,
+                &request.settings.managed_by_tag,
+            ))
+            .tag_specifications(tags(
+                ResourceType::Volume,
+                &request.name,
+                &request.settings.managed_by_tag,
+            ))
+            .build()
+            .expect("both instance counts are present"),
+    )
 }
 
 impl Cloud for Aws {
@@ -119,7 +128,7 @@ impl Cloud for Aws {
             .first()
             .and_then(|image| image.root_device_name())
             .context("AMI has no root device")?;
-        let input = launch_input(request, root);
+        let input = launch_input(request, root)?;
         let output = self
             .ec2
             .run_instances()
@@ -242,8 +251,8 @@ mod tests {
     fn ec2_request_tags_disk_network_and_key() {
         let request = Launch {
             settings: swarmy_config::RemoteSettings {
-                subnet: "subnet-test".into(),
-                security_group: "sg-test".into(),
+                subnet: Some("subnet-test".into()),
+                security_group: Some("sg-test".into()),
                 managed_by_tag: "codex-launcher".into(),
                 ..Default::default()
             },
@@ -251,7 +260,7 @@ mod tests {
             name: "test".into(),
             key_name: "unique-key".into(),
         };
-        let input = launch_input(&request, "/dev/sda1");
+        let input = launch_input(&request, "/dev/sda1").unwrap();
         assert_eq!(input.image_id(), Some("ami-test"));
         assert_eq!(input.key_name(), Some("unique-key"));
         assert_eq!(input.client_token(), Some("unique-key"));

@@ -53,7 +53,7 @@ struct Layout {
 
 impl Layout {
     fn discover() -> Result<Self> {
-        let loaded = Settings::load()?;
+        let loaded = Settings::load_base()?;
         let cwd = std::env::current_dir()?;
         let repo = cwd
             .ancestors()
@@ -114,8 +114,14 @@ pub async fn run(command: Command) -> Result<()> {
         Command::Down => {
             let _lock = layout.lock()?;
             stop_services(&layout.state).await?;
-            stack(&layout, "stop").await?;
-            println!("services and stack: down");
+            let remote = layout.state.join("remote").exists()
+                || Settings::load_base()?.settings.remote.profile.is_some();
+            if remote {
+                println!("services: down; remote stack preserved");
+            } else {
+                stack(&layout, "stop").await?;
+                println!("services and stack: down");
+            }
             Ok(())
         }
         Command::Status => status(&layout).await,
@@ -164,18 +170,9 @@ async fn up(layout: &Layout) -> Result<()> {
         println!("replacing recorded processes: {}", survivors.join(", "));
     }
     stop_services(&layout.state).await?;
-    // CI and manual users may already have started the backing stack.
-    let running = stack(layout, "status").await?;
-    if running
-        .lines()
-        .filter(|line| line.contains(": up (pid "))
-        .count()
-        != 3
-        || !layout.repo.join(".dev/env").is_file()
-    {
-        stack(layout, "start").await?;
-    }
-    let settings = prepare_settings(layout)?;
+    let remote = Settings::load_base()?.settings.remote.profile;
+    prepare_stack(layout, remote.as_deref()).await?;
+    let settings = prepare_settings(layout, remote.is_some())?;
     for (name, _) in SERVICES {
         let executable = binary(name)?;
         ensure!(
@@ -243,7 +240,11 @@ async fn up(layout: &Layout) -> Result<()> {
                 .map(|id| format!("{name}={}", id.pid))
         })
         .collect::<Vec<_>>();
-    println!("stack: ready ({})", stack_pids.join(", "));
+    if let Some(name) = remote {
+        println!("stack: remote {name}");
+    } else {
+        println!("stack: ready ({})", stack_pids.join(", "));
+    }
     for (name, _) in SERVICES {
         let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
             .context("service exited during startup")?;
@@ -256,14 +257,48 @@ async fn up(layout: &Layout) -> Result<()> {
     Ok(())
 }
 
-fn prepare_settings(layout: &Layout) -> Result<Settings> {
-    let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.repo.join(".dev/env"))?)?;
+async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
+    if remote.is_none() {
+        // CI and manual users may already have started the backing stack.
+        let running = stack(layout, "status").await?;
+        if running
+            .lines()
+            .filter(|line| line.contains(": up (pid "))
+            .count()
+            != 3
+            || !layout.repo.join(".dev/env").is_file()
+        {
+            stack(layout, "start").await?;
+        }
+    }
+    let marker = layout.state.join("remote");
+    if let Some(name) = remote {
+        let profile = swarmy_config::RemoteProfile::read(
+            Path::new(&Settings::load_base()?.settings.state_dir),
+            name,
+        )?;
+        ensure!(
+            crate::remote::ssh::healthy(&profile).await,
+            "remote tunnel is down; run swarmy remote connect {name}"
+        );
+        write_private(&marker, name)?;
+    } else if marker.exists() {
+        fs::remove_file(&marker)?;
+    }
+    Ok(())
+}
+
+fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     let mut settings = if layout.config.exists() {
         Settings::read(&layout.config)?
     } else {
         Settings::default()
     };
-    settings.apply_environment(&exports)?;
+    if !remote {
+        let exports =
+            swarmy_config::parse_exports(&fs::read_to_string(layout.repo.join(".dev/env"))?)?;
+        settings.apply_environment(&exports)?;
+    }
     if settings.credential_file.is_empty() {
         settings.credential_file = std::env::var_os("HOME")
             .map_or_else(|| layout.root.clone(), PathBuf::from)
@@ -394,7 +429,9 @@ async fn status(layout: &Layout) -> Result<()> {
                 .map(|identity| (name, identity))
         })
         .collect::<Vec<_>>();
-    if stack.is_empty() {
+    if let Ok(name) = fs::read_to_string(layout.state.join("remote")) {
+        println!("stack: remote {name}");
+    } else if stack.is_empty() {
         println!("stack: down");
     } else {
         let mut entries = Vec::new();

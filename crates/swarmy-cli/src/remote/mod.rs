@@ -1,38 +1,31 @@
 mod aws;
+mod connect;
+mod disconnect;
 mod down;
-mod ssh;
+mod logs;
+pub(crate) mod ssh;
 mod state;
 #[cfg(test)]
 mod tests;
 mod up;
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Result, bail};
-use clap::Subcommand;
 use swarmy_config::{RemoteNode, RemoteSettings, Settings};
 
-#[derive(Subcommand)]
-pub enum Command {
-    /// Launch, copy this checkout, and provision a remote node
-    Up { name: String },
-    /// Terminate a node and remove its key pair and local state
-    Down { name: String },
-}
+use crate::remote_command::Command;
+use state::State;
 
-pub async fn run(command: Command) -> Result<()> {
-    let loaded = Settings::load()?;
-    let directory = loaded
-        .path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map_or_else(|| loaded.root.join(".swarmy"), std::path::Path::to_owned)
-        .join("remote");
-    let state = state::State::open(&directory)?;
-    let _lock = state.lock()?;
+pub async fn run(command: Command, json: bool) -> Result<()> {
+    // The base settings are enough here: a selected tunnel profile only rewrites endpoints.
+    let loaded = Settings::load_base()?;
+    let state_dir = PathBuf::from(&loaded.settings.state_dir);
+    let state = State::open(&state_dir.join("remote"))?;
     match command {
         Command::Up { name } => {
-            state::validate_name(&name)?;
+            let _lock = state.lock()?;
+            swarmy_config::validate_remote_name(&name)?;
             let host = ssh::Ssh::discover()?;
             let cloud = aws::Aws::new(&loaded.settings.remote.region).await;
             tokio::select! {
@@ -44,6 +37,7 @@ pub async fn run(command: Command) -> Result<()> {
             }
         }
         Command::Down { name } => {
+            let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
                 println!("No remote node named {name}");
                 return Ok(());
@@ -51,6 +45,10 @@ pub async fn run(command: Command) -> Result<()> {
             let cloud = aws::Aws::new(&node.region).await;
             down::run(&cloud, &state, &node, Duration::from_secs(5)).await
         }
+        Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
+        Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
+        Command::Logs { name } => logs::run(&state, &name).await,
+        Command::Status => unreachable!("status runs in swarmy-session"),
     }
 }
 
@@ -81,9 +79,20 @@ trait Cloud {
     async fn delete_key(&self, name: &str) -> Result<()>;
 }
 
+/// Key generation and provisioning over SSH, replaceable by a fake in tests.
 trait Host {
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
     async fn provision(&self, node: &RemoteNode) -> Result<String>;
+}
+
+impl Host for ssh::Ssh {
+    async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
+        ssh::generate_key(node).await
+    }
+
+    async fn provision(&self, node: &RemoteNode) -> Result<String> {
+        ssh::Ssh::provision(self, node).await
+    }
 }
 
 async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Instance> {

@@ -102,8 +102,8 @@ fn instance(status: &str) -> Instance {
 
 fn settings() -> RemoteSettings {
     RemoteSettings {
-        subnet: "subnet-test".into(),
-        security_group: "sg-test".into(),
+        subnet: Some("subnet-test".into()),
+        security_group: Some("sg-test".into()),
         managed_by_tag: "codex-launcher".into(),
         ..Default::default()
     }
@@ -158,8 +158,8 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
     assert_eq!(request.settings.disk_gb, 100);
     assert_eq!(request.settings.instance_type, "m6id.xlarge");
     assert_eq!(request.name, "demo");
-    assert_eq!(request.settings.subnet, "subnet-test");
-    assert_eq!(request.settings.security_group, "sg-test");
+    assert_eq!(request.settings.subnet.as_deref(), Some("subnet-test"));
+    assert_eq!(request.settings.security_group.as_deref(), Some("sg-test"));
     assert_eq!(request.settings.managed_by_tag, "codex-launcher");
     assert_eq!(request.key_name, super::key_name(&node).unwrap());
     assert!(request.key_name.len() <= 64);
@@ -311,7 +311,7 @@ async fn wait_rejects_terminal_state_and_times_out() {
 #[test]
 fn names_cannot_escape_state_and_commands_are_serialized() {
     for name in ["", "../escape", "a/b", "bad.name", "$(true)"] {
-        assert!(super::state::validate_name(name).is_err());
+        assert!(swarmy_config::validate_remote_name(name).is_err());
     }
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(dir.path()).unwrap();

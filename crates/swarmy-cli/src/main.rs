@@ -2,6 +2,7 @@ mod dev;
 mod doctor;
 mod image_command;
 mod remote;
+mod remote_command;
 mod session_command;
 mod tools;
 mod vol_command;
@@ -20,16 +21,19 @@ struct Cli {
     /// Emit compact machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
+    /// Use a saved remote tunnel profile
+    #[arg(long, global = true)]
+    remote: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Launch and terminate EC2 development nodes
+    /// Launch, connect to, and inspect remote development stacks
     Remote {
         #[command(subcommand)]
-        command: remote::Command,
+        command: remote_command::Command,
     },
     /// Collect unreferenced chunks older than the configured grace window
     Gc {
@@ -88,6 +92,7 @@ enum AuthCommand {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    remote_command::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
         tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
@@ -105,7 +110,9 @@ fn main() -> anyhow::Result<()> {
     }
     if matches!(
         cli.command,
-        Command::Run { .. }
+        Command::Remote {
+            command: remote_command::Command::Status
+        } | Command::Run { .. }
             | Command::Session { .. }
             | Command::Chat { .. }
             | Command::Vol { .. }
@@ -126,7 +133,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Remote { command } => remote::run(command).await?,
+        Command::Remote { command } => remote::run(command, cli.json).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Run { .. }
         | Command::Session { .. }
