@@ -1,6 +1,8 @@
 //! Shared configuration for services and command-line programs.
 mod exports;
+mod object;
 pub use exports::parse_exports;
+pub use object::ObjectPrefix;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -9,6 +11,10 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid S3 namespace: {0}")]
+    S3Namespace(&'static str),
+    #[error(transparent)]
+    ObjectStore(#[from] object_store::Error),
     #[error("configuration I/O: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid configuration: {0}")]
@@ -72,6 +78,7 @@ pub struct Settings {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub s3_bucket: String,
+    pub s3_prefix: ObjectPrefix,
     pub s3_region: String,
     pub store_directory: String,
     pub bus_prefix: String,
@@ -132,6 +139,7 @@ impl Default for Settings {
             s3_access_key: "swarmy-dev".into(),
             s3_secret_key: "swarmy-dev-secret".into(),
             s3_bucket: "swarmy".into(),
+            s3_prefix: ObjectPrefix::default(),
             s3_region: "us-east-1".into(),
             store_directory: "swarmy".into(),
             bus_prefix: String::new(),
@@ -290,7 +298,9 @@ impl Settings {
     /// # Errors
     /// Fails if the file cannot be read or decoded.
     pub fn read(path: &Path) -> Result<Self, Error> {
-        Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+        let settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        settings.s3_namespace()?;
+        Ok(settings)
     }
 
     /// Encode settings for a configuration file.
@@ -353,7 +363,7 @@ impl Settings {
 
     /// Apply existing `SWARMY_*` names over file values.
     /// # Errors
-    /// Fails if a numeric override cannot be parsed.
+    /// Fails if an override cannot be parsed or the S3 namespace is invalid.
     pub fn apply_environment(
         &mut self,
         environment: &BTreeMap<String, String>,
@@ -379,6 +389,10 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_S3_BUCKET") {
             self.s3_bucket.clone_from(value);
         }
+        if let Some(value) = environment.get("SWARMY_S3_PREFIX") {
+            self.s3_prefix = value.parse()?;
+        }
+        self.s3_namespace()?;
         if let Some(value) = environment.get("SWARMY_S3_REGION") {
             self.s3_region.clone_from(value);
         }
@@ -518,6 +532,7 @@ impl Settings {
             ("SWARMY_S3_ACCESS_KEY".into(), self.s3_access_key.clone()),
             ("SWARMY_S3_SECRET_KEY".into(), self.s3_secret_key.clone()),
             ("SWARMY_S3_BUCKET".into(), self.s3_bucket.clone()),
+            ("SWARMY_S3_PREFIX".into(), self.s3_prefix.as_str().into()),
             ("SWARMY_S3_REGION".into(), self.s3_region.clone()),
             (
                 "SWARMY_STORE_DIRECTORY".into(),

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path, prefix::PrefixStore};
+use object_store::{ObjectStore, path::Path};
 use tokio::sync::RwLock;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,28 +66,11 @@ impl ObjectBlobStore {
     /// Returns an error for an unreadable configuration or invalid S3 settings.
     pub fn from_env() -> Result<Self, BlobError> {
         let settings = swarmy_config::Settings::load()?.settings;
-        Self::from_settings(settings)
+        Self::from_settings(&settings)
     }
 
-    fn from_settings(settings: swarmy_config::Settings) -> Result<Self, BlobError> {
-        // Benchmark namespaces historically used bucket/prefix. S3 accepts that
-        // path for individual objects, but listings must address the bucket and
-        // put the namespace in the prefix query. PrefixStore also strips it from
-        // listing results so the collector sees canonical chunk paths.
-        let (bucket, prefix) = settings
-            .s3_bucket
-            .split_once('/')
-            .unwrap_or((&settings.s3_bucket, ""));
-        let inner = AmazonS3Builder::new()
-            .with_endpoint(settings.s3_endpoint)
-            .with_access_key_id(settings.s3_access_key)
-            .with_secret_access_key(settings.s3_secret_key)
-            .with_bucket_name(bucket)
-            .with_region(settings.s3_region)
-            .with_allow_http(true)
-            .with_virtual_hosted_style_request(false)
-            .build()?;
-        Ok(Self::new(Arc::new(PrefixStore::new(inner, prefix))))
+    fn from_settings(settings: &swarmy_config::Settings) -> Result<Self, BlobError> {
+        Ok(Self::new(settings.object_store()?))
     }
 
     #[must_use]
@@ -129,15 +112,21 @@ mod tests {
             return;
         }
         let mut settings = swarmy_config::Settings::load().unwrap().settings;
+        // Exercise legacy compatibility even when the test runner selects an
+        // explicit namespace. Keep the fixture beneath that namespace.
+        if !settings.s3_prefix.as_str().is_empty() {
+            write!(settings.s3_bucket, "/{}", settings.s3_prefix.as_str()).unwrap();
+            settings.s3_prefix = swarmy_config::ObjectPrefix::default();
+        }
         write!(
             settings.s3_bucket,
             "/prefix-test-{}",
             ulid::Ulid::generate()
         )
         .unwrap();
-        let root = ObjectBlobStore::from_settings(settings.clone()).unwrap();
+        let root = ObjectBlobStore::from_settings(&settings).unwrap();
         settings.s3_bucket.push_str("/inside");
-        let scoped = ObjectBlobStore::from_settings(settings).unwrap();
+        let scoped = ObjectBlobStore::from_settings(&settings).unwrap();
         let payload = Bytes::from_static(b"prefix regression");
         let outside = root.put("outside", payload.clone()).await;
         let written = scoped.put("chunks/value", payload.clone()).await;

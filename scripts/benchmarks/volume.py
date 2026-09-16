@@ -183,21 +183,29 @@ def main():
     args = options()
     assert os.geteuid() == 0, "run as root on a disposable VM"
     root = Path.cwd()
-    bucket = os.environ["SWARMY_S3_BUCKET"]
+    # Older benchmark environments embed their prefix in the bucket. Keep
+    # those paths intact while supporting the explicit namespace setting.
+    namespace_key = "SWARMY_S3_PREFIX" if os.environ.get("SWARMY_S3_PREFIX") else "SWARMY_S3_BUCKET"
+    namespace = os.environ[namespace_key]
+    metadata = os.environ.get("SWARMY_STORE_DIRECTORY")
     modes = (False, True) if args.background == "both" else (args.background == "on",)
     for trial in range(args.trials):
         for background in modes:
             directory = root / f"{args.profile}-{'on' if background else 'off'}-{trial}"
             directory.mkdir()
             os.chdir(directory)
-            # The production client uses path-style S3 URLs; a bucket suffix
-            # isolates objects without changing the upload implementation.
-            os.environ["SWARMY_S3_BUCKET"] = bucket + "/sample-" + uuid.uuid4().hex
+            sample = "sample-" + uuid.uuid4().hex
+            os.environ[namespace_key] = namespace + "/" + sample
+            os.environ["SWARMY_STORE_DIRECTORY"] = (metadata or "swarmy") + "/" + sample
             try:
                 measurement(args, background, trial)
             finally:
                 os.chdir(root)
-                os.environ["SWARMY_S3_BUCKET"] = bucket
+                os.environ[namespace_key] = namespace
+                if metadata is None:
+                    os.environ.pop("SWARMY_STORE_DIRECTORY", None)
+                else:
+                    os.environ["SWARMY_STORE_DIRECTORY"] = metadata
 
 
 def measurement(args, background, trial):

@@ -72,7 +72,9 @@ call_log = ".swarmy/dev/calls.log"
 ```
 
 The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
-`s3_access_key`, `s3_secret_key`, `s3_bucket`, and `s3_region`. Additional settings
+`s3_access_key`, `s3_secret_key`, `s3_bucket`, `s3_prefix`, and `s3_region`.
+`s3_prefix` defaults to empty. Use it to select a namespace within the bucket;
+see the [namespace and migration rules](DESIGN.md#73-snapshot-retention-and-garbage-collection). Additional settings
 are `scheduler_scan_interval_ms`, `scheduler_resend_interval_ms`,
 `worker_lease_ms`, `worker_recovery_interval_ms`, `bus_ack_wait_ms`,
 `bus_max_deliver`, `gateway_concurrency`, and `system_prompt`. The optional
@@ -236,6 +238,7 @@ the calling shell's environment.
 | `SWARMY_S3_ACCESS_KEY` | `swarmy-dev` |
 | `SWARMY_S3_SECRET_KEY` | `swarmy-dev-secret` |
 | `SWARMY_S3_BUCKET` | `swarmy` |
+| `SWARMY_S3_PREFIX` | empty |
 | `SWARMY_S3_REGION` | `us-east-1` |
 
 S3 clients should use path-style bucket addressing with this endpoint. Tests
@@ -248,6 +251,27 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+The S3 namespace acceptance test also needs `SWARMY_S3_TEST_BUCKET` naming a
+pre-created, dedicated empty bucket. It refuses a non-empty bucket and cleans
+up its objects and metadata after each case, including assertion failures.
+It tests empty and nested prefixes, more than 1000 objects in one listing,
+legacy compatibility, sibling isolation, and dry and real collection. For the
+local SeaweedFS stack:
+
+```bash
+source .dev/env
+export SWARMY_S3_TEST_BUCKET=swarmy-s3-namespace-test
+curl --fail --silent --show-error --noproxy '*' \
+  --aws-sigv4 'aws:amz:us-east-1:s3' \
+  --header 'x-amz-content-sha256: UNSIGNED-PAYLOAD' \
+  --user 'swarmy-dev:swarmy-dev-secret' -X PUT \
+  "http://127.0.0.1:8333/$SWARMY_S3_TEST_BUCKET"
+cargo test -p swarmy-store --test s3_namespace --locked -- --nocapture
+```
+
+The same test runs against cloud S3 by setting the S3 endpoint, credentials,
+region, and a dedicated empty test bucket, with a reachable FoundationDB.
 
 The Ubuntu CI job installs these pinned versions, starts the stack, and copies
 the exported settings into `GITHUB_ENV` so subsequent test steps inherit them.

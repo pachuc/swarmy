@@ -386,17 +386,33 @@ run can reclaim bytes that its record does not report.
 candidate counts and bytes, while deleting nothing. `--json` emits the durable
 run summary. The scheduler attempts collection after each configured interval,
 waiting one full interval at startup and after every attempt. Competing
-schedulers skip a busy lease and retry next interval. A metadata namespace must
-have its own object namespace; collection cannot discover references belonging
-to another FoundationDB directory sharing the bucket.
+schedulers skip a busy lease and retry next interval.
 
-S3 namespace prefixes must apply to listing queries as well as object paths.
-Cloud validation found that the historical `bucket/run-prefix` convention
-worked for individual reads and writes but made collection fail with S3
-`NoSuchKey`. The blob-store client now interprets that convention through an
-`object_store::prefix::PrefixStore`, addressing the physical bucket for lists
-and returning relative object names. A follow-up task will consolidate the
-remaining S3 constructors behind explicit, validated namespace configuration.
+One FoundationDB metadata namespace (`store_directory`) must pair with exactly
+one object namespace (S3 endpoint, bucket, and prefix). Every service, CLI,
+benchmark, and collector using that metadata must use the same object settings.
+Distinct metadata namespaces must use disjoint object namespaces: separate
+buckets or non-overlapping prefixes. An empty prefix owns the entire bucket;
+its namespace cannot share that bucket with another metadata namespace.
+Collection cannot discover references in another FoundationDB directory and
+could delete its live data if object namespaces overlap.
+
+`swarmy-config::Settings::object_store()` constructs every S3 client and applies
+`object_store::prefix::PrefixStore` when `s3_prefix` is non-empty. The bucket
+alone is used for S3 requests; object operations and listing queries apply the
+prefix separately, and listings expose canonical relative names such as
+`chunks/ab/hash`. `s3_prefix` defaults to empty and can be overridden with
+`SWARMY_S3_PREFIX`. It must have no leading or trailing slash, empty segments,
+`.` or `..` segments, or control characters. Invalid values are rejected,
+never trimmed or normalized.
+
+The legacy `s3_bucket = "bucket/run-prefix"` (or `SWARMY_S3_BUCKET`) remains
+accepted with a deprecation warning. It selects bucket `bucket` and prefix
+`run-prefix`, preserving existing object locations. To migrate, set
+`s3_bucket = "bucket"` and `s3_prefix = "run-prefix"` (or their environment
+overrides); no objects need moving. A legacy prefix combined with a non-empty
+explicit prefix is rejected as ambiguous. Exported configuration includes
+`SWARMY_S3_PREFIX`, including when empty, so child services use the same setting.
 
 Configuration is under `[gc]`: `grace_seconds` defaults to 21600,
 `interval_seconds` to 3600, and `filter_bytes` to 67108864. All are positive.

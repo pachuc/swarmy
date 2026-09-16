@@ -2797,12 +2797,14 @@ name = "swarmy-config"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "object_store",
  "serde",
  "shell-words",
  "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "tracing",
  "ulid",
 ]
 

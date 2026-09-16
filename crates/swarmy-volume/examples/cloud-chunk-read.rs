@@ -1,21 +1,13 @@
 //! Measure uncached 256 KiB reads through the production chunk store.
-use std::{env, error::Error, sync::Arc, time::Instant};
+use std::{error::Error, time::Instant};
 
-use object_store::aws::AmazonS3Builder;
 use swarmy_core::CHUNK_SIZE;
 use swarmy_volume::ChunkStore;
 
 fn store() -> Result<ChunkStore, Box<dyn Error>> {
-    Ok(ChunkStore::new(Arc::new(
-        AmazonS3Builder::new()
-            .with_endpoint(env::var("SWARMY_S3_ENDPOINT")?)
-            .with_access_key_id(env::var("SWARMY_S3_ACCESS_KEY")?)
-            .with_secret_access_key(env::var("SWARMY_S3_SECRET_KEY")?)
-            .with_bucket_name(env::var("SWARMY_S3_BUCKET")?)
-            .with_region(env::var("SWARMY_S3_REGION")?)
-            .with_virtual_hosted_style_request(false)
-            .build()?,
-    )))
+    Ok(ChunkStore::new(
+        swarmy_config::Settings::load()?.settings.object_store()?,
+    ))
 }
 
 #[tokio::main]

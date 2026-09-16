@@ -98,18 +98,7 @@ impl Fixture {
             .set_len(64 * 1024 * 1024)
             .unwrap();
         system("mkfs.ext4", &["-F", "-q", raw.to_str().unwrap()]);
-        let objects = Arc::new(
-            object_store::aws::AmazonS3Builder::new()
-                .with_endpoint(&settings.s3_endpoint)
-                .with_access_key_id(&settings.s3_access_key)
-                .with_secret_access_key(&settings.s3_secret_key)
-                .with_bucket_name(&settings.s3_bucket)
-                .with_region(&settings.s3_region)
-                .with_allow_http(true)
-                .with_virtual_hosted_style_request(false)
-                .build()
-                .unwrap(),
-        );
+        let objects = settings.object_store().unwrap();
         let image = swarmy_volume::image::upload_image(&raw, objects)
             .await
             .unwrap();

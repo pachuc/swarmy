@@ -94,6 +94,7 @@ def main():
             "SWARMY_S3_ENDPOINT": "https://s3.us-east-1.amazonaws.com",
             "SWARMY_S3_REGION": "us-east-1",
             "SWARMY_S3_BUCKET": os.environ["SWARMY_S3_BUCKET"],
+            "SWARMY_S3_PREFIX": os.environ.get("SWARMY_S3_PREFIX", ""),
             "SWARMY_S3_ACCESS_KEY": os.environ["AWS_ACCESS_KEY_ID"],
             "SWARMY_S3_SECRET_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
             "SWARMY_STORE_DIRECTORY": STATE["name"],

@@ -1,20 +1,13 @@
 //! Measure serial HEAD and 256 KiB PUT calls through the same S3 client as volumes.
 //! Run against a disposable benchmark bucket or run prefix, then delete its objects.
-use std::{env, error::Error, time::Instant};
+use std::{error::Error, time::Instant};
 
-use object_store::{ObjectStore, PutMode, aws::AmazonS3Builder, path::Path};
+use object_store::{PutMode, path::Path};
 use swarmy_core::CHUNK_SIZE;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let store = AmazonS3Builder::new()
-        .with_endpoint(env::var("SWARMY_S3_ENDPOINT")?)
-        .with_access_key_id(env::var("SWARMY_S3_ACCESS_KEY")?)
-        .with_secret_access_key(env::var("SWARMY_S3_SECRET_KEY")?)
-        .with_bucket_name(env::var("SWARMY_S3_BUCKET")?)
-        .with_region(env::var("SWARMY_S3_REGION")?)
-        .with_virtual_hosted_style_request(false)
-        .build()?;
+    let store = swarmy_config::Settings::load()?.settings.object_store()?;
     for sample in 0..20 {
         let id = ulid::Ulid::generate();
         let path = Path::from(format!("request-probe/{id}"));
