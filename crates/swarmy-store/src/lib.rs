@@ -16,6 +16,7 @@ mod leases;
 mod nodes;
 mod placed_tools;
 mod placements;
+mod tool_routing;
 mod tools;
 mod volumes;
 

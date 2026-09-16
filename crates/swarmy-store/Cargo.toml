@@ -23,8 +23,8 @@ serde_json.workspace = true
 swarmy-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+ulid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 swarmy-volume.workspace = true
-ulid.workspace = true

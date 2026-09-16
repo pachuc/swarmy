@@ -22,6 +22,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 #[derive(Clone, Debug)]
 pub enum TranscriptEvent {
     UserMessage(Message),
+    SystemMessage(Message),
     AssistantTextDelta {
         index: usize,
         text: String,
@@ -279,10 +280,11 @@ impl Replay {
                 }
                 match message.role {
                     MessageRole::User => Some(TranscriptEvent::UserMessage(message.clone())),
+                    MessageRole::System => Some(TranscriptEvent::SystemMessage(message.clone())),
                     MessageRole::Assistant => {
                         Some(TranscriptEvent::AssistantMessageFinal(message.clone()))
                     }
-                    _ => None,
+                    MessageRole::Tool => None,
                 }
             }
             Event::ToolCallRequested {
