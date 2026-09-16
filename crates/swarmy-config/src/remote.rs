@@ -1,0 +1,227 @@
+//! Files shared by remote provisioning and local tunnel commands.
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Error, Settings};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteSettings {
+    pub region: String,
+    pub subnet: Option<String>,
+    pub security_group: Option<String>,
+    pub instance_type: String,
+    pub disk_gb: u32,
+    pub image: Option<String>,
+    pub profile: Option<String>,
+}
+
+impl Default for RemoteSettings {
+    fn default() -> Self {
+        Self {
+            region: "us-east-1".into(),
+            subnet: None,
+            security_group: None,
+            instance_type: "m6id.xlarge".into(),
+            disk_gb: 100,
+            image: None,
+            profile: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemotePorts {
+    pub fdb: u16,
+    pub nats: u16,
+    pub s3: u16,
+}
+
+impl Default for RemotePorts {
+    fn default() -> Self {
+        Self {
+            fdb: 4500,
+            nats: 4222,
+            s3: 8333,
+        }
+    }
+}
+
+/// Provisioned instance state, stored at `<state_dir>/remote/<name>.json`.
+/// Additional instances use the same contract in `nodes`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteNode {
+    pub name: String,
+    pub region: String,
+    pub instance_id: String,
+    pub public_ip: String,
+    pub private_ip: String,
+    pub key_path: PathBuf,
+    #[serde(default = "ssh_user")]
+    pub ssh_user: String,
+    #[serde(default)]
+    pub ports: RemotePorts,
+    #[serde(default)]
+    pub nodes: Vec<RemoteNode>,
+    pub created_at: String,
+}
+
+fn ssh_user() -> String {
+    "ubuntu".into()
+}
+
+/// Local endpoints and ownership information for one SSH control master.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteProfile {
+    pub name: String,
+    pub socket_path: PathBuf,
+    pub pid: u32,
+    pub ports: RemotePorts,
+    #[serde(default)]
+    pub remote_ports: RemotePorts,
+    pub fdb_cluster_file: PathBuf,
+    pub nats_url: String,
+    pub s3_endpoint: String,
+}
+
+impl RemoteProfile {
+    /// `FoundationDB` checks that the connected port matches the advertised port.
+    /// # Errors
+    /// Rejects remapped coordinator ports before starting the native client.
+    pub fn validate_fdb_port(&self) -> Result<(), Error> {
+        if self.ports.fdb != self.remote_ports.fdb {
+            return Err(Error::Remote(
+                "FoundationDB cannot use a remapped port; disconnect, free the advertised FoundationDB port, and reconnect (or use a separate network namespace)",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply only endpoint overrides, preserving credentials and namespaces.
+    pub fn apply(&self, settings: &mut Settings) {
+        settings.fdb_cluster_file = self.fdb_cluster_file.to_string_lossy().into_owned();
+        settings.nats_url.clone_from(&self.nats_url);
+        settings.s3_endpoint.clone_from(&self.s3_endpoint);
+    }
+
+    /// # Errors
+    /// Returns errors for missing or invalid profiles.
+    pub fn read(state: &Path, name: &str) -> Result<Self, Error> {
+        let profile: Self =
+            serde_json::from_slice(&std::fs::read(remote_path(state, name, "profile.json")?)?)?;
+        if profile.name != name {
+            return Err(Error::Remote("profile name does not match filename"));
+        }
+        Ok(profile)
+    }
+}
+
+/// Validate names before using them as filenames or shell output.
+/// # Errors
+/// Rejects empty names, path traversal, and shell metacharacters.
+pub fn validate_remote_name(name: &str) -> Result<(), Error> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(Error::Remote(
+            "names must contain 1-64 letters, digits, hyphens, or underscores",
+        ));
+    }
+    Ok(())
+}
+
+/// # Errors
+/// Rejects invalid remote names.
+pub fn remote_path(state: &Path, name: &str, extension: &str) -> Result<PathBuf, Error> {
+    validate_remote_name(name)?;
+    Ok(state.join("remote").join(format!("{name}.{extension}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn shared_state_defaults_and_round_trip() {
+        let node: RemoteNode = serde_json::from_str(r#"{"name":"local","region":"local","instance_id":"i-local","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        assert_eq!(node.ssh_user, "ubuntu");
+        assert_eq!(node.ports, RemotePorts::default());
+        assert!(node.nodes.is_empty());
+        let encoded = serde_json::to_vec(&node).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<RemoteNode>(&encoded)
+                .unwrap()
+                .instance_id,
+            "i-local"
+        );
+        let settings = Settings::default();
+        assert_eq!(settings.remote.instance_type, "m6id.xlarge");
+        assert_eq!(settings.remote.disk_gb, 100);
+    }
+
+    #[test]
+    fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join(".swarmy");
+        std::fs::create_dir_all(state.join("remote")).unwrap();
+        std::fs::create_dir_all(root.path().join("nested")).unwrap();
+        std::fs::write(
+            state.join("config.toml"),
+            "provider = 'fake'\n[remote]\nprofile = 'test'\n",
+        )
+        .unwrap();
+        let profile = RemoteProfile {
+            name: "test".into(),
+            socket_path: state.join("socket"),
+            pid: 123,
+            remote_ports: RemotePorts::default(),
+            ports: RemotePorts {
+                fdb: 4500,
+                nats: 14222,
+                s3: 18333,
+            },
+            fdb_cluster_file: state.join("test.cluster"),
+            nats_url: "nats://127.0.0.1:14222".into(),
+            s3_endpoint: "http://127.0.0.1:18333".into(),
+        };
+        std::fs::write(
+            remote_path(&state, "test", "profile.json").unwrap(),
+            serde_json::to_vec(&profile).unwrap(),
+        )
+        .unwrap();
+        let env = BTreeMap::from([
+            ("SWARMY_NATS_URL".into(), "nats://wrong:4222".into()),
+            ("SWARMY_S3_BUCKET".into(), "custom".into()),
+        ]);
+        let loaded = Settings::load_from(&root.path().join("nested"), &env).unwrap();
+        assert_eq!(loaded.settings.nats_url, profile.nats_url);
+        assert_eq!(loaded.settings.s3_endpoint, profile.s3_endpoint);
+        assert_eq!(
+            Path::new(&loaded.settings.fdb_cluster_file),
+            profile.fdb_cluster_file
+        );
+        assert_eq!(loaded.settings.s3_bucket, "custom");
+        assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
+        let mut invalid = profile;
+        invalid.ports.fdb = 14500;
+        assert!(invalid.validate_fdb_port().is_err());
+        std::fs::write(
+            remote_path(&state, "test", "profile.json").unwrap(),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        assert!(Settings::load_from(root.path(), &env).is_err());
+
+        let mut env = env;
+        env.insert("SWARMY_REMOTE".into(), "missing".into());
+        assert!(Settings::load_from(root.path(), &env).is_err());
+        env.insert("SWARMY_REMOTE".into(), "../test".into());
+        assert!(Settings::load_from(root.path(), &env).is_err());
+    }
+}
