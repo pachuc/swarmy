@@ -124,17 +124,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
 async fn storage(
     settings: &swarmy_config::Settings,
 ) -> Result<(Store, Arc<dyn object_store::ObjectStore>)> {
-    let objects = Arc::new(
-        object_store::aws::AmazonS3Builder::new()
-            .with_endpoint(&settings.s3_endpoint)
-            .with_access_key_id(&settings.s3_access_key)
-            .with_secret_access_key(&settings.s3_secret_key)
-            .with_bucket_name(&settings.s3_bucket)
-            .with_region(&settings.s3_region)
-            .with_allow_http(true)
-            .with_virtual_hosted_style_request(false)
-            .build()?,
-    );
+    let objects = settings.object_store()?;
     let directory: Vec<_> = settings
         .store_directory
         .split('/')

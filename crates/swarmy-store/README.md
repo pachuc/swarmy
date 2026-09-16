@@ -55,7 +55,7 @@ value in the same transaction and then resolves any blob pointer.
 `MemoryBlobStore` is useful for tests. `ObjectBlobStore` adapts any
 `object_store::ObjectStore`; `from_env` constructs S3 storage from
 `SWARMY_S3_ENDPOINT`, `SWARMY_S3_ACCESS_KEY`, `SWARMY_S3_SECRET_KEY`,
-`SWARMY_S3_BUCKET`, and `SWARMY_S3_REGION`, with HTTP allowed and path-style bucket
+`SWARMY_S3_BUCKET`, `SWARMY_S3_PREFIX` (empty by default), and `SWARMY_S3_REGION`, with HTTP allowed and path-style bucket
 addressing.
 
 The FoundationDB binding requires `libfdb_c` 7.3 and libclang at build time. Run the

@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use object_store::aws::AmazonS3Builder;
 use swarmy_core::{ImageTag, ManifestId};
 use swarmy_store::MAX_SCAN_LIMIT;
 use swarmy_volume::image::{Recipe, build_ext4, upload_image_protected, validate_label};
@@ -79,17 +76,7 @@ async fn build(
     let (recipe, directory, name) = Recipe::load(&path)?;
     let store = store().await?;
     let settings = swarmy_config::Settings::load()?.settings;
-    let objects = Arc::new(
-        AmazonS3Builder::new()
-            .with_endpoint(settings.s3_endpoint)
-            .with_access_key_id(settings.s3_access_key)
-            .with_secret_access_key(settings.s3_secret_key)
-            .with_bucket_name(settings.s3_bucket)
-            .with_region(settings.s3_region)
-            .with_allow_http(true)
-            .with_virtual_hosted_style_request(false)
-            .build()?,
-    );
+    let objects = settings.object_store()?;
     let image = tokio::task::spawn_blocking(move || build_ext4(&recipe, &directory)).await??;
     let built = upload_image_protected(image.path(), objects, store.clone()).await?;
     if let Some(output) = output {

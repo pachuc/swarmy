@@ -86,9 +86,10 @@ mod tests {
 
     #[test]
     fn parses_every_stack_setting() {
-        let input = "export SWARMY_FDB_CLUSTER_FILE=/tmp/fdb.cluster\nexport SWARMY_NATS_URL=nats://127.0.0.1:4222\nexport SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\nexport SWARMY_S3_ACCESS_KEY=swarmy-dev\nexport SWARMY_S3_SECRET_KEY=swarmy-dev-secret\nexport SWARMY_S3_BUCKET=swarmy\nexport SWARMY_S3_REGION=us-east-1\n";
+        let input = "export SWARMY_FDB_CLUSTER_FILE=/tmp/fdb.cluster\nexport SWARMY_NATS_URL=nats://127.0.0.1:4222\nexport SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\nexport SWARMY_S3_ACCESS_KEY=swarmy-dev\nexport SWARMY_S3_SECRET_KEY=swarmy-dev-secret\nexport SWARMY_S3_BUCKET=swarmy\nexport SWARMY_S3_PREFIX=''\nexport SWARMY_S3_REGION=us-east-1\n";
         let values = parse_exports(input).unwrap();
-        assert_eq!(values.len(), 7);
+        assert_eq!(values.len(), 8);
+        assert_eq!(values["SWARMY_S3_PREFIX"], "");
         assert_eq!(values["SWARMY_S3_ENDPOINT"], "http://127.0.0.1:8333");
     }
 

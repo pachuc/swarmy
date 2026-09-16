@@ -149,7 +149,9 @@ JSON
     # under a deep repository path. Key a short directory by the repository.
     socket_dir="${TMPDIR:-/tmp}/swarmy-$(printf '%s' "$dev_dir" | sha256sum | cut -c1-12)"
     mkdir -p -- "$socket_dir"
+    # Separate S3 test buckets each need collection volume slots.
     launch seaweed weed server -dir "$dev_dir/seaweed" -ip 127.0.0.1 -ip.bind 127.0.0.1 \
+        -volume.max 32 \
         -s3 -s3.port 8333 -s3.config "$dev_dir/s3.json" \
         -filer.localSocket "$socket_dir/filer.sock" -s3.localSocket "$socket_dir/s3.sock" \
         -s3.port.iceberg 0 -s3.port.lance 0 -master.telemetry=false
@@ -176,6 +178,7 @@ JSON
         printf 'export SWARMY_S3_ACCESS_KEY=swarmy-dev\n'
         printf 'export SWARMY_S3_SECRET_KEY=swarmy-dev-secret\n'
         printf 'export SWARMY_S3_BUCKET=swarmy\n'
+        printf 'export SWARMY_S3_PREFIX=%q\n' ''
         printf 'export SWARMY_S3_REGION=us-east-1\n'
     } > "$dev_dir/env"
     start_complete=true

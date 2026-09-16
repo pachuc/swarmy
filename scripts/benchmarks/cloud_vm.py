@@ -89,7 +89,8 @@ def provision(state, path, workload):
     save(path, state)
     print(json.dumps({"phase": "machine", "name": state["name"], "cache_disk": state["cache_disk"]}), flush=True)
     environment = dict(os.environ, SWARMY_BENCH_STATE=str(path.resolve()),
-                       SWARMY_S3_BUCKET=state["bucket"] + "/" + state["prefix"].rstrip("/"),
+                       SWARMY_S3_BUCKET=state["bucket"],
+                       SWARMY_S3_PREFIX=state["prefix"].rstrip("/"),
                        SWARMY_S3_REGION=state["region"])
     # Workload does SSH readiness, installation, and volume.py using this state.
     # Capture output to prevent a child command from leaking credentials to logs.
