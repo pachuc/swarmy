@@ -14,23 +14,24 @@ all orchestration logic is in house.
 ## 2. Principles
 
 1. **An agent is data, not a process.** An agent is an append-only event log,
-   a compact snapshot, and a durable disk. Nothing runs on an agent's behalf
-   between steps. Idle agents cost storage rows only.
+   a compact snapshot, and a durable disk. Its computer can keep processes
+   running between steps. After idle eviction, the agent costs storage only.
 2. **Every worker is stateless and leased.** Work is claimed under an
    expiring lease. A dead worker is an expired lease, and the work is
    re-dispatched. No worker has identity.
 3. **Idempotency everywhere.** Every inference request and tool call carries a
-   deterministic key derived from session id and step sequence. Retries never
-   double-spend or double-apply.
+   deterministic key derived from session id and step sequence. Committed
+   results are deduplicated; external side effects require tool-specific
+   reconciliation when an execution outcome is unknown.
 4. **Three stateful primitives, none written by us.** FoundationDB is truth.
    NATS is motion. Object storage is bulk. Everything we write is stateless or
    rebuildable from those three.
 5. **Quota is the scarce resource.** The scheduler is a quota-aware admission
    controller, not a queue. Millions of live sessions is easy. Concurrent
    inference streams are bounded by provider capacity.
-6. **Disk is durable, memory is a cache.** Sandbox disk state is globally
-   durable. Sandbox memory state is a host-local optimization that may be
-   discarded.
+6. **Published disk snapshots are durable.** Writes since the last published
+   snapshot can be lost on node failure. Computer memory and running
+   processes are local state and are lost on rebuild.
 7. **Abstract the seams we consume, not the cloud.** Traits for node
    provisioning, sandbox runtime, and blob storage. No cloud-specific code
    outside those trait implementations.
@@ -49,15 +50,16 @@ all orchestration logic is in house.
 | **Event** | An immutable record in a session log. Messages, parts, inference requests and completions, tool calls and results, volume manifest changes, state transitions. |
 | **Volume** | A persistent block device. A chain of manifests over content-addressed fixed-size chunks in object storage. One writer at a time. Clone is copy-on-write. |
 | **Base image** | An immutable volume manifest shared by many agents. OS, toolchains, browser. |
-| **Sandbox** | An ephemeral execution environment on one node with the agent's home volume attached. One per agent, shared by that agent's sessions. |
+| **Sandbox** | The agent's long-lived computer on one node, with its home volume attached. Shared by all its sessions; rebuilt from a durable disk snapshot after eviction or failure. |
+| **Placement** | The computer's hosting node, epoch, lease expiry, and last epoch change reason and time. Only the current unexpired holder may act. |
 | **Channel** | A durable ordered message log with membership. A DM is a two-member channel. |
 | **Principal** | Anything that can be a channel member: an agent, a human, or the system. |
 | **Node** | A Linux host running `swarmyd`. Advertises roles and capacity. |
 
 ## 4. Services
 
-All services are stateless Rust binaries except where noted. Any instance of
-a service can handle any request.
+Control-plane services are stateless Rust binaries. Node agents own local
+computers under placement leases; sandbox requests route to the current holder.
 
 ### 4.1 Store (library, not a service)
 
@@ -89,8 +91,13 @@ completions as session events.
 ### 4.5 Node agent (`swarmyd`)
 
 Runs on every node. Registers, heartbeats, reports capacity. Hosts the volume
-block device server and the sandbox runtime. Executes sandbox-bound tool
-calls against local sandboxes. Flushes volumes and records manifests.
+block device server and the sandbox runtime. Keeps each placed computer alive
+between tool calls, renews its placement lease, and executes tools only for
+the current unexpired epoch. Stops acting when renewal fails or the lease
+expires. Continuously stages dirty chunks, publishes a disk snapshot every
+ten minutes, and retains the last ten periodic snapshots. Evicts computers
+after thirty minutes idle, after a final checkpoint. Reports occupancy
+separately from the registered maximum computer capacity.
 
 ### 4.6 Guest agent (`swarmy-guest`)
 
@@ -142,10 +149,13 @@ is a FoundationDB transaction plus a NATS nudge.
    tool calls on `tool.node.{node_id}` if the agent has a placed sandbox,
    otherwise on `sched.place` for the scheduler to place first.
 6. **Execute.** A step worker or `swarmyd` claims each tool call under its own
-   lease. For sandbox tools: run through the guest agent, then freeze, flush
-   dirty chunks, write a new manifest, unfreeze. Transaction: append
-   `ToolCallCompleted` including the new manifest id, and when all outstanding
-   calls are done set `Runnable`.
+   lease. Sandbox jobs also carry the agent id, node id, and placement epoch.
+   The node checks its unexpired placement before execution; the completion
+   transaction checks that same epoch and live lease before appending
+   `ToolCallCompleted`. When all outstanding calls are done, set `Runnable`.
+   `bash` executes inside the existing computer. Ordinary tool completion
+   does not freeze the filesystem or publish a disk snapshot. The explicit
+   `checkpoint` tool acknowledges only after publishing a durable manifest.
 7. **Fold.** Worker claims, appends tool result parts, returns to 3.
 8. **Turn end.** Main session: set `Idle`. Worker session: append result,
    set `Completed`, post a message to the parent agent's mailbox.
@@ -153,10 +163,14 @@ is a FoundationDB transaction plus a NATS nudge.
 Compaction is a step type: when the tail exceeds a threshold, a step
 summarizes, writes a snapshot, and starts a new session in the chain.
 
-**Crash consistency between disk and log.** A volume flush happens at tool
-call boundaries. If a node dies mid-call, the disk rolls back to the manifest
-recorded before that call, the tool call lease expires, and the call re-runs
-from a clean state. The disk and the log are always a consistent pair.
+**Durability of disk and log.** Tool results and session events are durable in
+FoundationDB independently of computer disk snapshots. Node failure restores
+the latest published manifest, so files written after it may be lost even if
+a tool previously reported success. Background chunk upload alone does not
+make a recoverable snapshot. Checkpoint is the explicit durability boundary.
+In-flight calls lose their processes on rebuild; callers must reconcile an
+unknown result and external side effects before retrying. The system does
+not promise rollback of a single call or exactly-once external effects.
 
 ## 6. Storage layout
 
@@ -182,7 +196,10 @@ Values over 100KB are stored in object storage with a pointer in the value.
 ("volume", volume_id)                       -> {head_manifest, writer_lease, parent}
 ("manifest", manifest_id)                   -> ManifestHeader {size, chunk_size, root_ref}
 ("image", name, tag)                        -> manifest_id
-("sandbox", agent_id)                       -> {node_id, state, memory_snapshot_ref}
+("placement", agent_id)                     -> {agent_id, node_id, epoch, expires_at, last_change_reason, last_changed_at}
+("placement_by_node", node_id, agent_id)     -> PlacementRecord
+("placement_epoch", agent_id)               -> retained epoch counter, including after release
+("placement_count", node_id)                -> occupied computer slots
 ("node", node_id)                           -> {roles, capacity, last_heartbeat, cached_images}
 ("channel", channel_id)                     -> ChannelRecord
 ("channel_msg", channel_id, seq)            -> Message
@@ -258,15 +275,16 @@ image chunks are shared by every agent on a node so they stay hot. Per-agent
 diffs are small and cold reads are rare after warmup.
 
 Write path: writes land in a local dirty block store on NVMe. Each write advances
-its chunks' generations and invalidates their staged hashes. The optional
+its chunks' generations and invalidates their staged hashes. The
 attachment background uploader selects chunks quiet for 250 ms, copies their
 bytes and generations under the dirty-store lock, and releases it before remote
 uploads. A completed hash is retained only if its generation is still current.
 Overwritten uploads are unreferenced objects, never published disk contents.
 By default, at most 32 uploads run concurrently across background work and publication.
 
-At a tool boundary or sandbox pause, flush freezes the filesystem, waits for
-the active upload batch, and uploads generations without a current hash. It
+Every ten minutes, on explicit checkpoint, or before orderly eviction,
+flush freezes the filesystem, waits for the active upload batch, and uploads
+generations without a current hash. It
 builds the manifest, advances the volume head through the existing fenced
 FoundationDB transaction under the writer lease, and thaws. A separate write
 barrier gives unmounted flushes the same point-in-time block snapshot. Dirty
@@ -280,9 +298,33 @@ manifest is equivalent to a power-loss snapshot and ext4 journal replay
 handles it.
 
 Single writer: the volume writer lease is held by the node hosting the
-sandbox. Attaching elsewhere requires the lease to expire or be released.
+computer. Attaching elsewhere requires the lease to expire or be released.
+Placement and writer leases both fence publication; takeover must never bypass
+a live volume writer. Each publication checks the placement epoch and its
+unexpired lease in the same transaction as advancing the volume head.
 
-### 7.3 Chunk garbage collection
+### 7.3 Snapshot retention and garbage collection
+
+While a computer is resident, dirty chunks upload continuously and a snapshot
+loop publishes a clean manifest every ten minutes. Keep the last ten periodic
+snapshots per volume, plus its current head and any explicitly pinned
+checkpoints. An explicit checkpoint publishes immediately. Only an acknowledged
+manifest commit establishes durability; staged chunks may never become part
+of a manifest. Ten minutes is the target recovery window while publication
+is healthy, not a bound during an upload or storage outage. Monitor the age
+of the last successful snapshot and report it during recovery.
+
+The garbage collector traces all live volume heads, retained snapshots,
+clones, base images, and pinned checkpoints through manifests to chunks. It
+reclaims unreferenced manifests and chunks only after a grace window longer
+than the maximum permitted upload/publication interval. Objects first seen
+unreachable are candidates, not immediate deletions. Before deleting, the
+collector rechecks references and coordinates with publication so a concurrent
+commit cannot reference an object being removed. In-progress uploads need
+protection until commit or abandonment; an upload that exceeds its protection
+window must restart or renew that protection. Retention removal only removes
+references; physical deletion belongs to the collector. The grace window is
+configurable and also covers uploads orphaned by failed or fenced commits.
 
 `swarmy gc` marks retained snapshots of every volume, the head of every
 attached volume (including an expired writer until explicitly released), and
@@ -368,11 +410,13 @@ dry-run accounting, deletion, lease renewal, elapsed time, and peak memory.
 - Root privileges on nodes. `swarmyd` runs as root. Acceptable on our own VMs
   and in privileged pods.
 
-### 7.5 Proposed tool-boundary latency budget
+### 7.5 Historical tool-boundary latency budget
 
-The following tasks that change upload concurrency and dirty-store locking are
-measured against this target. It is a proposed p95 budget for the extra time
-between a tool finishing and its durable manifest being acknowledged, including
+The slice 2 tool-boundary implementation was measured against this target.
+The persistent computer model moves publication to the snapshot loop and
+explicit checkpoint; this table remains a baseline for publication latency.
+It is a proposed p95 budget for the extra time between a tool finishing and
+its durable manifest being acknowledged, including
 freeze acquisition, publication, and thaw. It is not a claim that the current
 implementation meets it. Collect repeated samples before claiming p95 compliance.
 
@@ -461,29 +505,66 @@ virtualization. Azure Dv3 and later do. AWS exposes KVM only on `.metal`
 instances. So on AWS the default runtime is gVisor unless metal node pools
 are used. This is why the container path is built first and never removed.
 
-### 8.2 Lifecycle
+### 8.2 Placement, leases, and lifecycle
 
-States: `Absent`, `Placing`, `Booting`, `Running`, `Paused`, `Dead`.
+One computer belongs to each agent and is shared by its main and worker
+sessions. An isolated worker uses a clone with a separate computer identity.
+A computer remains running across tool calls and inference waits, so shell
+state on disk, installed packages, servers, and managed processes persist.
+States are `Absent`, `Placing`, `Booting`, `Running`, and `Dead`; future
+host-local memory pause is an optimization, not a durability mechanism.
 
-Policy, tunable per agent class:
+FoundationDB has one placement record per agent: agent id, node id, epoch,
+lease expiry, last epoch change reason (`initial`, `failure`, or `eviction`),
+and change time. The store API is `place`, `renew`, `release`, `take_over`,
+`get_by_agent`, and `list_by_node`. Place requires absence and a registered
+sandbox node with capacity. Registration already advertises the maximum as
+`NodeCapacity.sandboxes`. Occupancy is a separate transactional counter, so a
+heartbeat cannot reset it. Expired placements still reserve their slots until
+takeover or release. Node listings include expired records and paginate by
+agent id; schedulers can use them to find computers needing recovery.
 
-- Sandbox stays `Running` while tool calls are in flight and for a short
-  hysteresis window after, since coding turns cluster tool calls.
-- After the window with no tool calls, pause: freeze and flush disk, snapshot
-  memory to host disk if the runtime supports it, free CPU and RAM.
-- After a longer idle period, evict: discard the memory snapshot and detach
-  the volume. The agent is now `Absent` and costs nothing.
-- On the next sandbox tool call: resume from memory snapshot if it exists on
-  a live node, otherwise place and cold boot from the volume head.
-- Placement prefers the node holding the memory snapshot, then nodes with
-  the agent's base image hot in cache, then any node with capacity.
-- Node death is detected by heartbeat loss. All sandboxes on it are marked
-  `Dead`, their volume writer leases are broken, and in-flight tool calls
-  are re-dispatched after re-placement. The agent is informed in its next
-  turn that its environment restarted and running processes were lost.
+The holder renews a live lease using its node id and epoch. Renewals preserve
+the epoch and change metadata. Release checks that same authority, removes
+the placement and node index, and returns capacity. The epoch counter survives
+release. Place increments it, recording `initial` on the first grant and
+`eviction` when rebuilding after release. Takeover checks the observed node
+and epoch, requires expiry, and atomically transfers capacity and the node
+index while increasing the epoch and recording `failure`. Competing takeovers
+cannot both win. Rebuilding on the same node also increases the epoch.
 
-One sandbox per agent. All of an agent's sessions share it. A worker session
-that requests isolation gets a cloned volume and its own sandbox.
+Every mutating transaction on an existing placement checks its epoch. Tool
+routing carries that epoch through execution and completion, and publication
+checks it with the volume writer lease. Reads alone grant no authority. The
+node must stop tool execution and background activity before its lease runs
+out if it cannot renew. A heartbeat timeout can trigger recovery checks but
+cannot override an unexpired placement or writer lease. Leases require
+bounded clock skew and renewal margins; a database fence rejects stale commits
+but cannot undo a stale process's external side effects. Node shutdown must
+stop those processes before releasing authority.
+
+After thirty minutes with no tool activity or managed running processes,
+checkpoint, stop the computer, detach its volume, and release placement.
+Managed background processes count as activity and prevent idle eviction.
+The next tool request places it again and cold boots from its latest published
+manifest. Placement prefers nodes with the base image cached, then any node
+with capacity. After failure, wait for lease expiry and take over with a new
+epoch; all memory and running processes are lost.
+
+Rebuild messaging derives from the new epoch's reason and time. An initial
+grant needs no restart notice. A failure notice says the computer restarted,
+processes were lost, and files returned to the latest snapshot, including its
+time and the possible lost-write window. An eviction notice says the computer
+was stopped while idle and rebuilt from its final checkpoint. Deliver these
+notices durably to the main session, deduplicated by agent id and epoch, before
+new tool results are folded. Never claim that successful tool output implies
+that its disk changes survived. The placement record retains the latest change;
+message delivery must persist each observed notice and its delivery cursor.
+
+These rules are the target for subsequent node, tool, snapshot, collector, and
+messaging tasks. The placement store API does not yet replace the slice 2
+session-scoped `SandboxRecord` and per-call flush paths; those callers migrate
+in their respective tasks.
 
 ### 8.3 Guest agent
 
@@ -491,7 +572,14 @@ Static Rust binary baked into every base image, started as PID 1 or by init.
 RPC over vsock in Firecracker, a unix socket bind mount in containers.
 Operations: exec with streaming stdio and timeouts, read, write, stat, list,
 glob, grep, sync and freeze, display screenshot, and a devtools proxy to the
-in-sandbox browser.
+in-sandbox browser. `bash` is an exec into the long-lived sandbox, not creation
+of a fresh container per call. `process_start` launches a managed background
+process and returns its id; `process_list` reports state, `process_log` reads
+captured output, and `process_stop` terminates it. Process ids and logs belong
+to a computer epoch; requests for an earlier epoch report that it restarted.
+`checkpoint` syncs, freezes, publishes a fenced manifest, and thaws before
+reporting success. Processes continue between ordinary calls, but their memory
+is never included in a disk checkpoint.
 
 ### 8.4 Browser and screen
 

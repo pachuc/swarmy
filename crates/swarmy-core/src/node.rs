@@ -13,6 +13,7 @@ pub struct NodeCapacity {
     pub cpu_millis: u64,
     pub memory_bytes: u64,
     pub disk_bytes: u64,
+    /// Maximum resident computers. Placement occupancy is maintained by the store.
     pub sandboxes: u32,
 }
 

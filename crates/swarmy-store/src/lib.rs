@@ -14,6 +14,7 @@ pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;
 mod leases;
 mod nodes;
+mod placements;
 mod tools;
 mod volumes;
 
@@ -51,6 +52,12 @@ pub enum StoreError {
     Encoding(#[from] EncodingError),
     #[error(transparent)]
     Blob(#[from] BlobError),
+    #[error("node does not exist")]
+    NodeMissing,
+    #[error("node has no computer capacity available")]
+    NodeAtCapacity,
+    #[error("placement already exists")]
+    PlacementExists,
     #[error("volume does not exist")]
     VolumeMissing,
     #[error("volume already exists")]
