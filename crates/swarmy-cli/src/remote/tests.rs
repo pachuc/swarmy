@@ -13,6 +13,7 @@ use super::{Cloud, Host, Instance, Launch, down, state::State, up, wait_running}
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<Launch>>,
+    launch_ids: RefCell<VecDeque<String>>,
     keys: RefCell<Vec<(String, Vec<u8>, String)>>,
     observations: RefCell<VecDeque<Option<Instance>>>,
     terminated: RefCell<Vec<String>>,
@@ -41,7 +42,11 @@ impl Cloud for FakeCloud {
     }
     fn launch(&self, request: &Launch) -> impl Future<Output = Result<String>> {
         self.requests.borrow_mut().push(request.clone());
-        std::future::ready(Ok("i-test".into()))
+        std::future::ready(Ok(self
+            .launch_ids
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| "i-test".into())))
     }
     fn instance(&self, _: &str) -> impl Future<Output = Result<Option<Instance>>> {
         std::future::ready(Ok(self
@@ -74,6 +79,7 @@ impl Cloud for FakeCloud {
 struct FakeHost {
     provisioned: RefCell<Vec<RemoteNode>>,
     fail: bool,
+    primaries: RefCell<Vec<Option<RemoteNode>>>,
 }
 
 impl Host for FakeHost {
@@ -82,8 +88,13 @@ impl Host for FakeHost {
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
         Ok(b"ssh-ed25519 test".to_vec())
     }
-    fn provision(&self, node: &RemoteNode) -> impl Future<Output = Result<String>> {
+    fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> impl Future<Output = Result<String>> {
         self.provisioned.borrow_mut().push(node.clone());
+        self.primaries.borrow_mut().push(primary.cloned());
         if self.fail {
             return std::future::ready(Err(anyhow::anyhow!("SSH failed")));
         }
@@ -350,4 +361,109 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
     assert!(node.key_path.is_file());
     assert!(state.read("demo").unwrap().is_some());
     assert!(cloud.deleted.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Instance {
+            id: "i-second".into(),
+            private_ip: "10.0.0.11".into(),
+            ..instance("running")
+        }),
+    ]);
+    up::run(&cloud, &host, &state, &settings(), "demo", Duration::ZERO)
+        .await
+        .unwrap();
+    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO)
+        .await
+        .unwrap();
+    let node = state.require("demo").unwrap();
+    assert_eq!(node.nodes.len(), 1);
+    let child = &node.nodes[0];
+    assert_eq!(child.name, "demo-2");
+    assert_ne!(child.key_path, node.key_path);
+    assert_eq!(cloud.stock_reads.get(), 1);
+    {
+        let requests = cloud.requests.borrow();
+        let join = &requests[1];
+        assert_eq!(join.image, requests[0].image);
+        assert_eq!(join.settings.region, node.region);
+        assert_eq!(join.settings.subnet, settings().subnet);
+        assert_eq!(join.settings.security_group, settings().security_group);
+        assert_eq!(join.settings.instance_type, settings().instance_type);
+        assert_eq!(join.settings.disk_gb, settings().disk_gb);
+        assert_eq!(join.settings.managed_by_tag, "codex-launcher");
+        assert_eq!(join.key_name, super::key_name(child).unwrap());
+        assert_eq!(join.name, child.name);
+    }
+    assert!(host.primaries.borrow()[0].is_none());
+    assert_eq!(
+        host.primaries.borrow()[1].as_ref().unwrap().private_ip,
+        node.private_ip
+    );
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(*cloud.terminated.borrow(), ["i-second", "i-test"]);
+    assert_eq!(cloud.deleted.borrow().len(), 2);
+    assert!(!child.key_path.exists());
+    assert!(!node.key_path.exists());
+    assert!(state.read("demo").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn failed_join_retains_child_for_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud
+        .observations
+        .borrow_mut()
+        .extend([Some(instance("running")), Some(instance("running"))]);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &settings(),
+        "demo",
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let host = FakeHost {
+        fail: true,
+        ..Default::default()
+    };
+    assert!(
+        super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO)
+            .await
+            .is_err()
+    );
+    let node = state.require("demo").unwrap();
+    assert_eq!(node.nodes.len(), 1);
+    assert!(!node.nodes[0].instance_id.is_empty());
+    cloud.fail_terminate.set(true);
+    assert!(
+        down::run(&cloud, &state, &node, Duration::ZERO)
+            .await
+            .is_err()
+    );
+    assert!(node.nodes[0].key_path.exists());
+    assert!(node.key_path.exists());
+    cloud.fail_terminate.set(false);
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO)
+        .await
+        .unwrap();
 }

@@ -1,3 +1,4 @@
+mod add_node;
 mod aws;
 mod connect;
 mod disconnect;
@@ -30,6 +31,19 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let cloud = aws::Aws::new(&loaded.settings.remote.region).await;
             tokio::select! {
                 result = up::run(&cloud, &host, &state, &loaded.settings.remote, &name, Duration::from_secs(5)) => result,
+                result = tokio::signal::ctrl_c() => {
+                    result?;
+                    bail!("interrupted; run swarmy remote down {name} to clean up")
+                }
+            }
+        }
+        Command::AddNode { name } => {
+            let _lock = state.lock()?;
+            let node = state.require(&name)?;
+            let host = ssh::Ssh::discover()?;
+            let cloud = aws::Aws::new(&node.region).await;
+            tokio::select! {
+                result = Box::pin(add_node::run(&cloud, &host, &state, &name, Duration::from_secs(5))) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
@@ -82,7 +96,7 @@ trait Cloud {
 /// Key generation and provisioning over SSH, replaceable by a fake in tests.
 trait Host {
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
-    async fn provision(&self, node: &RemoteNode) -> Result<String>;
+    async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String>;
 }
 
 impl Host for ssh::Ssh {
@@ -90,8 +104,8 @@ impl Host for ssh::Ssh {
         ssh::generate_key(node).await
     }
 
-    async fn provision(&self, node: &RemoteNode) -> Result<String> {
-        ssh::Ssh::provision(self, node).await
+    async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String> {
+        ssh::Ssh::provision(self, node, primary).await
     }
 }
 

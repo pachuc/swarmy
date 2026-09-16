@@ -79,6 +79,14 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
     let ssh = root.path().join("ssh");
     std::fs::write(&ssh, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join(".swarmy/remote/test.json");
+    let mut node: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut child = node.clone();
+    child["name"] = "test-2".into();
+    child["instance_id"] = "i-second".into();
+    node["nodes"] = serde_json::json!([child]);
+    std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
     let output = cli(root.path(), &["remote", "status", "--json"]);
     assert!(
         output.status.success(),
@@ -87,6 +95,11 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value[0]["name"], "test");
+    assert_eq!(value[0]["nodes"][0]["instance_id"], "i-second");
+    assert_eq!(
+        value[0]["nodes"][0]["instance_state"],
+        "unknown (SSH unreachable)"
+    );
     assert_eq!(value[0]["tunnel"], false);
     assert_eq!(
         value[0]["registration_error"],
@@ -145,4 +158,27 @@ fn doctor_reports_a_missing_profile_as_disconnected_without_checking_local_servi
             .iter()
             .any(|check| check["name"] == "remote FoundationDB")
     );
+}
+
+#[test]
+fn status_uses_private_ssh_when_public_address_is_unreachable() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let path = root.path().join(".swarmy/remote/test.json");
+    let content = std::fs::read_to_string(&path).unwrap().replace(
+        "\"private_ip\":\"127.0.0.1\"",
+        "\"private_ip\":\"127.0.0.2\"",
+    );
+    std::fs::write(path, content).unwrap();
+    let ssh = root.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        "#!/bin/sh\ncase \"$*\" in *127.0.0.2*) exit 0;; *) exit 1;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = cli(root.path(), &["remote", "status", "--json"]);
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value[0]["instance_state"], "running (SSH reachable)");
 }

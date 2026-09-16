@@ -9,6 +9,10 @@ services=(fdb nats seaweed)
 started=()
 locked=false
 start_complete=false
+advertise_address=${2:-127.0.0.1}
+bind_address=$advertise_address
+# Wildcard listening keeps loopback clients working when a private address is advertised.
+if [[ $advertise_address != 127.0.0.1 ]]; then bind_address=0.0.0.0; fi
 
 fail() {
     printf '%s\n' "$*" >&2
@@ -130,7 +134,10 @@ start() {
     done
 
     if [[ ! -f $dev_dir/fdb.cluster ]]; then
-        printf 'dev:dev@127.0.0.1:4500\n' > "$dev_dir/fdb.cluster"
+        printf 'dev:dev@%s:4500\n' "$advertise_address" > "$dev_dir/fdb.cluster"
+    fi
+    if [[ $(tr -d '\n\r' < "$dev_dir/fdb.cluster") != "dev:dev@$advertise_address:4500" ]]; then
+        fail 'The cluster file advertises another address; use the original advertise-address.'
     fi
     cat > "$dev_dir/s3.json" <<'JSON'
 {
@@ -142,15 +149,15 @@ start() {
 }
 JSON
 
-    launch fdb fdbserver -p 127.0.0.1:4500 -C "$dev_dir/fdb.cluster" \
+    launch fdb fdbserver -p "$advertise_address:4500" -l "$bind_address:4500" -C "$dev_dir/fdb.cluster" \
         -d "$dev_dir/fdb/data" -L "$dev_dir/fdb/logs"
-    launch nats nats-server -js -sd "$dev_dir/nats" -a 127.0.0.1 -p 4222 -m 8222
+    launch nats nats-server -js -sd "$dev_dir/nats" -a "$bind_address" --client_advertise "$advertise_address:4222" -p 4222 -m 8222
     # Unix socket paths are limited to about 100 bytes, so they cannot live
     # under a deep repository path. Key a short directory by the repository.
     socket_dir="${TMPDIR:-/tmp}/swarmy-$(printf '%s' "$dev_dir" | sha256sum | cut -c1-12)"
     mkdir -p -- "$socket_dir"
     # Separate S3 test buckets each need collection volume slots.
-    launch seaweed weed server -dir "$dev_dir/seaweed" -ip 127.0.0.1 -ip.bind 127.0.0.1 \
+    launch seaweed weed server -dir "$dev_dir/seaweed" -ip "$advertise_address" -ip.bind "$bind_address" \
         -volume.max 32 \
         -s3 -s3.port 8333 -s3.config "$dev_dir/s3.json" \
         -filer.localSocket "$socket_dir/filer.sock" -s3.localSocket "$socket_dir/s3.sock" \
@@ -186,9 +193,12 @@ JSON
 }
 
 case ${1:-} in
-    start|stop|status) [[ $# == 1 ]] || fail 'Usage: scripts/dev-stack.sh {start|stop|status}' ;;
+    start) [[ $# == 1 || $# == 2 ]] || fail 'Usage: scripts/dev-stack.sh start [advertise-address]' ;;
+    stop|status) [[ $# == 1 ]] || fail 'Usage: scripts/dev-stack.sh {stop|status}' ;;
     *) fail 'Usage: scripts/dev-stack.sh {start|stop|status}' ;;
 esac
+
+[[ $advertise_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Expected an IPv4 advertise address.'
 
 if [[ $1 == status ]]; then
     for service in "${services[@]}"; do

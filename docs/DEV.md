@@ -401,11 +401,12 @@ ports, PID, and control socket. Port selection and SSH binding cannot be atomic;
 if another process claims a selected port, SSH fails startup and no profile is
 published. Retry connect after resolving the collision.
 
-FoundationDB needs special care: the generated coordinator file uses the dev
-stack's `dev:dev` cluster identity. Its transport verifies that the connected
+FoundationDB needs special care: the local coordinator file preserves the
+remote cluster identity and rewrites its address to the local tunnel. New
+remotes forward to the first node's private address; legacy remotes still
+forward to loopback. Its transport verifies that the connected
 port matches the server's advertised port. A remapped coordinator port fails
-that check even when the destination is localhost. It also discovers server
-addresses, so the advertised `127.0.0.1:4500` must reach the same remote database.
+that check even when the destination is localhost. The local `127.0.0.1:4500` endpoint must reach the same remote database.
 Free that port before connecting, or use a separate network namespace. Connect
 still records and opens the alternative forward for inspection, but warns;
 doctor reports the mapping failure, and configuration loading rejects it before

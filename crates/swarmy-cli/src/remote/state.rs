@@ -68,6 +68,13 @@ impl State {
     }
 
     pub fn remove(&self, node: &RemoteNode) -> Result<()> {
+        self.remove_key(node)?;
+        fs::remove_file(self.path(&node.name, "json")?)?;
+        File::open(&self.directory)?.sync_all()?;
+        Ok(())
+    }
+
+    pub fn remove_key(&self, node: &RemoteNode) -> Result<()> {
         // Only remove generated files inside our directory, even if state was edited.
         ensure!(
             node.key_path.parent() == Some(self.directory.as_path()),
@@ -77,7 +84,6 @@ impl State {
             node.key_path.clone(),
             node.key_path.with_extension("pub"),
             node.key_path.with_extension("known_hosts"),
-            self.path(&node.name, "json")?,
         ] {
             match fs::remove_file(path) {
                 Ok(()) => {}

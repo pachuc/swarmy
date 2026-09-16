@@ -54,6 +54,10 @@ pub async fn run(
         ssh_user: "ubuntu".into(),
         ports: RemotePorts::default(),
         nodes: Vec::new(),
+        launch_settings: Some(RemoteSettings {
+            image: Some(image.clone()),
+            ..settings.clone()
+        }),
         created_at: jiff::Timestamp::now().to_string(),
     };
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
@@ -99,5 +103,5 @@ async fn provision(
     node.public_ip = instance.public_ip;
     node.private_ip = instance.private_ip;
     state.save(node)?;
-    host.provision(node).await
+    host.provision(node, None).await
 }

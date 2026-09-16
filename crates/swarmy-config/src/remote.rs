@@ -68,6 +68,9 @@ pub struct RemoteNode {
     pub ports: RemotePorts,
     #[serde(default)]
     pub nodes: Vec<RemoteNode>,
+    /// Resolved launch configuration, retained so joins do not depend on later edits.
+    #[serde(default)]
+    pub launch_settings: Option<RemoteSettings>,
     /// UTC timestamp in RFC 3339 format.
     pub created_at: String,
 }
