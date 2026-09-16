@@ -1,4 +1,5 @@
 mod config;
+mod placement;
 mod worker;
 
 use std::sync::Arc;

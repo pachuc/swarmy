@@ -13,6 +13,7 @@ pub struct Config {
     pub partitions: BTreeSet<u16>,
     pub provider: String,
     pub lease_duration: Duration,
+    pub placement_lease: Duration,
     pub recovery_interval: Duration,
     pub harness: Harness,
     pub kill_point: Option<String>,
@@ -72,6 +73,7 @@ impl Config {
             partitions: parse_partitions(&settings.worker_partitions)?,
             provider,
             lease_duration: duration(settings.worker_lease_ms)?,
+            placement_lease: Duration::from_secs(settings.placement_lease_seconds.get()),
             recovery_interval: duration(settings.worker_recovery_interval_ms)?,
             harness: Harness {
                 system_prompt_template: settings.system_prompt,

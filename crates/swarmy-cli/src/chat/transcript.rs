@@ -21,6 +21,7 @@ pub struct Transcript {
 
 enum Entry {
     User(String),
+    System(String),
     Assistant(String),
     Tool {
         request: RequestId,
@@ -38,6 +39,11 @@ impl Transcript {
             TranscriptEvent::UserMessage(message) => {
                 if self.messages.insert(message.id) {
                     self.entries.push(Entry::User(message_text(&message)));
+                }
+            }
+            TranscriptEvent::SystemMessage(message) => {
+                if self.messages.insert(message.id) {
+                    self.entries.push(Entry::System(message_text(&message)));
                 }
             }
             TranscriptEvent::AssistantTextDelta { index, text } => {
@@ -81,6 +87,7 @@ impl Transcript {
         let mut lines = Vec::new();
         for entry in &self.entries {
             match entry {
+                Entry::System(text) => append_lines(&mut lines, "System", text, Color::Yellow),
                 Entry::User(text) => append_lines(&mut lines, "You", text, Color::Cyan),
                 Entry::Assistant(text) => append_lines(&mut lines, "Agent", text, Color::Reset),
                 Entry::Error(text) => append_lines(&mut lines, "Error", text, Color::Reset),
@@ -329,5 +336,39 @@ mod tests {
         assert_eq!(usize::from(scroll.position(lines + 10, 4)), lines + 6);
         scroll.end();
         assert_eq!(scroll.position(1, 4), 0);
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::conversation::Replay;
+    use swarmy_core::{Event, Message, MessageRole, Part};
+
+    #[test]
+    fn system_notice_survives_feed_replay_and_renders_once() {
+        let message = Message {
+            id: MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::System,
+            parts: vec![Part::Text {
+                text: "Computer rebuilt from its snapshot.".into(),
+            }],
+        };
+        let event = Event::MessageAppended { seq: 1, message };
+        let mut replay = Replay::default();
+        let mut transcript = Transcript::default();
+        transcript.apply(replay.record(&event).unwrap());
+        assert!(replay.record(&event).is_none());
+        let text = transcript
+            .lines()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("System"));
+        assert_eq!(
+            text.matches("Computer rebuilt from its snapshot.").count(),
+            1
+        );
     }
 }

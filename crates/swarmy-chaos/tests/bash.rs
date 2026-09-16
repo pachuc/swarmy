@@ -29,7 +29,7 @@ fn root_bash_disk_and_failure_acceptance() {
             "--sessions",
             "1",
             "--steps",
-            "2",
+            "3",
             "--kills",
             "0",
             "--kill-node-mid-command",

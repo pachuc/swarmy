@@ -61,6 +61,13 @@ impl Hosting {
         if self.store.tool_completed(job.request_id).await? {
             return Ok(());
         }
+        if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
+            anyhow::ensure!(
+                dispatched.node_id == self.node,
+                "tool dispatched to another node"
+            );
+            self.store.validate_placement(&dispatched).await?;
+        }
         let agent = self
             .store
             .fetch_session(job.session_id)
@@ -98,11 +105,19 @@ impl Hosting {
             .context("agent stopped serving; placement lease lost")?
     }
 
-    async fn placement(&self, agent: AgentId) -> Result<PlacementRecord> {
+    async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
+        let dispatched = self.store.tool_placement(job.request_id).await?;
         let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
         let placement = match self.store.get_by_agent(agent).await? {
-            None => self.store.place(agent, self.node, expiry).await?,
+            None => {
+                anyhow::ensure!(dispatched.is_none(), "dispatch placement was released");
+                self.store.place(agent, self.node, expiry).await?
+            }
             Some(old) if old.expires_at <= jiff::Timestamp::now() => {
+                anyhow::ensure!(
+                    dispatched.is_none(),
+                    "dispatch placement expired; worker must recover the call"
+                );
                 self.store.take_over(&old, self.node, expiry).await?
             }
             Some(old) if old.node_id != self.node => bail!(
@@ -111,6 +126,12 @@ impl Hosting {
                 old.epoch
             ),
             Some(old) => {
+                anyhow::ensure!(
+                    dispatched
+                        .as_ref()
+                        .is_none_or(|expected| expected.epoch == old.epoch),
+                    "dispatch placement epoch changed"
+                );
                 if self.previous.lock().await.get(&agent) == Some(&old.epoch) {
                     bail!(
                         "placement epoch {} stopped; waiting for lease expiry before rebuilding",
@@ -133,7 +154,7 @@ impl Hosting {
         let Some(first) = calls.recv().await else {
             return Ok(());
         };
-        let placement = match self.placement(agent).await {
+        let placement = match self.placement(agent, &first.job).await {
             Ok(placement) => placement,
             Err(error) => {
                 let _ = first.reply.send(Err(error));
