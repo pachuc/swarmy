@@ -2,6 +2,8 @@
 mod device;
 mod metrics;
 pub use metrics::UploadStats;
+mod snapshot;
+pub use snapshot::SnapshotLoop;
 mod flush;
 pub use flush::{BackgroundUploader, FlushResult, VolumeWriter};
 pub mod image;

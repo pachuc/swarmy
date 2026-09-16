@@ -36,6 +36,7 @@ pub struct VolumeWriter {
     id: VolumeId,
     lease: Mutex<Lease>,
     head: Mutex<ManifestId>,
+    retention: std::num::NonZeroUsize,
 }
 
 impl VolumeWriter {
@@ -47,12 +48,32 @@ impl VolumeWriter {
         lease: Lease,
         head: ManifestId,
     ) -> Arc<Self> {
+        Self::with_retention(
+            device,
+            store,
+            id,
+            lease,
+            head,
+            swarmy_config::VolumeSnapshots::default().retention,
+        )
+    }
+
+    #[must_use]
+    pub fn with_retention(
+        device: Arc<VolumeDevice>,
+        store: Store,
+        id: VolumeId,
+        lease: Lease,
+        head: ManifestId,
+        retention: std::num::NonZeroUsize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             device,
             store,
             id,
             lease: Mutex::new(lease),
             head: Mutex::new(head),
+            retention,
         })
     }
 
@@ -63,6 +84,29 @@ impl VolumeWriter {
     /// Returns freeze, storage, or lease errors. Always attempts to unfreeze.
     pub async fn flush(&self, mount: Option<&Path>) -> Result<FlushResult> {
         let mut head = self.head.lock().await;
+        self.publish(mount, &mut head).await
+    }
+
+    /// Publish immediately, even if no chunks changed, and return the new head.
+    /// # Errors
+    /// Returns freeze, storage, or writer fencing errors.
+    pub async fn checkpoint(&self, mount: Option<&Path>) -> Result<ManifestId> {
+        Ok(self.flush(mount).await?.manifest_id)
+    }
+
+    /// Skip idle periods without freezing or contacting the metadata store.
+    /// The check shares the publication lock with checkpoints and legacy flushes.
+    /// # Errors
+    /// Returns freeze, storage, or writer fencing errors.
+    pub async fn flush_if_dirty(&self, mount: Option<&Path>) -> Result<Option<FlushResult>> {
+        let mut head = self.head.lock().await;
+        if !self.device.has_unpublished_changes().await {
+            return Ok(None);
+        }
+        self.publish(mount, &mut head).await.map(Some)
+    }
+
+    async fn publish(&self, mount: Option<&Path>, head: &mut ManifestId) -> Result<FlushResult> {
         let start = Instant::now();
         let before = self.device.upload_stats();
         let frozen = FrozenMount::freeze(mount).await?;
@@ -78,7 +122,14 @@ impl VolumeWriter {
                 loop {
                     match self
                         .store
-                        .advance_volume(self.id, &lease, previous, next, &header)
+                        .advance_volume_retained(
+                            self.id,
+                            &lease,
+                            previous,
+                            next,
+                            &header,
+                            self.retention,
+                        )
                         .await
                     {
                         // The immutable id lets a retry recognize a publication

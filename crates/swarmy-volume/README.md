@@ -47,7 +47,8 @@ Shared ids, hashes, headers, and volume records live in `swarmy-core`.
 
 - `("manifest", id)` holds `{ size, chunk_size, root_hash }`. An id cannot be
   replaced with a different header.
-- `("manifest_parent", id)` links a published manifest to its predecessor.
+- `("manifest_parent", id)` records immutable provenance, independent of retention.
+- `("volume_snapshots", id)` holds retained manifest ids, newest first.
 - `("volume", id)` holds `{ head_manifest, writer_lease, parent }`.
 - `("image", name, tag)` maps an image name and string `ImageTag` to a manifest id.
 - `("volume_lease_seq", id)` retains the last writer grant sequence even after
@@ -173,6 +174,7 @@ sudo -E swarmy vol attach VOLUME --background
 # In another terminal:
 sudo mount /dev/nbdX /mnt/agent
 sudo -E swarmy vol flush VOLUME --mount /mnt/agent
+sudo -E swarmy vol checkpoint VOLUME
 sudo -E swarmy vol snapshot VOLUME
 swarmy vol clone VOLUME
 sudo -E swarmy vol detach VOLUME
@@ -181,15 +183,15 @@ swarmy vol show VOLUME
 ```
 
 Every command accepts `--json`. Attach emits one ready record; list emits one
-record per volume; show includes the complete manifest chain, newest first.
+record per volume; show includes retained snapshots, newest first.
 Snapshot flushes a live local writer and returns its immutable manifest id.
 For an unattached volume it returns the last committed manifest id. Clone
 always uses the last committed manifest; snapshot first to include local writes.
 Clones begin unleased and share immutable objects, with independent local writes.
-Their history includes the source's predecessors up to the point of cloning.
+Their retained history starts at the cloned head; source retention is independent.
 
 Attach selects an unused `/dev/nbd0` through `/dev/nbd15`, or accepts `--device`.
-It renews a 60-second writer lease every 15 seconds. Flush, snapshot, and detach
+It renews a 60-second writer lease every 15 seconds. Flush, checkpoint, snapshot, and detach
 send requests to `.swarmy/volumes/VOLUME.sock` under the discovered configuration
 root. Invoke commands with the same configuration root and node id; root-created
 sockets generally require sudo for control commands too. A local lock protects
@@ -237,9 +239,54 @@ a volume id, an optional device path, a background-upload flag, a readiness
 callback, and a shutdown future. Readiness follows kernel capacity publication.
 `server::control` returns the manifest id after flush or detach. The service
 owns the local lock, control socket, overlay, kernel attachment, background
-uploader, and renewal task for its whole lifetime. Callers supply shutdown
+uploader, snapshot loop, and renewal task for its whole lifetime. Callers supply shutdown
 policy and presentation; the CLI supplies signals and prints readiness, while
 the sandbox runtime mounts the ready device and controls detach itself.
+
+### Periodic snapshots and retention
+
+Every attachment runs a snapshot loop, including when `--background` is absent.
+It waits 600 seconds by default between attempts. Only unpublished chunk changes
+trigger a flush; already uploaded but unpublished chunks still count as dirty.
+An idle attempt neither freezes the filesystem nor accesses FoundationDB.
+Each attempt discovers the current mount before freezing it. Periodic publication,
+control requests, and detach serialize so publication cannot race unmounting.
+Failed publications retain dirty data and retry on the next period.
+
+`swarmy vol checkpoint VOLUME [--mount PATH]` immediately publishes through the
+local control socket and prints the new manifest id. It creates a new snapshot
+even on an idle disk. `VolumeWriter::checkpoint` and `server::checkpoint` expose
+the same operation to library callers. The existing flush API remains available.
+
+Shared configuration controls the period and retention for CLI and node
+attachments. Both values must be positive:
+
+```toml
+[volume_snapshots]
+period_seconds = 600
+retention = 10
+```
+
+Environment overrides are `SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS` and
+`SWARMY_VOLUME_SNAPSHOT_RETENTION`. The shared attachment server loads the policy
+when attaching. Direct writers can use `VolumeWriter::with_retention`.
+
+Every successful publication atomically retains the newest ten snapshots by
+default, including the new head. Creation and cloning retain their initial head.
+Existing volume records without explicit history import the newest retained
+entries from their parent links.
+Retention removes only per-volume history entries: manifest headers, immutable
+parent links, and object data remain for the garbage collector. Parent links do
+not keep manifests live and do not define the history shown by the CLI.
+
+`Store::live_manifests` returns the union of all retained snapshots, all attached
+heads, and every registered image manifest at one database read version. A writer
+lease counts as attached until released, including after expiry. The query
+excludes unreferenced headers and pruned ancestors unless another volume or
+image retains them. It reads scan pages in one transaction, so FoundationDB's
+transaction time and size limits apply. A future collector must also protect
+publications concurrent with its sweep; this query alone does not authorize
+object deletion.
 
 ### Flush measurements
 

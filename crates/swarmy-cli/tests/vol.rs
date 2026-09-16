@@ -23,7 +23,15 @@ fn commands_are_forwarded_and_root_is_required() {
         assert!(output.status.success());
         let help = String::from_utf8(output.stdout).unwrap();
         for name in [
-            "create", "attach", "flush", "snapshot", "clone", "detach", "ls", "show",
+            "create",
+            "attach",
+            "flush",
+            "checkpoint",
+            "snapshot",
+            "clone",
+            "detach",
+            "ls",
+            "show",
         ] {
             assert!(help.contains(name));
         }
@@ -44,6 +52,8 @@ struct Fixture {
     store: Store,
     node_a: String,
     node_b: String,
+    snapshot_period: u64,
+    snapshot_retention: usize,
 }
 impl Fixture {
     async fn new() -> Option<Self> {
@@ -74,6 +84,8 @@ impl Fixture {
             store,
             node_a: ulid::Ulid::generate().to_string(),
             node_b: ulid::Ulid::generate().to_string(),
+            snapshot_period: 600,
+            snapshot_retention: 10,
         };
         fixture.base_image(&settings).await;
         Some(fixture)
@@ -115,6 +127,14 @@ impl Fixture {
             .current_dir(self.root.path())
             .env("SWARMY_STORE_DIRECTORY", &self.namespace)
             .env("SWARMY_NODE_ID", node)
+            .env(
+                "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
+                self.snapshot_period.to_string(),
+            )
+            .env(
+                "SWARMY_VOLUME_SNAPSHOT_RETENTION",
+                self.snapshot_retention.to_string(),
+            )
             .args(["--json", "vol"])
             .args(arguments);
         command
@@ -239,7 +259,8 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     let mut node_b = fixture.attach(&fixture.node_b, volume, "b");
     assert_eq!(node_b.read("durable"), b"committed on A");
     eprintln!("acceptance 1 passed: durable data moved from node A to node B");
-    let snapshot = fixture.json(&fixture.node_b, &["snapshot", volume]);
+    let snapshot = fixture.json(&fixture.node_b, &["checkpoint", volume]);
+    assert_ne!(snapshot["manifest_id"], flushed["manifest_id"]);
     let cloned = fixture.json(&fixture.node_a, &["clone", volume]);
     let clone = cloned["volume_id"].as_str().unwrap();
     let mut clone_server = fixture.attach(&fixture.node_a, clone, "clone");
@@ -343,4 +364,59 @@ fn check_history(fixture: &Fixture, volume: &str, clone: &str, created: &Value) 
         assert!(text.contains(entry["manifest_id"].as_str().unwrap()));
     }
     eprintln!("acceptance 5 passed: manifest history and every volume are listed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_periodic_snapshot_checkpoint_and_configured_retention() {
+    let Some(mut fixture) = Fixture::new().await else {
+        return;
+    };
+    fixture.snapshot_period = 1;
+    fixture.snapshot_retention = 3;
+    let created = fixture.json(&fixture.node_a, &["create", "test:base"]);
+    let volume = created["volume_id"].as_str().unwrap();
+    let id = VolumeId::from_ulid(volume.parse().unwrap());
+    let mut server = fixture.attach(&fixture.node_a, volume, "periodic");
+    server.write("periodic", b"published by timer");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let head = fixture
+                .store
+                .get_volume(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .head_manifest;
+            if serde_json::to_value(head).unwrap() != created["manifest_id"] {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("periodic snapshot did not publish");
+    for index in 0..12 {
+        server.write("checkpoint", index.to_string().as_bytes());
+        let checkpoint = fixture.json(&fixture.node_a, &["checkpoint", volume]);
+        let head = fixture
+            .store
+            .get_volume(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_manifest;
+        assert_eq!(
+            serde_json::to_value(head).unwrap(),
+            checkpoint["manifest_id"]
+        );
+    }
+    let shown = fixture.json(&fixture.node_a, &["show", volume]);
+    assert_eq!(shown["manifests"].as_array().unwrap().len(), 3);
+    fixture.json(&fixture.node_a, &["detach", volume]);
+    server.stopped();
+    let mut reopened = fixture.attach(&fixture.node_b, volume, "reopened");
+    assert_eq!(reopened.read("periodic"), b"published by timer");
+    assert_eq!(reopened.read("checkpoint"), b"11");
+    fixture.json(&fixture.node_b, &["detach", volume]);
+    reopened.stopped();
 }

@@ -56,6 +56,18 @@ pub async fn control(
     Ok(control_flush(config, id, mount, detach).await?.manifest_id)
 }
 
+/// Request an immediate checkpoint through the attachment's control socket.
+/// This uses the same fenced publication protocol as the legacy flush request.
+/// # Errors
+/// Returns transport, publication, or attachment errors.
+pub async fn checkpoint(
+    config: &ServerConfig,
+    id: VolumeId,
+    mount: Option<PathBuf>,
+) -> Result<ManifestId> {
+    control(config, id, mount, false).await
+}
+
 /// Send a control request and return publication timings and counters.
 /// # Errors
 /// Returns transport, publication, or attachment errors.
@@ -191,44 +203,105 @@ async fn serve(
         4,
     )
     .await?;
-    let writer = VolumeWriter::new(
+    let policy = swarmy_config::Settings::load()
+        .map_err(|error| Error::Message(error.to_string()))?
+        .settings
+        .volume_snapshots;
+    let writer = VolumeWriter::with_retention(
         device.clone(),
         store.clone(),
         id,
         lease.clone(),
         record.head_manifest,
+        policy.retention,
     );
-    let (path, attachment) = attach_kernel(path, device).await?;
+    let (path, attachment) = attach_kernel(path, device.clone()).await?;
     let mut attachment = Some(attachment);
     let _background = background.then(|| writer.background(Duration::from_millis(250)));
-    let (lost_tx, mut lost_rx) = tokio::sync::oneshot::channel();
-    let renew_writer = writer.clone();
-    let renewal = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
-            if let Err(error) = renew_writer.renew(LEASE_DURATION).await {
-                let _ = lost_tx.send(error);
-                break;
-            }
-        }
-    });
-    let _renewal = AbortTask(renewal);
+    // Hold this gate through mount discovery, freeze, and detach so a periodic
+    // publication cannot race unmounting or the final publication.
+    let operations = Arc::new(tokio::sync::Mutex::new(()));
+    let snapshots = start_snapshots(
+        writer.clone(),
+        device,
+        path.clone(),
+        operations.clone(),
+        policy,
+    );
+    let (_renewal, mut lost_rx) = start_renewal(writer.clone());
     ready(&path)?;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (socket, _) = result?;
-                if handle(socket, node, &path, &writer, &mut attachment).await? { break; }
+                let _operation = operations.lock().await;
+                if handle(socket, node, &path, &writer, &mut attachment).await? {
+                    drop(snapshots);
+                    break;
+                }
             }
-            error = &mut lost_rx => { return Err(Error::Message(format!("writer lease lost; device disconnected: {}", error?))); }
+            error = &mut lost_rx => {
+                let _operation = operations.lock().await;
+                drop(snapshots);
+                return Err(Error::Message(format!("writer lease lost; device disconnected: {}", error?)));
+            }
             () = &mut shutdown => {
+                let _operation = operations.lock().await;
+                // Cancel while holding the gate; no next tick can start after
+                // final publication and race lease release or device teardown.
+                drop(snapshots);
                 finish(&path, &writer, &mut attachment).await?;
                 break;
             }
         }
     }
     Ok(())
+}
+
+fn start_snapshots(
+    writer: Arc<VolumeWriter>,
+    device: Arc<VolumeDevice>,
+    path: PathBuf,
+    operations: Arc<tokio::sync::Mutex<()>>,
+    policy: swarmy_config::VolumeSnapshots,
+) -> crate::SnapshotLoop {
+    crate::SnapshotLoop::spawn(
+        Duration::from_secs(policy.period_seconds.get()),
+        move || {
+            let operations = operations.clone();
+            let writer = writer.clone();
+            let path = path.clone();
+            let device = device.clone();
+            async move {
+                let _operation = operations.lock().await;
+                if device.has_unpublished_changes().await {
+                    let mount = mountpoint(&path).await?;
+                    writer.flush_if_dirty(mount.as_deref()).await?;
+                }
+                Ok::<_, Error>(())
+            }
+        },
+    )
+}
+
+fn start_renewal(
+    writer: Arc<VolumeWriter>,
+) -> (
+    AbortTask,
+    tokio::sync::oneshot::Receiver<crate::VolumeError>,
+) {
+    let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            if let Err(error) = writer.renew(LEASE_DURATION).await {
+                let _ = lost_tx.send(error);
+                break;
+            }
+        }
+    });
+    (AbortTask(task), lost_rx)
 }
 
 struct AbortTask(tokio::task::JoinHandle<()>);
