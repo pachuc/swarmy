@@ -14,7 +14,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             crate::vol_server::attach(VolumeId::from_ulid(volume), device, background, json)
                 .await?;
         }
-        Command::Flush { volume, mount } => {
+        Command::Flush { volume, mount } | Command::Checkpoint { volume, mount } => {
             crate::vol_server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
         }
         Command::Snapshot { volume } => {
@@ -90,8 +90,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
         Command::Show { volume } => {
             let id = VolumeId::from_ulid(volume);
             let record = store.get_volume(id).await?.context("volume not found")?;
-            let mut current = Some(record.head_manifest);
-            let mut seen = std::collections::HashSet::new();
+
             let mut chain = Vec::new();
             let mut text = format!(
                 "{id} parent={}",
@@ -99,8 +98,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                     .parent
                     .map_or_else(|| "-".into(), |parent| parent.to_string())
             );
-            while let Some(manifest) = current {
-                anyhow::ensure!(seen.insert(manifest), "manifest history contains a cycle");
+            for manifest in store.volume_snapshots(id).await? {
                 let header = store
                     .get_manifest(manifest)
                     .await?
@@ -111,7 +109,6 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                     header.size, header.root_hash
                 )?;
                 chain.push(serde_json::json!({"manifest_id": manifest, "header": header}));
-                current = store.manifest_parent(manifest).await?;
             }
             output(
                 &serde_json::json!({"volume_id": id, "record": record, "manifests": chain}),

@@ -21,9 +21,26 @@ pub enum Error {
     Export(usize),
 }
 
+/// Publication policy shared by every volume attachment.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VolumeSnapshots {
+    pub period_seconds: std::num::NonZeroU64,
+    pub retention: std::num::NonZeroUsize,
+}
+impl Default for VolumeSnapshots {
+    fn default() -> Self {
+        Self {
+            period_seconds: std::num::NonZeroU64::new(600).unwrap(),
+            retention: std::num::NonZeroUsize::new(10).unwrap(),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub volume_snapshots: VolumeSnapshots,
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
@@ -72,6 +89,7 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            volume_snapshots: VolumeSnapshots::default(),
             node_id: None,
             node_roles: vec![
                 swarmy_core::NodeRole::Sandbox,
@@ -258,6 +276,23 @@ impl Settings {
         Ok(toml::to_string_pretty(self)?)
     }
 
+    fn apply_snapshot_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS") {
+            self.volume_snapshots.period_seconds = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_VOLUME_SNAPSHOT_RETENTION") {
+            self.volume_snapshots.retention = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_VOLUME_SNAPSHOT_RETENTION".into()))?;
+        }
+        Ok(())
+    }
+
     /// Apply existing `SWARMY_*` names over file values.
     /// # Errors
     /// Fails if a numeric override cannot be parsed.
@@ -266,6 +301,7 @@ impl Settings {
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         self.apply_node_environment(environment)?;
+        self.apply_snapshot_environment(environment)?;
         if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
             self.fdb_cluster_file.clone_from(value);
         }
@@ -478,6 +514,14 @@ impl Settings {
         ]
         .into();
         self.node_environment(&mut environment);
+        environment.insert(
+            "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
+            self.volume_snapshots.period_seconds.to_string(),
+        );
+        environment.insert(
+            "SWARMY_VOLUME_SNAPSHOT_RETENTION".into(),
+            self.volume_snapshots.retention.to_string(),
+        );
         if let Some(value) = &self.worker_kill_point {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
@@ -539,6 +583,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_policy_defaults_overrides_and_positive_values() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.volume_snapshots.period_seconds.get(), 600);
+        assert_eq!(settings.volume_snapshots.retention.get(), 10);
+        let environment = BTreeMap::from([
+            ("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(), "2".into()),
+            ("SWARMY_VOLUME_SNAPSHOT_RETENTION".into(), "3".into()),
+        ]);
+        settings.apply_environment(&environment).unwrap();
+        for (key, value) in environment {
+            assert_eq!(settings.environment()[&key], value);
+        }
+        assert!(toml::from_str::<Settings>("[volume_snapshots]\nperiod_seconds = 0").is_err());
+        assert!(toml::from_str::<Settings>("[volume_snapshots]\nretention = 0").is_err());
+        for name in [
+            "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
+            "SWARMY_VOLUME_SNAPSHOT_RETENTION",
+        ] {
+            assert!(
+                settings
+                    .apply_environment(&BTreeMap::from([(name.into(), "0".into())]))
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn node_settings_round_trip_and_reject_invalid_roles() {

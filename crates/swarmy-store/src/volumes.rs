@@ -1,6 +1,7 @@
 //! Volume metadata stays inline so cloning and fencing never need object storage.
 use foundationdb::Transaction;
 use jiff::Timestamp;
+use std::{collections::BTreeSet, num::NonZeroUsize};
 use swarmy_core::{
     CHUNK_SIZE, ImageRecord, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
     VolumeRecord,
@@ -61,7 +62,7 @@ impl Store {
         .await
     }
 
-    /// Clone in one transaction containing only two fixed-size volume records.
+    /// Clone using volume records and one initial snapshot reference.
     /// Neither the manifest header nor any object is read. A clone starts unleased.
     /// # Errors
     /// Rejects missing sources, duplicate destination ids, and transaction failures.
@@ -248,6 +249,30 @@ impl Store {
         next: ManifestId,
         header: &ManifestHeader,
     ) -> Result<()> {
+        self.advance_volume_retained(
+            id,
+            expected,
+            previous,
+            next,
+            header,
+            swarmy_config::VolumeSnapshots::default().retention,
+        )
+        .await
+    }
+
+    /// Publish and trim this volume's snapshot history in the same fenced transaction.
+    /// Retention never deletes manifest headers, parent links, or chunk objects.
+    /// # Errors
+    /// Rejects stale heads, invalid headers, reused ids, and absent or stale leases.
+    pub async fn advance_volume_retained(
+        &self,
+        id: VolumeId,
+        expected: &Lease,
+        previous: ManifestId,
+        next: ManifestId,
+        header: &ManifestHeader,
+        retention: NonZeroUsize,
+    ) -> Result<()> {
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected)
@@ -282,13 +307,18 @@ impl Store {
             }
             write(&trx, &self.manifest_key(next), header)?;
             write(&trx, &parent_key, &previous)?;
+            let mut snapshots = self.snapshots(&trx, id, previous, retention.get()).await?;
+            snapshots.insert(0, next);
+            snapshots.truncate(retention.get());
+            write(&trx, &self.volume_snapshots_key(id), &snapshots)?;
             volume.head_manifest = next;
             write(&trx, &self.volume_key(id), &volume)
         })
         .await
     }
 
-    /// Follow one immutable history link. Image manifests have no predecessor.
+    /// Follow immutable provenance, not retained snapshot history or GC liveness.
+    /// Image manifests have no predecessor.
     /// # Errors
     /// Returns decoding and transaction errors.
     pub async fn manifest_parent(&self, id: ManifestId) -> Result<Option<ManifestId>> {
@@ -325,6 +355,111 @@ impl Store {
         .await
     }
 
+    /// Retained snapshots in publication order, newest first, including the head.
+    /// Older records import the newest ten entries from immutable parent links.
+    /// # Errors
+    /// Returns missing-volume, decoding, or transaction errors.
+    pub async fn volume_snapshots(&self, id: VolumeId) -> Result<Vec<ManifestId>> {
+        self.transaction(|trx| async move {
+            let volume = self.volume(&trx, id).await?;
+            self.snapshots(
+                &trx,
+                id,
+                volume.head_manifest,
+                swarmy_config::VolumeSnapshots::default().retention.get(),
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Return the live manifest roots at one database read version: retained
+    /// snapshots of every volume, heads with an attached writer (including an
+    /// expired lease until explicitly released), and every registered image.
+    /// Parent links and unreferenced manifest headers do not confer liveness.
+    /// A collector must also protect publications concurrent with its sweep.
+    /// # Errors
+    /// Returns decoding and transaction errors, including transaction size/time limits.
+    pub async fn live_manifests(&self) -> Result<BTreeSet<ManifestId>> {
+        self.transaction(|trx| async move {
+            let mut live = BTreeSet::new();
+            for kind in ["volume", "image"] {
+                let space = self.root.subspace(&(kind,));
+                let (mut begin, end) = space.range();
+                loop {
+                    let page =
+                        scan(&trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    for (key, value) in page {
+                        if kind == "image" {
+                            live.insert(swarmy_core::decode::<ManifestId>(&value)?);
+                        } else {
+                            let volume: VolumeRecord = swarmy_core::decode(&value)?;
+                            let (bytes,): (Vec<u8>,) =
+                                space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                            let bytes: [u8; 16] =
+                                bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+                            let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
+                            live.extend(
+                                self.snapshots(
+                                    &trx,
+                                    id,
+                                    volume.head_manifest,
+                                    swarmy_config::VolumeSnapshots::default().retention.get(),
+                                )
+                                .await?,
+                            );
+                            if volume.writer_lease.is_some() {
+                                live.insert(volume.head_manifest);
+                            }
+                        }
+                        begin = key;
+                        begin.push(0);
+                    }
+                }
+            }
+            Ok(live)
+        })
+        .await
+    }
+
+    async fn snapshots(
+        &self,
+        trx: &Transaction,
+        id: VolumeId,
+        head: ManifestId,
+        legacy_limit: usize,
+    ) -> Result<Vec<ManifestId>> {
+        if let Some(snapshots) = read(trx, &self.volume_snapshots_key(id)).await? {
+            return Ok(snapshots);
+        }
+        // Import only the retained portion of pre-retention history. Never
+        // traverse a whole legacy chain in a publication transaction.
+        let mut snapshots = vec![head];
+        while snapshots.len() < legacy_limit {
+            let Some(parent) = read::<ManifestId>(
+                trx,
+                &self.manifest_parent_key(*snapshots.last().ok_or(StoreError::Corrupt)?),
+            )
+            .await?
+            else {
+                break;
+            };
+            if snapshots.contains(&parent) {
+                return Err(StoreError::Corrupt);
+            }
+            snapshots.push(parent);
+        }
+        Ok(snapshots)
+    }
+
+    fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
+        self.root
+            .pack(&("volume_snapshots", id.as_ulid().to_bytes().as_slice()))
+    }
+
     fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
         self.root
             .pack(&("manifest_parent", id.as_ulid().to_bytes().as_slice()))
@@ -353,6 +488,11 @@ impl Store {
         if read::<VolumeRecord>(trx, &key).await?.is_some() {
             return Err(StoreError::VolumeExists);
         }
+        write(
+            trx,
+            &self.volume_snapshots_key(id),
+            &vec![record.head_manifest],
+        )?;
         write(trx, &key, record)
     }
 }

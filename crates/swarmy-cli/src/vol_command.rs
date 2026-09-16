@@ -22,6 +22,13 @@ pub enum Command {
         #[arg(long)]
         mount: Option<PathBuf>,
     },
+    /// Immediately publish the attached volume and print its new manifest id
+    Checkpoint {
+        volume: ulid::Ulid,
+        /// Freeze this mount before publishing (otherwise discover the mount)
+        #[arg(long)]
+        mount: Option<PathBuf>,
+    },
     /// Flush an attached volume and print its immutable manifest id
     Snapshot { volume: ulid::Ulid },
     /// Create an independent writer from the last committed manifest

@@ -400,6 +400,11 @@ impl VolumeDevice {
         Ok(())
     }
 
+    /// Includes staged uploads that have not yet been published in a manifest.
+    pub async fn has_unpublished_changes(&self) -> bool {
+        !self.lock_dirty().await.pending.is_empty()
+    }
+
     /// Upload pending chunks without publishing a snapshot. Remote requests do
     /// not hold the dirty-store lock; overwritten generations remain pending.
     /// # Errors
