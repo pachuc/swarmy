@@ -261,10 +261,20 @@ impl Hosting {
                 .unwrap_or(Duration::ZERO);
             // Reserve time to stop local processes even when the store hangs or
             // a renewal acknowledgement arrives near the old lease deadline.
-            let budget = remaining.saturating_sub(self.lease / 10);
+            let budget = remaining.saturating_sub(remaining / 10);
             let renewal = async {
-                tokio::time::sleep(self.lease / 3).await;
-                let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
+                tokio::time::sleep(self.lease.min(remaining) / 3).await;
+                let current = self
+                    .store
+                    .get_by_agent(placement.agent_id)
+                    .await?
+                    .context("placement missing during renewal")?;
+                // A worker or a changed grant can leave more time than the
+                // node requests. Preserve it and the store's strict increase.
+                let expiry = jiff::Timestamp::now()
+                    .checked_add(self.lease)?
+                    .max(current.expires_at.checked_add(Duration::from_millis(1))?);
+                // Keep the original epoch token even if the read saw a takeover.
                 Ok::<_, anyhow::Error>(self.store.renew(&placement, expiry).await?)
             };
             match tokio::time::timeout(budget, renewal).await {

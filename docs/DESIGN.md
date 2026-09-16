@@ -576,12 +576,13 @@ Recovery must wait for both placement and volume-writer authority: shortening
 the placement lease alone does not remove the volume server's 60-second writer
 lease wait. Report that wait separately from rehydration time.
 
-Use the same placement lease duration in workers and nodes. Validation found
-that a node configured with a shorter duration than the worker's initial grant
-can fail its first renewal: the computed expiry precedes the current expiry,
-and the store correctly rejects it. The follow-up task is to preserve monotonic
-expiry in the hosting renewal loop, including during configuration changes,
-without weakening the store fence. This validation uses matching durations.
+Workers and nodes may use different placement lease durations. Validation found
+that a shorter node duration could fail renewal after a longer worker grant.
+Hosting renewals now preserve the later of the node's requested expiry and the
+stored expiry, advancing the latter by one millisecond to satisfy the store's
+strict increase check. Renewal timing and the cancellation margin respect the
+remaining effective grant. Epoch and expiry fencing still apply to every
+renewal, including after a grant changes while the computer is resident.
 
 ### 8.3 Guest agent
 
