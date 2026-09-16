@@ -1,4 +1,7 @@
-use super as ssh;
+use super::{
+    ssh,
+    state::{self, State},
+};
 use anyhow::{Context, Result, bail, ensure};
 use std::{net::TcpListener, path::Path, process::Stdio, time::Duration};
 use swarmy_config::{RemotePorts, RemoteProfile, remote_path};
@@ -20,13 +23,12 @@ impl Drop for StartingTunnel {
     }
 }
 
-pub async fn run(name: &str, json: bool) -> Result<()> {
-    let state = ssh::state_dir()?;
-    let _lock = ssh::lock(&state, name)?;
-    let node = ssh::node(&state, name)?;
-    let path = remote_path(&state, name, "profile.json")?;
+pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Result<()> {
+    let _lock = state.lock()?;
+    let node = state.require(name)?;
+    let path = remote_path(state_dir, name, "profile.json")?;
     if path.exists() {
-        let profile = RemoteProfile::read(&state, name)?;
+        let profile = RemoteProfile::read(state_dir, name)?;
         if ssh::control(&profile, "check").await?.status.success() {
             print(&profile, json)?;
             return Ok(());
@@ -55,11 +57,11 @@ pub async fn run(name: &str, json: bool) -> Result<()> {
         pid: 0,
         ports,
         remote_ports: node.ports,
-        fdb_cluster_file: remote_path(&state, name, "cluster")?,
+        fdb_cluster_file: remote_path(state_dir, name, "cluster")?,
         nats_url: format!("nats://127.0.0.1:{}", ports.nats),
         s3_endpoint: format!("http://127.0.0.1:{}", ports.s3),
     };
-    let (mut command, log_path) = tunnel_command(&node, &profile, &state)?;
+    let (mut command, log_path) = tunnel_command(&node, &profile, state_dir)?;
     command.kill_on_drop(false);
     drop(reservations);
     let mut tunnel = StartingTunnel {
@@ -81,11 +83,11 @@ pub async fn run(name: &str, json: bool) -> Result<()> {
             }
             sleep(Duration::from_millis(50)).await;
         }
-        ssh::write(
+        state::write(
             &profile.fdb_cluster_file,
             format!("dev:dev@127.0.0.1:{}\n", ports.fdb).as_bytes(),
         )?;
-        ssh::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
+        state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
         Ok::<_, anyhow::Error>(())
     })
     .await
@@ -105,7 +107,7 @@ pub async fn run(name: &str, json: bool) -> Result<()> {
 fn tunnel_command(
     node: &swarmy_config::RemoteNode,
     profile: &RemoteProfile,
-    state: &Path,
+    state_dir: &Path,
 ) -> Result<(tokio::process::Command, std::path::PathBuf)> {
     let ports = profile.ports;
     let mut command = ssh::command(node)?;
@@ -123,8 +125,8 @@ fn tunnel_command(
             .arg("-L")
             .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));
     }
-    let log_path = remote_path(state, &profile.name, "ssh.log")?;
-    ssh::write(&log_path, b"")?;
+    let log_path = remote_path(state_dir, &profile.name, "ssh.log")?;
+    state::write(&log_path, b"")?;
     command
         .arg(&node.public_ip)
         .stdout(Stdio::null())

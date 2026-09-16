@@ -378,7 +378,8 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     pause_resume_timeout(&node, sandbox).await;
     crash_recovery(&mut node, &store, volume).await;
     node.stop().await;
-    persistent::run(node.settings.clone(), &store, base).await;
+    // Settings now carries the merged remote configuration, so this future is boxed.
+    Box::pin(persistent::run(node.settings.clone(), &store, base)).await;
 }
 
 async fn registration(node: &Node, store: &Store) {

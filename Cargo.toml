@@ -21,6 +21,9 @@ needless_collect = "deny"
 large_stack_frames = "deny"
 
 [workspace.dependencies]
+aws-config = "1"
+aws-sdk-ec2 = "1"
+aws-sdk-ssm = "1"
 portable-pty = "0.9"
 vt100 = "0.16"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
@@ -71,3 +74,18 @@ swarmy-harness = { path = "crates/swarmy-harness" }
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Generated AWS clients need substantial memory; omit their debug info and
+# optimization in development builds so local and CI builds remain practical.
+[profile.dev.package.aws-sdk-ec2]
+opt-level = 0
+debug = false
+
+[profile.dev.package.aws-sdk-ssm]
+opt-level = 0
+debug = false
+
+# EC2 calls are infrequent and network bound. Avoid optimizing its generated
+# client so release builds fit on the four-core development node too.
+[profile.release.package.aws-sdk-ec2]
+opt-level = 0

@@ -30,7 +30,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Connect to and inspect provisioned remote stacks
+    /// Launch, connect to, and inspect remote development stacks
     Remote {
         #[command(subcommand)]
         command: remote_command::Command,

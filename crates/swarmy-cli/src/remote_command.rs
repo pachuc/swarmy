@@ -2,6 +2,10 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Launch, copy this checkout, and provision a remote node
+    Up { name: String },
+    /// Terminate a node and remove its key pair and local state
+    Down { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
     Connect { name: String },
     /// Stop the recorded SSH tunnel

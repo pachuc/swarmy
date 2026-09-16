@@ -1,12 +1,12 @@
 //! Shared configuration for services and command-line programs.
 mod exports;
+mod object;
 mod remote;
+pub use exports::parse_exports;
+pub use object::ObjectPrefix;
 pub use remote::{
     RemoteNode, RemotePorts, RemoteProfile, RemoteSettings, remote_path, validate_remote_name,
 };
-mod object;
-pub use exports::parse_exports;
-pub use object::ObjectPrefix;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

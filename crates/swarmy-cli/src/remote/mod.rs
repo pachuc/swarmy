@@ -1,62 +1,120 @@
+mod aws;
 mod connect;
 mod disconnect;
+mod down;
 mod logs;
 pub(crate) mod ssh;
+mod state;
+#[cfg(test)]
+mod tests;
+mod up;
+
+use std::{path::PathBuf, time::Duration};
+
+use anyhow::{Result, bail};
+use swarmy_config::{RemoteNode, RemoteSettings, Settings};
 
 use crate::remote_command::Command;
-use anyhow::{Context, Result, ensure};
-
-use ssh::{command, control, healthy};
-use std::{
-    fs::{File, OpenOptions},
-    os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
-};
-use swarmy_config::{RemoteNode, Settings, remote_path};
+use state::State;
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
+    // The base settings are enough here: a selected tunnel profile only rewrites endpoints.
+    let loaded = Settings::load_base()?;
+    let state_dir = PathBuf::from(&loaded.settings.state_dir);
+    let state = State::open(&state_dir.join("remote"))?;
     match command {
-        Command::Connect { name } => connect::run(&name, json).await,
-        Command::Disconnect { name } => disconnect::run(&name).await,
-        Command::Logs { name } => logs::run(&name).await,
+        Command::Up { name } => {
+            let _lock = state.lock()?;
+            swarmy_config::validate_remote_name(&name)?;
+            let host = ssh::Ssh::discover()?;
+            let cloud = aws::Aws::new(&loaded.settings.remote.region).await;
+            tokio::select! {
+                result = up::run(&cloud, &host, &state, &loaded.settings.remote, &name, Duration::from_secs(5)) => result,
+                result = tokio::signal::ctrl_c() => {
+                    result?;
+                    bail!("interrupted; run swarmy remote down {name} to clean up")
+                }
+            }
+        }
+        Command::Down { name } => {
+            let _lock = state.lock()?;
+            let Some(node) = state.read(&name)? else {
+                println!("No remote node named {name}");
+                return Ok(());
+            };
+            let cloud = aws::Aws::new(&node.region).await;
+            down::run(&cloud, &state, &node, Duration::from_secs(5)).await
+        }
+        Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
+        Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
+        Command::Logs { name } => logs::run(&state, &name).await,
         Command::Status => unreachable!("status runs in swarmy-session"),
     }
 }
 
-pub fn state_dir() -> Result<PathBuf> {
-    Ok(Settings::load_base()?.settings.state_dir.into())
+#[derive(Clone, Debug)]
+struct Launch {
+    settings: RemoteSettings,
+    image: String,
+    name: String,
+    key_name: String,
 }
 
-pub fn node(state: &Path, name: &str) -> Result<RemoteNode> {
-    let path = remote_path(state, name, "json")?;
-    let node: RemoteNode = serde_json::from_slice(
-        &std::fs::read(&path).with_context(|| format!("read {}", path.display()))?,
-    )?;
-    ensure!(
-        node.name == name,
-        "remote state name does not match filename"
-    );
-    Ok(node)
+#[derive(Clone, Debug)]
+struct Instance {
+    id: String,
+    status: String,
+    public_ip: String,
+    private_ip: String,
 }
 
-pub fn lock(state: &Path, name: &str) -> Result<File> {
-    std::fs::create_dir_all(state.join("remote"))?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(remote_path(state, name, "lock")?)?;
-    fs2::FileExt::try_lock_exclusive(&file).context("another remote operation is in progress")?;
-    Ok(file)
+/// Only this boundary knows about AWS. Missing resources are represented by None.
+trait Cloud {
+    async fn stock_image(&self) -> Result<String>;
+    async fn import_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()>;
+    async fn launch(&self, request: &Launch) -> Result<String>;
+    async fn instance(&self, id: &str) -> Result<Option<Instance>>;
+    async fn find_launch(&self, token: &str) -> Result<Option<String>>;
+    async fn terminate(&self, id: &str) -> Result<()>;
+    async fn delete_key(&self, name: &str) -> Result<()>;
 }
 
-pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(path)?;
-    Ok(())
+/// Key generation and provisioning over SSH, replaceable by a fake in tests.
+trait Host {
+    async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
+    async fn provision(&self, node: &RemoteNode) -> Result<String>;
+}
+
+impl Host for ssh::Ssh {
+    async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
+        ssh::generate_key(node).await
+    }
+
+    async fn provision(&self, node: &RemoteNode) -> Result<String> {
+        ssh::Ssh::provision(self, node).await
+    }
+}
+
+async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Instance> {
+    for _ in 0..120 {
+        if let Some(instance) = cloud.instance(id).await? {
+            anyhow::ensure!(instance.id == id, "EC2 returned a different instance");
+            match instance.status.as_str() {
+                "running" if !instance.public_ip.is_empty() && !instance.private_ip.is_empty() => {
+                    return Ok(instance);
+                }
+                "pending" | "running" => {}
+                status => bail!("instance {id} entered {status} while waiting for running"),
+            }
+        }
+        tokio::time::sleep(delay).await;
+    }
+    bail!("timed out waiting for instance {id} to run with an IP address")
+}
+
+fn key_name(node: &RemoteNode) -> Result<&str> {
+    node.key_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid key path in remote state"))
 }

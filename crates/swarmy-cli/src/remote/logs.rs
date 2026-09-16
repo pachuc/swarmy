@@ -1,8 +1,8 @@
-use super as ssh;
+use super::{ssh, state::State};
 use anyhow::{Result, ensure};
 
-pub async fn run(name: &str) -> Result<()> {
-    let node = ssh::node(&ssh::state_dir()?, name)?;
+pub async fn run(state: &State, name: &str) -> Result<()> {
+    let node = state.require(name)?;
     let mut child = ssh::command(&node)?
         .arg(&node.public_ip)
         .arg("journalctl --unit swarmyd --follow --no-pager --lines 100")

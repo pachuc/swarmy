@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Settings};
 
+/// EC2 placement, resource ownership, and the selected tunnel profile.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RemoteSettings {
@@ -15,6 +16,7 @@ pub struct RemoteSettings {
     pub disk_gb: u32,
     pub image: Option<String>,
     pub profile: Option<String>,
+    pub managed_by_tag: String,
 }
 
 impl Default for RemoteSettings {
@@ -27,6 +29,7 @@ impl Default for RemoteSettings {
             disk_gb: 100,
             image: None,
             profile: None,
+            managed_by_tag: "swarmy".into(),
         }
     }
 }
@@ -65,6 +68,7 @@ pub struct RemoteNode {
     pub ports: RemotePorts,
     #[serde(default)]
     pub nodes: Vec<RemoteNode>,
+    /// UTC timestamp in RFC 3339 format.
     pub created_at: String,
 }
 
@@ -148,6 +152,29 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn defaults_and_overrides() {
+        let settings: Settings = toml::from_str("[remote]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'\nmanaged_by_tag = 'codex-launcher'").unwrap();
+        assert_eq!(settings.remote.region, "us-east-1");
+        assert_eq!(settings.remote.instance_type, "m6id.xlarge");
+        assert_eq!(settings.remote.disk_gb, 100);
+        assert_eq!(settings.remote.subnet.as_deref(), Some("subnet-test"));
+        assert_eq!(settings.remote.security_group.as_deref(), Some("sg-test"));
+        assert_eq!(settings.remote.managed_by_tag, "codex-launcher");
+        assert!(settings.remote.image.is_none());
+        assert!(settings.remote.profile.is_none());
+        let settings = Settings {
+            remote: RemoteSettings {
+                image: Some("ami-test".into()),
+                ..settings.remote
+            },
+            ..settings
+        };
+        let decoded: Settings = toml::from_str(&settings.to_toml().unwrap()).unwrap();
+        assert_eq!(decoded.remote.image.as_deref(), Some("ami-test"));
+        assert_eq!(decoded.remote.managed_by_tag, "codex-launcher");
+    }
+
+    #[test]
     fn shared_state_defaults_and_round_trip() {
         let node: RemoteNode = serde_json::from_str(r#"{"name":"local","region":"local","instance_id":"i-local","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
         assert_eq!(node.ssh_user, "ubuntu");
@@ -163,6 +190,9 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.remote.instance_type, "m6id.xlarge");
         assert_eq!(settings.remote.disk_gb, 100);
+        assert_eq!(settings.remote.managed_by_tag, "swarmy");
+        assert!(settings.remote.subnet.is_none());
+        assert!(settings.remote.security_group.is_none());
     }
 
     #[test]

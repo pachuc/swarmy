@@ -5,6 +5,8 @@ mod gc;
 mod image;
 mod image_command;
 mod remote_command;
+// Status only needs the health and command helpers; provisioning helpers stay unused here.
+#[allow(dead_code)]
 #[path = "remote/ssh.rs"]
 mod remote_ssh;
 #[path = "remote/status.rs"]
@@ -79,7 +81,9 @@ fn main() -> anyhow::Result<()> {
             Command::Remote {
                 command: remote_command::Command::Status,
             } => remote_status::run(cli.json).await,
-            Command::Remote { .. } => anyhow::bail!("use swarmy for tunnel and log commands"),
+            Command::Remote { .. } => {
+                anyhow::bail!("use swarmy for node, tunnel, and log commands")
+            }
             Command::Gc { dry_run } => gc::run(dry_run, cli.json).await,
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,

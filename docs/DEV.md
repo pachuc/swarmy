@@ -37,6 +37,8 @@ It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
 PID records contain Linux process start times to guard against PID reuse.
 
+To run the backing services and swarmyd on EC2, see [remote development nodes](REMOTE.md).
+
 ## Shared configuration
 
 Every binary searches upward from its current directory for
