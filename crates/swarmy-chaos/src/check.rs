@@ -73,8 +73,26 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
                 }]),
         "session {id}: unexpected final answer: {last:?}"
     );
+    tool_results(id, events, expected_steps - 1)
+}
+
+fn tool_results(id: SessionId, events: &[Event], expected: usize) -> Result<()> {
     let mut tools = 0;
+    let mut writes = 0;
+    let mut recovery = None;
     for event in events {
+        if let Event::MessageAppended { message, .. } = event
+            && message.role == MessageRole::System
+            && let [Part::Text { text }] = message.parts.as_slice()
+        {
+            if text.starts_with("Your computer was rebuilt from the snapshot at ") {
+                // These short runs never reach the periodic checkpoint interval.
+                writes = 0;
+                recovery = Some(text);
+            } else if text.starts_with("Your computer was evicted while idle ") {
+                recovery = Some(text);
+            }
+        }
         if let Event::ToolCallCompleted { result, .. } = event {
             let ToolResult::Completed {
                 output,
@@ -82,7 +100,15 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
                 metadata,
             } = result
             else {
-                anyhow::bail!("session {id}: failed get_time: {result:?}");
+                let ToolResult::Error { error } = result else {
+                    unreachable!()
+                };
+                ensure!(
+                    recovery == Some(error),
+                    "session {id}: failure lacks its matching recovery system message: {result:?}"
+                );
+                tools += 1;
+                continue;
             };
             if title == "bash" {
                 ensure!(
@@ -90,7 +116,7 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
                     "session {id}: bash failed: {result:?}"
                 );
                 ensure!(
-                    metadata["stdout"] == "swarmy\n".repeat(tools + 1),
+                    metadata["stdout"] == "swarmy\n".repeat(writes + 1),
                     "session {id}: disk contains missing or duplicated writes: {output:?}"
                 );
                 ensure!(
@@ -102,6 +128,7 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
                     metadata.contains_key("manifest_id"),
                     "session {id}: manifest missing"
                 );
+                writes += 1;
             } else {
                 output.parse::<jiff::Timestamp>()?;
             }
@@ -109,9 +136,8 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
         }
     }
     ensure!(
-        tools == expected_steps - 1,
-        "session {id}: expected {} clock results, got {tools}",
-        expected_steps - 1
+        tools == expected,
+        "session {id}: expected {expected} tool results, got {tools}"
     );
     Ok(())
 }

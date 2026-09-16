@@ -107,6 +107,14 @@ impl Store {
     pub async fn claim_placed_tool(&self, claim: &PlacedToolClaim) -> Result<bool> {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, &claim.placement).await?;
+            self.check_tool_dispatch(&trx, &claim.job, &claim.placement)
+                .await?;
+            let Some(value) = trx
+                .get(&self.tool_key("tool_job", claim.job.request_id), false)
+                .await?
+            else {
+                return Ok(false);
+            };
             let session = self.session(&trx, claim.job.session_id).await?;
             if session.agent_id != claim.placement.agent_id
                 || session.state != SessionState::WaitingTools
@@ -114,12 +122,6 @@ impl Store {
             {
                 return Err(StoreError::InvalidState);
             }
-            let Some(value) = trx
-                .get(&self.tool_key("tool_job", claim.job.request_id), false)
-                .await?
-            else {
-                return Ok(false);
-            };
             if self.hydrate::<ToolJob>(&value).await? != claim.job {
                 return Err(StoreError::InvalidState);
             }
@@ -151,6 +153,8 @@ impl Store {
         claim: &PlacedToolClaim,
     ) -> Result<StoredPlacedClaim> {
         self.check_live_placement(trx, &claim.placement).await?;
+        self.check_tool_dispatch(trx, &claim.job, &claim.placement)
+            .await?;
         let current: StoredPlacedClaim = read(
             trx,
             &self.tool_key("placed_tool_claim", claim.job.request_id),
@@ -229,6 +233,7 @@ impl Store {
                 }
                 trx.set(&self.event_space(job.session_id).pack(&(head,)), event);
                 trx.clear(&self.tool_key("tool_job", job.request_id));
+                trx.clear(&self.tool_key("tool_placement", job.request_id));
                 trx.clear(&self.tool_key("placed_tool_claim", job.request_id));
                 write(&trx, &self.tool_key("tool_done", job.request_id), &true)?;
                 let pending = self.pending_space(job.session_id);

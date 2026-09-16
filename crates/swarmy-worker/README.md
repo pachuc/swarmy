@@ -95,6 +95,33 @@ ephemeral and can contain duplicates. Observers deduplicate by session/sequence
 and use the durable log to fill gaps after disconnection. It is not a durable
 subscription or an atomic database/NATS transaction.
 
+## Persistent computer routing
+
+Sandbox jobs resolve the agent's placement, so sessions of the same agent share
+one node and volume. A live lease wins regardless of heartbeat age. For absent or
+expired leases, the worker scans live sandbox nodes, prefers a different host
+after expiry, and tries transactional capacity admission in node-id order. The
+selection policy lives in `src/placement.rs`. The initial lease uses the shared
+`SWARMY_PLACEMENT_LEASE_SECONDS` setting; the hosting node renews it.
+Recovery waits for any remaining volume writer lease before granting a new
+placement, so the replacement computer can attach its disk.
+
+The dispatch placement is committed with each durable job before publication.
+Both node claims and completions check that epoch. Recovery scans re-resolve
+placement on every retry: JetStream redelivery on a dead node's subject alone
+cannot move a call to another node. An epoch change fails the outstanding call
+instead of repeating its side effects. Later calls route to the new placement.
+
+Recovery appends a system message before the failed result in one transaction.
+The snapshot time comes from the agent volume's head-manifest ULID timestamp,
+and the loss window ends at placement `last_changed_at`. Each observed notice
+is retained by agent and epoch, with a delivery marker for each affected session.
+There is no main-session identity in the current session schema, so notices go
+to the sessions making calls. Repeated recovery and later snapshots cannot
+change an already recorded explanation. The harness includes these messages in
+prompts, and the shared chat feed renders them as system messages. Evictions
+use distinct wording about the final checkpoint.
+
 ## Tests and kill points
 
 `SWARMY_WORKER_KILL_POINT` exits the worker with status 137 at `after_claim`,

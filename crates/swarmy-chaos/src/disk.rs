@@ -28,7 +28,7 @@ pub async fn kill_mid_command(processes: &mut [Process], files: &Path) -> Result
                             .context("node process missing")?;
                         node.restart().await?;
                         tracing::info!(
-                            "killed swarmyd after the file write; waiting for one clean retry"
+                            "killed swarmyd after the file write; waiting for a failed call and rebuild notice"
                         );
                         return Ok::<_, anyhow::Error>(());
                     }

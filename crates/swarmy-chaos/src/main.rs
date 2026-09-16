@@ -314,6 +314,24 @@ impl Fixture {
             let mut events = Vec::new();
             read_through(&self.store, *id, &mut events, session.head_seq).await?;
             check::finished(&session, &events, config.steps)?;
+            if config.kill_node_mid_command {
+                ensure!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(
+                            event,
+                            swarmy_core::Event::ToolCallCompleted {
+                                result: swarmy_core::ToolResult::Error { .. },
+                                ..
+                            }
+                        ))
+                        .count()
+                        == 1,
+                    "expected exactly one failed interrupted call"
+                );
+                ensure!(events.iter().filter(|event| matches!(event, swarmy_core::Event::MessageAppended { message, .. } if message.role == swarmy_core::MessageRole::System)).count() == 1,
+                    "expected exactly one recovery system message");
+            }
             if let Some(image) = self.image {
                 disk::verify(&self.store, &events, *id, image, self.files.path()).await?;
             }
@@ -322,7 +340,7 @@ impl Fixture {
             let log = std::fs::read_to_string(self.files.path().join("swarmyd-0.log"))?;
             ensure!(
                 log.matches("executing sandbox command").count() == 2,
-                "expected exactly two command attempts"
+                "expected one interrupted command and one subsequent command"
             );
         }
         let calls = call_count(self.files.path())?;

@@ -71,8 +71,8 @@ impl Config {
         }
         if self.kill_node_mid_command {
             ensure!(
-                self.sessions == 1 && self.steps == 2 && self.kills == 0,
-                "deterministic node kill requires --sessions 1 --steps 2 --kills 0"
+                self.sessions == 1 && self.steps == 3 && self.kills == 0,
+                "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
             );
         }
         self.sessions

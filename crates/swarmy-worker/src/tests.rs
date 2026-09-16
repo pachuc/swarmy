@@ -27,6 +27,8 @@ use ulid::Ulid;
 
 use crate::{config::Config, worker::Worker};
 
+static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
+
 struct SlowTool(Arc<AtomicUsize>);
 impl Tool for SlowTool {
     fn name(&self) -> &'static str {
@@ -61,6 +63,7 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
         partitions: BTreeSet::from([7]),
         provider: "fake".into(),
         lease_duration: Duration::from_millis(600),
+        placement_lease: Duration::from_secs(30),
         recovery_interval: Duration::from_secs(5),
         harness: Harness {
             system_prompt_template: String::new(),
@@ -121,7 +124,6 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
-    static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Ok(cluster), Ok(url)) = (
         std::env::var("SWARMY_FDB_CLUSTER_FILE"),
         std::env::var("SWARMY_NATS_URL"),
@@ -236,3 +238,5 @@ async fn cleanup(cluster: &str, url: &str, prefix: &str) {
             .unwrap();
     }
 }
+
+mod routing;

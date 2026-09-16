@@ -186,6 +186,29 @@ impl Store {
         lease: &Lease,
         jobs: &[ToolJob],
     ) -> Result<()> {
+        self.dispatch_jobs(id, lease, jobs, None).await
+    }
+
+    /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
+    /// # Errors
+    /// Rejects stale workers, placements, unrelated jobs, and storage failures.
+    pub async fn dispatch_placed_tool_jobs(
+        &self,
+        id: SessionId,
+        lease: &Lease,
+        jobs: &[ToolJob],
+        placement: &swarmy_core::PlacementRecord,
+    ) -> Result<()> {
+        self.dispatch_jobs(id, lease, jobs, Some(placement)).await
+    }
+
+    async fn dispatch_jobs(
+        &self,
+        id: SessionId,
+        lease: &Lease,
+        jobs: &[ToolJob],
+        placement: Option<&swarmy_core::PlacementRecord>,
+    ) -> Result<()> {
         let mut values = Vec::new();
         for job in jobs {
             values.push(self.prepare(job).await?);
@@ -197,6 +220,13 @@ impl Store {
                     .await?;
                 if jobs.is_empty() {
                     return Err(StoreError::InvalidState);
+                }
+                if let Some(placement) = placement {
+                    self.check_live_placement(&trx, placement).await?;
+                    if self.session(&trx, id).await?.agent_id != placement.agent_id {
+                        return Err(StoreError::InvalidState);
+                    }
+                    self.deliver_computer_notice(&trx, id, placement).await?;
                 }
                 for (job, value) in jobs.iter().zip(values) {
                     if job.session_id != id
@@ -224,6 +254,13 @@ impl Store {
                         _ => return Err(StoreError::InvalidState),
                     }
                     trx.set(&self.tool_key("tool_job", job.request_id), value);
+                    if let Some(placement) = placement {
+                        write(
+                            &trx,
+                            &self.tool_key("tool_placement", job.request_id),
+                            placement,
+                        )?;
+                    }
                     write(
                         &trx,
                         &self

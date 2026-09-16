@@ -1,0 +1,70 @@
+//! Selection policy is separate from the store's transactional capacity admission.
+use std::time::Duration;
+
+use anyhow::{Result, bail};
+use jiff::Timestamp;
+use swarmy_core::{AgentId, NodeRecord, NodeRole, PlacementRecord, VolumeId};
+use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
+
+pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<PlacementRecord> {
+    // Contention can change the winner while capacity is being reserved. Re-read
+    // instead of treating another session's successful placement as an error.
+    for _ in 0..8 {
+        let old = store.get_by_agent(agent).await?;
+        if let Some(current) = &old
+            && current.expires_at > Timestamp::now()
+        {
+            return Ok(current.clone());
+        }
+        // The disk writer can outlive the placement. Granting a new epoch before
+        // it expires makes the next call fail while booting its replacement.
+        if let Some(volume) = store
+            .get_volume(VolumeId::from_ulid(agent.as_ulid()))
+            .await?
+            && volume
+                .writer_lease
+                .is_some_and(|writer| writer.expires_at > Timestamp::now())
+        {
+            bail!("waiting for the previous computer's volume writer lease to expire");
+        }
+        let mut nodes = Vec::new();
+        let mut cursor = None;
+        let since = Timestamp::now().checked_sub(Duration::from_secs(30))?;
+        loop {
+            let (page, next) = store.scan_live_nodes(cursor, since, MAX_SCAN_LIMIT).await?;
+            nodes.extend(page);
+            if next.is_none() {
+                break;
+            }
+            cursor = next;
+        }
+        order_candidates(&mut nodes, old.as_ref());
+        for node in nodes {
+            let expiry = Timestamp::now().checked_add(lease)?;
+            let result = if let Some(old) = &old {
+                store.take_over(old, node.node_id, expiry).await
+            } else {
+                store.place(agent, node.node_id, expiry).await
+            };
+            match result {
+                Ok(placement) => return Ok(placement),
+                Err(StoreError::NodeAtCapacity | StoreError::NodeMissing) => {}
+                Err(StoreError::PlacementExists | StoreError::LeaseMismatch) => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    bail!("no live sandbox node has available computer capacity")
+}
+
+fn order_candidates(nodes: &mut Vec<NodeRecord>, old: Option<&PlacementRecord>) {
+    nodes.retain(|node| node.roles.contains(&NodeRole::Sandbox) && node.capacity.sandboxes > 0);
+    // Prefer another host after expiry; the store checks actual occupancy when
+    // claiming capacity, including simultaneous placements by other workers.
+    nodes.sort_by_key(|node| {
+        (
+            old.is_some_and(|old| old.node_id == node.node_id),
+            node.node_id,
+        )
+    });
+}
