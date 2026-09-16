@@ -1,6 +1,7 @@
 mod dev;
 mod doctor;
 mod image_command;
+mod remote;
 mod session_command;
 mod tools;
 mod vol_command;
@@ -25,6 +26,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Launch and terminate EC2 development nodes
+    Remote {
+        #[command(subcommand)]
+        command: remote::Command,
+    },
     /// Collect unreferenced chunks older than the configured grace window
     Gc {
         #[arg(long)]
@@ -120,6 +126,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Remote { command } => remote::run(command).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Run { .. }
         | Command::Session { .. }

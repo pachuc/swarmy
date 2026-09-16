@@ -20,6 +20,10 @@ path = "src/runtime.rs"
 
 # Doctor alone loads the FoundationDB library through a small, documented FFI boundary.
 [dependencies]
+aws-config.workspace = true
+aws-sdk-ec2.workspace = true
+aws-sdk-ssm.workspace = true
+shell-words.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true

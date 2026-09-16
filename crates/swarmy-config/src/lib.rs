@@ -1,8 +1,10 @@
 //! Shared configuration for services and command-line programs.
 mod exports;
 mod object;
+mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
+pub use remote::{RemoteNode, RemotePorts, RemoteSettings};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -64,6 +66,7 @@ impl Default for GarbageCollection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
     pub sandbox_idle_seconds: std::num::NonZeroU64,
     pub placement_lease_seconds: std::num::NonZeroU64,
@@ -117,6 +120,7 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
             sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
