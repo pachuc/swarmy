@@ -1,5 +1,6 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
 mod device;
+pub mod gc;
 mod metrics;
 pub use metrics::UploadStats;
 mod snapshot;
@@ -14,7 +15,7 @@ pub mod nbd;
 pub mod server;
 pub use device::{BLOCK_SIZE, DeviceStats, VolumeDevice};
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use object_store::{ObjectStore, PutMode, path::Path};
@@ -42,6 +43,8 @@ pub enum VolumeError {
     InvalidBlock(u64),
     #[error("stored content does not match its hash or manifest shape")]
     Corrupt,
+    #[error("invalid garbage collection policy or reference allocation failed")]
+    InvalidGcPolicy,
     #[error("nonzero content hashed to the reserved zero sentinel")]
     ReservedHash,
 }
@@ -51,6 +54,7 @@ pub type Result<T> = std::result::Result<T, VolumeError>;
 #[derive(Clone)]
 pub struct ChunkStore {
     inner: Arc<dyn ObjectStore>,
+    metadata: Arc<OnceLock<swarmy_store::Store>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +66,40 @@ pub struct PutChunkResult {
 impl ChunkStore {
     #[must_use]
     pub fn new(inner: Arc<dyn ObjectStore>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            metadata: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Bind uploads to the metadata namespace whose collector owns this bucket.
+    #[must_use]
+    pub fn with_gc_protection(inner: Arc<dyn ObjectStore>, metadata: swarmy_store::Store) -> Self {
+        let chunks = Self::new(inner);
+        chunks.protect_uploads(metadata);
+        chunks
+    }
+
+    pub(crate) fn protect_uploads(&self, metadata: swarmy_store::Store) {
+        // An attachment binds once, before its uploader starts. Clones share it.
+        let _ = self.metadata.set(metadata);
+    }
+
+    async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {
+        if let Some(metadata) = self.metadata.get() {
+            loop {
+                match metadata.protect_reused_chunk(hash).await {
+                    Err(swarmy_store::StoreError::LeaseMismatch) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    result => {
+                        result?;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Hash one block and check for its object before uploading a versioned payload.
@@ -82,10 +119,15 @@ impl ChunkStore {
         let hash = content_hash(bytes)?;
         let path = chunk_path(hash);
         if exists(&*self.inner, &path).await? {
-            return Ok(PutChunkResult {
-                hash,
-                uploaded: false,
-            });
+            self.protect_reuse(hash).await?;
+            // A collector may have won before the reuse guard. Recheck after
+            // acquiring it so a completed deletion causes a fresh upload.
+            if self.metadata.get().is_none() || exists(&*self.inner, &path).await? {
+                return Ok(PutChunkResult {
+                    hash,
+                    uploaded: false,
+                });
+            }
         }
         // Chunks are stored as raw block bytes: the content hash in the object
         // name already verifies them, and raw objects can be read by range and

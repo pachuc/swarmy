@@ -78,6 +78,11 @@ impl ObjectBlobStore {
         Ok(Self::new(Arc::new(inner)))
     }
 
+    #[must_use]
+    pub fn object_store(&self) -> Arc<dyn ObjectStore> {
+        self.inner.clone()
+    }
+
     /// Remove a blob once no durable pointer references it.
     /// # Errors
     /// Returns the underlying object storage error.

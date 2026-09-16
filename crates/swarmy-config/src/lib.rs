@@ -37,10 +37,29 @@ impl Default for VolumeSnapshots {
     }
 }
 
+/// Chunk collection policy. All durations are positive seconds.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GarbageCollection {
+    pub grace_seconds: std::num::NonZeroU64,
+    pub interval_seconds: std::num::NonZeroU64,
+    pub filter_bytes: std::num::NonZeroUsize,
+}
+impl Default for GarbageCollection {
+    fn default() -> Self {
+        Self {
+            grace_seconds: std::num::NonZeroU64::new(6 * 60 * 60).unwrap(),
+            interval_seconds: std::num::NonZeroU64::new(60 * 60).unwrap(),
+            filter_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub volume_snapshots: VolumeSnapshots,
+    pub gc: GarbageCollection,
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
@@ -90,6 +109,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             volume_snapshots: VolumeSnapshots::default(),
+            gc: GarbageCollection::default(),
             node_id: None,
             node_roles: vec![
                 swarmy_core::NodeRole::Sandbox,
@@ -293,6 +313,26 @@ impl Settings {
         Ok(())
     }
 
+    fn apply_gc_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        for (name, target) in [
+            ("SWARMY_GC_GRACE_SECONDS", &mut self.gc.grace_seconds),
+            ("SWARMY_GC_INTERVAL_SECONDS", &mut self.gc.interval_seconds),
+        ] {
+            if let Some(value) = environment.get(name) {
+                *target = value.parse().map_err(|_| Error::Environment(name.into()))?;
+            }
+        }
+        if let Some(value) = environment.get("SWARMY_GC_FILTER_BYTES") {
+            self.gc.filter_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_GC_FILTER_BYTES".into()))?;
+        }
+        Ok(())
+    }
+
     /// Apply existing `SWARMY_*` names over file values.
     /// # Errors
     /// Fails if a numeric override cannot be parsed.
@@ -302,6 +342,7 @@ impl Settings {
     ) -> Result<(), Error> {
         self.apply_node_environment(environment)?;
         self.apply_snapshot_environment(environment)?;
+        self.apply_gc_environment(environment)?;
         if let Some(value) = environment.get("SWARMY_FDB_CLUSTER_FILE") {
             self.fdb_cluster_file.clone_from(value);
         }
@@ -514,6 +555,16 @@ impl Settings {
         ]
         .into();
         self.node_environment(&mut environment);
+        for (name, value) in [
+            ("SWARMY_GC_GRACE_SECONDS", self.gc.grace_seconds.to_string()),
+            (
+                "SWARMY_GC_INTERVAL_SECONDS",
+                self.gc.interval_seconds.to_string(),
+            ),
+            ("SWARMY_GC_FILTER_BYTES", self.gc.filter_bytes.to_string()),
+        ] {
+            environment.insert(name.into(), value);
+        }
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
             self.volume_snapshots.period_seconds.to_string(),
@@ -583,6 +634,30 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gc_defaults_overrides_and_positive_values() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.gc.grace_seconds.get(), 21600);
+        assert_eq!(settings.gc.interval_seconds.get(), 3600);
+        assert_eq!(settings.gc.filter_bytes.get(), 64 * 1024 * 1024);
+        for (name, field) in [
+            ("SWARMY_GC_GRACE_SECONDS", "grace_seconds"),
+            ("SWARMY_GC_INTERVAL_SECONDS", "interval_seconds"),
+            ("SWARMY_GC_FILTER_BYTES", "filter_bytes"),
+        ] {
+            settings
+                .apply_environment(&BTreeMap::from([(name.into(), "123".into())]))
+                .unwrap();
+            assert_eq!(settings.environment()[name], "123");
+            assert!(
+                settings
+                    .apply_environment(&BTreeMap::from([(name.into(), "0".into())]))
+                    .is_err()
+            );
+            assert!(toml::from_str::<Settings>(&format!("[gc]\n{field} = 0")).is_err());
+        }
+    }
 
     #[test]
     fn snapshot_policy_defaults_overrides_and_positive_values() {

@@ -194,10 +194,13 @@ impl VolumeDevice {
         data.set_len(manifest.header().size).await?;
         let dirty_bytes = present.iter().copied().map(u64::from).sum::<u64>() * BLOCK_SIZE;
         let uploads = Arc::new(UploadCounters::default());
-        let store = ChunkStore::new(Arc::new(MeteredStore {
-            inner: store.inner,
-            counters: uploads.clone(),
-        }));
+        let store = ChunkStore {
+            inner: Arc::new(MeteredStore {
+                inner: store.inner,
+                counters: uploads.clone(),
+            }),
+            metadata: store.metadata,
+        };
         Ok(Arc::new(Self {
             store,
             uploads,
@@ -239,6 +242,10 @@ impl VolumeDevice {
     #[must_use]
     pub const fn size(&self) -> u64 {
         self.manifest.header().size
+    }
+
+    pub(crate) fn protect_uploads(&self, store: swarmy_store::Store) {
+        self.store.protect_uploads(store);
     }
 
     #[must_use]

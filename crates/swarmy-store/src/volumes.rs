@@ -373,6 +373,29 @@ impl Store {
         .await
     }
 
+    /// Read one volume's live roots in a bounded transaction. Fleet collectors
+    /// must page volume ids and call this separately for each volume.
+    /// # Errors
+    /// Returns missing-volume, decoding, and transaction errors.
+    pub async fn volume_live_manifests(&self, id: VolumeId) -> Result<Vec<ManifestId>> {
+        self.transaction(|trx| async move {
+            let volume = self.volume(&trx, id).await?;
+            let mut roots = self
+                .snapshots(
+                    &trx,
+                    id,
+                    volume.head_manifest,
+                    swarmy_config::VolumeSnapshots::default().retention.get(),
+                )
+                .await?;
+            if volume.writer_lease.is_some() && !roots.contains(&volume.head_manifest) {
+                roots.push(volume.head_manifest);
+            }
+            Ok(roots)
+        })
+        .await
+    }
+
     /// Return the live manifest roots at one database read version: retained
     /// snapshots of every volume, heads with an attached writer (including an
     /// expired lease until explicitly released), and every registered image.
