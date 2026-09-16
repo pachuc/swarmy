@@ -271,8 +271,10 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
         .place(
             f.agent,
             f.nodes[0],
+            // Leases long enough that setup and the first step cannot outlive
+            // them on a slow machine; the sleeps below then expire each in turn.
             Timestamp::now()
-                .checked_add(Duration::from_millis(600))
+                .checked_add(Duration::from_millis(2000))
                 .unwrap(),
         )
         .await
@@ -285,13 +287,13 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
             volume,
             LeaseOwnerId::from_ulid(f.nodes[0].as_ulid()),
             now,
-            now.checked_add(Duration::from_millis(1500)).unwrap(),
+            now.checked_add(Duration::from_millis(4000)).unwrap(),
         )
         .await
         .unwrap();
     f.step(id).await;
     let delivery = f.delivery(f.nodes[0]).await;
-    sleep(Duration::from_millis(650)).await;
+    sleep(Duration::from_millis(2100)).await;
     f.worker.recover_tools().await.unwrap();
     assert_eq!(
         f.store.get_by_agent(f.agent).await.unwrap(),
@@ -303,7 +305,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
             .await
             .unwrap()
     );
-    sleep(Duration::from_millis(900)).await;
+    sleep(Duration::from_millis(2200)).await;
     f.worker.recover_tools().await.unwrap();
     let current = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(current.node_id, f.nodes[1]);
@@ -379,8 +381,9 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
         .place(
             f.agent,
             f.nodes[0],
+            // Long enough that setup cannot outlive the lease on a slow machine.
             Timestamp::now()
-                .checked_add(Duration::from_millis(600))
+                .checked_add(Duration::from_millis(2000))
                 .unwrap(),
         )
         .await
@@ -406,7 +409,7 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
     let delivery = f.delivery(f.nodes[0]).await;
     let claim = f.claim(delivery.value.clone(), placement.clone()).await;
     // Leave the first delivery unacknowledged, as a dead node would.
-    sleep(Duration::from_millis(650)).await;
+    sleep(Duration::from_millis(2100)).await;
     let redelivery = f.delivery(f.nodes[0]).await;
     assert!(redelivery.delivery_count().unwrap() > 1);
     let current = f
