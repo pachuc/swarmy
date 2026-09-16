@@ -28,6 +28,8 @@ struct Request {
     node: NodeId,
     mount: Option<PathBuf>,
     detach: bool,
+    #[serde(default)]
+    discard: bool,
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
@@ -81,6 +83,7 @@ pub async fn control_flush(
         node: config.node,
         mount,
         detach,
+        discard: false,
     };
     let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
     socket.write_all(&serde_json::to_vec(&request)?).await?;
@@ -96,6 +99,28 @@ pub async fn control_flush(
     reply
         .flush
         .ok_or_else(|| Error::Message("attach server returned no manifest".into()))
+}
+
+/// Disconnect an attachment without publishing after placement authority is lost.
+/// # Errors
+/// Returns transport or device teardown errors.
+pub async fn discard(config: &ServerConfig, id: VolumeId) -> Result<()> {
+    let request = Request {
+        node: config.node,
+        mount: None,
+        detach: true,
+        discard: true,
+    };
+    let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
+    socket.write_all(&serde_json::to_vec(&request)?).await?;
+    socket.write_all(b"\n").await?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line).await?;
+    let reply: Reply = serde_json::from_str(&line)?;
+    if let Some(error) = reply.error {
+        return Err(Error::Message(error));
+    }
+    Ok(())
 }
 
 struct SocketGuard(PathBuf);
@@ -350,6 +375,16 @@ async fn handle(
             request.node == node,
             "writer lease belongs to another node ({node})"
         );
+        if request.discard {
+            let detached = attachment
+                .take()
+                .ok_or_else(|| Error::Message("device already disconnected".into()))?
+                .detach()
+                .await;
+            detached?;
+            let _ = writer.release().await;
+            return Ok((None, true));
+        }
         let manifest = if request.detach {
             finish(path, writer, attachment).await?
         } else {
@@ -367,13 +402,13 @@ async fn handle(
                 .flush(request.mount.as_deref().or(detected.as_deref()))
                 .await?
         };
-        Ok::<_, Error>((manifest, request.detach))
+        Ok::<_, Error>((Some(manifest), request.detach))
     }
     .await;
     let (reply, detached) = match result {
         Ok((manifest, detached)) => (
             Reply {
-                flush: Some(manifest),
+                flush: manifest,
                 error: None,
             },
             detached,

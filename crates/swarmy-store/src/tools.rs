@@ -18,7 +18,7 @@ struct StoredToolClaim {
     job_digest: [u8; 32],
 }
 
-fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
+pub(crate) fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&swarmy_core::encode(job)?).as_bytes())
 }
 
@@ -27,10 +27,10 @@ impl Store {
         self.root
             .pack(&("sandbox", id.as_ulid().to_bytes().as_slice()))
     }
-    fn tool_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
+    pub(crate) fn tool_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
         self.root.pack(&(kind, id.as_bytes().as_slice()))
     }
-    fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
+    pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
         self.root
             .subspace(&("session_tools", id.as_ulid().to_bytes().as_slice()))
     }

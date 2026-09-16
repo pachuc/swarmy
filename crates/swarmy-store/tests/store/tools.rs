@@ -319,3 +319,102 @@ fn node() -> NodeRecord {
         cached_images: vec![],
     }
 }
+
+#[tokio::test]
+async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (session, image, node, jobs) = setup(store).await;
+    let agent = store
+        .fetch_session(session)
+        .await
+        .unwrap()
+        .unwrap()
+        .agent_id;
+    let expiry = || {
+        Timestamp::now()
+            .checked_add(Duration::from_secs(30))
+            .unwrap()
+    };
+    let placement = store.place(agent, node.node_id, expiry()).await.unwrap();
+    let volume = store.agent_volume(session, &placement).await.unwrap();
+    assert_eq!(volume.as_ulid(), agent.as_ulid());
+    let writer = store
+        .acquire_writer_lease(
+            volume,
+            LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
+            Timestamp::now(),
+            expiry(),
+        )
+        .await
+        .unwrap();
+    let before = store.list_volumes(None, 64).await.unwrap();
+    let claim = swarmy_core::PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: expiry(),
+    };
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    assert!(!store.claim_placed_tool(&claim).await.unwrap());
+    store.renew(&placement, expiry()).await.unwrap();
+    store.renew_placed_tool(&claim, expiry()).await.unwrap();
+    let result = BashResult {
+        stdout: "done".into(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        manifest_id: image,
+    };
+    store
+        .complete_placed_tool(&claim, 2, &result)
+        .await
+        .unwrap();
+    assert_eq!(store.list_volumes(None, 64).await.unwrap(), before);
+    let claim = swarmy_core::PlacedToolClaim {
+        job: jobs[1].clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: expiry(),
+    };
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    store.release(&placement).await.unwrap();
+    let next = store.place(agent, node.node_id, expiry()).await.unwrap();
+    assert!(next.epoch > placement.epoch);
+    assert_eq!(
+        next.last_change_reason,
+        swarmy_core::PlacementChangeReason::Eviction
+    );
+    assert!(matches!(
+        store.complete_placed_tool(&claim, 3, &result).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        store.renew_placed_tool(&claim, expiry()).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        store.renew_writer_lease(volume, &writer, expiry()).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let header = store.get_manifest(image).await.unwrap().unwrap();
+    assert!(matches!(
+        store
+            .advance_volume(
+                volume,
+                &writer,
+                image,
+                ManifestId::from_ulid(Ulid::generate()),
+                &header
+            )
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        store.agent_volume(session, &next).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.cleanup().await;
+}

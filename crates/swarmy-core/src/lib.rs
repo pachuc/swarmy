@@ -37,7 +37,8 @@ pub use sandbox::{
 
 mod tool;
 pub use tool::{
-    BashArguments, BashResult, PlaceReply, PlaceRequest, SandboxRecord, ToolClaim, ToolJob,
+    BashArguments, BashResult, PlaceReply, PlaceRequest, PlacedToolClaim, SandboxRecord, ToolClaim,
+    ToolJob,
 };
 
 mod placement;

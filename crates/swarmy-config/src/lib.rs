@@ -41,6 +41,8 @@ impl Default for VolumeSnapshots {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub volume_snapshots: VolumeSnapshots,
+    pub sandbox_idle_seconds: std::num::NonZeroU64,
+    pub placement_lease_seconds: std::num::NonZeroU64,
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
@@ -90,6 +92,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             volume_snapshots: VolumeSnapshots::default(),
+            sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
+            placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
             node_id: None,
             node_roles: vec![
                 swarmy_core::NodeRole::Sandbox,
@@ -280,6 +284,20 @@ impl Settings {
         &mut self,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
+        for (name, target) in [
+            (
+                "SWARMY_SANDBOX_IDLE_SECONDS",
+                &mut self.sandbox_idle_seconds,
+            ),
+            (
+                "SWARMY_PLACEMENT_LEASE_SECONDS",
+                &mut self.placement_lease_seconds,
+            ),
+        ] {
+            if let Some(value) = environment.get(name) {
+                *target = value.parse().map_err(|_| Error::Environment(name.into()))?;
+            }
+        }
         if let Some(value) = environment.get("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS") {
             self.volume_snapshots.period_seconds = value
                 .parse()
@@ -515,6 +533,14 @@ impl Settings {
         .into();
         self.node_environment(&mut environment);
         environment.insert(
+            "SWARMY_SANDBOX_IDLE_SECONDS".into(),
+            self.sandbox_idle_seconds.to_string(),
+        );
+        environment.insert(
+            "SWARMY_PLACEMENT_LEASE_SECONDS".into(),
+            self.placement_lease_seconds.to_string(),
+        );
+        environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
             self.volume_snapshots.period_seconds.to_string(),
         );
@@ -583,6 +609,34 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosting_policy_defaults_and_overrides() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.sandbox_idle_seconds.get(), 1800);
+        assert_eq!(settings.placement_lease_seconds.get(), 30);
+        let environment = BTreeMap::from([
+            ("SWARMY_SANDBOX_IDLE_SECONDS".into(), "2".into()),
+            ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
+        ]);
+        settings.apply_environment(&environment).unwrap();
+        for (key, value) in environment {
+            assert_eq!(settings.environment()[&key], value);
+        }
+        for field in ["sandbox_idle_seconds", "placement_lease_seconds"] {
+            assert!(toml::from_str::<Settings>(&format!("{field} = 0")).is_err());
+        }
+        for name in [
+            "SWARMY_SANDBOX_IDLE_SECONDS",
+            "SWARMY_PLACEMENT_LEASE_SECONDS",
+        ] {
+            assert!(
+                settings
+                    .apply_environment(&BTreeMap::from([(name.into(), "0".into())]))
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn snapshot_policy_defaults_overrides_and_positive_values() {

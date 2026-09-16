@@ -162,6 +162,7 @@ impl Store {
         }
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
+            self.check_volume_placement(&trx, id, owner).await?;
             if volume
                 .writer_lease
                 .as_ref()
@@ -218,6 +219,8 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<Lease> {
         self.transaction(|trx| async move {
+            self.check_volume_placement(&trx, id, expected.owner)
+                .await?;
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected)
                 || expected.expires_at <= Timestamp::now()
@@ -274,6 +277,8 @@ impl Store {
         retention: NonZeroUsize,
     ) -> Result<()> {
         self.transaction(|trx| async move {
+            self.check_volume_placement(&trx, id, expected.owner)
+                .await?;
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected)
                 || expected.expires_at <= Timestamp::now()

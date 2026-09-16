@@ -29,7 +29,15 @@ struct Journal {
 
 struct Running {
     journal: Journal,
-    server: JoinHandle<server::Result<()>>,
+    server: Option<ServerTask>,
+    cancellations: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
+}
+
+struct ServerTask(JoinHandle<server::Result<()>>);
+impl Drop for ServerTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// One runtime per node state directory. An exclusive lock fences local daemons.
@@ -71,8 +79,15 @@ impl RuncRuntime {
                     serde_json::from_slice(&std::fs::read(path.join("journal.json"))?)?;
                 runtime.stop(journal.spec.agent_id).await?;
                 unmount(&path.join("rootfs")).await?;
-                std::fs::remove_dir_all(path)?;
+                if path.join("device").exists() {
+                    let device = std::fs::read_to_string(path.join("device"))?;
+                    swarmy_volume::kernel::cleanup_stale(Path::new(&device)).map_err(|error| {
+                        Error::Operation(format!("clear stale attachment {device}: {error}"))
+                    })?;
+                }
             }
+            // A crash between mkdir and journal persistence leaves no attachment.
+            std::fs::remove_dir_all(path)?;
         }
         Ok(runtime)
     }
@@ -161,33 +176,111 @@ impl RuncRuntime {
             .ok_or(Error::State)
     }
 
-    async fn remove(&self, id: AgentId) -> Result<PauseHandle> {
+    async fn remove(&self, id: AgentId, publish: bool) -> Result<PauseHandle> {
+        self.stop(id).await?;
         let _lifecycle = self.lifecycle.lock().await;
         let entry = self.running(id).await?;
-        self.stop(id).await?;
         let mut running = entry.lock().await;
+        // A delayed cancellation signal must finish before this id can be reused.
+        while running
+            .cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|task| !task.is_finished())
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for task in std::mem::take(
+            &mut *running
+                .cancellations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ) {
+            let _ = task.join();
+        }
         unmount(&self.bundle(id).join("rootfs")).await?;
-        server::control(&self.config, running.journal.disk.volume_id, None, true).await?;
-        (&mut running.server)
-            .await
-            .map_err(|error| Error::Operation(error.to_string()))??;
+        let mut forced = false;
+        if running
+            .server
+            .as_ref()
+            .is_some_and(|server| !server.0.is_finished())
+        {
+            if publish {
+                server::control(&self.config, running.journal.disk.volume_id, None, true).await?;
+            } else if let Err(error) =
+                server::discard(&self.config, running.journal.disk.volume_id).await
+            {
+                // A detach error may arrive after the device was disconnected.
+                // Finish local cleanup even if the control reply reports failure.
+                tracing::warn!(%error, "forcing attachment shutdown after discard error");
+                if let Some(server) = &running.server {
+                    server.0.abort();
+                }
+                forced = true;
+            }
+        }
+        let outcome = if let Some(mut server) = running.server.take() {
+            (&mut server.0)
+                .await
+                .map_err(|error| Error::Operation(error.to_string()))
+                .and_then(|result| result.map_err(Error::from))
+        } else {
+            Ok(())
+        };
+        if publish {
+            outcome?;
+        } else if let Err(error) = outcome {
+            tracing::warn!(%error, "discarded failed attachment");
+        }
+        if forced {
+            let device = std::fs::read_to_string(self.bundle(id).join("device"))?;
+            swarmy_volume::kernel::cleanup_stale(Path::new(&device)).map_err(|error| {
+                Error::Operation(format!("clear discarded attachment {device}: {error}"))
+            })?;
+        }
         let handle = PauseHandle {
             spec: running.journal.spec.clone(),
             disk: running.journal.disk,
         };
-        std::fs::remove_dir_all(self.bundle(id))?;
+        std::fs::remove_dir_all(self.bundle(id))
+            .map_err(|error| Error::Operation(format!("remove sandbox bundle {id}: {error}")))?;
         self.sandboxes.lock().await.remove(&id);
         Ok(handle)
     }
 
-    /// Clean up a previous attempt before reusing its agent identity.
+    /// Stop local processes and background disk activity without publication.
     /// # Errors
-    /// Returns stop, unmount, detach, or flush failures.
+    /// Returns stop, unmount, or detach errors.
     pub async fn discard_if_present(&self, id: AgentId) -> Result<()> {
         if self.sandboxes.lock().await.contains_key(&id) {
-            self.remove(id).await?;
+            self.remove(id, false).await?;
+        } else if self.bundle(id).join("journal.json").exists() {
+            let journal: Journal =
+                serde_json::from_slice(&std::fs::read(self.bundle(id).join("journal.json"))?)?;
+            self.stop(id).await?;
+            unmount(&self.bundle(id).join("rootfs")).await?;
+            if self
+                .config
+                .directory
+                .join(format!("{}.sock", journal.disk.volume_id))
+                .exists()
+            {
+                server::discard(&self.config, journal.disk.volume_id).await?;
+            }
+            std::fs::remove_dir_all(self.bundle(id))?;
         }
         Ok(())
+    }
+
+    /// List local containers owned by this runtime.
+    pub async fn list(&self) -> Vec<Sandbox> {
+        self.sandboxes
+            .lock()
+            .await
+            .keys()
+            .map(|id| Sandbox { agent_id: *id })
+            .collect()
     }
 
     /// Stop and flush every local sandbox before a graceful daemon exit.
@@ -197,7 +290,7 @@ impl RuncRuntime {
         let ids: Vec<_> = self.sandboxes.lock().await.keys().copied().collect();
         let mut result = Ok(());
         for id in ids {
-            if let Err(error) = self.remove(id).await {
+            if let Err(error) = self.remove(id, true).await {
                 result = Err(error);
             }
         }
@@ -226,26 +319,37 @@ impl SandboxRuntime for RuncRuntime {
         std::fs::create_dir(bundle.join("guest"))?;
         let (ready_tx, ready_rx) = oneshot::channel();
         let config = self.config.clone();
-        let mut server = tokio::spawn(server::attach(
+        let device_journal = bundle.join("device");
+        let mut server = ServerTask(tokio::spawn(server::attach(
             config,
             disk.volume_id,
             None,
             true,
             move |path| {
+                std::fs::write(&device_journal, path.as_os_str().as_encoded_bytes())?;
+                File::open(&device_journal)?.sync_all()?;
                 ready_tx
                     .send(path.to_path_buf())
                     .map_err(|_| server::Error::Message("sandbox creation cancelled".into()))
             },
             std::future::pending(),
-        ));
+        )));
         let Ok(path) = ready_rx.await else {
-            let outcome = server
+            let outcome = (&mut server.0)
                 .await
                 .map_err(|error| Error::Operation(error.to_string()))?;
             std::fs::remove_dir_all(bundle)?;
             outcome?;
             return Err(Error::State);
         };
+        self.sandboxes.lock().await.insert(
+            id,
+            Arc::new(Mutex::new(Running {
+                journal,
+                server: Some(server),
+                cancellations: Arc::default(),
+            })),
+        );
         let setup = async {
             checked(
                 Command::new("mount")
@@ -258,22 +362,11 @@ impl SandboxRuntime for RuncRuntime {
         }
         .await;
         if let Err(error) = setup {
-            self.stop(id).await?;
-            unmount(&bundle.join("rootfs")).await?;
-            if !server.is_finished() {
-                server::control(&self.config, disk.volume_id, None, true).await?;
-            }
-            let outcome = (&mut server)
-                .await
-                .map_err(|error| Error::Operation(error.to_string()))?;
-            std::fs::remove_dir_all(bundle)?;
-            outcome?;
+            // Release the lifecycle gate before the common teardown takes it.
+            drop(_lifecycle);
+            self.remove(id, false).await?;
             return Err(error);
         }
-        self.sandboxes
-            .lock()
-            .await
-            .insert(id, Arc::new(Mutex::new(Running { journal, server })));
         Ok(Sandbox { agent_id: id })
     }
 
@@ -289,7 +382,7 @@ impl SandboxRuntime for RuncRuntime {
             ));
         }
         let entry = self.running(sb.agent_id).await?;
-        let _running = entry.lock().await;
+        let running = entry.lock().await;
         let mut child = self
             .command()
             .arg("exec")
@@ -302,6 +395,7 @@ impl SandboxRuntime for RuncRuntime {
             root: self.root.join("runc"),
             id: sb.agent_id,
             armed: true,
+            cancellations: running.cancellations.clone(),
         };
         let stdout = child.stdout.take().ok_or(Error::State)?;
         let stderr = child.stderr.take().ok_or(Error::State)?;
@@ -340,13 +434,13 @@ impl SandboxRuntime for RuncRuntime {
     }
 
     async fn pause(&self, sb: &Sandbox) -> Result<PauseHandle> {
-        self.remove(sb.agent_id).await
+        self.remove(sb.agent_id, true).await
     }
     async fn resume(&self, handle: PauseHandle) -> Result<Sandbox> {
         self.create(handle.spec, handle.disk).await
     }
     async fn destroy(&self, sb: Sandbox) -> Result<()> {
-        self.remove(sb.agent_id).await.map(|_| ())
+        self.remove(sb.agent_id, true).await.map(|_| ())
     }
     fn capabilities(&self) -> RuntimeCaps {
         RuntimeCaps {
@@ -360,19 +454,29 @@ struct ExecGuard {
     root: PathBuf,
     id: AgentId,
     armed: bool,
+    cancellations: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
 }
 impl Drop for ExecGuard {
     fn drop(&mut self) {
         if self.armed {
-            // Cancellation must not leave guest descendants running after the
-            // host-side runc exec process has been dropped.
-            let _ = std::process::Command::new("runc")
+            // Signalling can wait for tasks in kernel I/O. Do not block the
+            // executor that must keep serving their NBD requests during teardown.
+            if let Ok(mut child) = std::process::Command::new("runc")
                 .arg("--root")
                 .arg(&self.root)
                 .args(["kill", "--all", &self.id.to_string(), "KILL"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .spawn()
+            {
+                let task = std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                self.cancellations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(task);
+            }
         }
     }
 }
