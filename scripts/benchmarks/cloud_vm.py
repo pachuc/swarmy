@@ -69,7 +69,8 @@ def provision(state, path, workload):
                   region=state["region"])["Parameter"]["Value"]
         if not os.environ.get("SWARMY_BENCH_SUBNET") or not os.environ.get("SWARMY_BENCH_SECURITY_GROUP"):
             raise AuditError("AWS subnet and security group environment settings required")
-        created = aws("ec2", "run-instances", image_id=ami, instance_type="m6id.xlarge", count=1,
+        count = state.get("nodes", 1)
+        created = aws("ec2", "run-instances", image_id=ami, instance_type="m6id.xlarge", count=count,
             client_token=state["run_id"], key_name=state["name"],
             subnet_id=os.environ["SWARMY_BENCH_SUBNET"],
             security_group_ids=os.environ["SWARMY_BENCH_SECURITY_GROUP"],
@@ -78,8 +79,10 @@ def provision(state, path, workload):
             tag_specifications=json.dumps([{"ResourceType": kind, "Tags": tags} for kind in ("instance", "volume")]),
             region=state["region"])
         instances = created["Instances"]
-        if len(instances) != 1:
-            raise AuditError("expected one AWS benchmark machine")
+        if len(instances) != count:
+            raise AuditError("unexpected AWS benchmark machine count")
+        state["instances"] = [{"instance_id": item["InstanceId"],
+                               "private_ip": item.get("PrivateIpAddress")} for item in instances]
         state["instance_id"] = instances[0]["InstanceId"]
         state["private_ip"] = instances[0].get("PrivateIpAddress")
         state["cache_disk"] = "local NVMe SSD"

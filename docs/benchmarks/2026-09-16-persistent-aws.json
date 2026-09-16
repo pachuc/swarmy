@@ -1,0 +1,728 @@
+{
+  "date": "2026-09-16",
+  "base_commit": "89f6d32f416a1d8e16d9b0ce3f93e3ae7552a728",
+  "build": "debug, Rust 1.98.1",
+  "state": {
+    "run_id": "caf60e30a7f74d0cb888f181d1a7751d",
+    "name": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d",
+    "prefix": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d/",
+    "provider": "aws",
+    "bucket": "swarmy-bench-815638500196",
+    "project": "swarmy-508717",
+    "region": "us-east-1",
+    "delete_versions": true,
+    "allow_retention": false,
+    "vm": true,
+    "nodes": 2,
+    "compute_attempted": true,
+    "instances": [
+      {
+        "instance_id": "i-0972f1ca1a1bd81dd",
+        "private_ip": "172.31.55.201"
+      },
+      {
+        "instance_id": "i-0efeed68b7df7755b",
+        "private_ip": "172.31.52.169"
+      }
+    ],
+    "instance_id": "i-0972f1ca1a1bd81dd",
+    "private_ip": "172.31.55.201",
+    "cache_disk": "local NVMe SSD"
+  },
+  "rehydration": [
+    {
+      "cache": "cold",
+      "sample": 0,
+      "seconds": 2.004998114
+    },
+    {
+      "cache": "cold",
+      "sample": 1,
+      "seconds": 1.835473571
+    },
+    {
+      "cache": "warm",
+      "sample": 0,
+      "seconds": 0.796242961
+    },
+    {
+      "cache": "warm",
+      "sample": 1,
+      "seconds": 0.827149
+    }
+  ],
+  "volume_samples": [
+    {
+      "sample": 0,
+      "checkpoints": [
+        {
+          "generation": 0,
+          "manifest_id": "01M2MCZ1JEDC48MFR8H2486C7Y",
+          "sha256": "aa4ec6a3a67eda88addc9336df287d78d3997c30b11bd8a53c26317efb071cea"
+        },
+        {
+          "generation": 1,
+          "manifest_id": "01M2MCZ22GYP7KN1NH714XE7GG",
+          "sha256": "cd1aa6d7f2fa848178bad16bc2fd27eb50cfadce7ec4ae855e42996684932f88"
+        },
+        {
+          "generation": 2,
+          "manifest_id": "01M2MCZ2MHT2SQJXFE9TYJ5C1Z",
+          "sha256": "140d96100dfedb1bdb1ad489a79ecc4d4df9242f031877b157d5bb46a65f0383"
+        },
+        {
+          "generation": 3,
+          "manifest_id": "01M2MCZ35H8WNGS4XMXVA91WNJ",
+          "sha256": "2b5a155a076c7e590c80d28efb63a08bc53c8445c9c64b917ec1bbb2ad8f5d69"
+        },
+        {
+          "generation": 4,
+          "manifest_id": "01M2MCZ3N3ZYZ3B9NE4FV1AFQH",
+          "sha256": "3f00d37d44b9c6e07018c4e72c43bc9d89c58fe5150de92e0e0c5d064bfa798c"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2MCZ47YENQJWG78EDVD39E2",
+          "sha256": "9702a9213a3650a644a462e00c81e7fcac78a4c995ffc74210d627df690435ae"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2MCZ4VC10V1KTYD99P8RRRZ",
+          "sha256": "220b89b2a365162695ad630751c52e256d6e2c54be5b79518a0474dcf6c52d27"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2MCZ5BPT2PDWZCD9XPC4NXR",
+          "sha256": "5de05ed129950b7535f6e06457aa8c46e44f7420ff089375ec7023549dcbc055"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2MCZ5ZK91E1G8R9NGAC372Q",
+          "sha256": "3a7e6b8e214ece97bf59863dc3f79a717252951f0c7a964b67e43b99b8d7569d"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2MCZ6ESNCZR43CM9NGH55K0",
+          "sha256": "956a86532d125238f3e57a4eb86b37840eff5c9a8bd5712e8add3125e244c89b"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2MCZ6XC10K6MVAWWD7S8BMX",
+          "sha256": "c5fc0798b0c150657b4a26037a11d613cf38454cfe9da8a010a87175826fac8a"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2MCZ7J1CTGXEBHP0E14B9TZ",
+          "sha256": "a7db5f2364a1f7da74931d9222e26ac685d9f50479e545e541e388864c39c310"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZ82CCXR7RJ4SZS9G3NDT",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZ9FFP1Y70QFTH3XK0T17",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZASSGJDMVHDECB4E5ADA",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7",
+          "source": "detach"
+        }
+      ],
+      "collector": {
+        "dry": {
+          "bytes_freed": 0,
+          "candidate_bytes": 118226944,
+          "candidates": 451,
+          "deleted": 0,
+          "dry_run": true,
+          "duration_ms": 5045,
+          "error": null,
+          "finished": true,
+          "manifests": 19,
+          "owner": "01M2MCZE4XTF7C81WTDRXMP162",
+          "scanned": 2825,
+          "started_at": "2026-09-16T06:03:00.637383273Z"
+        },
+        "dry_seconds": 5.077414065000028,
+        "real": {
+          "bytes_freed": 118226944,
+          "candidate_bytes": 118226944,
+          "candidates": 451,
+          "deleted": 451,
+          "dry_run": false,
+          "duration_ms": 14871,
+          "error": null,
+          "finished": true,
+          "manifests": 19,
+          "owner": "01M2MCZK3JHXRW7XR94RV1Y2GJ",
+          "scanned": 2825,
+          "started_at": "2026-09-16T06:03:05.714337183Z"
+        },
+        "real_seconds": 14.899932086000035
+      },
+      "pause": {
+        "checkpoint": {
+          "detached": false,
+          "device_total": {
+            "bytes_uploaded": 139202202,
+            "chunks_uploaded": 517,
+            "dirty_lock_wait": {
+              "nanos": 15247949,
+              "secs": 2
+            },
+            "object_store_requests": 1168,
+            "object_store_time": {
+              "nanos": 830175345,
+              "secs": 34
+            },
+            "referenced_chunk_bytes": 134742016
+          },
+          "elapsed": {
+            "nanos": 325429075,
+            "secs": 0
+          },
+          "freeze_wait": {
+            "nanos": 20865157,
+            "secs": 0
+          },
+          "frozen": {
+            "nanos": 304563129,
+            "secs": 0
+          },
+          "frozen_chunks_uploaded": 10,
+          "manifest_id": "01M2MCZ9FFP1Y70QFTH3XK0T17",
+          "uploads": {
+            "bytes_uploaded": 2883851,
+            "chunks_uploaded": 10,
+            "dirty_lock_wait": {
+              "nanos": 11479667,
+              "secs": 0
+            },
+            "object_store_requests": 28,
+            "object_store_time": {
+              "nanos": 739977377,
+              "secs": 0
+            },
+            "referenced_chunk_bytes": 3145728
+          },
+          "volume_id": "01M2MCZ0DVP0NPZB7F5H8MZ4G0"
+        },
+        "max_gap_ns": 327948067,
+        "metric": "snapshot_writer_pause",
+        "sample_count": 179,
+        "timestamps_around_max_ns": [
+          462085140602,
+          462096682918,
+          462109702560,
+          462437650627,
+          462449199478,
+          462460605744
+        ]
+      },
+      "retained": [
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZASSGJDMVHDECB4E5ADA",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZ9FFP1Y70QFTH3XK0T17",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MCZ82CCXR7RJ4SZS9G3NDT",
+          "sha256": "6f6f3f82d2b4ab337eab619b3134b295a99339b4748b6f3ebae57490671db2a7"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2MCZ7J1CTGXEBHP0E14B9TZ",
+          "sha256": "a7db5f2364a1f7da74931d9222e26ac685d9f50479e545e541e388864c39c310"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2MCZ6XC10K6MVAWWD7S8BMX",
+          "sha256": "c5fc0798b0c150657b4a26037a11d613cf38454cfe9da8a010a87175826fac8a"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2MCZ6ESNCZR43CM9NGH55K0",
+          "sha256": "956a86532d125238f3e57a4eb86b37840eff5c9a8bd5712e8add3125e244c89b"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2MCZ5ZK91E1G8R9NGAC372Q",
+          "sha256": "3a7e6b8e214ece97bf59863dc3f79a717252951f0c7a964b67e43b99b8d7569d"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2MCZ5BPT2PDWZCD9XPC4NXR",
+          "sha256": "5de05ed129950b7535f6e06457aa8c46e44f7420ff089375ec7023549dcbc055"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2MCZ4VC10V1KTYD99P8RRRZ",
+          "sha256": "220b89b2a365162695ad630751c52e256d6e2c54be5b79518a0474dcf6c52d27"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2MCZ47YENQJWG78EDVD39E2",
+          "sha256": "9702a9213a3650a644a462e00c81e7fcac78a4c995ffc74210d627df690435ae"
+        }
+      ],
+      "volume": "01M2MCZ0DVP0NPZB7F5H8MZ4G0"
+    },
+    {
+      "sample": 1,
+      "checkpoints": [
+        {
+          "generation": 0,
+          "manifest_id": "01M2MD1AKZDXRSGBEJFWXVXH7R",
+          "sha256": "5b8785811a8789ef373439db0ef2f01a93e64488777ec3ade43863102bab85e3"
+        },
+        {
+          "generation": 1,
+          "manifest_id": "01M2MD1B5VS32S2HMW5F7DJ7DF",
+          "sha256": "867c985966536a1a8effb0aaf4b06d08a0198ebe177adc1f069bb5f2c24cc0d2"
+        },
+        {
+          "generation": 2,
+          "manifest_id": "01M2MD1BPTCX7GPNMSDZHBTMX0",
+          "sha256": "8127240b0ca74bd82ebbfdb88f2aef1b556497a3e622f03814f30bc0aa4c9cd5"
+        },
+        {
+          "generation": 3,
+          "manifest_id": "01M2MD1C8SB9S2G2XKBH1CBHPQ",
+          "sha256": "ff0e5d730b80e24c512181b4586c280df0eb0baaefa821ada375ee68a2515b6f"
+        },
+        {
+          "generation": 4,
+          "manifest_id": "01M2MD1CS3MXYS768TCKYTBR7G",
+          "sha256": "40d78409022ebf3efe6771d0dcd59fe1b3d58d8205eb73684aab2538976b0efe"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2MD1D86FQFQ0BG7SXAN9R7Q",
+          "sha256": "7a9186ab56d15e1e0d3ae9a97dc889fb737c1b9d26c2dcdd2d0c92f8899d6aac"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2MD1DQ7DAPP166VPRDFENKZ",
+          "sha256": "441567026c2935d450e873414623c198213de7c7130a1fd1fe85e2c5a49c8511"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2MD1E8DBZVNJ9SBMTHRSFWE",
+          "sha256": "8369868afd137145cb2038d8d409072e0e059439871881969d9432f552dfad61"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2MD1ETXY2PV6ZH6VE73DSD5",
+          "sha256": "aa534c2c139165e5a3a0a963169d54537c4640a407ab45fa7126ac4095298aaa"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2MD1F9CFV20B7T6F5ECDKP5",
+          "sha256": "97a229b5c915c07c03c954551fd96b86cd57dfbee9739d082dfb85ed85022577"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2MD1FTC9YGNCS1H844ZSZT1",
+          "sha256": "731cd23c601a01595881adb0f0f79e04920d2fef6bdcec665f49b0ef54d47158"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2MD1GAJ17Q2VQZQHC213RCK",
+          "sha256": "c10c34a97ac895bc80ac18a131822a100992b50af6c248543230846fde1211c0"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1GVVYDRQGEQMXFZZ9SRT",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1J9SP9JTGATYB2Y9V2JZ",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1KMF7YGXX1K35CME84Y9",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849",
+          "source": "detach"
+        }
+      ],
+      "collector": {
+        "dry": {
+          "bytes_freed": 0,
+          "candidate_bytes": 50069504,
+          "candidates": 191,
+          "deleted": 0,
+          "dry_run": true,
+          "duration_ms": 10879,
+          "error": null,
+          "finished": true,
+          "manifests": 49,
+          "owner": "01M2MD1Q1AWT2JWEPGGDFCV9CJ",
+          "scanned": 2991,
+          "started_at": "2026-09-16T06:04:15.274660151Z"
+        },
+        "dry_seconds": 10.912728678000008,
+        "real": {
+          "bytes_freed": 50069504,
+          "candidate_bytes": 50069504,
+          "candidates": 191,
+          "deleted": 191,
+          "dry_run": false,
+          "duration_ms": 15051,
+          "error": null,
+          "finished": true,
+          "manifests": 49,
+          "owner": "01M2MD21PA0D2MZFG9XJ7QQYQT",
+          "scanned": 2991,
+          "started_at": "2026-09-16T06:04:26.186845375Z"
+        },
+        "real_seconds": 15.085755906000031
+      },
+      "pause": {
+        "checkpoint": {
+          "detached": false,
+          "device_total": {
+            "bytes_uploaded": 136842906,
+            "chunks_uploaded": 508,
+            "dirty_lock_wait": {
+              "nanos": 984241431,
+              "secs": 1
+            },
+            "object_store_requests": 1155,
+            "object_store_time": {
+              "nanos": 198474652,
+              "secs": 34
+            },
+            "referenced_chunk_bytes": 134742016
+          },
+          "elapsed": {
+            "nanos": 332040912,
+            "secs": 0
+          },
+          "freeze_wait": {
+            "nanos": 19521261,
+            "secs": 0
+          },
+          "frozen": {
+            "nanos": 312518404,
+            "secs": 0
+          },
+          "frozen_chunks_uploaded": 8,
+          "manifest_id": "01M2MD1J9SP9JTGATYB2Y9V2JZ",
+          "uploads": {
+            "bytes_uploaded": 2359563,
+            "chunks_uploaded": 8,
+            "dirty_lock_wait": {
+              "nanos": 8959684,
+              "secs": 0
+            },
+            "object_store_requests": 26,
+            "object_store_time": {
+              "nanos": 719342013,
+              "secs": 0
+            },
+            "referenced_chunk_bytes": 3145728
+          },
+          "volume_id": "01M2MD19SKZX77XT0BWVG4BEG0"
+        },
+        "max_gap_ns": 327457828,
+        "metric": "snapshot_writer_pause",
+        "sample_count": 176,
+        "timestamps_around_max_ns": [
+          536664573663,
+          536676547810,
+          536687967381,
+          537015425209,
+          537026818883,
+          537038172328
+        ]
+      },
+      "retained": [
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1KMF7YGXX1K35CME84Y9",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1J9SP9JTGATYB2Y9V2JZ",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2MD1GVVYDRQGEQMXFZZ9SRT",
+          "sha256": "1f620ef0be1413ce666ec7fc737e9294b691087cba4c27125f87d42f1e0c6849"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2MD1GAJ17Q2VQZQHC213RCK",
+          "sha256": "c10c34a97ac895bc80ac18a131822a100992b50af6c248543230846fde1211c0"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2MD1FTC9YGNCS1H844ZSZT1",
+          "sha256": "731cd23c601a01595881adb0f0f79e04920d2fef6bdcec665f49b0ef54d47158"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2MD1F9CFV20B7T6F5ECDKP5",
+          "sha256": "97a229b5c915c07c03c954551fd96b86cd57dfbee9739d082dfb85ed85022577"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2MD1ETXY2PV6ZH6VE73DSD5",
+          "sha256": "aa534c2c139165e5a3a0a963169d54537c4640a407ab45fa7126ac4095298aaa"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2MD1E8DBZVNJ9SBMTHRSFWE",
+          "sha256": "8369868afd137145cb2038d8d409072e0e059439871881969d9432f552dfad61"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2MD1DQ7DAPP166VPRDFENKZ",
+          "sha256": "441567026c2935d450e873414623c198213de7c7130a1fd1fe85e2c5a49c8511"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2MD1D86FQFQ0BG7SXAN9R7Q",
+          "sha256": "7a9186ab56d15e1e0d3ae9a97dc889fb737c1b9d26c2dcdd2d0c92f8899d6aac"
+        }
+      ],
+      "volume": "01M2MD19SKZX77XT0BWVG4BEG0"
+    }
+  ],
+  "retained_boots": [
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZASSGJDMVHDECB4E5ADA",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.8929656939999973,
+      "volume": "01M2MD01N3YFJYZHJBDGG0CNJJ"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ9FFP1Y70QFTH3XK0T17",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.1473983380000163,
+      "volume": "01M2MD05XVEYSGFAC79JD36ND6"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ82CCXR7RJ4SZS9G3NDT",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 2.9019167760000073,
+      "volume": "01M2MD09JST7YHD0G6Q9A2PNRE"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ7J1CTGXEBHP0E14B9TZ",
+      "generation": 11,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.023035278000009,
+      "volume": "01M2MD0CZZ2MVEWZME8ARSA52W"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ6XC10K6MVAWWD7S8BMX",
+      "generation": 10,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.777160207999998,
+      "volume": "01M2MD0GEXWB0DAYB9G4758CGQ"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ6ESNCZR43CM9NGH55K0",
+      "generation": 9,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.473792301000003,
+      "volume": "01M2MD0MPBGS1WW5HVY4G491CN"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ5ZK91E1G8R9NGAC372Q",
+      "generation": 8,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.5204463339999847,
+      "volume": "01M2MD0RMG29ZWGE31JH2CH86M"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ5BPT2PDWZCD9XPC4NXR",
+      "generation": 7,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.764762774000019,
+      "volume": "01M2MD0WN9KHCFEQ3HJ43DZKV7"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ4VC10V1KTYD99P8RRRZ",
+      "generation": 6,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.773569848000079,
+      "volume": "01M2MD10WB0BKE9EM9TFR8W2Q0"
+    },
+    {
+      "sample": 0,
+      "manifest_id": "01M2MCZ47YENQJWG78EDVD39E2",
+      "generation": 5,
+      "metric": "retained_snapshot_boot",
+      "seconds": 4.097301281,
+      "volume": "01M2MD153413QF9MG8TAR71NM5"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1KMF7YGXX1K35CME84Y9",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 2.97156634199996,
+      "volume": "01M2MD2GDKZPMJKBR5KK4XEP3E"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1J9SP9JTGATYB2Y9V2JZ",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.1656364000000394,
+      "volume": "01M2MD2KSVDZ9ABV30K3HN76XS"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1GVVYDRQGEQMXFZZ9SRT",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.076965085999973,
+      "volume": "01M2MD2QE1NG5ABP8E9YG735QD"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1GAJ17Q2VQZQHC213RCK",
+      "generation": 11,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.485791703000018,
+      "volume": "01M2MD2TZHVMAG41R4JR3JNGBZ"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1FTC9YGNCS1H844ZSZT1",
+      "generation": 10,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.532067174999952,
+      "volume": "01M2MD2Z24VG9G4FQNJ1T2JX50"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1F9CFV20B7T6F5ECDKP5",
+      "generation": 9,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.8753771750000396,
+      "volume": "01M2MD33190F799F20095Q6H56"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1ETXY2PV6ZH6VE73DSD5",
+      "generation": 8,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.6786520199999586,
+      "volume": "01M2MD37DF2Y0VX82358WMHD2X"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1E8DBZVNJ9SBMTHRSFWE",
+      "generation": 7,
+      "metric": "retained_snapshot_boot",
+      "seconds": 3.8978712990000304,
+      "volume": "01M2MD3BJWYCP5CD9DTXKH5SWD"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1DQ7DAPP166VPRDFENKZ",
+      "generation": 6,
+      "metric": "retained_snapshot_boot",
+      "seconds": 4.36917973300001,
+      "volume": "01M2MD3FYES82D0122GNZHV0F4"
+    },
+    {
+      "sample": 1,
+      "manifest_id": "01M2MD1D86FQFQ0BG7SXAN9R7Q",
+      "generation": 5,
+      "metric": "retained_snapshot_boot",
+      "seconds": 4.109627921999959,
+      "volume": "01M2MD3MRKNGB7NHG3GA59Z80E"
+    }
+  ],
+  "scenario_evidence": [
+    "2026-09-16T06:01:14.148832Z  INFO swarmy_chaos::persistent: persistent shared sessions and managed process idle protection passed agent=01M2MCVBGZCKGAJFCA5KDFZY9A",
+    "snapshot freeze observed; node stopped at writer wait channel percpu_rwsem_wait",
+    "2026-09-16T06:02:15.915576Z  INFO swarmy_chaos::persistent: persistent node kill with background server passed; time includes lease expiry seconds=56.090676922 snapshot=01M2MCW6CEXVDR7VYHAEED8VVG",
+    "2026-09-16T06:02:20.269848Z  INFO swarmy_chaos::persistent: persistent idle eviction and durable notice passed",
+    "2026-09-16T06:05:23.263975Z  INFO swarmy_chaos: chaos passed seed=152258973872654062 sessions=2 steps=5 kills=0 elapsed_secs=276.442977211"
+  ],
+  "restored_snapshot": {
+    "manifest_id": "01M2MCW6CEXVDR7VYHAEED8VVG",
+    "timestamp": "2026-09-16T06:01:14.382+00:00",
+    "post_termination_recovery_seconds": 56.090676922
+  },
+  "image": {
+    "chunks_stored": 1982,
+    "chunks_total": 32768,
+    "chunks_uploaded": 1981,
+    "event": "image_built",
+    "header": {
+      "chunk_size": 262144,
+      "root_hash": [
+        206,
+        225,
+        165,
+        115,
+        243,
+        131,
+        95,
+        10,
+        197,
+        185,
+        205,
+        209,
+        249,
+        231,
+        247,
+        137,
+        213,
+        94,
+        200,
+        216,
+        194,
+        57,
+        143,
+        123,
+        203,
+        201,
+        235,
+        159,
+        150,
+        252,
+        15,
+        206
+      ],
+      "size": 8589934592
+    },
+    "manifest_id": "01M2MCVB5ARD5D9H4ZS92D9JN1",
+    "name": "base-ubuntu",
+    "size": 8589934592,
+    "tag": "persistent"
+  }
+}

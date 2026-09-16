@@ -1,0 +1,209 @@
+{
+  "verified_at": "2026-09-16T06:06:29.068502+00:00",
+  "runs": [
+    {
+      "name": "swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3/",
+      "checks": {
+        "instances": [],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    },
+    {
+      "name": "swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15/",
+      "checks": {
+        "instances": [
+          {
+            "Id": "i-0bd907e08df00102f",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          },
+          {
+            "Id": "i-0f2a494a715f9f397",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          }
+        ],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    },
+    {
+      "name": "swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f/",
+      "checks": {
+        "instances": [
+          {
+            "Id": "i-0b2c57fbf8a5ce0e1",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          },
+          {
+            "Id": "i-004183d474de32ce0",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          }
+        ],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    },
+    {
+      "name": "swarmy-bench-9eb83331696b4239b45a60cf1a17f16b",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-9eb83331696b4239b45a60cf1a17f16b/",
+      "checks": {
+        "instances": [
+          {
+            "Id": "i-084e8c1ae01dfd5e6",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          },
+          {
+            "Id": "i-0451d92f867fe9692",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          }
+        ],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    },
+    {
+      "name": "swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e/",
+      "checks": {
+        "instances": [
+          {
+            "Id": "i-00eb5b17b4b134603",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          },
+          {
+            "Id": "i-0d65a10f025afa4f0",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          }
+        ],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    },
+    {
+      "name": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d",
+      "bucket": "swarmy-bench-815638500196",
+      "prefix": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d/",
+      "checks": {
+        "instances": [
+          {
+            "Id": "i-0efeed68b7df7755b",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          },
+          {
+            "Id": "i-0972f1ca1a1bd81dd",
+            "State": "terminated",
+            "Type": "m6id.xlarge",
+            "Image": "ami-025d99823a4caad37"
+          }
+        ],
+        "volumes": [],
+        "key_pairs": [],
+        "objects": {
+          "KeyCount": 0,
+          "IsTruncated": false
+        },
+        "versions": {
+          "Versions": null,
+          "DeleteMarkers": null,
+          "IsTruncated": false
+        },
+        "multipart": {
+          "Uploads": null,
+          "IsTruncated": false
+        }
+      }
+    }
+  ],
+  "gcp_instances_for_run_names": []
+}

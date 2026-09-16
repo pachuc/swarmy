@@ -420,6 +420,8 @@ def main():
     parser.add_argument("--vm", action="store_true", help="create a paid VM after preflight; omitted for storage-only validation")
     parser.add_argument("--workload", type=Path, help="control-host executable; output suppressed; receives SWARMY_BENCH_STATE")
     parser.add_argument("--ssh-public-key", type=Path)
+    parser.add_argument("--nodes", type=int, choices=(1, 2), default=1,
+                        help="AWS machines in the same subnet and security group")
     args = parser.parse_args()
     if args.action == "cleanup":
         state = json.loads(args.state.read_text())
@@ -438,13 +440,16 @@ def main():
         parser.error("run requires --provider and AWS requires --bucket or SWARMY_BENCH_BUCKET")
     if args.vm and (not args.workload or (args.provider == "aws" and not args.ssh_public_key)):
         parser.error("--vm requires --workload, and AWS also requires --ssh-public-key")
+    if args.nodes != 1 and (not args.vm or args.provider != "aws"):
+        parser.error("--nodes 2 requires --vm --provider aws")
     run_id = uuid.uuid4().hex
     name = "swarmy-bench-" + run_id
     state = dict(run_id=run_id, name=name, prefix=name + "/", provider=args.provider,
                  bucket=name if args.provider == "gcp" else args.bucket,
                  project=args.project, region=args.region or ("us-central1" if args.provider == "gcp" else "us-east-1"),
                  delete_versions=args.delete_versions, allow_retention=args.allow_retention,
-                 vm=args.vm, ssh_public_key=str(args.ssh_public_key.resolve()) if args.ssh_public_key else None)
+                 vm=args.vm, nodes=args.nodes,
+                 ssh_public_key=str(args.ssh_public_key.resolve()) if args.ssh_public_key else None)
     save(args.state, state)
     print(json.dumps({"phase": "run", "provider": state["provider"], "bucket": state["bucket"],
                       "prefix": state["prefix"], "retention_allowance": state["allow_retention"]}), flush=True)

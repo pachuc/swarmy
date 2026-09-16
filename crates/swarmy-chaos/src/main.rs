@@ -1,6 +1,8 @@
 mod check;
 mod config;
 mod disk;
+mod measure;
+mod persistent;
 mod process;
 
 use std::{
@@ -71,6 +73,7 @@ struct Fixture {
     processes: Vec<Process>,
     sessions: Vec<SessionId>,
     image: Option<swarmy_core::ManifestId>,
+    environment: Vec<(OsString, OsString)>,
 }
 
 impl Fixture {
@@ -99,6 +102,7 @@ impl Fixture {
             processes: Vec::new(),
             sessions: Vec::new(),
             image: None,
+            environment: Vec::new(),
         })
     }
 
@@ -180,6 +184,9 @@ impl Fixture {
             .collect::<Vec<(OsString, OsString)>>();
         shared.append(&mut environment);
         environment = shared;
+        if config.persistent {
+            environment.push(("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()));
+        }
         environment.push((
             "SWARMY_NODE_SANDBOXES".into(),
             config.sessions.to_string().into(),
@@ -198,7 +205,10 @@ impl Fixture {
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
             (Kind::Gateway, config.gateways),
-            (Kind::Node, usize::from(config.image.is_some())),
+            (
+                Kind::Node,
+                usize::from(config.image.is_some() && !config.persistent),
+            ),
         ] {
             for index in 0..count {
                 self.processes.push(Process::start(
@@ -210,6 +220,13 @@ impl Fixture {
                 )?);
             }
         }
+        self.ready().await?;
+        self.environment = environment;
+        self.create_sessions(config.sessions, config.persistent)
+            .await
+    }
+
+    async fn ready(&mut self) -> Result<()> {
         timeout(Duration::from_secs(30), async {
             loop {
                 for process in &mut self.processes {
@@ -230,11 +247,11 @@ impl Fixture {
             }
         })
         .await
-        .context("scheduler startup timed out")??;
-        self.create_sessions(config.sessions).await
+        .context("scheduler startup timed out")?
     }
 
-    async fn create_sessions(&mut self, count: usize) -> Result<()> {
+    async fn create_sessions(&mut self, count: usize, shared: bool) -> Result<()> {
+        let agent = AgentId::from_ulid(Ulid::generate());
         for _ in 0..count {
             let id = loop {
                 let id = SessionId::from_ulid(Ulid::generate());
@@ -247,7 +264,11 @@ impl Fixture {
                 .create_session(
                     &SessionRecord {
                         session_id: id,
-                        agent_id: AgentId::from_ulid(Ulid::generate()),
+                        agent_id: if shared {
+                            agent
+                        } else {
+                            AgentId::from_ulid(Ulid::generate())
+                        },
                         state: SessionState::Idle,
                         head_seq: 0,
                         snapshot_ref: None,
@@ -397,7 +418,13 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
     let result = tokio::select! {
         result = async {
             timeout(Duration::from_secs(60), fixture.start(config, binaries)).await.context("session setup timed out")??;
-            fixture.exercise(config, seed).await
+            if config.persistent {
+                persistent::exercise(&mut fixture, binaries, config.node_driver.as_deref()).await?;
+                if let Some(script) = &config.measurements { measure::run(&fixture, binaries, &script.canonicalize()?).await?; }
+                Ok(0)
+            } else {
+                fixture.exercise(config, seed).await
+            }
         } => result,
         result = tokio::signal::ctrl_c() => { result?; Err(anyhow::anyhow!("interrupted")) }
     };
