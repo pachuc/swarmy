@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    BashArguments, Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId,
+    Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId, SandboxArguments,
     SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob, decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
@@ -323,13 +323,13 @@ impl Worker {
                             .is_none() =>
                 {
                     Err(
-                        "bash requires a disk; start the session with swarmy run --image NAME:TAG"
+                        "sandbox tools require a disk; start the session with swarmy run --image NAME:TAG"
                             .into(),
                     )
                 }
                 Some(tool) if tool.sandbox_bound() => {
-                    match serde_json::from_value::<BashArguments>(call.arguments.clone()) {
-                        Ok(arguments) if arguments.valid() => {
+                    match SandboxArguments::parse(&call.tool, call.arguments.clone()) {
+                        Ok(arguments) => {
                             let step = events
                                 .iter()
                                 .find_map(|event| match event {
@@ -350,9 +350,7 @@ impl Worker {
                             });
                             continue;
                         }
-                        _ => Err(
-                            "bash expects a command and timeout_ms between 1 and 3600000".into(),
-                        ),
+                        Err(error) => Err(error.to_string()),
                     }
                 }
                 Some(tool) => tool.execute(call.arguments).await,

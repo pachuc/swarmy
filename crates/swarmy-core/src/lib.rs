@@ -17,7 +17,8 @@ pub use encoding::json;
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
 pub use id::{
-    AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId, SessionId, VolumeId,
+    AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
+    SessionId, VolumeId,
 };
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, WakeReply, WakeRequest};
@@ -37,8 +38,9 @@ pub use sandbox::{
 
 mod tool;
 pub use tool::{
-    BashArguments, BashResult, PlaceReply, PlaceRequest, PlacedToolClaim, SandboxRecord, ToolClaim,
-    ToolJob,
+    BashArguments, BashResult, EmptyArguments, PlaceReply, PlaceRequest, PlacedToolClaim,
+    ProcessArguments, ProcessStartArguments, SandboxArgumentError, SandboxArguments, SandboxRecord,
+    ToolClaim, ToolJob,
 };
 
 mod placement;

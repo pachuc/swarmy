@@ -244,8 +244,8 @@ impl Store {
                             request_id, call, ..
                         } if request_id == job.request_id
                             && call.call_id == job.call_id
-                            && call.tool == "bash"
-                            && serde_json::from_value::<swarmy_core::BashArguments>(
+                            && swarmy_core::SandboxArguments::parse(
+                                &call.tool,
                                 call.arguments.clone(),
                             )
                             .ok()

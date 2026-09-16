@@ -273,6 +273,20 @@ impl RuncRuntime {
         Ok(())
     }
 
+    /// Publish the attached disk while keeping its container alive.
+    /// # Errors
+    /// Returns missing sandbox, freeze, or fenced publication errors.
+    pub async fn checkpoint(&self, sandbox: &Sandbox) -> Result<swarmy_core::ManifestId> {
+        let entry = self.running(sandbox.agent_id).await?;
+        let running = entry.lock().await;
+        Ok(server::checkpoint(
+            &self.config,
+            running.journal.disk.volume_id,
+            Some(self.bundle(sandbox.agent_id).join("rootfs")),
+        )
+        .await?)
+    }
+
     /// List local containers owned by this runtime.
     pub async fn list(&self) -> Vec<Sandbox> {
         self.sandboxes
@@ -383,20 +397,27 @@ impl SandboxRuntime for RuncRuntime {
         }
         let entry = self.running(sb.agent_id).await?;
         let running = entry.lock().await;
+        let token = ulid::Ulid::generate().to_string();
+        let guest = self.bundle(sb.agent_id).join("guest");
+        let mut guard = ExecGuard {
+            root: self.root.join("runc"),
+            id: sb.agent_id,
+            token: token.clone(),
+            guest,
+            armed: true,
+            cancellations: running.cancellations.clone(),
+        };
         let mut child = self
             .command()
             .arg("exec")
             .arg(sb.agent_id.to_string())
+            .args(["/usr/bin/setsid", "--wait", "/bin/bash", "-c",
+                "echo $$ > /run/swarmy/$1.pid; test ! -e /run/swarmy/$1.cancel || exit 137; shift; exec \"$@\"",
+                "swarmy", &token])
             .args(request.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let mut guard = ExecGuard {
-            root: self.root.join("runc"),
-            id: sb.agent_id,
-            armed: true,
-            cancellations: running.cancellations.clone(),
-        };
         let stdout = child.stdout.take().ok_or(Error::State)?;
         let stderr = child.stderr.take().ok_or(Error::State)?;
         let run = async {
@@ -417,11 +438,8 @@ impl SandboxRuntime for RuncRuntime {
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {
-                checked(
-                    self.command()
-                        .args(["kill", "--all", &sb.agent_id.to_string(), "KILL"]),
-                )
-                .await?;
+                std::fs::write(guard.guest.join(format!("{token}.cancel")), b"")?;
+                checked(&mut guard.kill_command()).await?;
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 guard.armed = false;
@@ -454,21 +472,28 @@ struct ExecGuard {
     root: PathBuf,
     id: AgentId,
     armed: bool,
+    token: String,
+    guest: PathBuf,
     cancellations: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
+}
+impl ExecGuard {
+    fn kill_command(&self) -> Command {
+        let mut command = Command::new("runc");
+        command.arg("--root").arg(&self.root)
+            .args(["exec", &self.id.to_string(), "/bin/bash", "-c",
+                "if test -s /run/swarmy/$1.pid; then read -r pid < /run/swarmy/$1.pid; kill -KILL -- -$pid 2>/dev/null || true; fi",
+                "swarmy", &self.token]);
+        command
+    }
 }
 impl Drop for ExecGuard {
     fn drop(&mut self) {
         if self.armed {
-            // Signalling can wait for tasks in kernel I/O. Do not block the
-            // executor that must keep serving their NBD requests during teardown.
-            if let Ok(mut child) = std::process::Command::new("runc")
-                .arg("--root")
-                .arg(&self.root)
-                .args(["kill", "--all", &self.id.to_string(), "KILL"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
+            // Mark cancellation before signalling so an exec still starting
+            // cannot escape cleanup by publishing its pid after the signal.
+            let _ = std::fs::write(self.guest.join(format!("{}.cancel", self.token)), b"");
+            let mut command: std::process::Command = self.kill_command().into_std();
+            if let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                 let task = std::thread::spawn(move || {
                     let _ = child.wait();
                 });
@@ -477,6 +502,9 @@ impl Drop for ExecGuard {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(task);
             }
+        } else {
+            let _ = std::fs::remove_file(self.guest.join(format!("{}.pid", self.token)));
+            let _ = std::fs::remove_file(self.guest.join(format!("{}.cancel", self.token)));
         }
     }
 }

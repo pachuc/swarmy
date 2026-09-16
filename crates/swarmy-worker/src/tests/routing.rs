@@ -198,7 +198,8 @@ impl Fixture {
                     exit_code: 0,
                     timed_out: false,
                     manifest_id: self.manifest,
-                },
+                }
+                .tool_result(),
             )
             .await
     }

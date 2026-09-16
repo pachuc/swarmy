@@ -532,3 +532,56 @@ fn disk_manifest_and_command_status_survive_folding_and_snapshot_replay() {
     let restored: Snapshot = swarmy_core::decode(&bytes).unwrap();
     assert_eq!(restored.messages().last(), Some(&message));
 }
+
+#[test]
+fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions() {
+    let mut registry = swarmy_harness::ToolRegistry::default();
+    swarmy_tools::register(&mut registry);
+    let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::from(42_u128));
+    for (name, arguments) in [
+        ("bash", json!({"command":"echo hello"})),
+        ("process_start", json!({"command":"sleep 300"})),
+        ("process_list", json!({})),
+        ("process_log", json!({"process_id":id})),
+        ("process_stop", json!({"process_id":id})),
+        ("checkpoint", json!({})),
+    ] {
+        let call = ToolCallRecord {
+            call_id: ToolCallId(name.into()),
+            tool: name.into(),
+            arguments: arguments.clone(),
+            result: None,
+        };
+        assert_eq!(
+            step(&[user_event(), inference_event(std::slice::from_ref(&call))]),
+            Action::DispatchTools(vec![call])
+        );
+        let tool = registry.get(name).unwrap();
+        assert!(tool.sandbox_bound());
+        let parsed = swarmy_core::SandboxArguments::parse(name, arguments).unwrap();
+        assert_eq!(parsed.name(), name);
+        assert_eq!(
+            swarmy_core::decode::<swarmy_core::SandboxArguments>(
+                &swarmy_core::encode(&parsed).unwrap()
+            )
+            .unwrap(),
+            parsed
+        );
+        assert!(futures::executor::block_on(tool.execute(parsed.parameters())).is_err());
+        let description = tool.description();
+        for wording in [
+            "Files persist across failures up to the last snapshot",
+            "every ten minutes",
+            "checkpoint is called",
+            "Processes do not survive a node failure or an idle eviction",
+        ] {
+            assert!(description.contains(wording), "{name}: {description}");
+        }
+        assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
+    }
+    assert_eq!(registry.definitions().len(), 6);
+    assert!(
+        swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
+            .is_err()
+    );
+}

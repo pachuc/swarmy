@@ -184,7 +184,9 @@ impl Hosting {
                         let Some(call) = call else { break; };
                         self.execute(&placement, call).await?;
                     }
-                    () = tokio::time::sleep(self.idle) => break,
+                    () = tokio::time::sleep(self.idle) => {
+                        if !crate::tools::has_processes(&self.runtime, &placement).await? { break; }
+                    },
                     _ = shutdown.changed() => break,
                 }
             }

@@ -54,7 +54,7 @@ at `/run/swarmy`; `/etc/resolv.conf` is bound read-only. The container init is
 `/bin/sleep infinity` until the guest-agent slice supplies its own init.
 
 Timeout includes blocked output delivery. A timeout or cancelled exec kills
-all processes in that sandbox, including descendants. The disk remains attached
+only its own process group. Managed background processes remain alive. The disk remains attached
 until pause or destroy. Resume always cold boots: runc reports
 `memory_pause = false` and `kvm = false`.
 
@@ -94,11 +94,11 @@ pause/resume, separate output streams and exit codes, descendant timeout, and
 SIGKILL during exec followed by re-registration and committed-head recovery.
 Cleanup guards stop containers and unmount after a test failure.
 
-## Bash calls from sessions
+## Sandbox tools from sessions
 
 Start a disk-backed session with `swarmy run --image base-ubuntu:TAG "PROMPT"`.
 The CLI pins the image manifest before waking the session. The worker records
-bash request events, asks the scheduler for a live sandbox node, and atomically
+sandbox tool request events, asks the scheduler for a live sandbox node, and atomically
 stores tool jobs while releasing the session into `WaitingTools`. A recovery
 scan republishes pending jobs if a process dies before publishing to NATS.
 
@@ -133,10 +133,37 @@ publishes a final checkpoint, detaches the device, and releases placement.
 The retained epoch counter makes the next placement report reason `eviction`.
 Graceful shutdown does the same for hosted agents, keeping renewal active during
 checkpointing. Idle time starts after a call finishes, so an active call cannot
-be evicted. Unmanaged background processes alone do not reset this timer; managed
-process activity is part of the future guest-agent interface.
+be evicted. Running managed processes prevent idle eviction; unmanaged background
+processes alone do not reset this timer.
 
 The root node suite also drives the NATS tool path across multiple sessions of
 one agent. It checks process persistence, renewal during a call, no publication
 on a trivial call with 64 MiB dirty, idle checkpoint and rehydration, SIGKILL
 cleanup, and refusal after another node takes over the epoch.
+
+The registered tools are `bash`, `process_start`, `process_list`, `process_log`,
+`process_stop`, and `checkpoint`. Bash returns stdout, stderr, and exit status;
+a timeout returns a tool error without stopping other process groups.
+Checkpoint freezes the mounted disk, publishes through the attachment control
+socket, thaws, and returns the committed manifest id.
+
+Process tools execute a small Python program in the sandbox. Images must include
+`/bin/bash`, `/usr/bin/setsid`, and `/usr/bin/python3`, as the base Ubuntu image
+does. Each managed process has a ULID directory under `/var/lib/swarmy/processes`
+containing `record.json` and `output.log`. Records include the command, PID,
+Linux start ticks, start time, and sandbox lifetime. Launch detaches the process
+session and redirects all standard streams so the launching exec can finish.
+Listing reads disk records and checks `/proc`; it needs no daemon memory and can
+be reconstructed whenever the sandbox remains alive. The current node restart
+path rebuilds containers, so those processes are lost. Old records report
+`restarted` and cannot be used to stop a process in the new sandbox.
+
+Log reads return at most the last 64 KiB of combined stdout and stderr. Stop
+signals the managed process group with TERM, waits 250 ms, then sends KILL.
+Files persist across failures only up to the latest published snapshot, normally
+every ten minutes or when checkpoint is called. Neither snapshots nor idle
+eviction preserve process memory.
+
+The root suite checks a managed HTTP server from a later bash call, listing and
+logs, a bounded log tail, stop, idle protection, timeout isolation, explicit
+checkpoint against the store head, and old process ids after a rebuild.
