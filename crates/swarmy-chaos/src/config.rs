@@ -6,6 +6,16 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(about = "Verify durable sessions while killing and restarting services")]
 pub struct Config {
+    /// Exercise shared computers, background-process loss, and idle eviction.
+    #[arg(long)]
+    pub persistent: bool,
+    /// Executable controlling a remote first node: start, kill, and stop.
+    /// Receives the node settings as environment variables. Used by cloud benchmarks.
+    #[arg(long, requires = "persistent")]
+    pub node_driver: Option<PathBuf>,
+    /// Run the root volume measurement script twice after persistent scenarios.
+    #[arg(long, requires = "persistent")]
+    pub measurements: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     pub sessions: usize,
     /// Run bash disk checks and include swarmyd in the kill schedule (requires root).
@@ -73,6 +83,13 @@ impl Config {
             ensure!(
                 self.sessions == 1 && self.steps == 3 && self.kills == 0,
                 "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
+            );
+        }
+        if self.persistent {
+            ensure!(self.image.is_some(), "--persistent requires --image");
+            ensure!(
+                self.sessions == 2 && self.gateways == 1 && self.kills == 0,
+                "--persistent requires --sessions 2 --gateways 1 --kills 0"
             );
         }
         self.sessions

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path};
+use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path, prefix::PrefixStore};
 use tokio::sync::RwLock;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,16 +66,28 @@ impl ObjectBlobStore {
     /// Returns an error for an unreadable configuration or invalid S3 settings.
     pub fn from_env() -> Result<Self, BlobError> {
         let settings = swarmy_config::Settings::load()?.settings;
+        Self::from_settings(settings)
+    }
+
+    fn from_settings(settings: swarmy_config::Settings) -> Result<Self, BlobError> {
+        // Benchmark namespaces historically used bucket/prefix. S3 accepts that
+        // path for individual objects, but listings must address the bucket and
+        // put the namespace in the prefix query. PrefixStore also strips it from
+        // listing results so the collector sees canonical chunk paths.
+        let (bucket, prefix) = settings
+            .s3_bucket
+            .split_once('/')
+            .unwrap_or((&settings.s3_bucket, ""));
         let inner = AmazonS3Builder::new()
             .with_endpoint(settings.s3_endpoint)
             .with_access_key_id(settings.s3_access_key)
             .with_secret_access_key(settings.s3_secret_key)
-            .with_bucket_name(settings.s3_bucket)
+            .with_bucket_name(bucket)
             .with_region(settings.s3_region)
             .with_allow_http(true)
             .with_virtual_hosted_style_request(false)
             .build()?;
-        Ok(Self::new(Arc::new(inner)))
+        Ok(Self::new(Arc::new(PrefixStore::new(inner, prefix))))
     }
 
     #[must_use]
@@ -107,6 +119,53 @@ impl BlobStore for ObjectBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::TryStreamExt;
+    use std::fmt::Write as _;
+
+    #[tokio::test]
+    async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
+        if std::env::var_os("SWARMY_S3_ENDPOINT").is_none() {
+            eprintln!("skipping S3 namespace test: SWARMY_S3_ENDPOINT is unset");
+            return;
+        }
+        let mut settings = swarmy_config::Settings::load().unwrap().settings;
+        write!(
+            settings.s3_bucket,
+            "/prefix-test-{}",
+            ulid::Ulid::generate()
+        )
+        .unwrap();
+        let root = ObjectBlobStore::from_settings(settings.clone()).unwrap();
+        settings.s3_bucket.push_str("/inside");
+        let scoped = ObjectBlobStore::from_settings(settings).unwrap();
+        let payload = Bytes::from_static(b"prefix regression");
+        let outside = root.put("outside", payload.clone()).await;
+        let written = scoped.put("chunks/value", payload.clone()).await;
+        let read = scoped.get("chunks/value").await;
+        let listing = scoped
+            .inner
+            .list(Some(&Path::from("chunks/")))
+            .try_collect::<Vec<_>>()
+            .await;
+        let deleted = scoped.delete("chunks/value").await;
+        let sibling = root.get("outside").await;
+        let remaining = root.inner.list(None).try_collect::<Vec<_>>().await;
+        // Finish cleanup before assertions so a failed listing does not leave
+        // this test's sentinel behind in the shared development bucket.
+        let cleanup = root.delete("outside").await;
+        outside.unwrap();
+        written.unwrap();
+        deleted.unwrap();
+        cleanup.unwrap();
+        assert_eq!(read.unwrap(), payload);
+        assert_eq!(sibling.unwrap(), payload);
+        let listing = listing.unwrap();
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].location, Path::from("chunks/value"));
+        let remaining = remaining.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].location, Path::from("outside"));
+    }
 
     #[tokio::test]
     async fn memory_blobs_round_trip_and_report_missing_keys() {

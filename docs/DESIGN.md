@@ -390,6 +390,14 @@ schedulers skip a busy lease and retry next interval. A metadata namespace must
 have its own object namespace; collection cannot discover references belonging
 to another FoundationDB directory sharing the bucket.
 
+S3 namespace prefixes must apply to listing queries as well as object paths.
+Cloud validation found that the historical `bucket/run-prefix` convention
+worked for individual reads and writes but made collection fail with S3
+`NoSuchKey`. The blob-store client now interprets that convention through an
+`object_store::prefix::PrefixStore`, addressing the physical bucket for lists
+and returning relative object names. A follow-up task will consolidate the
+remaining S3 constructors behind explicit, validated namespace configuration.
+
 Configuration is under `[gc]`: `grace_seconds` defaults to 21600,
 `interval_seconds` to 3600, and `filter_bytes` to 67108864. All are positive.
 The corresponding environment overrides are `SWARMY_GC_GRACE_SECONDS`,
@@ -561,10 +569,19 @@ new tool results are folded. Never claim that successful tool output implies
 that its disk changes survived. The placement record retains the latest change;
 message delivery must persist each observed notice and its delivery cursor.
 
-These rules are the target for subsequent node, tool, snapshot, collector, and
-messaging tasks. The placement store API does not yet replace the slice 2
-session-scoped `SandboxRecord` and per-call flush paths; those callers migrate
-in their respective tasks.
+The hosting actor, worker routing, process tools, snapshot loop, and collector
+now implement this contract. The persistent-computer acceptance procedure is
+recorded in [the volume benchmarks](volume-benchmarks.md#2026-09-16-persistent-computers).
+Recovery must wait for both placement and volume-writer authority: shortening
+the placement lease alone does not remove the volume server's 60-second writer
+lease wait. Report that wait separately from rehydration time.
+
+Use the same placement lease duration in workers and nodes. Validation found
+that a node configured with a shorter duration than the worker's initial grant
+can fail its first renewal: the computed expiry precedes the current expiry,
+and the store correctly rejects it. The follow-up task is to preserve monotonic
+expiry in the hosting renewal loop, including during configuration changes,
+without weakening the store fence. This validation uses matching durations.
 
 ### 8.3 Guest agent
 

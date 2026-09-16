@@ -1026,3 +1026,278 @@ Clippy initially required the generation-exhaustion panic to be documented; the
 final run passes without lint allowances. No CI, lint, or test requirement was
 weakened. The only unverified performance claim is p95 compliance across the full
 budget table, which needs more samples and workloads than this installation run.
+
+## 2026-09-16 persistent computers
+
+### Procedure and scope
+
+The persistent chaos scenario is `swarmy-chaos --persistent --image
+base-ubuntu:persistent --sessions 2 --gateways 1 --kills 0`. Build without root,
+then run the prebuilt executable with `sudo -E`, `--no-start-stack`, and
+`--bin-dir` pointing at the built services. `scripts/test-bash.sh` also runs this
+scenario. It creates two sessions with one agent identity and sends each tool
+request through a scripted inference gateway, scheduler, and worker. It does
+not bypass routing by sending tool jobs directly to a node.
+
+For AWS, `cloud.py --vm --nodes 2` provisions two stock Ubuntu 24.04
+`m6id.xlarge` machines in the supplied `us-east-1` subnet and security group.
+[persistent-cloud.py](../scripts/benchmarks/persistent-cloud.py) installs the
+prebuilt debug binaries, loads the stock NBD module, and places working data
+and chunk caches on each machine's local NVMe instance store. FoundationDB,
+NATS, workers, scheduler, and gateway run on the primary; `swarmyd` runs on both.
+The supplied security group admits only SSH between instances. Two private SSH
+reverse forwards carry FoundationDB and NATS to the second node; neither
+service is exposed publicly and no security-group rules are changed. S3 uses a
+fresh prefix in the existing regional bucket. Google Cloud is optional
+for this task and is not used in this run.
+
+The test uses a three-second idle window and matching three-second placement
+leases to make eviction observable without waiting thirty minutes. The volume
+writer lease remains sixty seconds. The managed HTTP server must survive
+another session and a wait longer than the idle window. The failure path waits
+for both authorities to expire before issuing a new call. Its total recovery
+latency therefore includes a different cost from the rehydration measurements.
+
+The remote kill hook starts a checkpoint while a separate process writes and
+fsyncs a probe file. It observes that process blocked in the kernel's filesystem
+freeze wait, sends `SIGSTOP` to `swarmyd` to hold publication at that point, then
+terminates the EC2 instance. The head must still equal the acknowledged
+checkpoint from before the fault. The replacement must recover that
+checkpoint's files, lose the uncheckpointed marker and HTTP server, move to the
+other node with a higher epoch, and deliver exactly one system notice with the
+head manifest's exact timestamp. Idle eviction is checked separately, including
+writer release, final-checkpoint contents, and the distinct eviction notice.
+
+Rehydration has two cold and two warm samples. Each starts after idle eviction
+has released the computer. Cold trials remove the target chunk cache; warm
+trials reuse it. Both sync and drop the host page cache before timing. The timer
+covers gateway restart, two scripted inference responses, worker routing,
+container creation, filesystem access, and return to an idle session. It is a
+routed request measurement, not just mount latency. Cloud-side caches and the
+FoundationDB cache are not controlled. Two samples do not establish a p95.
+
+The separate [volume workload](../scripts/benchmarks/persistent-volume.py) runs
+twice. Each sample overwrites an 8 MiB random file through thirteen explicit
+`swarmy vol checkpoint` calls, then measures a checkpoint with a process writing
+and fsyncing monotonic timestamps every 10 ms. The reported pause is the largest
+observed inter-write gap, including scheduling and fsync costs; raw neighboring
+timestamps and observation counts accompany it. The pause checkpoint and final
+detach also publish snapshots. Exactly ten manifests must remain retained.
+After all writers stop, the isolated collector runs with a one-second grace
+window, first dry and then real. Candidate bytes must match deleted bytes.
+Every retained manifest is then cloned to a new volume, attached with an empty
+chunk cache, mounted, and used to start Bash. Each boot verifies its generation
+marker and the SHA-256 digest of its 8 MiB file. This grace setting is specific
+to a quiescent test namespace and is not a deployment recommendation.
+
+The reduced CI path in `scripts/chaos-ci.sh` retains seeded service kills and
+runs production worker tests for failure/eviction routing and durable notices,
+plus the real subprocess registry test. These checks require no root. They
+exercise the constituent contracts separately; they do not claim NBD, container,
+or physical-machine coverage. The root bash acceptance runs the integrated
+persistent scenarios. The CI workflow itself is unchanged.
+
+### Design finding
+
+An initial local trial used a three-second node placement lease with the
+worker's default thirty-second grant. The hosting actor's first renewal tried
+to shorten the expiry and the store rejected it. The node stopped serving and
+the following tool failed after recovery. Matching the durations allowed the
+scenario to pass. A follow-up task in the pull request proposes monotonic
+hosting renewal across differing durations, with regression tests for both
+initial handoff and configuration changes. The store's rejection is correct;
+its fencing rule should stay intact.
+
+The cloud collector uncovered a second issue: passing `bucket/run-prefix` as
+an S3 bucket produced a listing request to `/bucket/run-prefix?list-type=2`
+and S3 returned `404 NoSuchKey`. Individual object reads and writes had worked,
+which is why earlier disk benchmarks did not detect this. The blob-store
+constructor used by the collector now separates the physical bucket and uses
+`PrefixStore` for its namespace. This preserves existing object locations while
+making listings and deletions operate on relative chunk paths. A regression
+test checks scoped listing, reads, deletion, and preservation of a sibling key.
+The follow-up task is to centralize all S3 constructors and expose a validated
+prefix explicitly instead of relying on a slash inside the bucket setting.
+
+### Measurements and scenario results
+
+The successful run used two `m6id.xlarge` instances with local NVMe, the stock
+Ubuntu 24.04 image, kernel `7.0.0-1012-aws`, four vCPUs and 16 GiB class memory.
+The binaries were debug builds from Rust 1.98.1. These are correctness and
+small-sample latency measurements, not release-build performance limits.
+The run began at 06:00:46 UTC. Full sample values, manifest IDs, generation
+hashes, collector counters, and each retained boot are in
+[the raw AWS samples](benchmarks/2026-09-16-persistent-aws.json).
+
+| Measurement | Sample 1 | Sample 2 | Count |
+| --- | ---: | ---: | ---: |
+| Cold routed rehydration, seconds | 2.004998114 | 1.835473571 | 2 |
+| Warm routed rehydration, seconds | 0.796242961 | 0.827149000 | 2 |
+| Writer maximum gap, milliseconds | 327.948067 | 327.457828 | 2 checkpoints |
+| Writer timestamp observations | 179 | 176 | 355 total |
+| Checkpoint frozen interval, milliseconds | 304.563129 | 312.518404 | 2 |
+| Collector dry-run wall time, seconds | 5.077414065 | 10.912728678 | 2 |
+| Collector real-run wall time, seconds | 14.899932086 | 15.085755906 | 2 |
+| Collector durable duration, milliseconds | 14871 | 15051 | 2 |
+| Collector bytes freed | 118226944 | 50069504 | 168296448 total |
+| Collector deleted chunks | 451 | 191 | 642 total |
+| Retained snapshots booted after collection | 10 of 10 | 10 of 10 | 20 |
+
+The collector scanned 2,825 and 2,991 objects and marked 19 and 49 manifests.
+The second run includes the first run's retained volumes and boot clones.
+The first run can also collect chunks orphaned by the interrupted snapshot;
+its freed bytes should not be attributed solely to pruning. Both dry runs
+freed zero bytes and predicted exactly the real run's deleted byte count.
+Each volume published fifteen snapshots and retained ten, pruning the first
+five recorded generations. Each of the twenty retained manifests booted from
+an empty cache after collection and matched its expected generation and SHA-256.
+
+The raw timestamps around the largest writer gaps, in monotonic nanoseconds,
+were `[462085140602, 462096682918, 462109702560, 462437650627, 462449199478,
+462460605744]` and `[536664573663, 536676547810, 536687967381, 537015425209,
+537026818883, 537038172328]`. The test measured a lightweight timestamp writer
+after the 8 MiB file checkpoint; it does not represent installation-heavy
+snapshot pauses.
+
+All five requested scenarios passed. Both gateway sessions saw each other's
+files and the same running HTTP server. The server prevented idle eviction.
+The remote writer then blocked in `percpu_rwsem_wait`, the hosting process was
+stopped, and EC2 termination destroyed that machine. The authoritative head
+remained `01M2MCW6CEXVDR7VYHAEED8VVG`. Recovery on the other node found the
+checkpointed files, lost the uncheckpointed marker and server, and appended
+exactly one rebuild notice with snapshot time `2026-09-16T06:01:14.382Z`. The separate
+idle-eviction path released its writer, checkpointed its last file, and supplied
+the distinct eviction notice on the next routed call. Recovery after the
+termination request returned took 56.090676922 seconds, including lease expiry
+and the file/process/notice checks; it is separate from the cold/warm timings.
+
+### Reproduction and validation
+
+Install the provider CLI with `sudo snap install aws-cli --classic`, build as
+the ordinary user, and invoke the existing lifecycle controller. The workload
+installs `runc`, `e2fsprogs`, `debootstrap`, `curl`, `python3`, and `nbd-client` on
+the fresh machines and uses their stock NBD module. It does not need a separate
+`linux-modules-extra` package. Credentials are loaded from the private file and
+transferred only through SSH into private temporary files.
+
+```sh
+cargo build --workspace --locked
+set -a
+. ~/.config/swarmy-bench/aws.env
+set +a
+export SWARMY_BENCH_SSH_KEY=/tmp/swarmy-persistent-key
+export SWARMY_BENCH_RESULTS=/tmp/swarmy-persistent-results-5
+python3 scripts/benchmarks/cloud.py run --provider aws --delete-versions \
+  --vm --nodes 2 --ssh-public-key /tmp/swarmy-persistent-key.pub \
+  --workload scripts/benchmarks/persistent-cloud.py \
+  --state /tmp/swarmy-persistent-aws-5.json
+```
+
+Generate a temporary SSH key before the run if necessary. The lifecycle
+controller imports a separately tagged key pair for each run, journals both
+instances, and tears down compute and object storage even if the workload
+fails. The workload copies its raw results back before teardown.
+
+With the dev stack running and `.dev/env` sourced, validation passed:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/benchmarks -p 'test_*.py' -v
+scripts/chaos-ci.sh
+cargo test --workspace --locked --no-run --message-format=json
+cargo test -p swarmy-store --locked \
+  s3_namespace_lists_relative_keys_and_keeps_siblings -- --nocapture
+```
+
+The workspace suite passed 214 tests with one pre-existing ignored test. The
+Python suite passed 21 tests. The reduced chaos command passed its seeded kill
+schedule, both worker failure/eviction tests, and the subprocess registry test.
+The S3 namespace regression ran against the development object store; the
+collector then exercised the same constructor against real S3 on AWS.
+
+Root tests were compiled as the ordinary user. The compiler JSON supplied
+paths for `sudo -E BINARY --nocapture --test-threads=1`, with
+`SWARMY_TEST_CLI=/home/ubuntu/workspace/target/debug/swarmy` and
+`SWARMY_TEST_IMAGE=base-ubuntu:persistent`. All 40 selected tests passed across
+swarmy-volume's library/device/image/NBD/volume artifacts, CLI image/vol,
+swarmyd node, and chaos bash. OCI import was rerun successfully after installing
+`skopeo` and `umoci`. The root chaos acceptance includes the new persistent
+scenario, a mid-command node kill, and twelve seeded service kills.
+
+Initial local runs encountered stopped development services, a five-second
+readahead test timeout during concurrent compilation, and an intermittent
+existing mid-command chaos completion-count assertion. Restarting the services,
+rerunning the workspace without concurrent builds, and rerunning the unchanged
+root chaos acceptance passed. Clippy's allocation warning in the new regression
+test was fixed. No lint, test, or CI requirement was weakened. NBD attachment
+and mount audits after root testing were empty.
+
+### Attempts and teardown evidence
+
+The final run passed in 276.442977211 seconds after image construction. Four
+earlier attempts are excluded from the final sample table: bundle creation
+failed on a directory-mtime change; installation requested an unavailable
+kernel modules-extra package; the remote node could not reach FoundationDB
+through the SSH-only security group; and the first complete routing run stopped
+at the collector's invalid S3 listing request. The bundle procedure, stock NBD
+installation, private SSH forwards, and prefix-aware collector fixed those
+failures. Attempt four had passed the routing and interrupted-snapshot checks,
+but is not counted as a successful full run.
+
+[Raw provider queries](benchmarks/2026-09-16-persistent-cleanup.json) record an
+independent audit started at `2026-09-16T06:06:29Z`. Every listed instance is
+`terminated`; every run's tagged volumes and key pairs are empty. All six S3
+prefixes have zero current objects and no versions, delete markers, or pending
+multipart uploads. The existing bucket remains. No Google Cloud machine,
+bucket, or HMAC key was created for this task.
+
+| Attempt | Run name suffix (after `swarmy-bench-`) | Terminated instance IDs |
+| --- | --- | --- |
+| Storage preflight | `45ef9abfc08a421bb0f687ce5c0108d3` | No compute created |
+| 1 | `d7d1da0331b24c98972a4b2043f7fb15` | `i-0bd907e08df00102f`, `i-0f2a494a715f9f397` |
+| 2 | `4c51eadbbc834e74a49d0bee37c8fb8f` | `i-0b2c57fbf8a5ce0e1`, `i-004183d474de32ce0` |
+| 3 | `9eb83331696b4239b45a60cf1a17f16b` | `i-084e8c1ae01dfd5e6`, `i-0451d92f867fe9692` |
+| 4 | `7579ebdf38b044e0ad9b9bdbb0dcc12e` | `i-00eb5b17b4b134603`, `i-0d65a10f025afa4f0` |
+| 5, successful | `caf60e30a7f74d0cb888f181d1a7751d` | `i-0efeed68b7df7755b`, `i-0972f1ca1a1bd81dd` |
+
+The audit ran these provider queries for every run name above. `IsTruncated`
+was false for each empty storage result; the lifecycle controller also audited
+all version pages during cleanup.
+
+```sh
+run_name=swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d
+filters="Name=tag:Name,Values=$run_name Name=tag:managed-by,Values=codex-launcher"
+aws ec2 describe-instances --region us-east-1 --filters $filters \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Type:InstanceType,Image:ImageId}'
+# Both instances: State=terminated (full JSON in the evidence file)
+aws ec2 describe-volumes --region us-east-1 --filters $filters \
+  --query 'Volumes[].{Id:VolumeId,State:State}'
+# []
+aws ec2 describe-key-pairs --region us-east-1 --filters $filters \
+  --query 'KeyPairs[].KeyPairId'
+# []
+aws s3api list-objects-v2 --bucket "$SWARMY_BENCH_BUCKET" \
+  --prefix "$run_name/" --max-keys 1 --no-paginate \
+  --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}'
+# {"KeyCount":0,"IsTruncated":false}
+aws s3api list-object-versions --bucket "$SWARMY_BENCH_BUCKET" \
+  --prefix "$run_name/" --max-keys 1 --no-paginate \
+  --query '{Versions:Versions,DeleteMarkers:DeleteMarkers,IsTruncated:IsTruncated}'
+# {"Versions":null,"DeleteMarkers":null,"IsTruncated":false}
+aws s3api list-multipart-uploads --bucket "$SWARMY_BENCH_BUCKET" \
+  --prefix "$run_name/" --max-uploads 1 --no-paginate \
+  --query '{Uploads:Uploads,IsTruncated:IsTruncated}'
+# {"Uploads":null,"IsTruncated":false}
+gcloud compute instances list --project=swarmy-508717 \
+  --filter='name=(swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3 swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15 swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f swarmy-bench-9eb83331696b4239b45a60cf1a17f16b swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d)' \
+  --format=json
+# []
+```
+
+The final lifecycle cleanup also returned `audit_failures: []`,
+`live_resources: []`, and `retained_versions: []`. Optional Google Cloud
+measurements and statistically meaningful p95 estimates were not attempted.
+All required AWS scenarios and the root test plan were verified.

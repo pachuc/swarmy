@@ -353,6 +353,47 @@ class StorageTests(unittest.TestCase):
         self.assertEqual({item["kind"] for item in result["live_resources"]}, {"gcp_vm", "gcp_disk"})
         self.assertTrue(result["audit_failures"])
 
+class MultiNodeTests(unittest.TestCase):
+    setUp = StorageTests.setUp
+
+    def test_cleanup_discovers_both_nodes_after_lost_creation_response(self):
+        self.state["compute_attempted"] = True
+        terminated = set()
+        def api(service, operation, **args):
+            if operation == "describe-instances":
+                return {"Reservations": [{"Instances": [
+                    {"InstanceId": identifier, "State": {"Name": "terminated" if identifier in terminated else "running"}}
+                    for identifier in ("i-one", "i-two")]}]}
+            if operation == "terminate-instances":
+                terminated.add(args["instance_ids"])
+            return {"KeyPairs": [], "Volumes": []}
+        with patch.object(cloud_vm, "aws", api), patch.object(cloud_vm, "command"):
+            result = cloud.report()
+            cloud_vm.terminate(self.state, self.path, result)
+        self.assertEqual(terminated, {"i-one", "i-two"})
+        self.assertFalse(cloud.failed(result))
+
+    def test_two_nodes_share_run_ownership_and_are_journaled(self):
+        self.state.update(nodes=2, ssh_public_key="/tmp/run.pub")
+        calls = []
+        def api(service, operation, **args):
+            calls.append((operation, args))
+            if operation == "get-parameter":
+                return {"Parameter": {"Value": "ami-stock"}}
+            if operation == "run-instances":
+                return {"Instances": [{"InstanceId": "i-one", "PrivateIpAddress": "10.0.0.1"},
+                                      {"InstanceId": "i-two", "PrivateIpAddress": "10.0.0.2"}]}
+            return {}
+        with patch.dict("os.environ", SWARMY_BENCH_SUBNET="subnet-run", SWARMY_BENCH_SECURITY_GROUP="sg-run"), \
+                patch.object(cloud_vm, "aws", api), patch.object(cloud_vm, "command"):
+            cloud_vm.provision(self.state, self.path, self.path)
+        launch = next(args for op, args in calls if op == "run-instances")
+        self.assertEqual(launch["count"], 2)
+        self.assertEqual(launch["security_group_ids"], "sg-run")
+        self.assertEqual(len(json.loads(self.path.read_text())["instances"]), 2)
+        for resource in json.loads(launch["tag_specifications"]):
+            self.assertIn({"Key": "managed-by", "Value": "codex-launcher"}, resource["Tags"])
+
 
 if __name__ == "__main__":
     unittest.main()
