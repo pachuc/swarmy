@@ -333,15 +333,17 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
         .place(
             f.agent,
             f.nodes[0],
+            // Long enough that the session and volume setup below cannot
+            // outlive the lease on a slow machine; the sleep then expires it.
             Timestamp::now()
-                .checked_add(Duration::from_millis(200))
+                .checked_add(Duration::from_millis(1500))
                 .unwrap(),
         )
         .await
         .unwrap();
     let id = f.session(true).await;
     f.store.agent_volume(id, &old).await.unwrap();
-    sleep(Duration::from_millis(250)).await;
+    sleep(Duration::from_millis(1600)).await;
     f.step(id).await;
     let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(placement.node_id, f.nodes[1]);
