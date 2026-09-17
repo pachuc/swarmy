@@ -165,7 +165,7 @@ impl Default for Settings {
             credential_file: String::new(),
             worker_partitions: "0-255".into(),
             scheduler_partitions: "0-255".into(),
-            scheduler_scan_interval_ms: 1000,
+            scheduler_scan_interval_ms: 5000,
             scheduler_resend_interval_ms: 5000,
             worker_lease_ms: 30000,
             worker_recovery_interval_ms: 5000,

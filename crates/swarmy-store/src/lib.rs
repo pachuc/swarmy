@@ -19,6 +19,7 @@ mod placements;
 mod session_images;
 mod tool_routing;
 mod tools;
+mod turns;
 mod volumes;
 
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
@@ -413,7 +414,7 @@ impl Store {
         expected_head: u64,
         events: &[Event],
     ) -> Result<u64> {
-        self.append_events_inner(id, expected_head, events, None)
+        self.append_events_inner(id, expected_head, events, None, false)
             .await
     }
 
@@ -428,8 +429,33 @@ impl Store {
         lease: &swarmy_core::Lease,
         now: jiff::Timestamp,
     ) -> Result<u64> {
-        self.append_events_inner(id, expected_head, events, Some((lease, now)))
+        self.append_events_inner(id, expected_head, events, Some((lease, now)), false)
             .await
+    }
+
+    /// Append one user message and index Runnable in the same transaction.
+    /// # Errors
+    /// Rejects non-user messages, non-idle sessions, stale heads and append errors.
+    pub async fn append_user_message(
+        &self,
+        id: SessionId,
+        expected_head: u64,
+        message: &swarmy_core::Message,
+    ) -> Result<u64> {
+        if message.role != swarmy_core::MessageRole::User {
+            return Err(StoreError::InvalidState);
+        }
+        self.append_events_inner(
+            id,
+            expected_head,
+            &[Event::MessageAppended {
+                seq: 0,
+                message: message.clone(),
+            }],
+            None,
+            true,
+        )
+        .await
     }
 
     async fn append_events_inner(
@@ -438,6 +464,7 @@ impl Store {
         expected_head: u64,
         events: &[Event],
         fence: Option<(&swarmy_core::Lease, jiff::Timestamp)>,
+        wake: bool,
     ) -> Result<u64> {
         let head = expected_head
             .checked_add(u64::try_from(events.len()).map_err(|_| StoreError::TooLarge)?)
@@ -446,16 +473,7 @@ impl Store {
         let mut size = 0;
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
             let mut event = event.clone();
-            match &mut event {
-                Event::MessageAppended { seq: n, .. }
-                | Event::InferenceRequested { seq: n, .. }
-                | Event::InferenceCompleted { seq: n, .. }
-                | Event::ToolCallRequested { seq: n, .. }
-                | Event::ToolCallCompleted { seq: n, .. }
-                | Event::StateChanged { seq: n, .. }
-                | Event::SnapshotWritten { seq: n, .. }
-                | Event::InferenceFailed { seq: n, .. } => *n = seq,
-            }
+            event.set_seq(seq);
             let key = self.event_space(id).pack(&(seq,));
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
@@ -477,6 +495,9 @@ impl Store {
                         actual: session.head_seq,
                     });
                 }
+                if wake && session.state != SessionState::Idle {
+                    return Err(StoreError::InvalidState);
+                }
                 for (key, value) in prepared {
                     trx.set(key, value);
                 }
@@ -495,7 +516,17 @@ impl Store {
                     }
                 }
                 session.head_seq = head;
-                write(&trx, &self.session_key(id), &session)
+                if wake {
+                    self.transition(
+                        &trx,
+                        session,
+                        SessionState::Runnable,
+                        jiff::Timestamp::now(),
+                    )
+                    .await
+                } else {
+                    write(&trx, &self.session_key(id), &session)
+                }
             }
         })
         .await?;

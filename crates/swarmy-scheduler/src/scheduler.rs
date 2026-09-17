@@ -1,10 +1,8 @@
-use std::{collections::HashMap, time::Instant};
-
 use jiff::Timestamp;
-use swarmy_bus::{Bus, WorkQueue};
-use swarmy_core::{Nudge, SessionId, SessionState, WakeReply, WakeRequest};
+use swarmy_bus::Bus;
+use swarmy_core::{SessionId, SessionState, WakeReply, WakeRequest};
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, runnable_partition};
-use tokio::{sync::Mutex, time::MissedTickBehavior};
+use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
 
@@ -12,17 +10,11 @@ pub struct Scheduler {
     store: Store,
     bus: Bus,
     config: Config,
-    recent: Mutex<HashMap<SessionId, Instant>>,
 }
 
 impl Scheduler {
     pub fn new(store: Store, bus: Bus, config: Config) -> Self {
-        Self {
-            store,
-            bus,
-            config,
-            recent: Mutex::new(HashMap::new()),
-        }
+        Self { store, bus, config }
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
@@ -45,33 +37,27 @@ impl Scheduler {
         if !self.config.partitions.contains(&partition) {
             return;
         }
-        // Serialize publications so a wake and a scan share the resend deadline.
-        // Record only acknowledged publications; a failed send stays retryable.
-        let mut recent = self.recent.lock().await;
-        if !force
-            && recent
-                .get(&session_id)
-                .is_some_and(|sent| sent.elapsed() < self.config.resend_interval)
-        {
-            return;
+        let result = async {
+            let session = self
+                .store
+                .fetch_session(session_id)
+                .await?
+                .ok_or(StoreError::SessionMissing)?;
+            let turn = self.store.turn_id(session_id).await?;
+            self.bus
+                .nudge(
+                    session_id,
+                    session.head_seq,
+                    turn,
+                    self.config.resend_interval,
+                    force,
+                )
+                .await?;
+            Ok::<_, anyhow::Error>(())
         }
-        let turn = self.store.turn_id(session_id).await.ok().flatten();
-        let observation = turn.map(|turn| {
-            swarmy_bus::Bus::turn_event(session_id, turn, swarmy_core::TurnStage::Nudged, None)
-        });
-        match self
-            .bus
-            .publish_work(&WorkQueue::Runnable(partition), &Nudge { session_id })
-            .await
-        {
-            Ok(()) => {
-                if let Some(event) = observation {
-                    self.bus.record_turn(&event).await;
-                }
-                recent.insert(session_id, Instant::now());
-                tracing::info!(%session_id, partition, "nudged runnable session");
-            }
-            Err(error) => tracing::warn!(%session_id, partition, %error, "nudge failed"),
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(%session_id, partition, %error, "nudge failed");
         }
     }
 
@@ -80,10 +66,6 @@ impl Scheduler {
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            self.recent
-                .lock()
-                .await
-                .retain(|_, sent| sent.elapsed() < self.config.resend_interval);
             for &partition in &self.config.partitions {
                 if let Err(error) = self.scan_partition(partition).await {
                     tracing::warn!(partition, %error, "runnable scan failed; will retry");

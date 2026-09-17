@@ -4,13 +4,7 @@ use swarmy_core::{ImageTag, ManifestId, RunnableEntry, SessionId, SessionState, 
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
-pub const RUNNABLE_PARTITIONS: u16 = 256;
-
-/// Stable BLAKE3 partition of the session's 16 ULID bytes.
-#[must_use]
-pub fn runnable_partition(id: SessionId) -> u16 {
-    u16::from(blake3::hash(&id.as_ulid().to_bytes()).as_bytes()[0])
-}
+pub use swarmy_core::{RUNNABLE_PARTITIONS, runnable_partition};
 
 impl Store {
     pub(crate) fn request_turn_key(&self, id: swarmy_core::RequestId) -> Vec<u8> {

@@ -805,14 +805,7 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
     ));
     assert_inference_pending(&test.store, id, request_id, inflight).await;
     completion.expected_head = 0;
-    test.store
-        .complete_inference(&completion, &response)
-        .await
-        .unwrap();
-    test.store
-        .complete_inference(&completion, &response)
-        .await
-        .unwrap();
+    assert_completion_published_once(&test.store, &mut completion, &response).await;
     assert!(
         !test
             .store
@@ -822,6 +815,31 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
     );
     assert_inference_completed(&test.store, id, request_id, response).await;
     test.cleanup().await;
+}
+
+async fn assert_completion_published_once(
+    store: &Store,
+    completion: &mut swarmy_store::InferenceCompletion,
+    response: &str,
+) {
+    assert!(
+        store
+            .complete_inference(completion, &response)
+            .await
+            .unwrap()
+    );
+    completion.expected_head = 123;
+    completion.event = Event::InferenceFailed {
+        seq: 0,
+        request_id: completion.claim.request_id,
+        error: "must not be published".into(),
+    };
+    assert!(
+        !store
+            .complete_inference(completion, &response)
+            .await
+            .unwrap()
+    );
 }
 
 async fn assert_inference_pending(
@@ -1583,6 +1601,8 @@ async fn assert_volume_listing(store: &Store, head: ManifestId) {
 
 #[path = "store/tools.rs"]
 mod tools;
+#[path = "store/turns.rs"]
+mod turns;
 
 #[path = "store/placements.rs"]
 mod placements;

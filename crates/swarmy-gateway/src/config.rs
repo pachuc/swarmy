@@ -18,6 +18,7 @@ pub struct Config {
     pub bus: BusConfig,
     pub class: SubjectToken,
     pub concurrency: usize,
+    pub resend_interval: Duration,
     pub provider: Arc<dyn Provider>,
 }
 
@@ -55,6 +56,7 @@ impl Config {
                 max_deliver: settings.bus_max_deliver,
             },
             class: SubjectToken::new(class)?,
+            resend_interval: Duration::from_millis(settings.scheduler_resend_interval_ms),
             concurrency,
             provider,
         })
@@ -214,7 +216,9 @@ impl Provider for FileFake {
             file.write_all(b"call\n").await?;
             file.sync_data().await?;
             if fail {
-                tokio::time::sleep(latency).await;
+                if !latency.is_zero() {
+                    tokio::time::sleep(latency).await;
+                }
                 Err(swarmy_llm::Error::Protocol("scripted provider failure".into()))?;
             }
             let mut stream = if let Some(script) = request_based {
@@ -225,7 +229,9 @@ impl Provider for FileFake {
                 provider.request(request)
             };
             while let Some(delta) = stream.next().await {
-                tokio::time::sleep(latency).await;
+                if !latency.is_zero() {
+                    tokio::time::sleep(latency).await;
+                }
                 yield delta?;
             }
         })

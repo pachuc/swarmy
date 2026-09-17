@@ -57,6 +57,20 @@ pub enum Event {
 }
 
 impl Event {
+    /// Set the sequence assigned by a successful store append.
+    pub fn set_seq(&mut self, value: u64) {
+        match self {
+            Self::MessageAppended { seq, .. }
+            | Self::InferenceRequested { seq, .. }
+            | Self::InferenceCompleted { seq, .. }
+            | Self::ToolCallRequested { seq, .. }
+            | Self::ToolCallCompleted { seq, .. }
+            | Self::StateChanged { seq, .. }
+            | Self::SnapshotWritten { seq, .. }
+            | Self::InferenceFailed { seq, .. } => *seq = value,
+        }
+    }
+
     #[must_use]
     pub const fn seq(&self) -> u64 {
         match self {

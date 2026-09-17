@@ -24,6 +24,7 @@
 //! # }
 //! ```
 
+mod nudge;
 pub mod subjects;
 mod turn;
 
@@ -224,6 +225,7 @@ impl Config {
 
 #[derive(Clone)]
 pub struct Bus {
+    recent_nudges: nudge::RecentNudges,
     client: async_nats::Client,
     jetstream: jetstream::Context,
     config: Config,
@@ -374,6 +376,7 @@ impl Bus {
         }
         let client = async_nats::connect(url).await.map_err(nats)?;
         Ok(Self {
+            recent_nudges: std::sync::Arc::default(),
             jetstream: jetstream::new(client.clone()),
             client,
             config,

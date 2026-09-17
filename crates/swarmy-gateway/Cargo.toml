@@ -21,6 +21,8 @@ serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
 swarmy-llm.workspace = true
+swarmy-harness.workspace = true
+blake3.workspace = true
 swarmy-store.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -29,6 +31,5 @@ ulid.workspace = true
 
 [dev-dependencies]
 async-nats.workspace = true
-blake3.workspace = true
 foundationdb.workspace = true
 tempfile.workspace = true

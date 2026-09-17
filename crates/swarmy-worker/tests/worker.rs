@@ -507,8 +507,45 @@ async fn competing_workers_claim_each_step_once() {
                     owners.insert(field("owner="));
                 }
             }
-            assert_eq!(claims.len(), 48);
+            // The gateway commits terminal responses and idle together, so
+            // each text turn needs only the inference submission claim.
+            assert_eq!(claims.len(), 24);
             assert_eq!(owners.len(), 2);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
+    run(|f| {
+        Box::pin(async move {
+            f.script(false, "");
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            for index in 0..3 {
+                if index > 0 {
+                    f.user_message(id).await;
+                }
+                f.store.wake_session(id, Timestamp::now()).await.unwrap();
+                let session = f.store.fetch_session(id).await.unwrap().unwrap();
+                f.bus
+                    .nudge(
+                        id,
+                        session.head_seq,
+                        f.store.turn_id(id).await.unwrap(),
+                        Duration::from_secs(60),
+                        false,
+                    )
+                    .await
+                    .unwrap();
+                let events = timeout(Duration::from_secs(5), f.idle(id))
+                    .await
+                    .expect("turn needed a scheduler scan");
+                assert_requests(id, &events, index + 1);
+            }
+            assert_eq!(f.calls(), 3);
         })
     })
     .await;

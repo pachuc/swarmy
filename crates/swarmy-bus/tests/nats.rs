@@ -503,3 +503,33 @@ async fn absent_or_unresponsive_scheduler_is_named_in_request_errors() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases() {
+    use futures_util::StreamExt;
+    use swarmy_core::{Nudge, decode, runnable_partition};
+    run(|f| async move {
+        let id = SessionId::from_ulid(Ulid::generate());
+        let subject = format!("{}.sched.runnable.{}", f.prefix, runnable_partition(id));
+        let mut events = f.admin.subscribe(subject).await.unwrap();
+        f.admin.flush().await.unwrap();
+        let resend = Duration::from_millis(300);
+        f.bus.nudge(id, 1, None, resend, false).await.unwrap();
+        let first = timeout(WAIT, events.next()).await.unwrap().unwrap();
+        assert_eq!(decode::<Nudge>(&first.payload).unwrap().session_id, id);
+        f.bus
+            .clone()
+            .nudge(id, 1, None, resend, false)
+            .await
+            .unwrap();
+        assert!(timeout(resend / 3, events.next()).await.is_err());
+        f.bus.nudge(id, 2, None, resend, false).await.unwrap();
+        timeout(WAIT, events.next()).await.unwrap().unwrap();
+        f.bus.nudge(id, 2, None, resend, true).await.unwrap();
+        timeout(WAIT, events.next()).await.unwrap().unwrap();
+        sleep(resend).await;
+        f.bus.nudge(id, 2, None, resend, false).await.unwrap();
+        timeout(WAIT, events.next()).await.unwrap().unwrap();
+    })
+    .await;
+}

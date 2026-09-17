@@ -13,7 +13,7 @@ use swarmy_llm::InferenceJob;
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition};
 use tokio::{
     sync::Mutex,
-    time::{MissedTickBehavior, interval},
+    time::{Instant, MissedTickBehavior, interval, interval_at},
 };
 use ulid::Ulid;
 
@@ -49,10 +49,9 @@ impl Worker {
 
     pub async fn handle(&self, message: &WorkMessage<Nudge>) -> Result<()> {
         let id = message.value.session_id;
-        let turn = self.store.turn_id(id).await?;
-        let lease = match self
+        let (lease, session, turn) = match self
             .store
-            .claim_lease(
+            .claim_step(
                 id,
                 self.owner,
                 Timestamp::now().checked_add(self.config.lease_duration)?,
@@ -79,7 +78,7 @@ impl Worker {
         self.kill("after_claim");
         let lease = Mutex::new(Some(lease));
         tokio::select! {
-            result = self.step(id, &lease) => result?,
+            result = self.step(session, turn, &lease) => result?,
             result = self.heartbeat(id, &lease, message) => result?,
         }
         message.acknowledge().await?;
@@ -93,7 +92,7 @@ impl Worker {
         message: &WorkMessage<Nudge>,
     ) -> Result<()> {
         let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);
-        let mut ticks = interval(period);
+        let mut ticks = interval_at(Instant::now() + period, period);
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
@@ -140,6 +139,23 @@ impl Worker {
         Ok(())
     }
 
+    async fn publish_tail(&self, id: SessionId, events: &[Event]) -> Result<()> {
+        for event in events {
+            // This session is leased. Historical idle events, including ones
+            // written before the atomic finish API, cannot announce readiness.
+            if !matches!(
+                event,
+                Event::StateChanged {
+                    to: SessionState::Idle,
+                    ..
+                }
+            ) {
+                self.publish_events(id, std::slice::from_ref(event)).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn append(
         &self,
         session: &mut SessionRecord,
@@ -161,21 +177,27 @@ impl Worker {
                 )
                 .await?;
         }
-        // Read assigned sequences from durable storage, also resolving oversized payloads.
-        let appended = self
-            .tail(session.session_id, before, session.head_seq)
-            .await?;
+        let appended: Vec<_> = batch
+            .iter()
+            .cloned()
+            .zip(before + 1..)
+            .map(|(mut event, seq)| {
+                event.set_seq(seq);
+                event
+            })
+            .collect();
         self.publish_events(session.session_id, &appended).await?;
         events.extend(appended);
         Ok(())
     }
 
-    async fn step(&self, id: SessionId, lease: &ActiveLease) -> Result<()> {
-        let mut session = self
-            .store
-            .fetch_session(id)
-            .await?
-            .context("session missing")?;
+    async fn step(
+        &self,
+        mut session: SessionRecord,
+        turn: Option<MessageId>,
+        lease: &ActiveLease,
+    ) -> Result<()> {
+        let id = session.session_id;
         let (snapshot, after) = if let Some(reference) = &session.snapshot_ref {
             (
                 decode::<Snapshot>(&self.blobs.get(&reference.object_key).await?)?,
@@ -187,7 +209,7 @@ impl Worker {
         let mut events = self.tail(id, after, session.head_seq).await?;
         // Replaying the tail also fans out events written by the gateway or a caller,
         // and retries a publication interrupted by the previous worker's death.
-        self.publish_events(id, &events).await?;
+        self.publish_tail(id, &events).await?;
         loop {
             let message_id = fold_id(
                 id,
@@ -203,10 +225,20 @@ impl Worker {
             {
                 Action::BuildInference(request) => {
                     return self
-                        .build_inference(&mut session, lease, &mut events, request)
+                        .build_inference(&mut session, lease, &[], request)
                         .await;
                 }
                 Action::DispatchTools(calls) => {
+                    if calls.iter().all(|call| {
+                        self.config
+                            .harness
+                            .tools
+                            .get(&call.tool)
+                            .is_some_and(swarmy_harness::Tool::sandbox_bound)
+                            && SandboxArguments::parse(&call.tool, call.arguments.clone()).is_ok()
+                    }) {
+                        return self.dispatch_calls(&session, lease, &calls, turn).await;
+                    }
                     let batch: Vec<_> = calls
                         .into_iter()
                         .enumerate()
@@ -224,20 +256,16 @@ impl Worker {
                     self.append(&mut session, lease, &mut events, &batch)
                         .await?;
                     if self
-                        .execute_pending(&mut session, lease, &mut events)
+                        .execute_pending(&mut session, lease, &mut events, turn)
                         .await?
                     {
                         return Ok(());
                     }
                 }
                 Action::FoldResults(message) => {
-                    self.append(
-                        &mut session,
-                        lease,
-                        &mut events,
-                        &[Event::MessageAppended { seq: 0, message }],
-                    )
-                    .await?;
+                    return self
+                        .fold_results(&mut session, lease, &snapshot, &mut events, message)
+                        .await;
                 }
                 Action::Wait => {
                     if let Some(request_id) = pending_inference(&events) {
@@ -246,11 +274,11 @@ impl Worker {
                     }
                     if pending_tools(&events).is_empty() {
                         return self
-                            .finish(&mut session, lease, &snapshot, &mut events)
+                            .finish(&mut session, lease, &snapshot, &mut events, turn)
                             .await;
                     }
                     if self
-                        .execute_pending(&mut session, lease, &mut events)
+                        .execute_pending(&mut session, lease, &mut events, turn)
                         .await?
                     {
                         return Ok(());
@@ -258,24 +286,53 @@ impl Worker {
                 }
                 Action::EndTurn => {
                     return self
-                        .finish(&mut session, lease, &snapshot, &mut events)
+                        .finish(&mut session, lease, &snapshot, &mut events, turn)
                         .await;
                 }
             }
         }
     }
 
+    async fn fold_results(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        message: swarmy_core::Message,
+    ) -> Result<()> {
+        let message_id = message.id;
+        let folded = Event::MessageAppended {
+            seq: session
+                .head_seq
+                .checked_add(1)
+                .context("sequence overflow")?,
+            message,
+        };
+        events.push(folded.clone());
+        let Action::BuildInference(request) = self
+            .config
+            .harness
+            .step(session, snapshot, events, message_id)
+        else {
+            anyhow::bail!("folded tool results did not produce inference");
+        };
+        self.build_inference(session, lease, &[folded], request)
+            .await
+    }
+
     async fn build_inference(
         &self,
         session: &mut SessionRecord,
         lease: &ActiveLease,
-        events: &mut Vec<Event>,
+        preceding: &[Event],
         request: swarmy_llm::Request,
     ) -> Result<()> {
         let id = session.session_id;
         let step = session
             .head_seq
-            .checked_add(1)
+            .checked_add(u64::try_from(preceding.len())?)
+            .and_then(|head| head.checked_add(1))
             .context("sequence overflow")?;
         let job = InferenceJob {
             session_id: id,
@@ -283,31 +340,40 @@ impl Worker {
             request_id: RequestId::for_step(id, step),
             request,
         };
-        {
-            let token = lease.lock().await;
-            self.store
-                .put_inference_input(
-                    id,
+        self.kill("before_release");
+        let event = {
+            let mut token = lease.lock().await;
+            let event = self
+                .store
+                .submit_inference_after(
                     session.head_seq,
                     token.as_ref().context("lease released")?,
-                    Timestamp::now(),
+                    &InflightRecord {
+                        session_id: id,
+                        seq: step,
+                        provider: self.config.provider.clone(),
+                        key_id: String::new(),
+                    },
                     &job,
+                    preceding,
                 )
                 .await?;
-        }
-        self.append(
-            session,
-            lease,
-            events,
-            &[Event::InferenceRequested {
-                seq: 0,
-                request_id: job.request_id,
-                step,
-            }],
-        )
-        .await?;
+            *token = None;
+            event
+        };
+        session.head_seq = event.seq();
+        self.publish_events(id, preceding).await?;
+        self.publish_events(id, std::slice::from_ref(&event))
+            .await?;
         self.kill("after_request_event");
-        self.submit(&job, lease).await
+        self.kill("after_release");
+        self.bus
+            .publish_work(
+                &WorkQueue::Inference(SubjectToken::new(&self.config.provider)?),
+                &job,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn execute_pending(
@@ -315,10 +381,10 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &ActiveLease,
         events: &mut Vec<Event>,
+        turn: Option<MessageId>,
     ) -> Result<bool> {
         let mut jobs = Vec::new();
         let id = session.session_id;
-        let turn = self.store.turn_id(session.session_id).await?;
         for (request_id, call) in pending_tools(events) {
             let result = match self.config.harness.tools.get(&call.tool) {
                 Some(tool) if tool.sandbox_bound() => {
@@ -372,8 +438,52 @@ impl Worker {
         if jobs.is_empty() {
             return Ok(false);
         }
+        self.dispatch_pending(session, lease, jobs, turn).await?;
+        Ok(true)
+    }
+
+    async fn dispatch_calls(
+        &self,
+        session: &SessionRecord,
+        lease: &ActiveLease,
+        calls: &[ToolCallRecord],
+        turn: Option<MessageId>,
+    ) -> Result<()> {
+        let placement =
+            crate::placement::resolve(&self.store, session.agent_id, self.config.placement_lease)
+                .await?;
+        let (events, jobs) = {
+            let mut token = lease.lock().await;
+            let dispatched = self
+                .store
+                .dispatch_tool_calls(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    calls,
+                    &placement,
+                )
+                .await?;
+            *token = None;
+            dispatched
+        };
+        self.kill("after_release");
+        self.publish_events(session.session_id, &events).await?;
+        self.publish_tools(session.session_id, &placement, jobs, turn)
+            .await
+    }
+
+    async fn dispatch_pending(
+        &self,
+        session: &SessionRecord,
+        lease: &ActiveLease,
+        jobs: Vec<ToolJob>,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
         // Resolve before releasing the step, and persist the epoch with the jobs.
-        let placement = self.place(session.session_id).await?;
+        let placement =
+            crate::placement::resolve(&self.store, session.agent_id, self.config.placement_lease)
+                .await?;
         {
             let mut token = lease.lock().await;
             self.store
@@ -387,10 +497,28 @@ impl Worker {
             *token = None;
         }
         self.kill("after_release");
+        self.publish_tools(session.session_id, &placement, jobs, turn)
+            .await
+    }
+
+    async fn publish_tools(
+        &self,
+        id: SessionId,
+        placement: &swarmy_core::PlacementRecord,
+        jobs: Vec<ToolJob>,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
+        // Dispatch already checked the placement and persisted its epoch with
+        // every job. The node checks that fence again before executing. Only
+        // recovery needs to resolve placement and repair a changed epoch.
         for job in jobs {
-            self.route_tool(&job).await?;
+            self.tool_stage(id, turn, TurnStage::ToolDispatched, job.request_id)
+                .await;
+            self.bus
+                .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
+                .await?;
         }
-        Ok(true)
+        Ok(())
     }
 
     async fn tool_stage(
@@ -499,7 +627,6 @@ impl Worker {
         lease: &ActiveLease,
         state: SessionState,
     ) -> Result<()> {
-        let turn = self.store.turn_id(id).await?;
         let mut token = lease.lock().await;
         self.store
             .set_state(
@@ -510,18 +637,6 @@ impl Worker {
             )
             .await?;
         *token = None;
-        if state == SessionState::Idle
-            && let Some(turn) = turn
-        {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    id,
-                    turn,
-                    swarmy_core::TurnStage::Idle,
-                    None,
-                ))
-                .await;
-        }
         Ok(())
     }
 
@@ -531,42 +646,50 @@ impl Worker {
         lease: &ActiveLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
+        turn: Option<MessageId>,
     ) -> Result<()> {
-        let last = self
-            .store
-            .read_events(session.session_id, session.head_seq.saturating_sub(1), 1)
-            .await?;
-        if !matches!(
-            last.last(),
-            Some(Event::StateChanged {
-                to: SessionState::Idle,
-                ..
-            })
-        ) {
-            self.append(
-                session,
-                lease,
-                events,
-                &[Event::StateChanged {
-                    seq: 0,
-                    from: SessionState::Leased,
-                    to: SessionState::Idle,
-                }],
-            )
-            .await?;
-        }
+        let head = session
+            .head_seq
+            .checked_add(1)
+            .context("sequence overflow")?;
+        let idle = Event::StateChanged {
+            seq: head,
+            from: SessionState::Leased,
+            to: SessionState::Idle,
+        };
+        events.push(idle);
         let bytes = encode(&snapshot.replay(events))?;
         let reference = SnapshotRef {
             object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
-            seq: session.head_seq,
+            seq: head,
         };
         self.blobs.put(&reference.object_key, bytes.into()).await?;
-        self.store
-            .write_snapshot(session.session_id, &reference)
-            .await?;
         self.kill("before_release");
-        self.transition(session.session_id, lease, SessionState::Idle)
-            .await
+        let event = {
+            let mut token = lease.lock().await;
+            let event = self
+                .store
+                .finish_turn(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    &reference,
+                )
+                .await?;
+            *token = None;
+            event
+        };
+        if let Some(turn) = turn {
+            self.bus
+                .record_turn(&Bus::turn_event(
+                    session.session_id,
+                    turn,
+                    TurnStage::Idle,
+                    None,
+                ))
+                .await;
+        }
+        self.publish_events(session.session_id, &[event]).await
     }
 
     async fn load_job(&self, id: RequestId) -> Result<InferenceJob> {

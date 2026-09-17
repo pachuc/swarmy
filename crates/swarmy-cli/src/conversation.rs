@@ -5,19 +5,19 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, LiveMessages, SubjectToken};
 use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionRecord,
-    SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply,
+    SessionState, ToolCallId, ToolCallRecord, ToolResult,
 };
 use swarmy_llm::Delta;
 use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
 use ulid::Ulid;
 
 const WAKE_TIMEOUT: Duration = Duration::from_secs(3);
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub enum TranscriptEvent {
@@ -80,7 +80,9 @@ pub struct Conversation {
     deltas_open: bool,
     poll: tokio::time::Interval,
     after: u64,
-    previous_head: Option<u64>,
+    submitted_head: u64,
+    needs_catch_up: bool,
+    resend_interval: Duration,
     state: Option<SessionState>,
     pending: VecDeque<Notification>,
     replay: Replay,
@@ -136,15 +138,20 @@ impl Conversation {
             deltas,
             events_open: true,
             deltas_open: true,
-            poll: tokio::time::interval(POLL_INTERVAL),
+            poll: tokio::time::interval_at(
+                tokio::time::Instant::now() + POLL_INTERVAL,
+                POLL_INTERVAL,
+            ),
             after: 0,
-            previous_head: None,
+            submitted_head: 0,
+            needs_catch_up: false,
+            resend_interval: Duration::from_millis(settings.scheduler_resend_interval_ms),
             state: None,
             pending: VecDeque::new(),
             replay: Replay::default(),
         };
         conversation.catch_up().await?;
-        // A client can exit after appending the message but before the wake ack.
+        // Recover messages appended by clients predating the atomic append/wake.
         if conversation.state == Some(SessionState::Idle) && conversation.replay.pending_user {
             conversation.wake().await?;
         }
@@ -156,32 +163,38 @@ impl Conversation {
         let turn = MessageId::from_ulid(Ulid::generate());
         self.turn = Some(ClientTurn::new(turn));
         self.observe(swarmy_core::TurnStage::Submitted).await;
-        let session = self
-            .store
-            .fetch_session(self.id)
-            .await?
-            .context("session disappeared")?;
         ensure!(
-            session.state == SessionState::Idle,
-            "session is {:?}; wait until idle",
-            session.state
+            self.state == Some(SessionState::Idle),
+            "session is not idle; wait until idle"
         );
-        self.store
-            .append_events(
-                self.id,
-                session.head_seq,
-                &[Event::MessageAppended {
-                    seq: 0,
-                    message: Message {
-                        id: turn,
-                        role: MessageRole::User,
-                        parts: vec![Part::Text { text }],
-                    },
-                }],
-            )
+        let message = Message {
+            id: turn,
+            role: MessageRole::User,
+            parts: vec![Part::Text { text }],
+        };
+        // The idle observation supplies the expected head. The append checks
+        // both that head and the current idle state in the same transaction.
+        let head = self
+            .store
+            .append_user_message(self.id, self.after, &message)
             .await?;
+        self.submitted_head = head;
+        self.reset_readiness();
+        if head == self.after + 1 {
+            self.record(Event::MessageAppended { seq: head, message });
+        } else {
+            self.catch_up().await?;
+        }
         self.observe(swarmy_core::TurnStage::Appended).await;
-        self.wake().await
+        // The durable runnable index already guarantees recovery if NATS is down.
+        if let Err(error) = self
+            .bus
+            .nudge(self.id, head, Some(turn), self.resend_interval, false)
+            .await
+        {
+            tracing::warn!(%error, "message nudge failed; scheduler will recover");
+        }
+        Ok(())
     }
 
     pub fn turn_id(&self) -> Option<MessageId> {
@@ -217,14 +230,31 @@ impl Conversation {
     }
 
     async fn wake(&mut self) -> Result<()> {
-        match self.bus.request_wake(self.id, WAKE_TIMEOUT).await? {
-            WakeReply::Runnable => {}
-            WakeReply::Unchanged(state) => bail!("scheduler did not wake session: {state:?}"),
-            WakeReply::NotFound => bail!("scheduler could not find session {}", self.id),
-            WakeReply::Failed(error) => bail!("scheduler failed to wake session: {error}"),
+        self.store.wake_session(self.id, Timestamp::now()).await?;
+        let session = self
+            .store
+            .fetch_session(self.id)
+            .await?
+            .context("session disappeared")?;
+        self.reset_readiness();
+        if let Err(error) = self
+            .bus
+            .nudge(
+                self.id,
+                session.head_seq,
+                self.store.turn_id(self.id).await?,
+                self.resend_interval,
+                false,
+            )
+            .await
+        {
+            tracing::warn!(%error, "wake nudge failed; scheduler will recover");
         }
-        self.previous_head = None;
-        self.state = None;
+        Ok(())
+    }
+
+    fn reset_readiness(&mut self) {
+        self.state = Some(SessionState::Runnable);
         // An initial Idle observation must not unlock a newly submitted turn.
         self.pending.retain(|event| {
             !matches!(
@@ -233,7 +263,6 @@ impl Conversation {
             )
         });
         self.emit(TranscriptEvent::State(SessionState::Runnable));
-        Ok(())
     }
 
     /// Cancellation is safe: consumed feed data and log pages enter `pending`
@@ -248,6 +277,11 @@ impl Conversation {
                 }
                 return Ok(event);
             }
+            if self.needs_catch_up {
+                self.catch_up().await?;
+                self.needs_catch_up = false;
+                continue;
+            }
             tokio::select! {
                 biased;
                 delta = self.deltas.next(), if self.deltas_open => {
@@ -258,11 +292,20 @@ impl Conversation {
                     }
                 }
                 event = self.events.next(), if self.events_open => {
-                    if event.is_none() { self.events_open = false; }
-                    // Live events are nudges. Only ordered durable events enter history.
-                    self.catch_up().await?;
+                    match event {
+                        Some(Ok(event)) if event.seq() == self.after + 1 => {
+                            let idle = matches!(event, Event::StateChanged { to: SessionState::Idle, .. })
+                                && event.seq() > self.submitted_head;
+                            self.record(event);
+                            if idle { self.idle(); }
+                        }
+                        Some(Ok(event)) if event.seq() > self.after => self.needs_catch_up = true,
+                        Some(Ok(_)) => {}, // A worker can replay an already observed tail.
+                        Some(Err(error)) => self.emit(TranscriptEvent::Error(error.to_string())),
+                        None => self.events_open = false,
+                    }
                 }
-                _ = self.poll.tick() => self.catch_up().await?,
+                _ = self.poll.tick() => self.needs_catch_up = true,
             }
         }
     }
@@ -308,24 +351,35 @@ impl Conversation {
                 .into_iter()
                 .take_while(|event| event.seq() <= session.head_seq)
             {
-                if let Some(event) = self.replay.record(&event) {
-                    self.emit(event);
-                }
-                self.after = event.seq();
-                self.pending.push_back(Notification::Log(event));
+                self.record(event);
             }
         }
-        // A stable head also handles stores that change state without a log event.
-        // Historical Idle events must never finish a later, still-running turn.
-        if self.state != Some(session.state) {
+        if session.state == SessionState::Idle
+            && session.head_seq >= self.submitted_head
+            && !self.replay.pending_user
+        {
+            self.idle();
+        } else if self.state != Some(session.state) {
             self.emit(TranscriptEvent::State(session.state));
             self.state = Some(session.state);
         }
-        if session.state == SessionState::Idle && self.previous_head == Some(session.head_seq) {
+        Ok(())
+    }
+
+    fn record(&mut self, event: Event) {
+        if let Some(transcript) = self.replay.record(&event) {
+            self.emit(transcript);
+        }
+        self.after = event.seq();
+        self.pending.push_back(Notification::Log(event));
+    }
+
+    fn idle(&mut self) {
+        if self.state != Some(SessionState::Idle) {
+            self.state = Some(SessionState::Idle);
+            self.emit(TranscriptEvent::State(SessionState::Idle));
             self.emit(TranscriptEvent::SessionIdle);
         }
-        self.previous_head = Some(session.head_seq);
-        Ok(())
     }
 }
 
@@ -370,6 +424,13 @@ impl Replay {
                 result: result.clone(),
             }),
             Event::InferenceFailed { error, .. } => Some(TranscriptEvent::Error(error.clone())),
+            Event::StateChanged {
+                to: SessionState::Idle,
+                ..
+            } => {
+                self.pending_user = false;
+                None
+            }
             _ => None,
         }
     }

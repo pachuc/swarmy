@@ -8,6 +8,8 @@ use swarmy_core::{
     SessionState, ToolClaim, ToolJob, VolumeId, VolumeRecord,
 };
 
+type PreparedToolRequests = [(Event, Vec<u8>)];
+
 // Keep claims inline even when a command input uses the blob path.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredToolClaim {
@@ -142,7 +144,7 @@ impl Store {
         lease: &Lease,
         jobs: &[ToolJob],
     ) -> Result<()> {
-        self.dispatch_jobs(id, lease, jobs, None).await
+        self.dispatch_jobs(id, lease, jobs, None, None).await
     }
 
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
@@ -155,7 +157,59 @@ impl Store {
         jobs: &[ToolJob],
         placement: &swarmy_core::PlacementRecord,
     ) -> Result<()> {
-        self.dispatch_jobs(id, lease, jobs, Some(placement)).await
+        self.dispatch_jobs(id, lease, jobs, Some(placement), None)
+            .await
+    }
+
+    /// Append sandbox call requests and persist their fenced handoff together.
+    /// # Errors
+    /// Rejects invalid calls, stale heads, worker leases, or placement epochs.
+    pub async fn dispatch_tool_calls(
+        &self,
+        id: SessionId,
+        expected_head: u64,
+        lease: &Lease,
+        calls: &[swarmy_core::ToolCallRecord],
+        placement: &swarmy_core::PlacementRecord,
+    ) -> Result<(Vec<Event>, Vec<ToolJob>)> {
+        let mut events = Vec::with_capacity(calls.len());
+        let mut jobs = Vec::with_capacity(calls.len());
+        let mut size = 0;
+        for (index, call) in calls.iter().enumerate() {
+            let step = expected_head
+                .checked_add(u64::try_from(index).map_err(|_| StoreError::SequenceOverflow)?)
+                .and_then(|head| head.checked_add(1))
+                .ok_or(StoreError::SequenceOverflow)?;
+            let request_id = RequestId::for_step(id, step);
+            let event = Event::ToolCallRequested {
+                seq: step,
+                request_id,
+                call: call.clone(),
+            };
+            let value = self.prepare(&event).await?;
+            size += value.len();
+            if size > crate::MAX_BATCH_BYTES {
+                return Err(StoreError::TooLarge);
+            }
+            events.push((event, value));
+            jobs.push(ToolJob {
+                session_id: id,
+                request_id,
+                step,
+                call_id: call.call_id.clone(),
+                arguments: swarmy_core::SandboxArguments::parse(&call.tool, call.arguments.clone())
+                    .map_err(|_| StoreError::InvalidState)?,
+            });
+        }
+        self.dispatch_jobs(
+            id,
+            lease,
+            &jobs,
+            Some(placement),
+            Some((expected_head, &events)),
+        )
+        .await?;
+        Ok((events.into_iter().map(|(event, _)| event).collect(), jobs))
     }
 
     async fn dispatch_jobs(
@@ -164,6 +218,7 @@ impl Store {
         lease: &Lease,
         jobs: &[ToolJob],
         placement: Option<&swarmy_core::PlacementRecord>,
+        append: Option<(u64, &PreparedToolRequests)>,
     ) -> Result<()> {
         let mut values = Vec::new();
         for job in jobs {
@@ -176,6 +231,10 @@ impl Store {
                     .await?;
                 if jobs.is_empty() {
                     return Err(StoreError::InvalidState);
+                }
+                if let Some((expected_head, events)) = append {
+                    self.append_tool_requests(&trx, id, expected_head, events)
+                        .await?;
                 }
                 if let Some(placement) = placement {
                     self.check_live_placement(&trx, placement).await?;
@@ -231,6 +290,37 @@ impl Store {
             }
         })
         .await
+    }
+
+    async fn append_tool_requests(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        expected_head: u64,
+        events: &PreparedToolRequests,
+    ) -> Result<()> {
+        let mut session = self.session(trx, id).await?;
+        if session.head_seq != expected_head {
+            return Err(StoreError::StaleSequence {
+                expected: expected_head,
+                actual: session.head_seq,
+            });
+        }
+        let turn = read::<swarmy_core::MessageId>(trx, &self.turn_key(id)).await?;
+        for (event, value) in events {
+            let Event::ToolCallRequested {
+                seq, request_id, ..
+            } = event
+            else {
+                return Err(StoreError::InvalidState);
+            };
+            trx.set(&self.event_space(id).pack(&(*seq,)), value);
+            if let Some(turn) = turn {
+                write(trx, &self.request_turn_key(*request_id), &turn)?;
+            }
+            session.head_seq = *seq;
+        }
+        write(trx, &self.session_key(id), &session)
     }
 
     /// # Errors

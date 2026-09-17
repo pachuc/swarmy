@@ -16,9 +16,16 @@ pub fn spawn(
     store: &Store,
     node: NodeId,
     hosting: &Arc<crate::hosting::Hosting>,
-    ack_wait: Duration,
+    settings: &swarmy_config::Settings,
 ) -> tokio::task::JoinHandle<Result<()>> {
-    tokio::spawn(serve(bus, store.clone(), node, hosting.clone(), ack_wait))
+    tokio::spawn(serve(
+        bus,
+        store.clone(),
+        node,
+        hosting.clone(),
+        Duration::from_millis(settings.bus_ack_wait_ms),
+        Duration::from_millis(settings.scheduler_resend_interval_ms),
+    ))
 }
 
 async fn serve(
@@ -27,6 +34,7 @@ async fn serve(
     node: NodeId,
     hosting: Arc<crate::hosting::Hosting>,
     ack_wait: Duration,
+    resend_interval: Duration,
 ) -> Result<()> {
     let queue = WorkQueue::NodeTools(node);
     bus.setup(std::slice::from_ref(&queue)).await?;
@@ -57,6 +65,12 @@ async fn serve(
                                     swarmy_core::TurnStage::ToolCompleted,
                                     Some(message.value.request_id))).await;
                             }
+                            if let Some(session) = store.fetch_session(message.value.session_id).await?
+                                && session.state == swarmy_core::SessionState::Runnable
+                                && let Err(error) = bus.nudge(session.session_id, session.head_seq, turn, resend_interval, false).await
+                            {
+                                tracing::warn!(%error, "tool completion nudge failed; scheduler will recover");
+                            }
                             message.acknowledge().await?;
                         }
                         Err(error) => {
@@ -81,10 +95,8 @@ pub async fn execute(
     if store.tool_completed(job.request_id).await? {
         return Ok(());
     }
-    store
-        .validate_placement(placement)
-        .await
-        .context("placement lease lost before execution")?;
+    // claim_placed_tool checks the live placement and dispatch epoch in the
+    // same transaction as the claim; a separate validation could race anyway.
     let claim = PlacedToolClaim {
         job,
         owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
