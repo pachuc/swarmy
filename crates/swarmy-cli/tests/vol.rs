@@ -240,7 +240,9 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     assert!(stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded);
     assert!(stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE));
     assert!(stats.device_total.dirty_lock_wait > Duration::ZERO);
-    assert!(stats.frozen > Duration::ZERO);
+    assert_eq!(stats.frozen, Duration::ZERO);
+    assert_eq!(stats.freeze_wait, Duration::ZERO);
+    assert_eq!(stats.frozen_chunks_uploaded, 0);
     assert!(stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded);
     assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
     fixture.json(&fixture.node_a, &["detach", volume]);
@@ -248,6 +250,20 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     let mut node_b = fixture.attach(&fixture.node_b, volume, "b");
     assert_eq!(node_b.read("durable"), b"committed on A");
     eprintln!("acceptance 1 passed: durable data moved from node A to node B");
+    let frozen = fixture.json(
+        &fixture.node_b,
+        &[
+            "flush",
+            volume,
+            "--mount",
+            node_b.mount.to_str().unwrap(),
+            "--freeze",
+        ],
+    );
+    let stats: swarmy_volume::FlushResult = serde_json::from_value(frozen).unwrap();
+    assert!(stats.frozen > Duration::ZERO);
+    assert!(stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded);
+    assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
     let snapshot = fixture.json(&fixture.node_b, &["checkpoint", volume]);
     assert_ne!(snapshot["manifest_id"], flushed["manifest_id"]);
     let cloned = fixture.json(&fixture.node_a, &["clone", volume]);
