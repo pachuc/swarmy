@@ -5,10 +5,11 @@ EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
 NATS, SeaweedFS, and swarmyd under systemd. The local machine needs `ssh`,
 `ssh-keygen`, and `rsync`. AWS credentials use the SDK's standard credential chain.
 The subnet must provide outbound internet access and the security group must
-allow SSH from your machine and TCP between group members. New remotes advertise
-the first node's private address. Backing services listen on all interfaces so
-both loopback and private-network clients can connect; restrict ingress to the
-security group and do not expose these development services to the internet.
+allow SSH from your machine and between group members. All backing services
+bind to loopback. FoundationDB advertises `127.0.0.1:4500`, and every client,
+including each joining node, reaches that endpoint through its own SSH tunnel.
+Clients need no route to private service ports. No database ports need inbound
+security group rules.
 
 Add this to the discovered `.swarmy/config.toml` (or user configuration file):
 
@@ -36,6 +37,8 @@ swarmy remote up demo
 # up prints an SSH command and its elapsed time
 swarmy remote add-node demo
 swarmy remote connect demo
+# connect reports total, address probing, and tunnel startup seconds
+swarmy doctor --remote demo
 swarmy dev up --remote demo
 swarmy remote status
 swarmy dev down
@@ -74,10 +77,17 @@ and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
 `cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP` on the first
-node. Joining nodes run only swarmyd, with no backing-services unit dependency;
-rerun their provisioning with `node FIRST_NODE_PRIVATE_IP` instead. Their cluster
-file is copied from the first node, preserving its cluster identity and private
-coordinator address. The scheduler, gateway, worker,
+node. Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
+provisioning with `node FIRST_NODE_PRIVATE_IP` instead. Their cluster file is
+copied from the first node, preserving its cluster identity and loopback
+coordinator address. `add-node` generates a dedicated tunnel key on the joining
+node and authorizes it for service forwards on the first node. It pins the first
+node's host key using the authenticated provisioning connection. The key permits
+no interactive shell. The tunnel forwards local ports 4500, 4222, and 8333 to
+the same loopback ports on the first node. It starts before swarmyd and restarts
+automatically after SSH failure. Inspect it with
+`sudo journalctl -u swarmy-tunnel`. Its identity and pinned host key are stored
+under `/etc/swarmy/`, readable only by the SSH user. The scheduler, gateway, worker,
 and CLI release binaries are also installed in `/usr/local/bin`.
 
 The local NVMe mount persists across reboot. Instance stop/start can discard
@@ -89,5 +99,33 @@ the first node still loses this development stack. For a recovery exercise,
 place a computer on a joining node and terminate that node while the first node
 remains running. `status` lists every saved instance and the stack's live and
 stale swarmyd registrations. The laptop tunnel forwards to the first node's
-private address and keeps local FoundationDB port 4500; stop any local dev stack
-before connecting.
+loopback address and keeps local FoundationDB port 4500; stop any local dev stack
+before connecting. Remotes created with private FoundationDB advertising must
+be recreated with this version before using `add-node`.
+
+Doctor checks the control master and port mapping, then runs a bounded session
+read transaction through the profile's FoundationDB cluster file and a NATS
+publish/subscribe round trip through its NATS URL. A working SSH connection or
+TCP listener alone does not pass these checks. The database probe times out
+after eight seconds and NATS after five seconds. S3 is still a TCP check.
+
+Connect's JSON preserves the profile fields and adds `timing` with
+`elapsed_seconds`, `address_probe_seconds`, `tunnel_startup_seconds`, and
+`reused`. Total time includes local setup and profile publication. Startup
+includes port allocation, SSH readiness, and fetching the cluster identity.
+Reusing a healthy control master reports `reused: true` and zero for the two
+skipped phases.
+
+For a proof from a launcher in the same VPC, block direct access before running
+the workflow as the ordinary user. Keep SSH port 22 allowed. For example:
+
+```sh
+sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
+  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+# Run up/connect/doctor/run/chat/checkpoint/add-node/recovery/down as ubuntu.
+sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
+  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+```
+
+Record the block, failed direct probes, successful doctor transactions, and
+provider teardown queries with the run. Remove the rule even after a failure.

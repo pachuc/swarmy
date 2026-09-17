@@ -32,6 +32,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Bounded database probe used by doctor without linking its front end to `libfdb_c`.
+    #[command(hide = true)]
+    DoctorFdb,
     Remote {
         #[command(subcommand)]
         command: remote_command::Command,
@@ -78,6 +81,10 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::DoctorFdb => {
+                conversation::store().await?.list_sessions(None, 1).await?;
+                Ok(())
+            }
             Command::Remote {
                 command: remote_command::Command::Status,
             } => remote_status::run(cli.json).await,

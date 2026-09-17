@@ -103,7 +103,7 @@ fn validates_chatgpt_credentials_without_printing_secrets() {
 }
 
 #[test]
-fn finds_home_tools_and_checks_configured_ports() {
+fn finds_home_tools_but_tcp_listeners_do_not_prove_service_usability() {
     let fixture = Fixture::new();
     let bin = fixture.0.path().join(".local/bin");
     fs::create_dir_all(&bin).unwrap();
@@ -143,8 +143,9 @@ fn finds_home_tools_and_checks_configured_ports() {
                 .contains("test-version")
         );
     }
-    for name in ["dev stack FoundationDB", "dev stack NATS", "dev stack S3"] {
-        assert_eq!(check(&report, name)["ok"], true);
+    assert_eq!(check(&report, "dev stack S3")["ok"], true);
+    for name in ["dev stack FoundationDB", "dev stack NATS"] {
+        assert_eq!(check(&report, name)["ok"], false);
     }
     drop((fdb, nats, s3));
     let output = fixture.doctor(true);
@@ -186,4 +187,91 @@ fn doctor_starts_even_when_the_client_library_cannot_load() {
             .contains("scripts/install-dev-tools.sh")
     );
     assert_eq!(check(&report, "config")["ok"], true);
+}
+
+fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
+    let fixture = Fixture::new();
+    fixture.config("provider = 'fake'");
+    let remote = fixture.0.path().join(".swarmy/remote");
+    fs::create_dir_all(&remote).unwrap();
+    let cluster_path = remote.join("test.cluster");
+    fs::write(&cluster_path, cluster).unwrap();
+    let profile = swarmy_config::RemoteProfile {
+        name: "test".into(),
+        socket_path: remote.join("socket"),
+        pid: 123,
+        ports: swarmy_config::RemotePorts::default(),
+        remote_ports: swarmy_config::RemotePorts::default(),
+        fdb_cluster_file: cluster_path,
+        nats_url: nats_url.into(),
+        s3_endpoint: "http://127.0.0.1:8333".into(),
+    };
+    fs::write(
+        remote.join("test.profile.json"),
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+    let bin = fixture.0.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(bin.join("ssh"), "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+    fixture
+}
+
+#[test]
+fn remote_doctor_rejects_unusable_database_even_with_healthy_tunnel_and_open_port() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let fixture = remote_fixture(
+        &format!("test:test@{}", listener.local_addr().unwrap()),
+        "nats://127.0.0.1:1",
+    );
+    let output = fixture
+        .command(true)
+        .args(["--remote", "test"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(check(&report, "remote tunnel")["ok"], true);
+    assert_eq!(check(&report, "remote FoundationDB")["ok"], false);
+    assert!(
+        check(&report, "remote FoundationDB")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("transaction")
+    );
+}
+
+#[test]
+fn remote_doctor_proves_real_database_and_nats_through_profile() {
+    let (Ok(cluster_path), Ok(nats_url)) = (
+        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
+        std::env::var("SWARMY_NATS_URL"),
+    ) else {
+        eprintln!("Skipping real doctor probes: start dev stack and source .dev/env");
+        return;
+    };
+    let fixture = remote_fixture(&fs::read_to_string(cluster_path).unwrap(), &nats_url);
+    let output = fixture
+        .command(true)
+        .args(["--remote", "test"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.status.success(), "{report}");
+    for name in ["remote tunnel", "remote FoundationDB", "remote NATS"] {
+        assert_eq!(check(&report, name)["ok"], true, "{report}");
+    }
+    assert!(
+        check(&report, "remote FoundationDB")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("transaction succeeded")
+    );
+    assert!(
+        check(&report, "remote NATS")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("round trip succeeded")
+    );
 }

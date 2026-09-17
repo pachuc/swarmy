@@ -184,17 +184,15 @@ impl Ssh {
         let mode = if let Some(primary) = primary {
             let source = wait_ssh(primary).await?;
             let cluster = base(primary)?
-                .arg(source)
+                .arg(&source)
                 .arg("cat swarmy/.dev/fdb.cluster")
                 .output()
                 .await?;
             ensure!(cluster.status.success(), "read primary cluster file failed");
             let cluster = String::from_utf8(cluster.stdout)?;
             ensure!(
-                cluster
-                    .trim()
-                    .ends_with(&format!("@{service_ip}:{}", primary.ports.fdb)),
-                "primary cluster file does not advertise its private address; recreate this remote"
+                cluster.trim().ends_with("@127.0.0.1:4500"),
+                "primary cluster file does not advertise loopback port 4500; recreate this remote"
             );
             checked(
                 base(node)?.arg(&address).arg(format!(
@@ -204,6 +202,7 @@ impl Ssh {
                 "copy primary cluster file",
             )
             .await?;
+            install_tunnel(node, &address, primary, &source).await?;
             "node"
         } else {
             "stack"
@@ -218,6 +217,65 @@ impl Ssh {
         .await?;
         Ok(address)
     }
+}
+
+// Generate the forwarding key on its owner; the primary login key never leaves the client.
+async fn install_tunnel(
+    node: &RemoteNode,
+    address: &str,
+    primary: &RemoteNode,
+    source: &str,
+) -> Result<()> {
+    let output = base(node)?.arg(address).arg(
+        "umask 077; mkdir -p swarmy/.swarmy; test -f swarmy/.swarmy/tunnel-key || ssh-keygen -q -t ed25519 -N '' -f swarmy/.swarmy/tunnel-key; cat swarmy/.swarmy/tunnel-key.pub",
+    ).output().await?;
+    ensure!(
+        output.status.success(),
+        "generate joining node tunnel key failed"
+    );
+    let key = String::from_utf8(output.stdout)?;
+    let authorization = tunnel_authorization(&key)?;
+    checked(base(primary)?.arg(source).arg(format!(
+        "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && (grep -qxF -- {0} ~/.ssh/authorized_keys || printf '%s\\n' {0} >> ~/.ssh/authorized_keys)",
+        shell_words::quote(&authorization)
+    )), "authorize joining node tunnel").await?;
+    // Obtain the host key over the already authenticated provisioning connection.
+    let host_key = base(primary)?
+        .arg(source)
+        .arg("cat /etc/ssh/ssh_host_ed25519_key.pub")
+        .output()
+        .await?;
+    ensure!(
+        host_key.status.success(),
+        "read primary SSH host key failed"
+    );
+    let host_key = String::from_utf8(host_key.stdout)?;
+    let known_host = format!("{} {}", primary.private_ip, host_key.trim());
+    checked(
+        base(node)?.arg(address).arg(format!(
+            "umask 077; printf '%s\\n' {} > swarmy/.swarmy/tunnel-known-hosts",
+            shell_words::quote(&known_host)
+        )),
+        "pin primary SSH host key",
+    )
+    .await
+}
+
+fn tunnel_authorization(key: &str) -> Result<String> {
+    let fields: Vec<_> = key.split_whitespace().collect();
+    ensure!(
+        fields.len() >= 2
+            && fields[0] == "ssh-ed25519"
+            && fields[1]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte)),
+        "invalid joining node public key"
+    );
+    // Limit destination access, and disable shell, agent, X11, and PTY sessions.
+    Ok(format!(
+        "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4500\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8333\" ssh-ed25519 {}",
+        fields[1]
+    ))
 }
 
 async fn wait_ssh(node: &RemoteNode) -> Result<String> {
@@ -245,4 +303,27 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
     bail!("timed out waiting for SSH on both instance addresses")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tunnel_authorization;
+
+    #[test]
+    fn tunnel_key_authorization_restricts_sessions_and_destinations() {
+        let entry = tunnel_authorization("ssh-ed25519 AAAA+/= arbitrary comment\n").unwrap();
+        assert!(entry.starts_with("restrict,port-forwarding,command=\"/bin/false\","));
+        for port in [4500, 4222, 8333] {
+            assert!(entry.contains(&format!("permitopen=\"127.0.0.1:{port}\"")));
+        }
+        assert!(entry.ends_with(" ssh-ed25519 AAAA+/="));
+        for key in [
+            "",
+            "ssh-rsa AAAA",
+            "ssh-ed25519 AAAA;command",
+            "ssh-ed25519 'AAAA'",
+        ] {
+            assert!(tunnel_authorization(key).is_err());
+        }
+    }
 }

@@ -1,0 +1,224 @@
+[
+  {
+    "tool_call_completed": {
+      "seq": 5,
+      "request_id": [
+        252,
+        101,
+        76,
+        93,
+        182,
+        12,
+        184,
+        160,
+        223,
+        12,
+        93,
+        229,
+        102,
+        198,
+        33,
+        94,
+        250,
+        206,
+        8,
+        238,
+        29,
+        228,
+        254,
+        67,
+        60,
+        11,
+        78,
+        149,
+        31,
+        88,
+        13,
+        177
+      ],
+      "call_id": "proof-0",
+      "result": {
+        "completed": {
+          "output": "{\"exit_code\":0,\"manifest_id\":\"01M2PEN2HQFZNB6S82170HQ2JN\",\"stderr\":\"\",\"stdout\":\"durable\",\"timed_out\":false}",
+          "title": "bash",
+          "metadata": {
+            "exit_code": 0,
+            "manifest_id": "01M2PEN2HQFZNB6S82170HQ2JN",
+            "stderr": "",
+            "stdout": "durable",
+            "timed_out": false
+          }
+        }
+      }
+    }
+  },
+  {
+    "tool_call_completed": {
+      "seq": 10,
+      "request_id": [
+        11,
+        108,
+        86,
+        65,
+        253,
+        108,
+        62,
+        191,
+        80,
+        231,
+        41,
+        44,
+        227,
+        4,
+        23,
+        32,
+        249,
+        63,
+        80,
+        26,
+        164,
+        18,
+        93,
+        192,
+        155,
+        76,
+        16,
+        167,
+        85,
+        208,
+        82,
+        49
+      ],
+      "call_id": "proof-1",
+      "result": {
+        "completed": {
+          "output": "{\"manifest_id\":\"01M2PG1EKV5S2KJ56J0KC5EAN0\"}",
+          "title": "checkpoint",
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "tool_call_completed": {
+      "seq": 15,
+      "request_id": [
+        225,
+        73,
+        154,
+        44,
+        147,
+        62,
+        89,
+        86,
+        62,
+        60,
+        72,
+        170,
+        107,
+        128,
+        89,
+        71,
+        96,
+        195,
+        130,
+        235,
+        91,
+        171,
+        20,
+        242,
+        202,
+        51,
+        245,
+        157,
+        122,
+        121,
+        58,
+        169
+      ],
+      "call_id": "proof-2",
+      "result": {
+        "completed": {
+          "output": "{\"exit_code\":0,\"manifest_id\":\"01M2PG1EKV5S2KJ56J0KC5EAN0\",\"stderr\":\"\",\"stdout\":\"\",\"timed_out\":false}",
+          "title": "bash",
+          "metadata": {
+            "exit_code": 0,
+            "manifest_id": "01M2PG1EKV5S2KJ56J0KC5EAN0",
+            "stderr": "",
+            "stdout": "",
+            "timed_out": false
+          }
+        }
+      }
+    }
+  },
+  {
+    "message_appended": {
+      "seq": 24,
+      "message": {
+        "id": "01M2PG6JP5Q0T834TCBSW5SZZZ",
+        "role": "system",
+        "parts": [
+          {
+            "text": {
+              "text": "Your computer was rebuilt from the snapshot at 2026-09-17T01:35:01.243Z, which was 168 seconds before the failure. Running processes and file changes after that snapshot were lost. The interrupted tool call failed; check external side effects before retrying."
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "tool_call_completed": {
+      "seq": 25,
+      "request_id": [
+        16,
+        172,
+        31,
+        237,
+        28,
+        38,
+        118,
+        37,
+        115,
+        224,
+        245,
+        70,
+        29,
+        108,
+        101,
+        182,
+        83,
+        91,
+        52,
+        188,
+        118,
+        220,
+        163,
+        115,
+        105,
+        193,
+        24,
+        66,
+        133,
+        205,
+        99,
+        179
+      ],
+      "call_id": "proof-4",
+      "result": {
+        "completed": {
+          "output": "{\"exit_code\":0,\"manifest_id\":\"01M2PG1EKV5S2KJ56J0KC5EAN0\",\"stderr\":\"\",\"stdout\":\"RECOVERED-FILES\\n\",\"timed_out\":false}",
+          "title": "bash",
+          "metadata": {
+            "exit_code": 0,
+            "manifest_id": "01M2PG1EKV5S2KJ56J0KC5EAN0",
+            "stderr": "",
+            "stdout": "RECOVERED-FILES\n",
+            "timed_out": false
+          }
+        }
+      }
+    }
+  }
+]

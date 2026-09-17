@@ -9,7 +9,14 @@ service_address=${2:-127.0.0.1}
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 stack_dependency=''
-if [[ $mode == stack ]]; then stack_dependency='swarmy-stack.service'; fi
+if [[ $mode == stack ]]; then
+    stack_dependency='swarmy-stack.service'
+    dependency_kind=Requires
+else
+    stack_dependency='swarmy-tunnel.service'
+    # Keep swarmyd running across tunnel reconnects; its clients reconnect too.
+    dependency_kind=Wants
+fi
 export DEBIAN_FRONTEND=noninteractive
 sudo cloud-init status --wait
 sudo apt-get update
@@ -85,8 +92,8 @@ sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
 sudo tee /etc/swarmy/node.env >/dev/null <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
-SWARMY_NATS_URL=nats://$service_address:4222
-SWARMY_S3_ENDPOINT=http://$service_address:8333
+SWARMY_NATS_URL=nats://127.0.0.1:4222
+SWARMY_S3_ENDPOINT=http://127.0.0.1:8333
 SWARMY_S3_ACCESS_KEY=swarmy-dev
 SWARMY_S3_SECRET_KEY=swarmy-dev-secret
 SWARMY_S3_BUCKET=swarmy
@@ -114,10 +121,32 @@ Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
 # systemd owns these processes, so stale state from an interrupted boot is safe to clear.
 ExecStartPre=/usr/bin/rm -f $repo_dir/.dev/fdb.pid $repo_dir/.dev/nats.pid $repo_dir/.dev/seaweed.pid
 ExecStartPre=-/usr/bin/rmdir $repo_dir/.dev/lock
-ExecStart=/bin/bash $repo_dir/scripts/dev-stack.sh start $service_address
+ExecStart=/bin/bash $repo_dir/scripts/dev-stack.sh start
 ExecStop=/bin/bash $repo_dir/scripts/dev-stack.sh stop
 TimeoutStartSec=300
 TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+else
+[[ -s .swarmy/tunnel-key && -s .swarmy/tunnel-known-hosts ]] || { echo 'Missing add-node tunnel identity' >&2; exit 1; }
+sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
+sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
+sudo tee /etc/systemd/system/swarmy-tunnel.service >/dev/null <<UNIT
+[Unit]
+Description=Swarmy tunnel to first node backing services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ubuntu
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8333:127.0.0.1:8333 ubuntu@$service_address
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+Restart=always
+RestartSec=5
+TimeoutStartSec=40
 
 [Install]
 WantedBy=multi-user.target
@@ -126,7 +155,7 @@ fi
 sudo tee /etc/systemd/system/swarmyd.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy node agent
-Requires=$stack_dependency
+$dependency_kind=$stack_dependency
 After=network-online.target $stack_dependency systemd-modules-load.service
 Wants=network-online.target
 RequiresMountsFor=$local_mount
@@ -147,6 +176,8 @@ if [[ $mode == stack ]]; then
     sudo systemctl enable --now swarmy-stack.service
 else
     [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
+    sudo systemctl enable swarmy-tunnel.service
+    sudo systemctl restart swarmy-tunnel.service
 fi
 sudo systemctl enable swarmyd.service
 sudo systemctl restart swarmyd.service

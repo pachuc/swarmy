@@ -1,0 +1,24 @@
+{
+  "queried_at": "2026-09-17T01:42:04.244544+00:00",
+  "region": "us-east-1",
+  "instances": [
+    {
+      "instance_id": "i-0d42743c23ae24147",
+      "state": "terminated"
+    },
+    {
+      "instance_id": "i-00abb3ca6ed0c7cd2",
+      "state": "terminated"
+    }
+  ],
+  "volumes": [],
+  "key_pairs": [],
+  "queried_volume_ids": [
+    "vol-02e693d459316a870",
+    "vol-0718b273e1fe729af"
+  ],
+  "queried_key_names": [
+    "swarmy-01M2PEHVB3MKE0E1V4KDPF3KYG",
+    "swarmy-01M2PE1T31DV76FGE8A6PBE5TZ"
+  ]
+}
