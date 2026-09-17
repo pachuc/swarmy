@@ -10,7 +10,8 @@ work in Bash and fish without sourcing an environment file.
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
 ./target/debug/swarmy dev up
 ./target/debug/swarmy doctor
-./target/debug/swarmy run "hello"
+sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
+./target/debug/swarmy run --image base-ubuntu:dev "hello"
 ./target/debug/swarmy dev status
 ./target/debug/swarmy dev down
 ```
@@ -63,6 +64,7 @@ store_directory = "swarmy"
 bus_prefix = ""
 provider = "fake"
 model = "gpt-5"
+default_image = "base-ubuntu:dev"
 reasoning_effort = "medium"
 credential_file = "/home/me/.swarmy/auth.json"
 worker_partitions = "0-255"
@@ -72,6 +74,15 @@ scheduler_partitions = "0-255"
 script = ".swarmy/dev/fake.json"
 call_log = ".swarmy/dev/calls.log"
 ```
+
+Every new session needs a registered image, including sessions that only use
+remote tools. Set `default_image = "NAME:TAG"` or `SWARMY_DEFAULT_IMAGE`, or pass
+`--image NAME:TAG` to `swarmy run` or `swarmy chat`. The flag overrides the
+setting, which has no built-in default. Unknown images fail before a session is
+created and the error lists registered images; `swarmy image ls` also lists them.
+Image construction requires root. The computer is materialized on first sandbox
+tool use, so a fake-provider conversation without sandbox tools needs no node.
+Resuming an existing session keeps its pinned image.
 
 The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
 `s3_access_key`, `s3_secret_key`, `s3_bucket`, `s3_prefix`, and `s3_region`.
@@ -450,9 +461,10 @@ swarmy run --remote demo --image base-ubuntu:remote 'Say ready and wait for my n
 swarmy chat --remote demo SESSION_ID
 ```
 
-Starting `swarmy chat` without that session id creates or selects a session;
-a new chat has no image selector and cannot execute sandbox tools. In the
-resumed session, ask the agent to use `process_start` to run
+Starting `swarmy chat` without that session id creates or selects a session.
+Use `swarmy chat --remote demo --image base-ubuntu:remote` for a new chat, or set
+`default_image = "base-ubuntu:remote"` in the laptop configuration. In the
+session, ask the agent to use `process_start` to run
 `python3 -u -m http.server 18765 --bind 127.0.0.1`. In the next turn ask it to
 fetch `http://127.0.0.1:18765/` with `bash` and verify the server is still listed
 by `process_list`. Then ask it to write a marker file and call `checkpoint`.

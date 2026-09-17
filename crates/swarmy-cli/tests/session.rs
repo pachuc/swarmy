@@ -1,3 +1,6 @@
+#[path = "../../swarmy-store/tests/support/mod.rs"]
+mod image_fixture;
+
 #[path = "session/chat.rs"]
 mod chat;
 
@@ -49,6 +52,7 @@ impl Fixture {
             .env("SWARMY_NATS_URL", &self.url)
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
             .env("SWARMY_BUS_PREFIX", &self.prefix)
+            .env("SWARMY_DEFAULT_IMAGE", "fixture:test")
             .env("TOKIO_WORKER_THREADS", "2")
             .stdin(Stdio::null())
             .kill_on_drop(true);
@@ -111,6 +115,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         prefix,
         url,
     };
+    image_fixture::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;
     fixture.cleanup().await;
     if let Err(panic) = result {
@@ -134,6 +139,14 @@ fn assistant() -> Event {
 async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
     let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(
+        fixture.store.session_image(id).await.unwrap(),
+        fixture
+            .store
+            .get_image("fixture", &swarmy_core::ImageTag("test".into()))
+            .await
+            .unwrap()
+    );
     let prompt = fixture.store.read_events(id, 0, 1).await.unwrap();
     assert!(matches!(&prompt[0], Event::MessageAppended { message, .. }
         if message.role == MessageRole::User && message.parts == [Part::Text { text: "hello".into() }]));
@@ -309,7 +322,11 @@ async fn run_streams_standin_answer_and_tools_then_show_and_list_paginate() {
             record.head_seq = 0;
             fixture
                 .store
-                .create_session(&record, Timestamp::now())
+                .create_session(
+                    &record,
+                    Timestamp::now(),
+                    image_fixture::image(&fixture.store).await,
+                )
                 .await
                 .unwrap();
         }
@@ -533,6 +550,74 @@ async fn text_is_flushed_before_the_turn_finishes() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stdout, b"answer\n");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn run_requires_default_image_and_explicit_image_overrides_it() {
+    run(|fixture| async move {
+        let missing = fixture
+            .command(&["run", "hello"])
+            .env("SWARMY_DEFAULT_IMAGE", "")
+            .output()
+            .await
+            .unwrap();
+        assert!(!missing.status.success());
+        let error = String::from_utf8_lossy(&missing.stderr);
+        assert!(
+            error.contains("default_image") && error.contains("SWARMY_DEFAULT_IMAGE"),
+            "{error}"
+        );
+        assert!(
+            fixture
+                .store
+                .list_sessions(None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let server = serve(&fixture, true).await;
+        let output = timeout(
+            WAIT,
+            fixture
+                .command(&["run", "hello", "--image", "fixture:test"])
+                .env("SWARMY_DEFAULT_IMAGE", "unregistered:default")
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.abort();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn run_rejects_unknown_images_before_creating_a_session() {
+    run(|fixture| async move {
+        let output = fixture
+            .output(&["run", "hello", "--image", "missing:tag"])
+            .await;
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("missing:tag") && error.contains("registered images: fixture:test"),
+            "{error}"
+        );
+        assert!(
+            fixture
+                .store
+                .list_sessions(None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     })
     .await;
 }

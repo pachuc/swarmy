@@ -62,15 +62,8 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
 }
 
 pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()> {
-    let mut conversation = Conversation::open(None).await?;
+    let mut conversation = Conversation::open(None, image.as_deref()).await?;
     let id = conversation.id;
-    if let Some(image) = image {
-        let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
-        store()
-            .await?
-            .set_session_image(id, name, &swarmy_core::ImageTag(tag.into()))
-            .await?;
-    }
     let mut output = Output::new(json);
     if json {
         println!(

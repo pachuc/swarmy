@@ -4,8 +4,8 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use jiff::Timestamp;
 use std::time::Duration;
 use swarmy_core::{
-    BashResult, Event, ImageRecord, ImageTag, Lease, ManifestId, NodeRole, RequestId,
-    SandboxRecord, SessionId, SessionState, ToolClaim, ToolJob, VolumeId, VolumeRecord,
+    BashResult, Event, ImageRecord, Lease, NodeRole, RequestId, SandboxRecord, SessionId,
+    SessionState, ToolClaim, ToolJob, VolumeId, VolumeRecord,
 };
 
 // Keep claims inline even when a command input uses the blob path.
@@ -33,50 +33,6 @@ impl Store {
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
         self.root
             .subspace(&("session_tools", id.as_ulid().to_bytes().as_slice()))
-    }
-
-    /// # Errors
-    /// Returns storage or decoding failures.
-    pub async fn session_image(&self, id: SessionId) -> Result<Option<ManifestId>> {
-        self.transaction(|trx| async move {
-            Ok(read::<ImageRecord>(
-                &trx,
-                &self
-                    .root
-                    .pack(&("session_image", id.as_ulid().to_bytes().as_slice())),
-            )
-            .await?
-            .map(|image| image.manifest_id))
-        })
-        .await
-    }
-
-    /// Resolve and pin an image before the session is woken for its first turn.
-    /// # Errors
-    /// Rejects missing images, sessions already started, and storage failures.
-    pub async fn set_session_image(&self, id: SessionId, name: &str, tag: &ImageTag) -> Result<()> {
-        let manifest = self
-            .get_image(name, tag)
-            .await?
-            .ok_or(StoreError::ManifestMissing)?;
-        self.transaction(|trx| async move {
-            let session = self.session(&trx, id).await?;
-            if session.state != SessionState::Idle || session.head_seq != 0 {
-                return Err(StoreError::InvalidState);
-            }
-            write(
-                &trx,
-                &self
-                    .root
-                    .pack(&("session_image", id.as_ulid().to_bytes().as_slice())),
-                &ImageRecord {
-                    name: name.into(),
-                    tag: tag.clone(),
-                    manifest_id: manifest,
-                },
-            )
-        })
-        .await
     }
 
     /// # Errors

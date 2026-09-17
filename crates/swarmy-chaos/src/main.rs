@@ -143,6 +143,22 @@ impl Fixture {
         self.bus.setup(&[]).await?;
         if let Some(image) = &config.image {
             self.import_image(image).await?;
+        } else {
+            // Remote-tool chaos still creates image-backed sessions, but no node is needed.
+            let manifest = swarmy_core::ManifestId::from_ulid(Ulid::generate());
+            self.store
+                .put_manifest(
+                    manifest,
+                    &swarmy_core::ManifestHeader {
+                        size: u64::from(swarmy_core::CHUNK_SIZE),
+                        chunk_size: swarmy_core::CHUNK_SIZE,
+                        root_hash: swarmy_core::ContentHash::ZERO,
+                    },
+                )
+                .await?;
+            self.store
+                .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest)
+                .await?;
         }
         std::fs::create_dir_all(self.files.path().join(".swarmy"))?;
         std::fs::write(self.files.path().join(".swarmy/config.toml"), "")?;
@@ -273,13 +289,9 @@ impl Fixture {
                         snapshot_ref: None,
                     },
                     Timestamp::now(),
+                    "chaos:test",
                 )
                 .await?;
-            if self.image.is_some() {
-                self.store
-                    .set_session_image(id, "chaos", &swarmy_core::ImageTag("test".into()))
-                    .await?;
-            }
             self.store
                 .append_events(
                     id,

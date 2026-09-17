@@ -9,10 +9,6 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
     let mut session = session();
     session.state = SessionState::Idle;
     let id = session.session_id;
-    store
-        .create_session(&session, Timestamp::now())
-        .await
-        .unwrap();
     let image = ManifestId::from_ulid(Ulid::generate());
     store
         .put_manifest(
@@ -30,7 +26,7 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
         .await
         .unwrap();
     store
-        .set_session_image(id, "base", &ImageTag("test".into()))
+        .create_session(&session, Timestamp::now(), "base:test")
         .await
         .unwrap();
     assert!(matches!(
