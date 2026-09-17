@@ -15,6 +15,8 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
+    MissingImage,
     #[error("remote configuration: {0}")]
     Remote(&'static str),
     #[error("invalid remote JSON: {0}")]
@@ -94,6 +96,7 @@ pub struct Settings {
     pub bus_prefix: String,
     pub provider: String,
     pub model: String,
+    pub default_image: Option<String>,
     pub reasoning_effort: String,
     pub credential_file: String,
     pub worker_partitions: String,
@@ -157,6 +160,7 @@ impl Default for Settings {
             bus_prefix: String::new(),
             provider: "fake".into(),
             model: "gpt-5".into(),
+            default_image: None,
             reasoning_effort: "medium".into(),
             credential_file: String::new(),
             worker_partitions: "0-255".into(),
@@ -224,6 +228,16 @@ impl Loaded {
 }
 
 impl Settings {
+    /// Select the image for a new session, giving an explicit flag precedence.
+    /// # Errors
+    /// Requires a configured default or an explicit image.
+    pub fn session_image<'a>(&'a self, explicit: Option<&'a str>) -> Result<&'a str, Error> {
+        explicit
+            .or(self.default_image.as_deref())
+            .filter(|image| !image.is_empty())
+            .ok_or(Error::MissingImage)
+    }
+
     /// Discover configuration and apply the current process's environment.
     /// # Errors
     /// Fails for unreadable files, invalid TOML, or invalid overrides.
@@ -436,6 +450,9 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_PROVIDER") {
             self.provider.clone_from(value);
         }
+        if let Some(value) = environment.get("SWARMY_DEFAULT_IMAGE") {
+            self.default_image = (!value.is_empty()).then(|| value.clone());
+        }
         if let Some(value) = environment.get("SWARMY_MODEL") {
             self.model.clone_from(value);
         }
@@ -588,12 +605,6 @@ impl Settings {
                 self.store_directory.clone(),
             ),
             ("SWARMY_BUS_PREFIX".into(), self.bus_prefix.clone()),
-            ("SWARMY_PROVIDER".into(), self.provider.clone()),
-            ("SWARMY_MODEL".into(), self.model.clone()),
-            (
-                "SWARMY_REASONING_EFFORT".into(),
-                self.reasoning_effort.clone(),
-            ),
             ("SWARMY_CHATGPT_AUTH".into(), self.credential_file.clone()),
             (
                 "SWARMY_WORKER_PARTITIONS".into(),
@@ -640,6 +651,7 @@ impl Settings {
         if let Some(name) = &self.remote.profile {
             environment.insert("SWARMY_REMOTE".into(), name.clone());
         }
+        self.session_environment(&mut environment);
         self.node_environment(&mut environment);
         for (name, value) in [
             ("SWARMY_GC_GRACE_SECONDS", self.gc.grace_seconds.to_string()),
@@ -671,6 +683,21 @@ impl Settings {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
         environment
+    }
+
+    fn session_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.extend([
+            ("SWARMY_PROVIDER".into(), self.provider.clone()),
+            ("SWARMY_MODEL".into(), self.model.clone()),
+            (
+                "SWARMY_DEFAULT_IMAGE".into(),
+                self.default_image.clone().unwrap_or_default(),
+            ),
+            (
+                "SWARMY_REASONING_EFFORT".into(),
+                self.reasoning_effort.clone(),
+            ),
+        ]);
     }
 
     fn node_environment(&self, environment: &mut BTreeMap<String, String>) {
@@ -946,6 +973,39 @@ mod tests {
         );
         std::fs::write(user.join("config.toml"), "bad toml").unwrap();
         assert!(Settings::load_from(&cwd, &environment).is_err());
+    }
+
+    #[test]
+    fn session_images_resolve_config_environment_and_explicit_precedence() {
+        let mut settings = Settings::default();
+        assert!(settings.default_image.is_none());
+        let error = settings.session_image(None).unwrap_err().to_string();
+        assert!(error.contains("default_image") && error.contains("SWARMY_DEFAULT_IMAGE"));
+        assert_eq!(
+            settings.session_image(Some("explicit:tag")).unwrap(),
+            "explicit:tag"
+        );
+        settings = toml::from_str("default_image = 'configured:tag'").unwrap();
+        assert_eq!(settings.session_image(None).unwrap(), "configured:tag");
+        settings
+            .apply_environment(&BTreeMap::from([(
+                "SWARMY_DEFAULT_IMAGE".into(),
+                "environment:tag".into(),
+            )]))
+            .unwrap();
+        assert_eq!(settings.session_image(None).unwrap(), "environment:tag");
+        assert_eq!(
+            settings.session_image(Some("explicit:tag")).unwrap(),
+            "explicit:tag"
+        );
+        assert_eq!(
+            settings.environment()["SWARMY_DEFAULT_IMAGE"],
+            "environment:tag"
+        );
+        settings
+            .apply_environment(&Settings::default().environment())
+            .unwrap();
+        assert!(settings.session_image(None).is_err());
     }
 
     #[test]

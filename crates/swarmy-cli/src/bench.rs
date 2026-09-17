@@ -3,11 +3,11 @@ use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use swarmy_core::{Event, ImageTag, MessageId, TurnEvent, TurnStage};
+use swarmy_core::{Event, MessageId, TurnEvent, TurnStage};
 
 use crate::{
     bench_command::Command,
-    conversation::{Conversation, Notification, TranscriptEvent, store},
+    conversation::{Conversation, Notification, TranscriptEvent},
     session::{Output, final_text},
 };
 
@@ -45,14 +45,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     );
     let mut samples = Vec::new();
     for shape in ["no_tool", "bash"] {
-        let mut conversation = Conversation::open(None).await?;
-        if shape == "bash" {
-            let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
-            store()
-                .await?
-                .set_session_image(conversation.id, name, &ImageTag(tag.into()))
-                .await?;
-        }
+        // Every session pins its image at creation; the bench image serves both shapes.
+        let mut conversation = Conversation::open(None, Some(image.as_str())).await?;
         let mut timeline = conversation.timeline().await?;
         for index in 0..=turns {
             let sample = tokio::time::timeout(

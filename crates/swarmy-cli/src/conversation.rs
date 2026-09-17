@@ -87,7 +87,13 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    pub async fn open(id: Option<SessionId>) -> Result<Self> {
+    pub async fn open(id: Option<SessionId>, image: Option<&str>) -> Result<Self> {
+        let settings = swarmy_config::Settings::load()?.settings;
+        let image = if id.is_none() {
+            Some(settings.session_image(image)?)
+        } else {
+            None
+        };
         let bus = bus().await?;
         let store = store().await?;
         let id = if let Some(id) = id {
@@ -108,6 +114,7 @@ impl Conversation {
                         snapshot_ref: None,
                     },
                     Timestamp::now(),
+                    image.context("new session image missing")?,
                 )
                 .await?;
             id

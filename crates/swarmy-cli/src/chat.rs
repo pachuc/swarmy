@@ -29,7 +29,7 @@ impl Drop for RestoreTerminal {
     }
 }
 
-pub async fn run(id: Option<SessionId>) -> Result<()> {
+pub async fn run(id: Option<SessionId>, image: Option<String>) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "chat requires an interactive terminal"
@@ -57,7 +57,11 @@ pub async fn run(id: Option<SessionId>) -> Result<()> {
     terminal.draw(|frame| {
         frame.render_widget(Paragraph::new("Loading conversation..."), frame.area());
     })?;
-    let conversation = Conversation::open(id).await?;
+    ensure!(
+        id.is_none() || image.is_none(),
+        "--image applies only to a new session"
+    );
+    let conversation = Conversation::open(id, image.as_deref()).await?;
     interact(&mut terminal, &mut keys, conversation, &provider).await
 }
 

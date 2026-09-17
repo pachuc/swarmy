@@ -72,7 +72,12 @@ enum Command {
         image: Option<String>,
     },
     /// Open a terminal conversation, or resume a session
-    Chat { session_id: Option<ulid::Ulid> },
+    Chat {
+        session_id: Option<ulid::Ulid>,
+        /// Base image in NAME:TAG form; otherwise use `default_image`.
+        #[arg(long, conflicts_with = "session_id")]
+        image: Option<String>,
+    },
     /// Inspect stored sessions
     Session {
         #[command(subcommand)]
@@ -97,7 +102,7 @@ enum AuthCommand {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = swarmy_version::parse::<Cli>("swarmy")?;
     remote_command::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -193,13 +198,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("Saved ChatGPT credentials to {}", path.display());
             }
         }
-        Command::Version => {
-            if cli.json {
-                println!("{{\"version\":\"{}\"}}", env!("CARGO_PKG_VERSION"));
-            } else {
-                println!("swarmy {}", env!("CARGO_PKG_VERSION"));
-            }
-        }
+        Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())
 }

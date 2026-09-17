@@ -1,3 +1,6 @@
+#[path = "../../swarmy-store/tests/support/mod.rs"]
+mod image_fixture;
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -119,12 +122,14 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     let config = fixture.files.path().join(".swarmy/config.toml");
     let prefix = format!("dev_test_{}", Ulid::generate());
     let settings = swarmy_config::Settings {
+        default_image: Some("fixture:test".into()),
         store_directory: prefix.clone(),
         bus_prefix: prefix.clone(),
         ..Default::default()
     };
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
     check_startup(&fixture).await;
+    register_image(&fixture).await;
     assert!(
         String::from_utf8(fixture.output(&["run", "hello"]).await.stdout)
             .unwrap()
@@ -164,6 +169,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
     fixture.output(&["dev", "up"]).await;
     assert!(fixture.output(&["session", "list"]).await.stdout.is_empty());
+    register_image(&fixture).await;
     fixture.output(&["run", "new directory"]).await;
     let second = fixture.output(&["--json", "session", "list"]).await.stdout;
     assert_ne!(first, second);
@@ -267,4 +273,20 @@ fn assert_gone(identities: &BTreeMap<String, (u32, String)>) {
             );
         }
     }
+}
+
+async fn register_image(fixture: &Fixture) {
+    static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
+        std::sync::OnceLock::new();
+    NETWORK.get_or_init(swarmy_store::boot);
+    let settings =
+        swarmy_config::Settings::read(&fixture.files.path().join(".swarmy/config.toml")).unwrap();
+    let store = swarmy_store::Store::open(
+        Some(&settings.fdb_cluster_file),
+        Some(&[settings.store_directory]),
+        std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    image_fixture::image(&store).await;
 }

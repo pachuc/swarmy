@@ -3527,6 +3527,7 @@ dependencies = [
  "swarmy-core",
  "swarmy-sandbox",
  "swarmy-store",
+ "swarmy-version",
  "swarmy-volume",
  "tempfile",
  "tokio",
@@ -3563,6 +3564,7 @@ dependencies = [
  "swarmy-core",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-version",
  "swarmy-volume",
  "tempfile",
  "tokio",
@@ -3621,6 +3623,7 @@ dependencies = [
  "swarmy-core",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-version",
  "tempfile",
  "tokio",
  "tracing",
@@ -3695,6 +3698,7 @@ dependencies = [
  "swarmy-config",
  "swarmy-core",
  "swarmy-store",
+ "swarmy-version",
  "swarmy-volume",
  "tokio",
  "tracing",
@@ -3733,6 +3737,14 @@ dependencies = [
  "serde_json",
  "swarmy-core",
  "swarmy-harness",
+]
+
+[[package]]
+name = "swarmy-version"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde_json",
 ]
 
 [[package]]
@@ -3780,6 +3792,7 @@ dependencies = [
  "swarmy-llm",
  "swarmy-store",
  "swarmy-tools",
+ "swarmy-version",
  "tempfile",
  "tokio",
  "tracing",
@@ -3801,6 +3814,7 @@ dependencies = [
  "swarmy-core",
  "swarmy-sandbox",
  "swarmy-store",
+ "swarmy-version",
  "swarmy-volume",
  "tempfile",
  "tokio",

@@ -11,6 +11,7 @@ use swarmy_volume::server::ServerConfig;
 use tokio::{net::UnixListener, task::JoinSet};
 
 fn main() -> Result<()> {
+    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_env_filter(

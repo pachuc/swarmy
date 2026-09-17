@@ -321,26 +321,6 @@ impl Worker {
         let turn = self.store.turn_id(session.session_id).await?;
         for (request_id, call) in pending_tools(events) {
             let result = match self.config.harness.tools.get(&call.tool) {
-                Some(tool)
-                    if tool.sandbox_bound()
-                        && self
-                            .store
-                            .session_image(session.session_id)
-                            .await?
-                            .is_none()
-                        && self
-                            .store
-                            .get_volume(swarmy_core::VolumeId::from_ulid(
-                                session.agent_id.as_ulid(),
-                            ))
-                            .await?
-                            .is_none() =>
-                {
-                    Err(
-                        "sandbox tools require a disk; start the session with swarmy run --image NAME:TAG"
-                            .into(),
-                    )
-                }
                 Some(tool) if tool.sandbox_bound() => {
                     match SandboxArguments::parse(&call.tool, call.arguments.clone()) {
                         Ok(arguments) => {
@@ -368,9 +348,10 @@ impl Worker {
                     }
                 }
                 Some(tool) => {
-                    self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id).await;
+                    self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
+                        .await;
                     tool.execute(call.arguments).await
-                },
+                }
                 None => Err(format!("unknown tool: {}", call.tool)),
             };
             self.append(

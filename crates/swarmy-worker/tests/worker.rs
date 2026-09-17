@@ -1,3 +1,6 @@
+#[path = "../../swarmy-store/tests/support/mod.rs"]
+mod image_fixture;
+
 use std::{
     collections::{BTreeMap, HashSet},
     future::Future,
@@ -162,6 +165,7 @@ impl Fixture {
                     snapshot_ref: None,
                 },
                 Timestamp::now(),
+                image_fixture::image(&self.store).await,
             )
             .await
             .unwrap();
