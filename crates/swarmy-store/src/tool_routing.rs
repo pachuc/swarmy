@@ -50,8 +50,12 @@ impl Store {
             if dispatched
                 .is_some_and(|old| old.epoch != placement.epoch || old.node_id != placement.node_id)
             {
-                self.fail_lost_tool(&trx, job, notice.ok_or(StoreError::Corrupt)?)
-                    .await?;
+                // A dispatch can expire without any node hosting its epoch.
+                // Fail the fenced call without inventing a computer loss.
+                let explanation = notice.unwrap_or_else(|| {
+                    "The tool call's placement expired before execution could be confirmed. The call failed; check external side effects before retrying.".into()
+                });
+                self.fail_lost_tool(&trx, job, explanation).await?;
                 return Ok(false);
             }
             // Jobs written by older workers acquire their first dispatch fence here.
@@ -124,7 +128,10 @@ impl Store {
         id: SessionId,
         placement: &PlacementRecord,
     ) -> Result<Option<String>> {
-        if placement.last_change_reason == PlacementChangeReason::Initial {
+        if matches!(
+            placement.last_change_reason,
+            PlacementChangeReason::Initial | PlacementChangeReason::Unstarted
+        ) {
             return Ok(None);
         }
         // Retain each observed epoch's explanation, even after later snapshots or
@@ -160,6 +167,9 @@ impl Store {
                 placement.last_change_reason,
                 snapshot,
                 placement.last_changed_at,
+                self.read_placement_hosting(trx, placement)
+                    .await?
+                    .and_then(|hosting| hosting.failure_estimate),
             )
             .ok_or(StoreError::Corrupt)?;
             let message = Message {

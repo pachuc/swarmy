@@ -378,9 +378,13 @@ async fn notice(
         .context("placement missing")?;
     let timestamp =
         jiff::Timestamp::from_millisecond(i64::try_from(snapshot.as_ulid().timestamp_ms())?)?;
-    let expected =
-        swarmy_core::computer_rebuilt_message(reason, timestamp, placement.last_changed_at)
-            .context("notice missing")?;
+    let expected = swarmy_core::computer_rebuilt_message(
+        reason,
+        timestamp,
+        placement.last_changed_at,
+        f.store.placement_failure_estimate(&placement).await?,
+    )
+    .context("notice missing")?;
     let mut count = 0;
     for id in &f.sessions {
         let session = f

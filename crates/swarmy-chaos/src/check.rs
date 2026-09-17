@@ -85,11 +85,11 @@ fn tool_results(id: SessionId, events: &[Event], expected: usize) -> Result<()> 
             && message.role == MessageRole::System
             && let [Part::Text { text }] = message.parts.as_slice()
         {
-            if text.starts_with("Your computer was rebuilt from the snapshot at ") {
+            if text.starts_with("Your computer recovery began at ") {
                 // These short runs never reach the periodic checkpoint interval.
                 writes = 0;
                 recovery = Some(text);
-            } else if text.starts_with("Your computer was evicted while idle ") {
+            } else if text.starts_with("Your computer was evicted while idle. ") {
                 recovery = Some(text);
             }
         }

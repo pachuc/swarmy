@@ -8,6 +8,8 @@ pub enum PlacementChangeReason {
     Initial,
     Failure,
     Eviction,
+    /// The previous placement expired before a node claimed it for hosting.
+    Unstarted,
 }
 
 /// Authority to host an agent's computer. Renewals preserve the epoch and its last-change metadata.

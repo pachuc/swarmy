@@ -2,8 +2,8 @@ use super::*;
 use swarmy_bus::WorkMessage;
 use swarmy_core::{
     BashResult, CHUNK_SIZE, ContentHash, ImageTag, LeaseOwnerId, ManifestHeader, ManifestId,
-    NodeCapacity, NodeId, NodeRecord, NodeRole, PlacedToolClaim, PlacementRecord, ToolJob,
-    ToolResult,
+    NodeCapacity, NodeId, NodeRecord, NodeRole, PlacedToolClaim, PlacementChangeReason,
+    PlacementRecord, ToolJob, ToolResult,
 };
 use swarmy_store::StoreError;
 
@@ -112,18 +112,42 @@ impl Fixture {
                 .await
                 .unwrap();
         }
+        self.request(id).await;
+        id
+    }
+
+    async fn request(&self, id: SessionId) {
+        let head = self
+            .store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        let request_id = self
+            .store
+            .read_events(id, 0, 64)
+            .await
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap_or_else(|| RequestId::for_step(id, head + 1));
         self.store
             .append_events(
                 id,
-                0,
+                head,
                 &[Event::InferenceCompleted {
                     seq: 0,
-                    request_id: RequestId::for_step(id, 1),
+                    request_id,
                     message: Message {
                         id: MessageId::from_ulid(Ulid::generate()),
                         role: MessageRole::Assistant,
                         parts: vec![Part::ToolCall {
-                            call_id: ToolCallId("shell".into()),
+                            call_id: ToolCallId(format!("shell-{head}")),
                             tool: "bash".into(),
                             input: json!({"command": "echo hello"}),
                         }],
@@ -136,7 +160,6 @@ impl Fixture {
             .set_state(id, SessionState::Runnable, None, Timestamp::now())
             .await
             .unwrap();
-        id
     }
 
     async fn step(&self, id: SessionId) {
@@ -168,6 +191,7 @@ impl Fixture {
     }
 
     async fn claim(&self, job: ToolJob, placement: PlacementRecord) -> PlacedToolClaim {
+        self.store.claim_placement(&placement).await.unwrap();
         let claim = PlacedToolClaim {
             job,
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
@@ -280,6 +304,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
         .await
         .unwrap();
     let id = f.session(true).await;
+    f.store.claim_placement(&placement).await.unwrap();
     let volume = f.store.agent_volume(id, &placement).await.unwrap();
     let now = Timestamp::now();
     f.store
@@ -338,14 +363,15 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
             // Long enough that the session and volume setup below cannot
             // outlive the lease on a slow machine; the sleep then expires it.
             Timestamp::now()
-                .checked_add(Duration::from_millis(1500))
+                .checked_add(Duration::from_millis(2000))
                 .unwrap(),
         )
         .await
         .unwrap();
     let id = f.session(true).await;
+    f.store.claim_placement(&old).await.unwrap();
     f.store.agent_volume(id, &old).await.unwrap();
-    sleep(Duration::from_millis(1600)).await;
+    sleep(Duration::from_millis(2100)).await;
     f.step(id).await;
     let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(placement.node_id, f.nodes[1]);
@@ -372,7 +398,7 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
 }
 
 #[tokio::test]
-async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
+async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() {
     let Some(f) = Fixture::new().await else {
         return;
     };
@@ -418,7 +444,7 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
             &placement,
             f.nodes[1],
             Timestamp::now()
-                .checked_add(Duration::from_secs(30))
+                .checked_add(Duration::from_secs(2))
                 .unwrap(),
         )
         .await
@@ -433,7 +459,9 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
     ));
     f.worker.recover_tools().await.unwrap();
     assert_eq!(current.node_id, f.nodes[1]);
-    assert!(current.epoch > placement.epoch);
+    assert_eq!(placement.epoch, 1);
+    assert_eq!(current.epoch, 2);
+    assert_eq!(current.last_change_reason, PlacementChangeReason::Failure);
     assert!(matches!(
         f.complete(&claim).await,
         Err(StoreError::LeaseMismatch)
@@ -445,6 +473,39 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
     };
     assert!(!f.store.claim_placed_tool(&new_claim).await.unwrap());
     f.worker.recover_tools().await.unwrap();
+    assert_failure_notice(&f, id, &current, checkpoint).await;
+    redelivery.acknowledge().await.unwrap();
+    // No node ever claimed epoch 2. A later user retry must be able to start
+    // epoch 3 without describing another computer loss.
+    sleep(Duration::from_millis(2100)).await;
+    f.request(id).await;
+    f.step(id).await;
+    let retry = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(retry.epoch, 3);
+    assert_eq!(retry.last_change_reason, PlacementChangeReason::Unstarted);
+    assert_eq!(
+        f.store.placement_failure_estimate(&retry).await.unwrap(),
+        None
+    );
+    let delivery = f.delivery(retry.node_id).await;
+    let claim = f.claim(delivery.value.clone(), retry).await;
+    f.complete(&claim).await.unwrap();
+    delivery.acknowledge().await.unwrap();
+    f.worker.recover_tools().await.unwrap();
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(events.iter().filter(|event| is_notice(event)).count(), 1);
+    assert!(events.iter().any(|event| matches!(event,
+        Event::ToolCallCompleted { request_id, result: ToolResult::Completed { .. }, .. }
+        if *request_id == claim.job.request_id)));
+    f.cleanup().await;
+}
+
+async fn assert_failure_notice(
+    f: &Fixture,
+    id: SessionId,
+    current: &PlacementRecord,
+    checkpoint: ManifestId,
+) {
     let events = f.store.read_events(id, 0, 64).await.unwrap();
     assert_eq!(events.iter().filter(|e| is_notice(e)).count(), 1);
     let snapshot =
@@ -454,6 +515,7 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
         current.last_change_reason,
         snapshot,
         current.last_changed_at,
+        f.store.placement_failure_estimate(current).await.unwrap(),
     )
     .unwrap();
     let notice_seq = events.iter().find(|e| is_notice(e)).unwrap().seq();
@@ -469,9 +531,7 @@ async fn node_lost_mid_call_fails_once_and_replays_notice_into_prompt() {
         })
         .collect();
     assert_eq!(failed, vec![(notice_seq + 1, &explanation)]);
-    assert_recovery_prompt(&f, id, &explanation).await;
-    redelivery.acknowledge().await.unwrap();
-    f.cleanup().await;
+    assert_recovery_prompt(f, id, &explanation).await;
 }
 
 async fn assert_recovery_prompt(f: &Fixture, id: SessionId, explanation: &str) {
@@ -497,4 +557,59 @@ async fn assert_recovery_prompt(f: &Fixture, id: SessionId, explanation: &str) {
                     }])
     );
     assert!(job.request.messages.iter().any(|m| m.role == MessageRole::Tool && m.parts.iter().any(|p| matches!(p, Part::ToolResult { result: ToolResult::Error { error }, .. } if error == explanation))));
+}
+
+#[tokio::test]
+async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let old = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            Timestamp::now()
+                .checked_add(Duration::from_secs(2))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let id = f.session(true).await;
+    f.step(id).await;
+    let delivery = f.delivery(old.node_id).await;
+    // The durable dispatch exists, but no node claimed the placement or the call.
+    sleep(Duration::from_millis(2100)).await;
+    f.worker.recover_tools().await.unwrap();
+    f.worker.recover_tools().await.unwrap();
+    let current = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(current.epoch, 2);
+    assert_eq!(current.last_change_reason, PlacementChangeReason::Unstarted);
+    assert!(
+        f.store
+            .tool_completed(delivery.value.request_id)
+            .await
+            .unwrap()
+    );
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert!(!events.iter().any(is_notice));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event,
+        Event::ToolCallCompleted { result: ToolResult::Error { error }, .. }
+        if error.contains("placement expired")))
+            .count(),
+        1
+    );
+    delivery.acknowledge().await.unwrap();
+    // Fold the failed call and let the worker request the retry inference.
+    f.step(id).await;
+    f.request(id).await;
+    f.step(id).await;
+    let delivery = f.delivery(current.node_id).await;
+    let claim = f.claim(delivery.value.clone(), current).await;
+    f.complete(&claim).await.unwrap();
+    delivery.acknowledge().await.unwrap();
+    f.cleanup().await;
 }

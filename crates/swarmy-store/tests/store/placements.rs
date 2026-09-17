@@ -78,6 +78,7 @@ async fn placement_lifecycle_fences_holders() {
         test.store.place(agent, b, future(60)).await,
         Err(StoreError::PlacementExists)
     ));
+    test.store.claim_placement(&first).await.unwrap();
     let renewed = test.store.renew(&first, future(120)).await.unwrap();
     assert_eq!(renewed.epoch, first.epoch);
     assert_eq!(renewed.last_changed_at, first.last_changed_at);
@@ -346,5 +347,121 @@ async fn placement_capacity_race_and_paginated_node_listing() {
         test.store.list_by_node(target, None, 0).await,
         Err(StoreError::InvalidLimit)
     ));
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let a = node(&test.store, 1).await.node_id;
+    let b = node(&test.store, 1).await.node_id;
+    let first = test
+        .store
+        .place(session().agent_id, a, future(60))
+        .await
+        .unwrap();
+    // Renewing a grant alone does not prove that a node started hosting it.
+    let first = test.store.renew(&first, future(120)).await.unwrap();
+    let expired = expire(&test, &first).await;
+    assert!(matches!(
+        test.store.claim_placement(&expired).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let unstarted = test.store.take_over(&expired, b, future(60)).await.unwrap();
+    assert_eq!(
+        unstarted.last_change_reason,
+        PlacementChangeReason::Unstarted
+    );
+    assert_eq!(
+        test.store
+            .placement_failure_estimate(&unstarted)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        test.store.claim_placement(&first).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let impostor = PlacementRecord {
+        node_id: a,
+        ..unstarted.clone()
+    };
+    assert!(matches!(
+        test.store.claim_placement(&impostor).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.store.claim_placement(&unstarted).await.unwrap();
+    let before_renewal = Timestamp::now();
+    let renewed = test.store.renew(&unstarted, future(120)).await.unwrap();
+    let after_renewal = Timestamp::now();
+    // An idempotent claim must not advance the last evidence of liveness.
+    test.store.claim_placement(&unstarted).await.unwrap();
+    let expired = expire(&test, &renewed).await;
+    let recovered = test.store.take_over(&expired, a, future(60)).await.unwrap();
+    assert_eq!(recovered.epoch, 3);
+    assert_eq!(recovered.last_change_reason, PlacementChangeReason::Failure);
+    let estimate = test
+        .store
+        .placement_failure_estimate(&recovered)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(estimate >= before_renewal && estimate <= after_renewal);
+    assert!(estimate <= recovered.last_changed_at);
+    // A later unstarted takeover clears the earlier failure estimate.
+    let expired = expire(&test, &recovered).await;
+    let retry = test.store.take_over(&expired, b, future(60)).await.unwrap();
+    assert_eq!(retry.epoch, 4);
+    assert_eq!(retry.last_change_reason, PlacementChangeReason::Unstarted);
+    assert_eq!(
+        test.store.placement_failure_estimate(&retry).await.unwrap(),
+        None
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn legacy_placements_without_hosting_metadata_still_report_loss() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let node = node(&test.store, 1).await.node_id;
+    let first = test
+        .store
+        .place(session().agent_id, node, future(60))
+        .await
+        .unwrap();
+    // Legacy placement and dispatch records retain their original postcard schema.
+    let key = test.root.pack(&(
+        "placement_hosting",
+        first.agent_id.as_ulid().to_bytes().as_slice(),
+    ));
+    test.db
+        .run(|trx, _| {
+            let key = &key;
+            async move {
+                trx.clear(key);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let expired = expire(&test, &first).await;
+    let recovered = test
+        .store
+        .take_over(&expired, node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(recovered.last_change_reason, PlacementChangeReason::Failure);
+    assert_eq!(
+        test.store
+            .placement_failure_estimate(&recovered)
+            .await
+            .unwrap(),
+        None
+    );
     test.cleanup().await;
 }
