@@ -2382,3 +2382,212 @@ The displayed results use the field projections retained in the proof JSON.
 The local SSH tunnel and private-route rejection rule were removed and the local
 dev stack was restored. This run used the remote node's SeaweedFS, created no
 external S3 objects or buckets, and used no Google Cloud resources.
+
+## 2026-09-17 Remote round trips and node services
+
+The warm path was counted before changing it, using the event-driven remote
+"after" table above. Counts below cover the client, worker, and gateway;
+execution-node transactions remain local to the store. Tool completion there
+also drops its preliminary session fetch and overlaps independent fencing reads. Each read transaction
+also needs a read version, and each mutation needs a commit acknowledgement.
+A read phase means independent reads can be in flight together. These are
+logical operations, not a packet capture: FoundationDB may reuse read versions,
+cache reads within a transaction, retry, or split a range page.
+
+| Warm operation | Previous transactions | Current transactions | Previous serial read phases | Current serial read phases |
+| --- | ---: | ---: | ---: | ---: |
+| Client append and wake | 1 | 1 | 3 | 1 |
+| Worker claim plus first replay page | 2 | 1 | 5 | 2 |
+| Worker inference submission | 1 | 1 | 4 | 1 |
+| Gateway inference claim | 1 | 1 | 4 | 1 |
+| Gateway header fetch and completion | 2 | 1 | 7 | 1 |
+| Worker warm placement lookup | 1 | 0 on cache hit | 1 | 0 |
+
+Text uses one claim, submission, and inference: **7 to 5 transactions**.
+A one-bash turn uses three claims, two submissions/inferences, one placement
+lookup, and one fenced dispatch: **17 to 11 transactions** on a cache hit.
+Dispatch still reads and verifies placement in its commit. Cold placement,
+expired cached routes, concurrent notices, oversized event pages, and recovery
+can add operations. Snapshot downloads are cached by immutable object key, so
+the three worker claims of a bash turn reuse the same snapshot after its first
+download. Session image pins are immutable and cached; the resident-computer
+path already reads image metadata only when creating a disk or rebuild notice.
+
+NATS retains durable publication acknowledgements: two publications for text
+(runnable, inference), six for bash (three runnable, two inference, one tool).
+Corresponding work deliveries still use confirmed acknowledgements (two for
+text, six for bash, of which one is local to the node). Each delivery also
+uses the existing pull consumer. These are not
+synchronous tool RPCs: tool results commit on the node and wake the worker.
+Independent tool publications now overlap their acknowledgement waits. We do
+not count recovery pulls, telemetry, or background scans as per-turn RPCs.
+
+`--services node` moves all worker, gateway, and scheduler store traffic and
+NATS handoffs to the node. The laptop still appends a user message, publishes a
+nudge, and observes the live durable event sequence through SSH.
+
+
+**Real-node measurements.** Both modes used the same release binaries and the
+same AWS `m6id.xlarge`, `i-0030ed4607356cea9`, in us-east-1, with its local NVMe
+cache and a 100 GB root disk. Provisioning used the launcher-tagged credentials
+and the supported command:
+
+```sh
+swarmy remote up turn-roundtrips --services node --image-recipe images/turn-proof
+swarmy remote connect turn-roundtrips --json
+swarmy dev up --remote turn-roundtrips
+swarmy bench turn --remote turn-roundtrips --turns 30 --image base-ubuntu:turn-roundtrips --output /tmp/swarmy-turn-node-final.json
+```
+
+The temporary `images/turn-proof` recipe contained bash, sleep, setsid, their
+shared libraries, and a `/bin/sh` link in a 256 MiB ext4 image. Both configurations
+used the same registered image and `scripts/benchmarks/turn-fake.json`, including
+real `printf TURN_TOOL_OK` bash execution. No provider credential was copied.
+The laptop comparison stopped the three node control-plane units, changed the
+saved launch setting to `laptop`, and ran `dev up --remote` and the same benchmark
+with output `/tmp/swarmy-turn-laptop-final.json`. The setting was restored to
+`node` before the final node-mode run. This administrative comparison reused one
+machine; changing an existing deployment's mode is not a new CLI operation.
+
+The launcher client and laptop services ran as ubuntu in a network namespace.
+Its owner-matched OUTPUT rules rejected direct connections to the node's private
+address on 4500, 4222, and 8333; port 22 remained reachable. Only localhost SSH
+forwards could reach the backing services. Both hosts reported synchronized
+clocks; end-to-end measurements use only the client's monotonic clock. Each
+shape had 30 measured turns and one excluded cold warmup. TCP connect to SSH
+had p95 0.259 ms over 40 samples, so the three-round-trips-plus-100-ms budget was
+**100.776 ms**. This measures a same-region launcher through SSH, not an emulated
+cross-continent WAN.
+
+| Configuration | Text p50 ms | Text p95 ms | Bash p50 ms | Bash p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Previous event-driven SSH run (above) | 90.798 | 204.932 | 348.638 | 535.562 |
+| Laptop services, final | 24.279 | 26.021 | 74.646 | 81.154 |
+| Node services, final | 21.940 | 22.828 | 64.427 | 68.287 |
+
+Both final configurations meet the measured budget for both shapes. The previous
+run used a different temporary node, so it is historical context, not a paired
+control. Final raw samples, including warmups, are retained in
+[the laptop artifact](benchmarks/2026-09-17-roundtrips-laptop-final.json.gz) and
+[the node artifact](benchmarks/2026-09-17-roundtrips-node-final.json.gz).
+
+Stage values below are elapsed from submission; inference and tool durations
+sum their respective spans. Repeated stage names use their last occurrence.
+
+| Stage | Laptop text p50/p95 ms | Laptop bash p50/p95 ms | Node text p50/p95 ms | Node bash p50/p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 3.027/3.185 | 3.093/3.316 | 3.074/3.327 | 3.052/3.151 |
+| claimed | 6.926/7.849 | 57.826/64.314 | 5.947/6.491 | 49.347/53.216 |
+| inference_started | 15.459/17.026 | 65.397/71.743 | 12.469/13.399 | 54.730/58.594 |
+| inference_finished | 18.266/19.787 | 68.482/74.644 | 16.982/17.869 | 59.336/63.431 |
+| inference_total_duration | 2.761/3.543 | 5.987/7.290 | 4.504/4.763 | 9.210/9.512 |
+| tool_dispatched | — | 29.950/33.973 | — | 24.852/26.370 |
+| tool_completed | — | 53.226/59.666 | — | 46.082/49.806 |
+| tool_total_duration | — | 23.235/26.779 | — | 20.944/24.402 |
+| idle | 23.744/25.149 | 74.131/80.646 | 21.461/22.183 | 63.989/67.878 |
+| final_text_rendered | 24.267/26.008 | 74.633/81.114 | 21.878/22.786 | 64.413/68.272 |
+| end_to_end | 24.279/26.021 | 74.646/81.154 | 21.940/22.828 | 64.427/68.287 |
+
+The first development runs still missed budget: laptop text/bash p95 were
+161.336/388.484 ms and node text/bash p95 were 33.700/135.678 ms. Their raw
+samples are retained as `roundtrips-laptop.json.gz` and `roundtrips-node.json.gz`
+with the same date prefix. Opening an exec session on the existing SSH master
+removed recurring stalls near 40 ms: a ten-turn diagnostic reached
+39.309/107.832 ms (the `roundtrips-laptop-nodelay.json.gz` artifact).
+The final connection code reads the cluster file over the forwarding master.
+OpenSSH's server transport enables TCP_NODELAY when a session opens; a bare
+`-N` master does not take that path. See
+[OpenSSH 9.6 packet.c](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/packet.c)
+(`ssh_packet_set_interactive`). Final runs used a newly connected master and
+also include the tool-completion batching. Existing tunnels should be
+disconnected and reconnected after upgrading. No durability acknowledgement,
+lease check, timing threshold, or benchmark warmup rule was removed.
+
+
+**Node-mode acceptance.** `dev up --remote turn-roundtrips` printed
+`services: running on node turn-roundtrips; no local services started`.
+All three control-plane units and `swarmyd` were active, and the remote credential
+file was absent. A real PTY ran `swarmy chat --remote turn-roundtrips`, sent a
+bash turn, killed `swarmyd` with
+`sudo systemctl kill --kill-whom=main --signal=SIGKILL swarmyd.service`, and sent
+another turn. The durable transcript contains one recovery notice at sequence
+14, an interrupted call recorded as failed at sequence 15, and a successful
+fresh bash call after reopening chat. Recovery waited for the crashed writer's
+lease; it did not replay an uncertain tool side effect. This kills the execution
+process, not the EC2 host holding the backing store. The
+[durable chat transcript](benchmarks/2026-09-17-roundtrips-chat.jsonl) and
+[proof artifact](benchmarks/2026-09-17-roundtrips-proof.json) retain the outcomes,
+blocked-route checks, matching release binary hashes, and teardown results.
+The final credential-exclusion path regression test was added after these
+measurements; it changes checkout copying, not the measured turn path.
+
+**Validation.** With `scripts/dev-stack.sh start` and `source .dev/env`:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+bash -n scripts/remote-services.sh
+```
+
+The three CI commands and shell syntax check passed: 302 workspace tests passed
+across 56 suites, with one live-provider account test intentionally ignored.
+Fake cloud/host tests cover
+node services with and without the explicit credential flag, refusal before
+resource creation when ChatGPT credentials are not acknowledged, and saved
+service mode. A CLI integration test verifies that node mode starts no local
+processes without installed service binaries. Routing tests cover cached expiry,
+early eviction, renewal, and epoch fencing. Checkout-copy exclusions also cover
+symlink targets and paths containing `..`.
+
+Privileged binaries were built without sudo:
+
+```sh
+cargo test --workspace --locked --no-run --message-format=json
+sudo -E <test-binary> --nocapture --test-threads=1
+```
+
+The selected suites were `swarmy-volume`'s library, `image`, and `nbd`,
+`swarmyd`'s `node`, `swarmy-chaos`'s `bash`, and the CLI's `image`, `vol`, and
+`session` filtered to `root_chat_default_image_executes_pwd`. The bash scenarios
+used `SWARMY_TEST_IMAGE=base-ubuntu:roundtrip-root`, built using
+`sudo -E target/debug/swarmy image build images/base-ubuntu --tag roundtrip-root`.
+OCI, ext4/fio, image builds, node recovery, lease fencing, managed processes,
+and all four bash chaos scenarios ran as root. The NBD retained-image test
+initially failed its 30 ms writer-gap bound under concurrent load (41.672 ms).
+Its isolated rerun passed at 24.267 ms with all four crash images mountable and
+filesystem checks passing; the bound was unchanged. An additional node-test
+rerun overlapped the CLI integration test restarting the shared dev stack and
+failed on a backing-store error. Its isolated final rerun passed all recovery,
+takeover, and graceful-shutdown checks in 205.94 seconds. No attached NBD
+devices remained after testing.
+
+One additional privileged test remains failing:
+`root_volume_durability_clone_crash_fencing_and_history` expects
+`stats.frozen > Duration::ZERO` after `vol flush --mount` without `--freeze`.
+The existing CLI defaults to an unfrozen block boundary, so that field is zero.
+The isolated rerun reproduced the assertion. The test and volume-flush code are
+unchanged by this task; this failure is recorded in
+[the captured log](benchmarks/2026-09-17-roundtrips-volume-failure.txt).
+The other two CLI volume tests passed. The live ChatGPT account test remains
+intentionally ignored; no real account credential transfer was performed.
+
+**Cloud teardown.** `swarmy dev down`, `swarmy remote disconnect turn-roundtrips`,
+and `swarmy remote down turn-roundtrips` completed. Final AWS queries returned:
+
+```text
+aws ec2 describe-instances --instance-ids i-0030ed4607356cea9
+[{"InstanceId":"i-0030ed4607356cea9","State":"terminated"}]
+aws ec2 describe-volumes --filters Name=volume-id,Values=vol-0f5e6eb21211f2d79
+[]
+aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A
+[]
+gcloud compute instances list --format=json
+[]
+```
+
+The AWS output uses the field projections in the proof artifact. The only
+remaining running AWS instance is the launcher, `i-074ffdebcc7a6968c`.
+This run used SeaweedFS on the terminated node and created no external S3
+objects, GCP buckets, or HMAC keys. The SSH master, network namespace, route
+rejection rules, and NAT rule were removed, and IP forwarding was restored.

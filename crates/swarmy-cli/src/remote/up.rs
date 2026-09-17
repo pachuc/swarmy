@@ -11,7 +11,7 @@ pub async fn run(
     state: &State,
     settings: &RemoteSettings,
     name: &str,
-    recipe: Option<&std::path::Path>,
+    options: super::services::Options<'_>,
     delay: Duration,
 ) -> Result<()> {
     ensure!(
@@ -66,7 +66,10 @@ pub async fn run(
     state.save(&node)?;
     let result = async {
         let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
-        if let Some(recipe) = recipe {
+        if settings.services == swarmy_config::RemoteServices::Node {
+            host.services(&node, &address, &options).await?;
+        }
+        if let Some(recipe) = options.recipe {
             println!("Building base-ubuntu:{name} (this takes several minutes)");
             let build_started = Instant::now();
             host.build_image(&node, &address, recipe).await?;

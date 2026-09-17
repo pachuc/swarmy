@@ -158,15 +158,13 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             }
         }
     };
+    // A single call usually remains at its request head. Concurrent calls and
+    // rebuild notices return the actual head from the same fenced transaction.
+    let mut head = claim.job.step;
     loop {
-        let head = store
-            .fetch_session(claim.job.session_id)
-            .await?
-            .context("session missing")?
-            .head_seq;
         match store.complete_placed_tool(claim, head, &result).await {
             Ok(()) => break,
-            Err(StoreError::StaleSequence { .. }) => {}
+            Err(StoreError::StaleSequence { actual, .. }) => head = actual,
             Err(error) => return Err(error.into()),
         }
     }

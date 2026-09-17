@@ -2,7 +2,7 @@ mod config;
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, WorkMessage, WorkQueue};
@@ -257,24 +257,11 @@ impl Gateway {
     ) -> Result<()> {
         // Keep the finished response and renew the deadline during store outages.
         // Retrying only this transaction avoids spending another provider call.
+        let mut expected_head = job.step;
         loop {
-            let session = self
-                .store
-                .fetch_session(job.session_id)
-                .await?
-                .context("session missing")?;
-            if session.state != swarmy_core::SessionState::WaitingInference
-                && self.completed(job.request_id).await?
-            {
-                break;
-            }
-            ensure!(
-                session.state == swarmy_core::SessionState::WaitingInference,
-                "session is not waiting for inference"
-            );
             let completion = InferenceCompletion {
                 claim: claim.clone(),
-                expected_head: session.head_seq,
+                expected_head,
                 event: event.clone(),
                 now: Timestamp::now(),
             };
@@ -296,10 +283,13 @@ impl Gateway {
             match committed {
                 Ok(false) => break,
                 Ok(true) => {
-                    event.set_seq(session.head_seq + 1);
+                    event.set_seq(expected_head + 1);
                     self.notify_completion(job.session_id, &event, turn, snapshot.as_ref())
                         .await;
                     break;
+                }
+                Err(swarmy_store::StoreError::StaleSequence { actual, .. }) => {
+                    expected_head = actual;
                 }
                 Err(error) => {
                     warn!(%error, "retrying terminal store update");

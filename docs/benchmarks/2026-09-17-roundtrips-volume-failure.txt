@@ -1,0 +1,15 @@
+
+running 1 test
+test root_volume_durability_clone_crash_fencing_and_history ... 
+thread 'root_volume_durability_clone_crash_fencing_and_history' (133472) panicked at crates/swarmy-cli/tests/vol.rs:243:5:
+assertion failed: stats.frozen > Duration::ZERO
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    root_volume_durability_clone_crash_fencing_and_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.58s
+

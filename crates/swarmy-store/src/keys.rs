@@ -94,6 +94,10 @@ impl Store {
         entry: &RunnableEntry,
     ) -> Result<()> {
         self.remove_runnable(trx, entry.session_id).await?;
+        self.write_runnable(trx, entry)
+    }
+
+    pub(crate) fn write_runnable(&self, trx: &Transaction, entry: &RunnableEntry) -> Result<()> {
         write(trx, &self.runnable_key(entry), &())?;
         write(trx, &self.runnable_lookup(entry.session_id), entry)
     }

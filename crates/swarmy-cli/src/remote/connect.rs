@@ -88,13 +88,25 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
             }
             sleep(Duration::from_millis(50)).await;
         }
+        // Use the forwarding connection for this session too. OpenSSH enables
+        // TCP_NODELAY on its server transport when a session is opened; a bare
+        // -N connection otherwise adds delayed-ACK stalls to small store replies.
+        let output = ssh::command(&node)?
+            .arg("-S")
+            .arg(&profile.socket_path)
+            .arg(&address)
+            .arg(if node.launch_settings.is_some() {
+                "cat swarmy/.dev/fdb.cluster"
+            } else {
+                "true"
+            })
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "initialize SSH forwarding session failed"
+        );
         let cluster = if node.launch_settings.is_some() {
-            let output = ssh::command(&node)?
-                .arg(&address)
-                .arg("cat swarmy/.dev/fdb.cluster")
-                .output()
-                .await?;
-            ensure!(output.status.success(), "read remote cluster file failed");
             rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
         } else {
             // Old single-node remotes used this fixed cluster identity and loopback listener.

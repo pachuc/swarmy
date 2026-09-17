@@ -187,21 +187,26 @@ impl Ssh {
         println!("Copying repository checkout");
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
+        let settings = swarmy_config::Settings::load_base()?.settings;
+        let credential = Path::new(&settings.credential_file);
+        let mut copy = Command::new("rsync");
+        for relative in credential_excludes(&self.repo, credential) {
+            copy.arg(format!("--exclude=/{}", relative.display()));
+        }
         checked(
-            Command::new("rsync")
-                .args([
-                    "-az",
-                    "--exclude=target/",
-                    "--exclude=.dev/",
-                    "--exclude=.swarmy/",
-                    "--exclude=.git/",
-                    "--exclude=.env",
-                    "--exclude=.env.*",
-                    "-e",
-                ])
-                .arg(shell_words::join(transport))
-                .arg(format!("{}/", self.repo.display()))
-                .arg(format!("{address}:swarmy/")),
+            copy.args([
+                "-az",
+                "--exclude=target/",
+                "--exclude=.dev/",
+                "--exclude=.swarmy/",
+                "--exclude=.git/",
+                "--exclude=.env",
+                "--exclude=.env.*",
+                "-e",
+            ])
+            .arg(shell_words::join(transport))
+            .arg(format!("{}/", self.repo.display()))
+            .arg(format!("{address}:swarmy/")),
             "copy checkout with rsync",
         )
         .await?;
@@ -338,6 +343,21 @@ fn tunnel_authorization(key: &str) -> Result<String> {
     ))
 }
 
+// Exclude both the configured name and its target. A path containing `..` or
+// a symlink must not let the ordinary checkout copy export credential contents.
+fn credential_excludes(repo: &Path, credential: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(relative) = credential.strip_prefix(repo) {
+        paths.push(relative.to_owned());
+    }
+    if let (Ok(root), Ok(target)) = (repo.canonicalize(), credential.canonicalize())
+        && let Ok(relative) = target.strip_prefix(root)
+    {
+        paths.push(relative.to_owned());
+    }
+    paths
+}
+
 async fn wait_ssh(node: &RemoteNode) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address.parse().context("invalid instance IP")?;
@@ -368,6 +388,18 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{Ssh, image_build_command, tunnel_authorization};
+
+    #[test]
+    fn checkout_excludes_credential_targets_with_parent_components_and_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("auth.json"), "private fixture").unwrap();
+        std::os::unix::fs::symlink(root.join("auth.json"), root.join("alias")).unwrap();
+        for path in [root.join("nested/../auth.json"), root.join("alias")] {
+            assert!(super::credential_excludes(root, &path).contains(&"auth.json".into()));
+        }
+    }
 
     #[test]
     fn image_command_sources_node_environment_and_quotes_recipe() {

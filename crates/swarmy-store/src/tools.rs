@@ -227,8 +227,15 @@ impl Store {
         self.transaction(|trx| {
             let values = &values;
             async move {
-                self.check_worker_lease(&trx, id, lease, Timestamp::now())
-                    .await?;
+                futures::try_join!(
+                    self.check_worker_lease(&trx, id, lease, Timestamp::now()),
+                    async {
+                        if let Some(placement) = placement {
+                            self.check_live_placement(&trx, placement).await?;
+                        }
+                        Ok::<_, StoreError>(())
+                    },
+                )?;
                 if jobs.is_empty() {
                     return Err(StoreError::InvalidState);
                 }
@@ -237,7 +244,6 @@ impl Store {
                         .await?;
                 }
                 if let Some(placement) = placement {
-                    self.check_live_placement(&trx, placement).await?;
                     if self.session(&trx, id).await?.agent_id != placement.agent_id {
                         return Err(StoreError::InvalidState);
                     }

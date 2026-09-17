@@ -5,10 +5,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Settings};
 
+/// Location of the scheduler, worker, and inference gateway.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteServices {
+    #[default]
+    Laptop,
+    Node,
+}
+
+impl std::str::FromStr for RemoteServices {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "laptop" => Ok(Self::Laptop),
+            "node" => Ok(Self::Node),
+            _ => Err("services must be laptop or node"),
+        }
+    }
+}
+
 /// EC2 placement, resource ownership, and the selected tunnel profile.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RemoteSettings {
+    pub services: RemoteServices,
     pub region: String,
     pub subnet: Option<String>,
     pub security_group: Option<String>,
@@ -22,6 +44,7 @@ pub struct RemoteSettings {
 impl Default for RemoteSettings {
     fn default() -> Self {
         Self {
+            services: RemoteServices::Laptop,
             region: "us-east-1".into(),
             subnet: None,
             security_group: None,

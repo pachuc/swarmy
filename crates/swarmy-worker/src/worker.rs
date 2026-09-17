@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
@@ -26,6 +26,8 @@ pub struct Worker {
     bus: Bus,
     blobs: Arc<dyn BlobStore>,
     config: Config,
+    placements: crate::placement::Cache,
+    snapshots: Mutex<HashMap<String, Snapshot>>,
     pub owner: LeaseOwnerId,
 }
 
@@ -36,6 +38,8 @@ impl Worker {
             bus,
             blobs,
             config,
+            placements: crate::placement::Cache::default(),
+            snapshots: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         }
     }
@@ -49,9 +53,9 @@ impl Worker {
 
     pub async fn handle(&self, message: &WorkMessage<Nudge>) -> Result<()> {
         let id = message.value.session_id;
-        let (lease, session, turn) = match self
+        let (lease, session, turn, events) = match self
             .store
-            .claim_step(
+            .claim_step_with_tail(
                 id,
                 self.owner,
                 Timestamp::now().checked_add(self.config.lease_duration)?,
@@ -78,7 +82,10 @@ impl Worker {
         self.kill("after_claim");
         let lease = Mutex::new(Some(lease));
         tokio::select! {
-            result = self.step(session, turn, &lease) => result?,
+            result = self.step(session.clone(), turn, &lease, events) => {
+                if result.is_err() { self.placements.invalidate(session.agent_id).await; }
+                result?;
+            },
             result = self.heartbeat(id, &lease, message) => result?,
         }
         message.acknowledge().await?;
@@ -191,22 +198,41 @@ impl Worker {
         Ok(())
     }
 
+    async fn snapshot(&self, key: &str) -> Result<Snapshot> {
+        if let Some(snapshot) = self.snapshots.lock().await.get(key) {
+            return Ok(snapshot.clone());
+        }
+        let bytes = self.blobs.get(key).await?;
+        let snapshot: Snapshot = decode(&bytes)?;
+        // Content-addressed snapshots are immutable. Bound retained data while
+        // avoiding repeat downloads for the claim, dispatch, and fold of a turn.
+        if bytes.len() <= 1024 * 1024 {
+            let mut cache = self.snapshots.lock().await;
+            if cache.len() >= 16 {
+                cache.clear();
+            }
+            cache.insert(key.to_owned(), snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
     async fn step(
         &self,
         mut session: SessionRecord,
         turn: Option<MessageId>,
         lease: &ActiveLease,
+        mut events: Vec<Event>,
     ) -> Result<()> {
         let id = session.session_id;
         let (snapshot, after) = if let Some(reference) = &session.snapshot_ref {
-            (
-                decode::<Snapshot>(&self.blobs.get(&reference.object_key).await?)?,
-                reference.seq,
-            )
+            (self.snapshot(&reference.object_key).await?, reference.seq)
         } else {
             (Snapshot::default(), 0)
         };
-        let mut events = self.tail(id, after, session.head_seq).await?;
+        let cursor = events.last().map_or(after, Event::seq);
+        if cursor < session.head_seq {
+            events.extend(self.tail(id, cursor, session.head_seq).await?);
+        }
         // Replaying the tail also fans out events written by the gateway or a caller,
         // and retries a publication interrupted by the previous worker's death.
         self.publish_tail(id, &events).await?;
@@ -449,28 +475,42 @@ impl Worker {
         calls: &[ToolCallRecord],
         turn: Option<MessageId>,
     ) -> Result<()> {
-        let placement =
-            crate::placement::resolve(&self.store, session.agent_id, self.config.placement_lease)
+        for attempt in 0..2 {
+            let placement = self
+                .placements
+                .resolve(&self.store, session.agent_id, self.config.placement_lease)
                 .await?;
-        let (events, jobs) = {
-            let mut token = lease.lock().await;
-            let dispatched = self
-                .store
-                .dispatch_tool_calls(
-                    session.session_id,
-                    session.head_seq,
-                    token.as_ref().context("lease released")?,
-                    calls,
-                    &placement,
-                )
-                .await?;
-            *token = None;
-            dispatched
-        };
-        self.kill("after_release");
-        self.publish_events(session.session_id, &events).await?;
-        self.publish_tools(session.session_id, &placement, jobs, turn)
-            .await
+            let (events, jobs) = {
+                let mut token = lease.lock().await;
+                let dispatched = self
+                    .store
+                    .dispatch_tool_calls(
+                        session.session_id,
+                        session.head_seq,
+                        token.as_ref().context("lease released")?,
+                        calls,
+                        &placement,
+                    )
+                    .await;
+                let dispatched = match dispatched {
+                    Err(StoreError::LeaseMismatch) if attempt == 0 => {
+                        // Eviction may release a placement before its cached expiry.
+                        // The failed transaction made no changes; resolve once again.
+                        self.placements.invalidate(session.agent_id).await;
+                        continue;
+                    }
+                    result => result?,
+                };
+                *token = None;
+                dispatched
+            };
+            self.kill("after_release");
+            self.publish_events(session.session_id, &events).await?;
+            return self
+                .publish_tools(session.session_id, &placement, jobs, turn)
+                .await;
+        }
+        unreachable!("the second dispatch attempt returns its result")
     }
 
     async fn dispatch_pending(
@@ -480,25 +520,38 @@ impl Worker {
         jobs: Vec<ToolJob>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        // Resolve before releasing the step, and persist the epoch with the jobs.
-        let placement =
-            crate::placement::resolve(&self.store, session.agent_id, self.config.placement_lease)
+        for attempt in 0..2 {
+            // Resolve before releasing the step, and persist the epoch with the jobs.
+            let placement = self
+                .placements
+                .resolve(&self.store, session.agent_id, self.config.placement_lease)
                 .await?;
-        {
-            let mut token = lease.lock().await;
-            self.store
-                .dispatch_placed_tool_jobs(
-                    session.session_id,
-                    token.as_ref().context("lease released")?,
-                    &jobs,
-                    &placement,
-                )
-                .await?;
-            *token = None;
+            {
+                let mut token = lease.lock().await;
+                let result = self
+                    .store
+                    .dispatch_placed_tool_jobs(
+                        session.session_id,
+                        token.as_ref().context("lease released")?,
+                        &jobs,
+                        &placement,
+                    )
+                    .await;
+                match result {
+                    Err(StoreError::LeaseMismatch) if attempt == 0 => {
+                        self.placements.invalidate(session.agent_id).await;
+                        continue;
+                    }
+                    result => result?,
+                }
+                *token = None;
+            }
+            self.kill("after_release");
+            return self
+                .publish_tools(session.session_id, &placement, jobs, turn)
+                .await;
         }
-        self.kill("after_release");
-        self.publish_tools(session.session_id, &placement, jobs, turn)
-            .await
+        unreachable!("the second dispatch attempt returns its result")
     }
 
     async fn publish_tools(
@@ -511,13 +564,14 @@ impl Worker {
         // Dispatch already checked the placement and persisted its epoch with
         // every job. The node checks that fence again before executing. Only
         // recovery needs to resolve placement and repair a changed epoch.
-        for job in jobs {
+        futures::future::try_join_all(jobs.into_iter().map(|job| async move {
             self.tool_stage(id, turn, TurnStage::ToolDispatched, job.request_id)
                 .await;
             self.bus
                 .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
-                .await?;
-        }
+                .await
+        }))
+        .await?;
         Ok(())
     }
 

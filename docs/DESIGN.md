@@ -814,20 +814,43 @@ uses a single machine with `swarmyd` run directly.
 ### 11.1 Laptop plus development nodes
 
 `swarmy remote` is an early deployment shape for the same service boundaries.
-An unprivileged Linux laptop runs the CLI, scheduler, step worker, and inference
-gateway; one Ubuntu EC2 node runs FoundationDB, NATS, SeaweedFS, and privileged
-`swarmyd`. SSH forwards backing-service endpoints. The current FoundationDB
-client also opens connections to the advertised private node address, so the
-measured client needed VPC reachability; SSH-only access from an external laptop
-remains an unresolved deployment requirement. Provider authentication stays
-with the laptop gateway and is never needed by the execution nodes. Agent tool
-processes and disks stay on the nodes and survive individual chat turns.
+The default `--services laptop` configuration runs the CLI, scheduler, step
+worker, and inference gateway on an unprivileged Linux laptop. One Ubuntu EC2
+node runs FoundationDB, NATS, SeaweedFS, and privileged `swarmyd`. SSH forwards
+all backing services, including FoundationDB at its advertised loopback port
+4500. Direct access to the node's private backing-service addresses is not
+required. The laptop cannot run another FoundationDB stack on that port.
+
+`swarmy remote up NAME --services node` instead enables systemd services for
+the scheduler, worker, and gateway on the first node. `dev up --remote NAME`
+then verifies the tunnel and starts no local services. Choose this mode when
+network latency dominates turn time or agents must progress while the laptop
+is disconnected. Choose laptop services when editing those services locally
+or keeping provider credentials on the laptop matters more than latency.
+Node services keep internal database transactions and NATS handoffs near the
+store; the client still commits messages and receives live events over SSH.
+
+The fake provider requires no credential. A ChatGPT node gateway requires
+`--copy-credential`, which prints a warning and sends the configured credential
+file over SSH into a private file on the node. Without that acknowledgement,
+provisioning refuses a ChatGPT node gateway before creating cloud resources.
+Do not run concurrent gateways refreshing the same account on both hosts.
+Agent tool processes and disks stay on the nodes in either configuration.
+
+The worker batches its claim and replay page, and independent inference reads
+share a read phase. Idle and waiting states need no lease or runnable-index
+reads. Immutable session image pins are cached without caching missing rows.
+Placement routes expire at the observed lease deadline and are invalidated on
+step failure. A dispatch rejected after early release invalidates the route and
+resolves it once more; dispatch and execution still check the database epoch.
+These caches do not grant authority or replace the store's fencing checks.
 
 Additional nodes join the first node's private backing-service endpoints and
 provide more computer capacity. They do not replicate the backing services.
 Checkpoints and session history therefore survive execution-process failure,
 but not loss or teardown of the first node's backing data. Closing the laptop
-stops control-plane progress while the cloud machines remain allocated.
+stops control-plane progress in laptop-services mode.
+Node services continue running; cloud machines remain allocated in either mode.
 
 This path tests cloud provisioning, remote placement, and recovery before
 slice 9. It does not satisfy the cloud-deploy goal: that slice still requires

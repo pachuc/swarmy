@@ -67,8 +67,12 @@ impl Store {
             let (input, inflight, value, preceding) = (&input, &inflight, &value, &preceding);
             async move {
                 let now = Timestamp::now();
-                self.check_worker_lease(&trx, id, lease, now).await?;
-                let mut session = self.session(&trx, id).await?;
+                let turn_key = self.turn_key(id);
+                let ((), mut session, turn) = futures::try_join!(
+                    self.check_worker_lease(&trx, id, lease, now),
+                    self.session(&trx, id),
+                    read::<swarmy_core::MessageId>(&trx, &turn_key),
+                )?;
                 if session.head_seq != expected_head {
                     return Err(StoreError::StaleSequence {
                         expected: expected_head,
@@ -91,8 +95,7 @@ impl Store {
                     trx.set(&self.event_space(id).pack(&(*seq,)), value);
                 }
                 trx.set(&self.event_space(id).pack(&(step,)), value);
-                if let Some(turn) = read::<swarmy_core::MessageId>(&trx, &self.turn_key(id)).await?
-                {
+                if let Some(turn) = turn {
                     write(&trx, &self.request_turn_key(request_id), &turn)?;
                 }
                 session.head_seq = step;

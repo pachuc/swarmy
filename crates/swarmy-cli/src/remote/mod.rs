@@ -4,6 +4,7 @@ mod connect;
 mod disconnect;
 mod down;
 mod logs;
+mod services;
 pub(crate) mod ssh;
 mod state;
 #[cfg(test)]
@@ -28,6 +29,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             no_image,
             image_recipe,
+            services,
+            copy_credential,
         } => {
             let _lock = state.lock()?;
             swarmy_config::validate_remote_name(&name)?;
@@ -37,9 +40,14 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             } else {
                 Some(host.image_recipe(&image_recipe)?)
             };
-            let cloud = aws::Aws::new(&loaded.settings.remote.region).await;
+            let mut settings = loaded.settings;
+            if let Some(services) = services {
+                settings.remote.services = services;
+            }
+            let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
+            let cloud = aws::Aws::new(&settings.remote.region).await;
             tokio::select! {
-                result = up::run(&cloud, &host, &state, &loaded.settings.remote, &name, recipe.as_deref(), Duration::from_secs(5)) => result,
+                result = Box::pin(up::run(&cloud, &host, &state, &settings.remote, &name, options, Duration::from_secs(5))) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
@@ -104,6 +112,12 @@ trait Cloud {
 
 /// Key generation and provisioning over SSH, replaceable by a fake in tests.
 trait Host {
+    async fn services(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        options: &services::Options<'_>,
+    ) -> Result<()>;
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
     async fn build_image(
         &self,
@@ -115,6 +129,15 @@ trait Host {
 }
 
 impl Host for ssh::Ssh {
+    async fn services(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        options: &services::Options<'_>,
+    ) -> Result<()> {
+        services::install(node, address, options).await
+    }
+
     async fn build_image(
         &self,
         node: &RemoteNode,

@@ -2,6 +2,9 @@
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read};
 use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
 
+pub(crate) type ImageCache =
+    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<SessionId, ManifestId>>>;
+
 impl Store {
     pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
         self.root
@@ -12,12 +15,26 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn session_image(&self, id: SessionId) -> Result<Option<ManifestId>> {
-        self.transaction(|trx| async move {
-            Ok(read::<ImageRecord>(&trx, &self.session_image_key(id))
-                .await?
-                .map(|image| image.manifest_id))
-        })
-        .await
+        if let Some(manifest) = self.images.lock().await.get(&id) {
+            return Ok(Some(*manifest));
+        }
+        let manifest = self
+            .transaction(|trx| async move {
+                Ok(read::<ImageRecord>(&trx, &self.session_image_key(id))
+                    .await?
+                    .map(|image| image.manifest_id))
+            })
+            .await?;
+        // Only committed, immutable pins are cached. A missing legacy row may
+        // be populated later, and an image tag can move without changing a pin.
+        if let Some(manifest) = manifest {
+            let mut cache = self.images.lock().await;
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(id, manifest);
+        }
+        Ok(manifest)
     }
 
     pub(crate) async fn unregistered_image(&self, image: &str) -> Result<StoreError> {
