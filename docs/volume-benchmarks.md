@@ -1301,3 +1301,341 @@ The final lifecycle cleanup also returned `audit_failures: []`,
 `live_resources: []`, and `retained_versions: []`. Optional Google Cloud
 measurements and statistically meaningful p95 estimates were not attempted.
 All required AWS scenarios and the root test plan were verified.
+
+## 2026-09-17 remote node workflow without local root
+
+### Scope and method
+
+Source: `c405fba94d130108077c97b7d1a8cf84e70a229a`, with documentation changes
+only. The client was the ordinary Ubuntu user on the launcher:
+
+```text
+uid=1000(ubuntu) gid=1000(ubuntu) groups=1000(ubuntu),4(adm),24(cdrom),27(sudo),30(dip),105(lxd)
+```
+
+Having sudo available was not used as a substitute for the no-root requirement.
+No local sudo command was invoked. The workflow commands ran with a first-in-PATH
+`sudo` script that would log an attempt and exit 99; its attempt log was never
+created. Provisioning and image construction used sudo over SSH **on the EC2
+nodes**, as designed. Rust, compilers, rsync, and a system FoundationDB client
+library were already present. `scripts/install-dev-tools.sh` installed tools
+under `~/.local`; the optional AWS CLI was unpacked and installed under
+`~/.local/aws-cli` and `~/.local/bin`, also without root. The local workspace
+build took 9m 31s, outside the `remote up` timer.
+
+AWS credentials were sourced from the existing private file, without printing
+or copying it. `[remote]` used the supplied `us-east-1` subnet and security group,
+`m6id.xlarge`, 100 GiB gp3, and `managed_by_tag = "codex-launcher"`. The group
+already admitted all TCP between members. No network rules were changed.
+Both nodes used Ubuntu AMI `ami-025d99823a4caad37` in `us-east-1a` and local NVMe
+for computer caches. The client was in the same VPC and used private SSH.
+No Google Cloud resources, managed S3 bucket, HMAC key, or objects in the
+pre-existing benchmark bucket were created. Object data stayed in the new
+node's SeaweedFS stack.
+
+The procedure used no `swarmy vol` commands:
+
+```bash
+swarmy remote up no-root-proof
+swarmy remote connect no-root-proof
+SWARMY_FAKE_SCRIPT="$PWD/.dev/remote-fake.json" \
+  SWARMY_FAKE_CALL_LOG=/tmp/swarmy-remote-proof/fake-calls.log \
+  swarmy dev up --remote no-root-proof
+swarmy doctor --remote no-root-proof
+# On the node, through the SSH command printed by up:
+cd ~/swarmy
+sudo bash -c 'set -a; . /etc/swarmy/node.env; set +a; /usr/local/bin/swarmy image build images/base-ubuntu --tag remote'
+# Back on the unprivileged client:
+swarmy run --remote no-root-proof --image base-ubuntu:remote \
+  'Say ready and wait for my next instruction.'
+swarmy chat --remote no-root-proof 01M2PBXXR5TCHDEST70BZ8QCJ0
+swarmy remote add-node no-root-proof
+```
+
+The real ChatGPT flow is documented in [DEV.md](DEV.md#remote-node-workflow).
+There was deliberately no ChatGPT credential in this run. The gateway used the
+existing scripted fake provider from `swarmy-gateway`, with `latency_ms = 30`
+and an indexed `responses` map in `.dev/remote-fake.json`. A response has the
+following format; text responses use `parts: [{"text":{"text":"..."}}]` and
+`stop_reason: "end_turn"`:
+
+```json
+{
+  "parts": [{"tool_call": {
+    "call_id": "proof-1",
+    "tool": "process_start",
+    "input": {"command": "exec python3 -u -m http.server 18765 --bind 127.0.0.1"}
+  }}],
+  "stop_reason": "tool_calls",
+  "usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+            "reasoning_output_tokens": 0, "total_tokens": 0}
+}
+```
+
+The response sequence was ready text; process_start; end-turn text; bash curl
+and marker write; process_list; end-turn text; checkpoint; end-turn text. The
+bash command fetched `http://127.0.0.1:18765/`, printed
+`SERVER_FROM_PREVIOUS_TURN_OK`, and wrote `remote-checkpoint` to
+`/root/proof-marker`. The terminal was driven through a PTY, answering cursor
+position requests as in `crates/swarmy-cli/tests/session/chat.rs`. Durable
+`session show --json` events, not the fake assistant's assertions, established
+the results. The driver initially sent the checkpoint prompt while input was
+locked; that prompt was not submitted. It was resent after the previous turn
+finished, and its tool completion was verified.
+
+### Observed chat and checkpoint
+
+Session `01M2PBXXR5TCHDEST70BZ8QCJ0`, abbreviated from the durable transcript:
+
+```text
+User: Start the managed HTTP server in the background.
+Tool: process_start {command: exec python3 -u -m http.server 18765 --bind 127.0.0.1}
+Result: process_id=01M2PBYNK1XBASKX23F298ZYS4
+Agent: HTTP server started; ask me to use it in the next turn.
+
+User: Use the server from the previous turn and write the checkpoint marker.
+Tool: bash
+Result: exit_code=0, stdout="SERVER_FROM_PREVIOUS_TURN_OK\n"
+Tool: process_list
+Result: process_id=01M2PBYNK1XBASKX23F298ZYS4, status=running
+Agent: The next turn reached the existing background server.
+
+User: Checkpoint the computer.
+Tool: checkpoint {}
+Result: manifest_id=01M2PC0XQ3E1PSX26KP87AMM7A
+Agent: Checkpoint acknowledged.
+```
+
+The first node's registration was `01M2PBJBQSSMTZ3Y5XW0HWMRDB`. It hosted the
+computer before the second node existed. Doctor passed all eleven checks,
+including advertised port preservation and reachability of the remote services.
+
+### Add-node and recovery
+
+`remote add-node no-root-proof` succeeded between `00:25:08Z` and `00:29:12Z`.
+Its release build took 148 seconds. Status showed two live registrations:
+`01M2PBJBQSSMTZ3Y5XW0HWMRDB` and `01M2PC8W2Z9Z4HRVJ7N913ZTJR`, with heartbeat
+ages of three and zero seconds. `remote logs no-root-proof` streamed the first
+node's journal; the observer stopped it with a 12-second timeout (exit 124).
+
+The laptop control services were restored after the latency comparison. The
+fake gateway was restarted with a two-response script: a read-only bash check
+of the marker and server, followed by end-turn text. At `00:30:43Z`, SSH ran
+`sudo systemctl kill --signal=SIGKILL swarmyd` on the first node (old PID 13039).
+Systemd restarted it as PID 26346. Neither backing services nor EC2 were killed.
+The worker logged `waiting for the previous computer's volume writer lease to
+expire` between `00:31:09Z` and `00:31:34Z`.
+
+At event 41 the session received this system notice, and event 42 failed the
+pending tool with the same text:
+
+```text
+Your computer was rebuilt from the snapshot at 2026-09-17T00:24:49.635Z,
+which was 409 seconds before the failure. Running processes and file
+changes after that snapshot were lost. The interrupted tool call failed;
+check external side effects before retrying.
+```
+
+The check was deliberately read-only, so it was safe to submit another turn
+after this error. The fake gateway was restarted with that check as its first
+response and a new call id. The terminal driver and manual validation left more
+than a placement lease between recovery and this retry. Event 51 delivered
+another notice for the same snapshot, this time saying 474 seconds. Event 52
+then completed the retry:
+
+```text
+User: Retry the read-only marker and background server checks after the rebuild notice.
+Tool: bash
+Result: exit_code=0
+        stdout="remote-checkpoint\nBACKGROUND_PROCESS_LOST\n"
+        manifest_id=01M2PC0XQ3E1PSX26KP87AMM7A
+        stderr="curl: (7) Failed to connect to 127.0.0.1 port 18765 ..."
+```
+
+The first node's journal proves that the successful retry ran there at epoch 3
+at `00:32:44.141360Z` and committed at `00:32:44.232048Z`. The joining node's
+journal showed registration but no tool execution. From the worker's preference
+for another live node on takeover, the inferred sequence is epoch 2 assigned
+to the joining node without materializing a computer, followed by expiry of
+that unstarted placement and a second takeover back to the first node. This
+was not a demonstrated disk rehydration on the added node. It did verify an
+acknowledged checkpoint surviving the hosting process's death, loss of the
+background process, and durable rebuild messaging in the resumed chat.
+
+Two notice issues are proposed tasks. First, an unstarted recovery placement
+can expire while a user reads the failure notice, producing another apparent
+computer failure without another host death. Second, the notice labels the
+snapshot age at takeover as time "before the failure": the observed kill was
+about 353 seconds after the checkpoint, not 409 or 474. Report the recovery-time
+age accurately, and distinguish loss of a resident computer from expiry of a
+placement that never booted. The initial local assertion expecting one notice
+failed; the final evidence explicitly records both notices rather than claiming
+a single-notice acceptance pass.
+
+### Startup and tool timings
+
+| Measurement | Result | Boundary |
+| --- | ---: | --- |
+| `remote up` | 534.8 s | CLI's own elapsed report, including provisioning and release build |
+| Release build on the first node | 439 s | Provisioning script's build timer, included in up |
+| `remote connect` | 8.068 s | External monotonic timer around one CLI invocation |
+
+Up ran from `2026-09-17T00:07:59Z` to `00:16:54Z`. Connect ran from
+`00:22:41.522045Z` to `00:22:49.590514Z`. Its time includes a failed public-IP
+SSH probe before successful private-IP fallback. The CLI emits no start/end
+timestamps or elapsed time for connect, so the requested CLI-owned connect
+measurement could not be collected. This is a proposed follow-up, not a timer
+silently attributed to the CLI.
+
+The latency script issued 21 serial `bash` calls with
+`{"command":"printf LATENCY_OK","timeout_ms":120000}`, then ended the turn.
+Each completion had exit code zero and exactly `LATENCY_OK` on stdout. The
+observer timestamped JSON `tool_call_requested` and `tool_call_completed`
+records with `time.monotonic_ns()` and subtracted their arrival times by call
+id. The first call, which creates the computer, was excluded; the other twenty
+were the warm sample. No inference duration, session startup, image build,
+checkpoint, or `swarmy vol` operation is in that interval.
+
+For the tunnel sample, `swarmy --json run --remote no-root-proof --image
+base-ubuntu:remote` used the laptop scheduler, worker, and gateway. For the
+on-node sample, those local services were stopped with `dev down`; the same
+five CLI/service executable files were copied to the first node and their
+SHA-256 hashes matched. Scheduler, worker, gateway, CLI, and the monotonic
+observer ran there using `.dev/env` and the private service endpoints, with no
+SSH in the timed interval. Only the fake script and binaries were copied; no
+provider credential was involved. Both samples set scheduler scan/resend
+intervals to 50/100 ms and fake latency to zero. The normal chat used defaults.
+The second node was provisioning independently during these samples.
+
+| Routed bash call | Mean | Median | Min–max | First call, excluded |
+| --- | ---: | ---: | ---: | ---: |
+| Client with remote profile | 98.296 ms | 47.639 ms | 36.138–224.022 ms | 153.632 ms |
+| Worker and observer on first node | 129.831 ms | 132.956 ms | 93.361–146.193 ms | 161.997 ms |
+| Client minus on-node | -31.535 ms | -85.317 ms | not applicable | not applicable |
+
+Warm samples in milliseconds, in execution order:
+
+```text
+client: 224.022 185.783 110.000 187.094 192.000 191.539 192.652 164.686
+         36.503  36.138  36.658  36.752  43.996  47.494  46.436  44.418
+         47.785  48.662  45.935  47.364
+node:   136.017 139.093 142.437 142.722 146.193  93.361 137.287 133.672
+        137.952 133.006 122.960 132.906 123.103 128.572 124.981 124.032
+        125.869 123.346 114.850 134.258
+```
+
+These are two deployment-topology samples, not an isolated estimate of SSH
+transport overhead or a WAN percentile. Moving control services onto the node
+also changes CPU contention, and the client sample has a visible settling
+pattern. The negative difference does not mean SSH reduces execution latency.
+In addition, the direct FoundationDB connections below mean this is not an
+all-traffic-through-the-tunnel measurement. A positive tunnel-only latency
+penalty remains unverified.
+
+### FoundationDB reachability finding
+
+The coordinator file remained `dev:dev@127.0.0.1:4500`, and doctor passed.
+Nevertheless, `ss -tnp` on the client showed each local control service also
+connected directly to the advertised node address. Representative established
+connections, with ephemeral ports retained from the observation:
+
+```text
+swarmy-worker   127.0.0.1:45408      -> 127.0.0.1:4500
+swarmy-worker   172.31.62.91:60864   -> 172.31.59.242:4500
+swarmy-worker   127.0.0.1:50880      -> 127.0.0.1:4222
+swarmy-scheduler 172.31.62.91:60850  -> 172.31.59.242:4500
+swarmy-gateway  172.31.62.91:60868   -> 172.31.59.242:4500
+```
+
+Thus this run proves operation as an unprivileged same-VPC client. It does not
+prove the intended SSH-only workflow from a laptop with no private route.
+Preserving local port 4500 solves the previously documented port assertion but
+not advertised-address reachability. DEV.md now makes this prerequisite
+explicit. Proposed task: make every FoundationDB endpoint reachable from an
+SSH-only client without laptop root, and add acceptance coverage from a client
+that cannot route directly to the node's private address. Doctor should detect
+this limitation instead of treating coordinator reachability as sufficient.
+
+A process-local negative check confirmed this was a dependency, not an unused
+connection. A temporary `LD_PRELOAD` shim intercepted `connect()` and returned
+`ENETUNREACH` only for `172.31.59.242:4500`; localhost and SSH connections were
+unchanged. It was compiled as the ordinary user with `cc -shared -fPIC -Wall
+-Wextra -Werror ... -ldl`, and was not installed or applied to other processes.
+
+```bash
+timeout 15 env LD_PRELOAD=/tmp/swarmy-remote-proof/block-private-fdb.so \
+  swarmy session list --remote no-root-proof --json
+# exit 1, no session rows; stderr ends: Error: FdbError { error_code: 1031 }
+env LD_PRELOAD=/tmp/swarmy-remote-proof/block-private-fdb.so \
+  swarmy doctor --remote no-root-proof --json
+# exit 0, "ok": true
+swarmy session list --remote no-root-proof --json
+# exit 0, three session rows
+```
+
+This simulated loss of the private route requires neither local root nor changes
+to security groups. It is not a test from a physically external laptop.
+
+### Validation and cleanup
+
+All three required commands passed on the client as `ubuntu`:
+
+```bash
+cargo fmt --all --check
+scripts/dev-stack.sh start
+source .dev/env
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+scripts/dev-stack.sh stop
+```
+
+The temporary local backing stack was used for the workspace integration tests
+and stopped before remote connect, so port 4500 was free. Formatting, tests,
+and Clippy exited zero (241 tests passed, one ignored, zero failed). The separate root-only volume and sandbox acceptance
+programs were not invoked locally; the live remote chat supplied the node
+execution exercise. Optional tests without their required environment retain
+the repository's normal skip behavior. The real ChatGPT login/session, an
+external client with no VPC route, CLI-owned connect timing, and a positive
+isolated tunnel-latency penalty remain unverified for the reasons above.
+
+Teardown ran as the ordinary client user:
+
+```text
+$ swarmy dev down
+services: down; remote stack preserved
+$ swarmy remote disconnect no-root-proof
+no-root-proof: disconnected
+$ swarmy remote down no-root-proof
+Terminating i-00f038e52e066a37a
+Confirmed i-00f038e52e066a37a is terminated or absent
+Deleting key pair swarmy-01M2PC1G1DHJJAQPFFPC1T0W5A
+Terminating i-0cd85e43c2a5e0248
+Confirmed i-0cd85e43c2a5e0248 is terminated or absent
+Deleting key pair swarmy-01M2PB23J85JBXB7ESRJ6C7AT3
+Removed remote no-root-proof
+```
+
+Independent provider queries at `2026-09-17T00:35:20Z` confirmed termination
+and removal of both task-created root volumes and imported keys:
+
+```bash
+aws ec2 describe-instances --region us-east-1 \
+  --instance-ids i-0cd85e43c2a5e0248 i-00f038e52e066a37a \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
+# [{"Id":"i-00f038e52e066a37a","State":"terminated"},
+#  {"Id":"i-0cd85e43c2a5e0248","State":"terminated"}]
+aws ec2 describe-volumes --region us-east-1 \
+  --filters Name=tag:Name,Values=no-root-proof,no-root-proof-2 \
+  --query 'Volumes[].VolumeId'
+# []
+aws ec2 describe-key-pairs --region us-east-1 \
+  --filters Name=key-name,Values=swarmy-01M2PB23J85JBXB7ESRJ6C7AT3,swarmy-01M2PC1G1DHJJAQPFFPC1T0W5A \
+  --query 'KeyPairs[].KeyName'
+# []
+```
+
+The deleted EBS volumes were `vol-01c2df92c27efcb5e` and
+`vol-0ef8fff9d923e53f4`. Instance-store disks and assigned public IPv4 addresses
+were released with their instances. The pre-existing launcher, subnet, security
+group, and benchmark bucket were left intact. No Google Cloud resources or
+external S3 objects needed cleanup because this workflow created none.
