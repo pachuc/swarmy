@@ -41,11 +41,7 @@ async fn dispatch_arguments(
     };
     let id = session.session_id;
     store
-        .create_session(&session, jiff::Timestamp::now())
-        .await
-        .unwrap();
-    store
-        .set_session_image(id, "persistent", &ImageTag("test".into()))
+        .create_session(&session, jiff::Timestamp::now(), "persistent:test")
         .await
         .unwrap();
     store

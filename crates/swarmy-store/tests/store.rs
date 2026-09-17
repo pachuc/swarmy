@@ -1,3 +1,6 @@
+#[path = "support/mod.rs"]
+mod image_fixture;
+
 use std::sync::{Arc, OnceLock};
 
 use foundationdb::{Database, tuple::Subspace};
@@ -68,7 +71,11 @@ impl TestStore {
     async fn create(&self) -> SessionId {
         let record = session();
         self.store
-            .create_session(&record, timestamp(0))
+            .create_session(
+                &record,
+                timestamp(0),
+                image_fixture::image(&self.store).await,
+            )
             .await
             .unwrap();
         record.session_id
@@ -95,7 +102,11 @@ async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
     record.state = SessionState::Idle;
     let id = record.session_id;
     test.store
-        .create_session(&record, timestamp(0))
+        .create_session(
+            &record,
+            timestamp(0),
+            image_fixture::image(&test.store).await,
+        )
         .await
         .unwrap();
     let (first, second) = tokio::join!(
@@ -411,7 +422,11 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
     let record = session();
     let id = record.session_id;
     test.store
-        .create_session(&record, timestamp(0))
+        .create_session(
+            &record,
+            timestamp(0),
+            image_fixture::image(&test.store).await,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -419,7 +434,13 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
         Some(record.clone())
     );
     assert!(matches!(
-        test.store.create_session(&record, timestamp(0)).await,
+        test.store
+            .create_session(
+                &record,
+                timestamp(0),
+                image_fixture::image(&test.store).await
+            )
+            .await,
         Err(StoreError::SessionExists)
     ));
     test.store
@@ -594,7 +615,10 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
         .await
         .unwrap();
     let record = session();
-    store.create_session(&record, timestamp(0)).await.unwrap();
+    store
+        .create_session(&record, timestamp(0), image_fixture::image(&store).await)
+        .await
+        .unwrap();
     let reopened = Store::open(Some(&cluster), Some(&path), blobs)
         .await
         .unwrap();
@@ -1562,3 +1586,138 @@ mod tools;
 
 #[path = "store/placements.rs"]
 mod placements;
+
+#[tokio::test]
+async fn creation_requires_a_registered_image_and_pins_it_atomically() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let record = session();
+    let error = test
+        .store
+        .create_session(&record, timestamp(0), "missing:tag")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("registered images: (none)"));
+    let image = image_fixture::image(&test.store).await;
+    let manifest = test
+        .store
+        .get_image("fixture", &ImageTag("test".into()))
+        .await
+        .unwrap();
+    // Cross a page boundary to verify the error lists every registration.
+    for index in 0..65 {
+        test.store
+            .put_image("other", &ImageTag(format!("{index:02}")), manifest.unwrap())
+            .await
+            .unwrap();
+    }
+    for invalid in ["missing:tag", "fixture:unknown"] {
+        let error = test
+            .store
+            .create_session(&record, timestamp(0), invalid)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(invalid) && error.contains("fixture:test") && error.contains("other:64"),
+            "{error}"
+        );
+        assert!(
+            test.store
+                .fetch_session(record.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            test.store
+                .session_image(record.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            test.store
+                .scan_runnable(runnable_partition(record.session_id), None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    test.store
+        .create_session(&record, timestamp(0), image)
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.session_image(record.session_id).await.unwrap(),
+        manifest
+    );
+    let replacement = ManifestId::from_ulid(Ulid::generate());
+    test.store
+        .put_manifest(
+            replacement,
+            &ManifestHeader {
+                size: u64::from(CHUNK_SIZE),
+                chunk_size: CHUNK_SIZE,
+                root_hash: ContentHash::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+    test.store
+        .put_image("fixture", &ImageTag("test".into()), replacement)
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.session_image(record.session_id).await.unwrap(),
+        manifest
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn legacy_sessions_without_images_remain_readable() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let record = session();
+    let key = test
+        .root
+        .pack(&("session", record.session_id.as_ulid().to_bytes().as_slice()));
+    let bytes = encode(&(
+        record.session_id,
+        record.agent_id,
+        record.state,
+        record.head_seq,
+        None::<u64>,
+    ))
+    .unwrap();
+    test.db
+        .run(|trx, _| {
+            let key = &key;
+            let bytes = &bytes;
+            async move {
+                trx.set(key, bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.fetch_session(record.session_id).await.unwrap(),
+        Some(record.clone())
+    );
+    assert_eq!(
+        test.store.list_sessions(None, 64).await.unwrap(),
+        vec![record.clone()]
+    );
+    assert!(
+        test.store
+            .session_image(record.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    test.cleanup().await;
+}

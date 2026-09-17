@@ -66,7 +66,12 @@ enum Command {
         image: Option<String>,
     },
     /// Open a terminal conversation, or resume a session
-    Chat { session_id: Option<ulid::Ulid> },
+    Chat {
+        session_id: Option<ulid::Ulid>,
+        /// Base image in NAME:TAG form; otherwise use `default_image`.
+        #[arg(long, conflicts_with = "session_id")]
+        image: Option<String>,
+    },
     /// Inspect stored sessions
     Session {
         #[command(subcommand)]

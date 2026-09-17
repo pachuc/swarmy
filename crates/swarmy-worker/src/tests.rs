@@ -1,3 +1,6 @@
+#[path = "../../swarmy-store/tests/support/mod.rs"]
+mod image_fixture;
+
 use std::{
     collections::BTreeSet,
     sync::{
@@ -154,6 +157,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 snapshot_ref: None,
             },
             Timestamp::now(),
+            image_fixture::image(&store).await,
         )
         .await
         .unwrap();

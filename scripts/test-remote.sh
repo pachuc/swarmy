@@ -91,6 +91,17 @@ for name in ['FoundationDB', 'NATS', 'S3']:
     assert checks['remote ' + name]['ok']
 assert 'fdbserver' not in checks
 PY
+# This fake-provider session never materializes a computer, but still needs a registered image.
+mkdir -p "$work/remote-fixture/rootfs"
+cat > "$work/remote-fixture/recipe.toml" <<'EOF'
+disk_size = 16777216
+source_date_epoch = 1714003200
+[source]
+kind = "directory"
+path = "rootfs"
+EOF
+"$cli" image build --remote local "$work/remote-fixture" --tag test
+export SWARMY_DEFAULT_IMAGE=remote-fixture:test
 timeout 45 "$cli" run --remote local 'what time is it' > run.log
 cat run.log
 grep -q 'Hello from swarmy!' run.log

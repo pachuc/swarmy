@@ -1,3 +1,6 @@
+#[path = "../../swarmy-store/tests/support/mod.rs"]
+mod image_fixture;
+
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
@@ -139,6 +142,10 @@ impl Fixture {
     async fn job(&self) -> InferenceJob {
         let session_id = SessionId::from_ulid(Ulid::generate());
         let now = Timestamp::now();
+        let settings = swarmy_config::Settings {
+            default_image: Some(image_fixture::image(&self.store).await.into()),
+            ..Default::default()
+        };
         self.store
             .create_session(
                 &SessionRecord {
@@ -149,9 +156,17 @@ impl Fixture {
                     snapshot_ref: None,
                 },
                 now,
+                settings.session_image(None).unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(
+            self.store.session_image(session_id).await.unwrap(),
+            self.store
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
+                .await
+                .unwrap()
+        );
         let lease = self
             .store
             .claim_lease(

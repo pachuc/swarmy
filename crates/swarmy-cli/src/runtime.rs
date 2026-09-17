@@ -61,6 +61,9 @@ enum Command {
     },
     Chat {
         session_id: Option<ulid::Ulid>,
+        /// Base image in NAME:TAG form; otherwise use `default_image`.
+        #[arg(long, conflicts_with = "session_id")]
+        image: Option<String>,
     },
     Session {
         #[command(subcommand)]
@@ -95,12 +98,12 @@ fn main() -> anyhow::Result<()> {
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
             Command::Run { prompt, image } => session::run(prompt, image, cli.json).await,
-            Command::Chat { session_id } => {
+            Command::Chat { session_id, image } => {
                 anyhow::ensure!(
                     !cli.json,
                     "chat is a terminal interface and does not support --json"
                 );
-                chat::run(session_id.map(swarmy_core::SessionId::from_ulid)).await
+                chat::run(session_id.map(swarmy_core::SessionId::from_ulid), image).await
             }
             Command::Session { command } => session::inspect(command, cli.json).await,
         }
