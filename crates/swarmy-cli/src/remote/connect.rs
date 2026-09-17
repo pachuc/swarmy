@@ -65,16 +65,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     let socket_dir = tempfile::Builder::new()
         .prefix("swarmy-ssh-")
         .tempdir_in("/tmp")?;
-    let profile = RemoteProfile {
-        name: name.into(),
-        socket_path: socket_dir.path().join("control"),
-        pid: 0,
-        ports,
-        remote_ports: node.ports,
-        fdb_cluster_file: remote_path(state_dir, name, "cluster")?,
-        nats_url: format!("nats://127.0.0.1:{}", ports.nats),
-        s3_endpoint: format!("http://127.0.0.1:{}", ports.s3),
-    };
+    let profile = new_profile(state_dir, &node, ports, socket_dir.path().join("control"))?;
     let (mut command, log_path) = tunnel_command(&node, &profile, state_dir, &address)?;
     command.kill_on_drop(false);
     drop(reservations);
@@ -129,6 +120,25 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         json,
         &Timing::new(started, probe_elapsed, startup.elapsed(), false),
     )
+}
+
+pub(super) fn new_profile(
+    state_dir: &Path,
+    node: &swarmy_config::RemoteNode,
+    ports: RemotePorts,
+    socket_path: std::path::PathBuf,
+) -> Result<RemoteProfile> {
+    Ok(RemoteProfile {
+        name: node.name.clone(),
+        socket_path,
+        pid: 0,
+        ports,
+        remote_ports: node.ports,
+        fdb_cluster_file: remote_path(state_dir, &node.name, "cluster")?,
+        nats_url: format!("nats://127.0.0.1:{}", ports.nats),
+        s3_endpoint: format!("http://127.0.0.1:{}", ports.s3),
+        default_image: node.default_image.clone(),
+    })
 }
 
 fn tunnel_command(
@@ -217,6 +227,9 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
             profile.nats_url,
             profile.s3_endpoint
         );
+        if let Some(image) = &profile.default_image {
+            println!("# Default image: {image}");
+        }
         println!("# swarmy dev up --remote {}", profile.name);
         println!(
             "# Connected in {:.3}s (address probing: {:.3}s; tunnel startup: {:.3}s; reused: {})",
@@ -290,6 +303,7 @@ mod tests {
             fdb_cluster_file: dir.path().join("cluster"),
             nats_url: String::new(),
             s3_endpoint: String::new(),
+            default_image: None,
         };
         for (settings, destination) in [
             (None, "127.0.0.1"),

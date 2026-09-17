@@ -6,7 +6,11 @@ This page describes provisioning and the saved node state.
 
 Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
 EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
-NATS, SeaweedFS, and swarmyd under systemd. The local machine needs `ssh`,
+NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
+`images/base-ubuntu` as root with `/etc/swarmy/node.env` and registers
+`base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
+the image build duration is printed separately from the total provisioning time.
+The local machine needs `ssh`,
 `ssh-keygen`, and `rsync`. AWS credentials use the SDK's standard credential chain.
 The current FoundationDB client additionally connects to the advertised private
 address on TCP 4500; the client machine needs a route to it. The SSH coordinator
@@ -41,17 +45,35 @@ The script refuses to format EBS disks or reuse unrecognized filesystems.
 
 ```sh
 swarmy remote up demo
-# up prints an SSH command and its elapsed time
+# up prints image build time, total elapsed time, and an SSH command
 swarmy remote add-node demo
 swarmy remote connect demo
 # connect reports total, address probing, and tunnel startup seconds
 swarmy doctor --remote demo
 swarmy dev up --remote demo
+swarmy chat --remote demo        # ask it to run pwd; no image flag needed
 swarmy remote status
 swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo
 ```
+
+Use `--image-recipe images/custom` on `remote up` to select a recipe directory
+within the copied checkout. Relative paths are resolved from the checkout root;
+absolute paths must also be inside the checkout. The recipe must contain
+`recipe.toml` and cannot be in an excluded directory such as `.swarmy` or
+`target`. It still registers as `base-ubuntu:NAME`. Use `--no-image` to skip the
+build; this does not set a remote default. These options cannot be combined.
+`add-node` reuses the stack's registry and does not rebuild the image.
+
+After a successful build, the node record stores `default_image`.
+`connect` copies it into `<state directory>/remote/<name>.profile.json` alongside
+the service endpoints. Selecting that profile with `--remote NAME`,
+`SWARMY_REMOTE`, or `[remote] profile` applies the stack's default to local
+commands, overriding a local configuration or environment default.
+An explicit session `--image NAME:TAG` still takes precedence. Older profiles
+and remotes created with `--no-image` preserve any locally configured default;
+otherwise a new session requires an explicit registered image.
 
 The instance, root volume, and imported ed25519 key pair receive `Name` and
 `managed-by` tags at creation. IAM needs EC2 `DescribeImages`,
@@ -105,7 +127,10 @@ permanently deletes the development node and its EBS backing data.
 the first node still loses this development stack. For a recovery exercise,
 place a computer on a joining node and terminate that node while the first node
 remains running. `status` lists every saved instance and the stack's live and
-stale swarmyd registrations. The laptop tunnel forwards to the first node's
+stale swarmyd registrations, plus the registered image names, tags, and manifest
+ids. JSON output includes `images` and `image_error`. Image and registration
+queries require a connected tunnel; disconnected or unavailable stores are
+reported as unknown rather than as an empty registry. The laptop tunnel forwards to the first node's
 loopback address and keeps local FoundationDB port 4500; stop any local dev stack
 before connecting. Remotes created with private FoundationDB advertising must
 be recreated with this version before using `add-node`.

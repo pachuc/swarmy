@@ -3,7 +3,15 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
-    Up { name: String },
+    Up {
+        name: String,
+        /// Skip building and registering the stack's default image
+        #[arg(long, conflicts_with = "image_recipe")]
+        no_image: bool,
+        /// Recipe directory within the checkout, relative to its root
+        #[arg(long, default_value = "images/base-ubuntu")]
+        image_recipe: std::path::PathBuf,
+    },
     /// Join another node to a remote over its private network
     AddNode { name: String },
     /// Terminate all nodes and remove their key pairs and local state
@@ -12,7 +20,7 @@ pub enum Command {
     Connect { name: String },
     /// Stop the recorded SSH tunnel
     Disconnect { name: String },
-    /// List saved instances, tunnels, and store heartbeats
+    /// List saved instances, tunnels, store heartbeats, and registered images
     Status,
     /// Follow the remote swarmyd journal
     Logs { name: String },
@@ -32,4 +40,56 @@ pub fn select(name: Option<&str>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Command;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    #[test]
+    fn image_build_options_parse() {
+        for (args, skipped, recipe) in [
+            (vec!["remote", "up", "demo"], false, "images/base-ubuntu"),
+            (
+                vec!["remote", "up", "demo", "--no-image"],
+                true,
+                "images/base-ubuntu",
+            ),
+            (
+                vec!["remote", "up", "demo", "--image-recipe", "images/custom"],
+                false,
+                "images/custom",
+            ),
+        ] {
+            let Command::Up {
+                name,
+                no_image,
+                image_recipe,
+            } = Cli::try_parse_from(args).unwrap().command
+            else {
+                panic!("expected up")
+            };
+            assert_eq!(name, "demo");
+            assert_eq!(no_image, skipped);
+            assert_eq!(image_recipe, std::path::Path::new(recipe));
+        }
+        assert!(
+            Cli::try_parse_from([
+                "remote",
+                "up",
+                "demo",
+                "--no-image",
+                "--image-recipe",
+                "images/custom"
+            ])
+            .is_err()
+        );
+    }
 }

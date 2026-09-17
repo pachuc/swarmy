@@ -1,7 +1,11 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 //! `swarmy-session` includes this file directly, so it must not reach into the
 //! parent module.
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use swarmy_config::{RemoteNode, RemoteProfile};
@@ -146,6 +150,31 @@ impl Ssh {
         Ok(Self { repo })
     }
 
+    /// Resolve before launching so missing recipes cannot leave cloud resources behind.
+    pub fn image_recipe(&self, path: &Path) -> Result<PathBuf> {
+        let path = self
+            .repo
+            .join(path)
+            .canonicalize()
+            .context("resolve image recipe directory")?;
+        ensure!(
+            path.is_dir() && path.join("recipe.toml").is_file(),
+            "image recipe must be a directory containing recipe.toml"
+        );
+        path.to_str().context("image recipe path must be UTF-8")?;
+        let relative = path
+            .strip_prefix(&self.repo)
+            .context("image recipe must be inside the copied checkout")?;
+        ensure!(
+            !relative.components().any(|part| matches!(
+                part.as_os_str().to_str(),
+                Some("target" | ".dev" | ".swarmy" | ".git")
+            )),
+            "image recipe is excluded from the copied checkout"
+        );
+        Ok(relative.to_owned())
+    }
+
     /// Copy the checkout and run the provisioning script; returns the reachable address.
     pub async fn provision(
         &self,
@@ -217,6 +246,37 @@ impl Ssh {
         .await?;
         Ok(address)
     }
+}
+
+/// Use the node's service environment, including its native `FoundationDB` library.
+pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
+    checked(
+        base(node)?
+            .arg(address)
+            .arg(image_build_command(recipe, &node.name)?),
+        "build and register remote image",
+    )
+    .await
+}
+
+fn image_build_command(recipe: &Path, tag: &str) -> Result<String> {
+    let recipe = recipe.to_str().context("image recipe path must be UTF-8")?;
+    let build = shell_words::join([
+        "/usr/local/bin/swarmy",
+        "image",
+        "build",
+        recipe,
+        "--name",
+        "base-ubuntu",
+        "--tag",
+        tag,
+    ]);
+    Ok(format!(
+        "cd swarmy && sudo -n bash -c {}",
+        shell_words::quote(&format!(
+            "set -e; set -a; . /etc/swarmy/node.env; set +a; exec {build}"
+        ))
+    ))
 }
 
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
@@ -307,7 +367,57 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::tunnel_authorization;
+    use super::{Ssh, image_build_command, tunnel_authorization};
+
+    #[test]
+    fn image_command_sources_node_environment_and_quotes_recipe() {
+        let path = std::path::Path::new("images/custom ' $(touch unwanted)");
+        let command = image_build_command(path, "demo").unwrap();
+        let outer = shell_words::split(&command).unwrap();
+        assert_eq!(
+            &outer[..7],
+            ["cd", "swarmy", "&&", "sudo", "-n", "bash", "-c"]
+        );
+        let script = &outer[7];
+        assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; exec "));
+        let args = shell_words::split(script.split("exec ").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            args,
+            [
+                "/usr/local/bin/swarmy",
+                "image",
+                "build",
+                path.to_str().unwrap(),
+                "--name",
+                "base-ubuntu",
+                "--tag",
+                "demo"
+            ]
+        );
+    }
+
+    #[test]
+    fn recipes_must_be_copied_with_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        for recipe in ["images/custom", ".swarmy/excluded"] {
+            std::fs::create_dir_all(repo.join(recipe)).unwrap();
+            std::fs::write(repo.join(recipe).join("recipe.toml"), "").unwrap();
+        }
+        let host = Ssh { repo: repo.clone() };
+        assert_eq!(
+            host.image_recipe(std::path::Path::new("images/custom"))
+                .unwrap(),
+            std::path::Path::new("images/custom")
+        );
+        for recipe in [
+            repo.join("missing"),
+            repo.join(".swarmy/excluded"),
+            dir.path().to_owned(),
+        ] {
+            assert!(host.image_recipe(&recipe).is_err());
+        }
+    }
 
     #[test]
     fn tunnel_key_authorization_restricts_sessions_and_destinations() {

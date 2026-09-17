@@ -19,18 +19,27 @@ use crate::remote_command::Command;
 use state::State;
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
-    // The base settings are enough here: a selected tunnel profile only rewrites endpoints.
+    // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
     let state = State::open(&state_dir.join("remote"))?;
     match command {
-        Command::Up { name } => {
+        Command::Up {
+            name,
+            no_image,
+            image_recipe,
+        } => {
             let _lock = state.lock()?;
             swarmy_config::validate_remote_name(&name)?;
             let host = ssh::Ssh::discover()?;
+            let recipe = if no_image {
+                None
+            } else {
+                Some(host.image_recipe(&image_recipe)?)
+            };
             let cloud = aws::Aws::new(&loaded.settings.remote.region).await;
             tokio::select! {
-                result = up::run(&cloud, &host, &state, &loaded.settings.remote, &name, Duration::from_secs(5)) => result,
+                result = up::run(&cloud, &host, &state, &loaded.settings.remote, &name, recipe.as_deref(), Duration::from_secs(5)) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
@@ -96,10 +105,25 @@ trait Cloud {
 /// Key generation and provisioning over SSH, replaceable by a fake in tests.
 trait Host {
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
+    async fn build_image(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        recipe: &std::path::Path,
+    ) -> Result<()>;
     async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String>;
 }
 
 impl Host for ssh::Ssh {
+    async fn build_image(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        recipe: &std::path::Path,
+    ) -> Result<()> {
+        ssh::build_image(node, address, recipe).await
+    }
+
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
         ssh::generate_key(node).await
     }
