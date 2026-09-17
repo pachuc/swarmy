@@ -29,7 +29,7 @@ impl Drop for RestoreTerminal {
     }
 }
 
-pub async fn run(id: Option<SessionId>) -> Result<()> {
+pub async fn run(id: Option<SessionId>, image: Option<String>) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "chat requires an interactive terminal"
@@ -57,7 +57,11 @@ pub async fn run(id: Option<SessionId>) -> Result<()> {
     terminal.draw(|frame| {
         frame.render_widget(Paragraph::new("Loading conversation..."), frame.area());
     })?;
-    let conversation = Conversation::open(id).await?;
+    ensure!(
+        id.is_none() || image.is_none(),
+        "--image applies only to a new session"
+    );
+    let conversation = Conversation::open(id, image.as_deref()).await?;
     interact(&mut terminal, &mut keys, conversation, &provider).await
 }
 
@@ -121,6 +125,8 @@ async fn interact(
     let mut transcript = Transcript::default();
     let mut input = Input::default();
     let mut scroll = Scroll::default();
+    let mut rendered = false;
+    let mut enabled = false;
     loop {
         terminal.draw(|frame| {
             let [body, status, prompt] = panes(frame.area());
@@ -137,9 +143,34 @@ async fn interact(
                 frame.set_cursor_position((prompt.x + cursor, prompt.y));
             }
         })?;
+        if rendered {
+            conversation
+                .observe(swarmy_core::TurnStage::FinalTextRendered)
+                .await;
+            rendered = false;
+        }
+        if enabled {
+            conversation
+                .observe(swarmy_core::TurnStage::InputEnabled)
+                .await;
+            enabled = false;
+        }
         tokio::select! {
             event = conversation.next() => {
-                if let Notification::Transcript(event) = event? { transcript.apply(event); }
+                match event? {
+                Notification::Transcript(event) => {
+                    rendered = matches!(&event, crate::conversation::TranscriptEvent::AssistantMessageFinal(message)
+                        if crate::session::final_text(&swarmy_core::Event::MessageAppended { seq: 0, message: message.clone() }));
+                    enabled = matches!(&event, crate::conversation::TranscriptEvent::SessionIdle) && !transcript.ready;
+                    transcript.apply(event);
+                }
+                Notification::Delta(swarmy_llm::Delta::Completed(response))
+                    if response.stop_reason == swarmy_llm::StopReason::EndTurn => {
+                    rendered = response.parts.iter().any(|part| matches!(part,
+                        swarmy_core::Part::Text { text } if !text.is_empty()));
+                }
+                _ => {}
+                }
             }
             event = keys.next() => {
                 if let Event::Key(key) = event.context("terminal input closed")??

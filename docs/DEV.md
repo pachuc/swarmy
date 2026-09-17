@@ -10,7 +10,8 @@ work in Bash and fish without sourcing an environment file.
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
 ./target/debug/swarmy dev up
 ./target/debug/swarmy doctor
-./target/debug/swarmy run "hello"
+sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
+./target/debug/swarmy run --image base-ubuntu:dev "hello"
 ./target/debug/swarmy dev status
 ./target/debug/swarmy dev down
 ```
@@ -63,6 +64,7 @@ store_directory = "swarmy"
 bus_prefix = ""
 provider = "fake"
 model = "gpt-5"
+default_image = "base-ubuntu:dev"
 reasoning_effort = "medium"
 credential_file = "/home/me/.swarmy/auth.json"
 worker_partitions = "0-255"
@@ -72,6 +74,15 @@ scheduler_partitions = "0-255"
 script = ".swarmy/dev/fake.json"
 call_log = ".swarmy/dev/calls.log"
 ```
+
+Every new session needs a registered image, including sessions that only use
+remote tools. Set `default_image = "NAME:TAG"` or `SWARMY_DEFAULT_IMAGE`, or pass
+`--image NAME:TAG` to `swarmy run` or `swarmy chat`. The flag overrides the
+setting, which has no built-in default. Unknown images fail before a session is
+created and the error lists registered images; `swarmy image ls` also lists them.
+Image construction requires root. The computer is materialized on first sandbox
+tool use, so a fake-provider conversation without sandbox tools needs no node.
+Resuming an existing session keeps its pinned image.
 
 The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
 `s3_access_key`, `s3_secret_key`, `s3_bucket`, `s3_prefix`, and `s3_region`.
@@ -418,7 +429,7 @@ needs local NVMe storage; caches go there and backing databases go on EBS.
 ```bash
 chmod 600 .swarmy/config.toml
 swarmy dev down                 # stop any local stack before reserving port 4500
-swarmy remote up demo           # builds on EC2; prints elapsed time and SSH command
+swarmy remote up demo           # builds binaries and base-ubuntu:demo; prints build times and SSH command
 swarmy remote connect demo
 swarmy auth login              # dedicated ChatGPT login, on the laptop
 swarmy dev up --remote demo
@@ -432,27 +443,31 @@ the private-address connection requirement above. Stop a conflicting local
 stack, disconnect, and reconnect.
 NATS and S3 alone can use automatically selected alternative local ports.
 
-A new remote has no base image. Use the SSH command printed by `up` to log in
-and run these commands **on that EC2 node**; then exit back to the laptop:
+`up` finishes by building `images/base-ubuntu` as root on the node using
+`/etc/swarmy/node.env`. It streams the build progress, reports its duration,
+and registers `base-ubuntu:demo`. `connect` copies that image into the remote
+profile's `default_image`, so new sessions need no image flag or local image
+configuration. Image construction needs node root; it never needs laptop root.
+`swarmy remote status` lists registered images while the remote is connected.
+
+Start a chat on the laptop and ask the agent to run `pwd` in its sandbox:
 
 ```bash
-cd ~/swarmy
-sudo bash -c 'set -a; . /etc/swarmy/node.env; set +a; /usr/local/bin/swarmy image build images/base-ubuntu --tag remote'
-exit
-```
-
-This registers `base-ubuntu:remote` in the remote stack. Image construction
-needs node root; it never needs laptop root. Start a disk-backed session on
-the laptop, then resume the session id printed by `run` in the chat UI:
-
-```bash
-swarmy run --remote demo --image base-ubuntu:remote 'Say ready and wait for my next instruction.'
+swarmy chat --remote demo
+# Alternatively, start a session and resume its printed id:
+swarmy run --remote demo 'Run pwd in the sandbox, then wait for my next instruction.'
 swarmy chat --remote demo SESSION_ID
 ```
 
-Starting `swarmy chat` without that session id creates or selects a session;
-a new chat has no image selector and cannot execute sandbox tools. In the
-resumed session, ask the agent to use `process_start` to run
+Use `swarmy remote up demo --image-recipe images/custom` to build another recipe
+directory within the checkout. Relative paths are resolved from the checkout
+root; absolute paths must also be inside that checkout. The registered name
+remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
+without a saved default; provide an already registered image through `--image`
+or `default_image` before starting a new session. The two options cannot be
+combined. An explicit session `--image NAME:TAG` overrides the profile default.
+
+In the session, ask the agent to use `process_start` to run
 `python3 -u -m http.server 18765 --bind 127.0.0.1`. In the next turn ask it to
 fetch `http://127.0.0.1:18765/` with `bash` and verify the server is still listed
 by `process_list`. Then ask it to write a marker file and call `checkpoint`.

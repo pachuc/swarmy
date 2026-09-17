@@ -1,4 +1,6 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
+mod bench;
+mod bench_command;
 mod chat;
 mod conversation;
 mod gc;
@@ -32,6 +34,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure conversation latency
+    Bench {
+        #[command(subcommand)]
+        command: bench_command::Command,
+    },
     /// Bounded database probe used by doctor without linking its front end to `libfdb_c`.
     #[command(hide = true)]
     DoctorFdb,
@@ -61,6 +68,9 @@ enum Command {
     },
     Chat {
         session_id: Option<ulid::Ulid>,
+        /// Base image in NAME:TAG form; otherwise use `default_image`.
+        #[arg(long, conflicts_with = "session_id")]
+        image: Option<String>,
     },
     Session {
         #[command(subcommand)]
@@ -75,12 +85,13 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    let cli = Cli::parse();
+    let cli = swarmy_version::parse::<Cli>("swarmy-session")?;
     remote_command::select(cli.remote.as_deref())?;
     // The network guard must outlive the runtime and all database operations.
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Bench { command } => bench::run(command, cli.json).await,
             Command::DoctorFdb => {
                 conversation::store().await?.list_sessions(None, 1).await?;
                 Ok(())
@@ -95,12 +106,12 @@ fn main() -> anyhow::Result<()> {
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
             Command::Run { prompt, image } => session::run(prompt, image, cli.json).await,
-            Command::Chat { session_id } => {
+            Command::Chat { session_id, image } => {
                 anyhow::ensure!(
                     !cli.json,
                     "chat is a terminal interface and does not support --json"
                 );
-                chat::run(session_id.map(swarmy_core::SessionId::from_ulid)).await
+                chat::run(session_id.map(swarmy_core::SessionId::from_ulid), image).await
             }
             Command::Session { command } => session::inspect(command, cli.json).await,
         }

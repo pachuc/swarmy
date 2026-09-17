@@ -91,7 +91,7 @@ impl Fixture {
         })
     }
 
-    async fn session(&self, image: bool) -> SessionId {
+    async fn session(&self) -> SessionId {
         let id = SessionId::from_ulid(Ulid::generate());
         self.store
             .create_session(
@@ -103,15 +103,10 @@ impl Fixture {
                     snapshot_ref: None,
                 },
                 Timestamp::now(),
+                "routing:test",
             )
             .await
             .unwrap();
-        if image {
-            self.store
-                .set_session_image(id, "routing", &ImageTag("test".into()))
-                .await
-                .unwrap();
-        }
         self.request(id).await;
         id
     }
@@ -249,7 +244,7 @@ async fn two_nodes_share_agent_placement_across_sessions_and_skip_full_nodes() {
         )
         .await
         .unwrap();
-    let id = f.session(true).await;
+    let id = f.session().await;
     f.step(id).await;
     let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(placement.node_id, f.nodes[1]);
@@ -259,7 +254,7 @@ async fn two_nodes_share_agent_placement_across_sessions_and_skip_full_nodes() {
     let claim = f.claim(delivery.value.clone(), placement.clone()).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    let second = f.session(false).await;
+    let second = f.session().await;
     f.step(second).await;
     let delivery = f.delivery(f.nodes[1]).await;
     assert_eq!(delivery.value.session_id, second);
@@ -303,7 +298,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
         )
         .await
         .unwrap();
-    let id = f.session(true).await;
+    let id = f.session().await;
     f.store.claim_placement(&placement).await.unwrap();
     let volume = f.store.agent_volume(id, &placement).await.unwrap();
     let now = Timestamp::now();
@@ -341,7 +336,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
             .await
             .unwrap()
     );
-    let next = f.session(false).await;
+    let next = f.session().await;
     f.step(next).await;
     let delivery = f.delivery(current.node_id).await;
     let claim = f.claim(delivery.value.clone(), current).await;
@@ -368,7 +363,7 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
         )
         .await
         .unwrap();
-    let id = f.session(true).await;
+    let id = f.session().await;
     f.store.claim_placement(&old).await.unwrap();
     f.store.agent_volume(id, &old).await.unwrap();
     sleep(Duration::from_millis(2100)).await;
@@ -381,7 +376,7 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
     f.store.release(&placement).await.unwrap();
-    let next = f.session(false).await;
+    let next = f.session().await;
     f.step(next).await;
     let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert!(placement.epoch > claim.placement.epoch);
@@ -414,7 +409,7 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
         )
         .await
         .unwrap();
-    let id = f.session(true).await;
+    let id = f.session().await;
     let checkpoint = ManifestId::from_ulid(Ulid::from_parts(1_789_545_900_000, 1));
     f.store
         .put_manifest(
@@ -575,7 +570,7 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
         )
         .await
         .unwrap();
-    let id = f.session(true).await;
+    let id = f.session().await;
     f.step(id).await;
     let delivery = f.delivery(old.node_id).await;
     // The durable dispatch exists, but no node claimed the placement or the call.

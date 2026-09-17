@@ -11,6 +11,7 @@ pub async fn run(
     state: &State,
     settings: &RemoteSettings,
     name: &str,
+    recipe: Option<&std::path::Path>,
     delay: Duration,
 ) -> Result<()> {
     ensure!(
@@ -54,6 +55,7 @@ pub async fn run(
         ssh_user: "ubuntu".into(),
         ports: RemotePorts::default(),
         nodes: Vec::new(),
+        default_image: None,
         launch_settings: Some(RemoteSettings {
             image: Some(image.clone()),
             ..settings.clone()
@@ -62,7 +64,24 @@ pub async fn run(
     };
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
     state.save(&node)?;
-    let result = provision(cloud, host, state, settings, image, &mut node, delay).await;
+    let result = async {
+        let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
+        if let Some(recipe) = recipe {
+            println!("Building base-ubuntu:{name} (this takes several minutes)");
+            let build_started = Instant::now();
+            host.build_image(&node, &address, recipe).await?;
+            node.default_image = Some(format!("base-ubuntu:{name}"));
+            state.save(&node)?;
+            println!(
+                "Image base-ubuntu:{name} built and registered in {:.1}s",
+                build_started.elapsed().as_secs_f64()
+            );
+        } else {
+            println!("Skipping image build (--no-image)");
+        }
+        Ok::<_, anyhow::Error>(address)
+    }
+    .await;
     let address = result
         .with_context(|| format!("remote up failed; cleanup with swarmy remote down {name}"))?;
     println!(

@@ -71,6 +71,8 @@ struct Script {
     fail: bool,
     #[serde(default)]
     request_based: Option<RequestScript>,
+    #[serde(default)]
+    request_by_prompt: BTreeMap<String, RequestScript>,
 }
 
 /// Steps are zero based assistant-message counts, independent of process history.
@@ -146,6 +148,7 @@ struct FileFake {
     fail: bool,
     latency: Duration,
     request_based: Option<RequestScript>,
+    request_by_prompt: BTreeMap<String, RequestScript>,
 }
 
 impl FileFake {
@@ -158,6 +161,14 @@ impl FileFake {
                 "choose responses or request_based, not both"
             );
         }
+        for mode in script.request_by_prompt.values() {
+            mode.validate()?;
+        }
+        anyhow::ensure!(
+            script.request_by_prompt.is_empty()
+                || (script.responses.is_empty() && script.request_based.is_none()),
+            "choose request_by_prompt, responses, or request_based"
+        );
         let mut provider = FakeProvider::default();
         provider.responses = script.responses;
         // Delay each emitted delta in the wrapper so tests can kill a partial stream.
@@ -166,6 +177,7 @@ impl FileFake {
             log: settings.fake.call_log.clone().into(),
             fail: script.fail,
             request_based: script.request_based,
+            request_by_prompt: script.request_by_prompt,
             latency: Duration::from_millis(script.latency_ms),
         })
     }
@@ -177,7 +189,26 @@ impl Provider for FileFake {
         let log = self.log.clone();
         let fail = self.fail;
         let latency = self.latency;
-        let request_based = self.request_based.clone();
+        let prompt = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| {
+                message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            });
+        let request_based = prompt
+            .as_ref()
+            .and_then(|prompt| self.request_by_prompt.get(prompt))
+            .cloned()
+            .or_else(|| self.request_based.clone());
         Box::pin(async_stream::try_stream! {
             let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(log).await?;
             file.write_all(b"call\n").await?;
@@ -220,6 +251,7 @@ mod tests {
             fail: false,
             latency: Duration::ZERO,
             request_based: script.request_based.clone(),
+            request_by_prompt: BTreeMap::new(),
         };
         let mut provider = make_provider();
         for step in [0, 1, 0, 2, 1, 2] {

@@ -21,6 +21,15 @@ struct Terminal {
 
 impl Terminal {
     fn open(fixture: &Fixture, id: Option<SessionId>) -> Self {
+        Self::with_image(fixture, id, None, "fixture:test")
+    }
+
+    fn with_image(
+        fixture: &Fixture,
+        id: Option<SessionId>,
+        image: Option<&str>,
+        default: &str,
+    ) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -31,6 +40,9 @@ impl Terminal {
             .unwrap();
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
         command.arg("chat");
+        if let Some(image) = image {
+            command.args(["--image", image]);
+        }
         if let Some(id) = id {
             command.arg(id.to_string());
         }
@@ -39,6 +51,7 @@ impl Terminal {
         command.env("SWARMY_STORE_DIRECTORY", &fixture.directory);
         command.env("SWARMY_BUS_PREFIX", &fixture.prefix);
         command.env("SWARMY_PROVIDER", "fake");
+        command.env("SWARMY_DEFAULT_IMAGE", default);
         command.env("TERM", "xterm-256color");
         command.env("TOKIO_WORKER_THREADS", "2");
         let child = pair.slave.spawn_command(command).unwrap();
@@ -485,4 +498,197 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
         service.abort();
     })
     .await;
+}
+
+#[tokio::test]
+async fn chat_requires_default_image_and_explicit_image_overrides_it() {
+    run(|fixture| async move {
+        let mut terminal = Terminal::with_image(&fixture, None, None, "");
+        terminal
+            .screen(|screen| screen.contains("New session"))
+            .await;
+        terminal.type_text("\r");
+        terminal.exit(false).await;
+        let screen = terminal.parser.screen().contents();
+        assert!(
+            screen.contains("default_image") && screen.contains("SWARMY_DEFAULT_IMAGE"),
+            "{screen}"
+        );
+        assert!(
+            fixture
+                .store
+                .list_sessions(None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let mut terminal =
+            Terminal::with_image(&fixture, None, Some("fixture:test"), "unregistered:default");
+        terminal
+            .screen(|screen| screen.contains("New session"))
+            .await;
+        terminal.type_text("\r");
+        terminal.ready().await;
+        let id = session_id(&fixture).await;
+        assert_eq!(
+            fixture.store.session_image(id).await.unwrap(),
+            fixture
+                .store
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
+                .await
+                .unwrap()
+        );
+        terminal.type_text("\x1b");
+        terminal.exit(true).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn chat_uses_default_image_without_a_node() {
+    run(|fixture| async move {
+        let mut terminal = Terminal::new_session(&fixture).await;
+        let id = session_id(&fixture).await;
+        assert_eq!(
+            fixture.store.session_image(id).await.unwrap(),
+            fixture
+                .store
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
+                .await
+                .unwrap()
+        );
+        terminal.type_text("\x1b");
+        terminal.exit(true).await;
+        let mut resumed = Terminal::with_image(&fixture, Some(id), None, "");
+        resumed.ready().await;
+        resumed.type_text("\x1b");
+        resumed.exit(true).await;
+    })
+    .await;
+}
+
+// A failed assertion must still let swarmyd unmount and detach its volumes.
+struct Node {
+    child: std::process::Child,
+    root: PathBuf,
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while matches!(self.child.try_wait(), Ok(None)) {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        // Also clean an interrupted boot whose node could not shut down normally.
+        if let Ok(bundles) = std::fs::read_dir(self.root.join("bundles")) {
+            for bundle in bundles.flatten() {
+                let _ = std::process::Command::new("runc")
+                    .arg("--root")
+                    .arg(self.root.join("runc"))
+                    .args(["delete", "--force"])
+                    .arg(bundle.file_name())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = std::process::Command::new("umount")
+                    .arg(bundle.path().join("rootfs"))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if let Ok(device) = std::fs::read_to_string(bundle.path().join("device"))
+                    && device
+                        .trim()
+                        .strip_prefix("/dev/nbd")
+                        .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
+                {
+                    let _ =
+                        swarmy_volume::kernel::cleanup_stale(std::path::Path::new(device.trim()));
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn root_chat_default_image_executes_pwd() {
+    if std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .unwrap()
+        .stdout
+        != b"0\n"
+    {
+        eprintln!("skipping root chat test: run the built test with sudo");
+        return;
+    }
+    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
+        eprintln!("skipping root chat test: SWARMY_TEST_IMAGE is unset");
+        return;
+    };
+    run(|fixture| async move {
+        let settings = swarmy_config::Settings::load().unwrap().settings;
+        let images = Store::open(Some(&settings.fdb_cluster_file), Some(&settings.store_directory.split('/').map(str::to_owned).collect::<Vec<_>>()), Arc::new(MemoryBlobStore::default())).await.unwrap();
+        let (name, tag) = image.split_once(':').unwrap();
+        let manifest = images.get_image(name, &swarmy_core::ImageTag(tag.into())).await.unwrap().expect("build SWARMY_TEST_IMAGE first");
+        fixture.store.put_manifest(manifest, &images.get_manifest(manifest).await.unwrap().unwrap()).await.unwrap();
+        fixture.store.put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest).await.unwrap();
+        let files = tempfile::tempdir().unwrap();
+        std::fs::create_dir(files.path().join(".swarmy")).unwrap();
+        std::fs::write(files.path().join(".swarmy/config.toml"), "").unwrap();
+        std::fs::write(files.path().join("script.json"), r#"{
+            "request_based": {"steps": 2, "tool_steps": [0], "bash_command": "pwd", "final_answer": "pwd completed"}
+        }"#).unwrap();
+        let mut services = Services {
+            files,
+            children: Vec::new(),
+            bin: PathBuf::from(env!("CARGO_BIN_EXE_swarmy")).parent().unwrap().to_owned(),
+        };
+        for name in ["scheduler", "worker", "gateway"] { services.launch(&fixture, name); }
+        wait_for_scheduler(&fixture).await;
+        let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
+        let _node = Node { root: services.files.path().join(".swarmy/node"), child: std::process::Command::new(services.bin.join("swarmyd"))
+            .current_dir(services.files.path())
+            .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
+            .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
+            .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
+            .env("SWARMY_BUS_PREFIX", &fixture.prefix)
+            .env("SWARMY_NATS_URL", &fixture.url)
+            .env("TOKIO_WORKER_THREADS", "2")
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap() };
+        let mut terminal = Terminal::new_session(&fixture).await;
+        let id = session_id(&fixture).await;
+        assert_eq!(fixture.store.session_image(id).await.unwrap(), Some(manifest));
+        let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
+        assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_none());
+        terminal.type_text("Run pwd\r");
+        timeout(Duration::from_secs(120), async {
+            loop {
+                let events = fixture.store.read_events(id, 0, 64).await.unwrap();
+                if let Some(result) = events.iter().find_map(|event| match event {
+                    Event::ToolCallCompleted { result, .. } => Some(result),
+                    _ => None,
+                }) {
+                    let ToolResult::Completed { output, .. } = result else { panic!("pwd failed: {result:?}"); };
+                    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+                    assert_eq!(result.exit_code, 0);
+                    assert!(result.stdout.trim().starts_with('/'), "pwd output: {}", result.stdout);
+                    assert!(!result.timed_out);
+                    break;
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("pwd did not finish: {}", std::fs::read_to_string(services.files.path().join("node.log")).unwrap()));
+        assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_some());
+        assert!(fixture.store.get_volume(swarmy_core::VolumeId::from_ulid(session.agent_id.as_ulid())).await.unwrap().is_some());
+        terminal.type_text("\x1b");
+        terminal.exit(true).await;
+    }).await;
 }

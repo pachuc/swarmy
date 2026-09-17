@@ -10,8 +10,9 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Build {
             recipe,
             tag,
+            name,
             output,
-        } => build(recipe, tag, output, json).await?,
+        } => build(recipe, tag, name, output, json).await?,
         Command::Ls => {
             let store = store().await?;
             let mut after: Option<swarmy_core::ImageRecord> = None;
@@ -69,11 +70,14 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
 async fn build(
     path: std::path::PathBuf,
     tag: String,
+    name: Option<String>,
     output: Option<std::path::PathBuf>,
     json: bool,
 ) -> Result<()> {
     validate_label(&tag)?;
-    let (recipe, directory, name) = Recipe::load(&path)?;
+    let (recipe, directory, directory_name) = Recipe::load(&path)?;
+    let name = name.unwrap_or(directory_name);
+    validate_label(&name)?;
     let store = store().await?;
     let settings = swarmy_config::Settings::load()?.settings;
     let objects = settings.object_store()?;

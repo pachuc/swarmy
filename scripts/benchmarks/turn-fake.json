@@ -1,0 +1,7 @@
+{
+  "latency_ms": 0,
+  "request_by_prompt": {
+    "swarmy bench turn no_tool": {"steps": 1, "tool_steps": [], "final_answer": "TURN_OK\n"},
+    "swarmy bench turn bash": {"steps": 2, "tool_steps": [0], "bash_command": "printf TURN_TOOL_OK", "final_answer": "TURN_OK\n"}
+  }
+}

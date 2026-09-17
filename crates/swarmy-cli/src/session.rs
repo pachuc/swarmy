@@ -62,15 +62,8 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
 }
 
 pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()> {
-    let mut conversation = Conversation::open(None).await?;
+    let mut conversation = Conversation::open(None, image.as_deref()).await?;
     let id = conversation.id;
-    if let Some(image) = image {
-        let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
-        store()
-            .await?
-            .set_session_image(id, name, &swarmy_core::ImageTag(tag.into()))
-            .await?;
-    }
     let mut output = Output::new(json);
     if json {
         println!(
@@ -94,9 +87,24 @@ pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()
                     }
                 );
                 output.event(&event)?;
+                if final_text(&event) {
+                    conversation
+                        .observe(swarmy_core::TurnStage::FinalTextRendered)
+                        .await;
+                }
             }
-            Notification::Delta(delta) => output.delta(&delta)?,
+            Notification::Delta(delta) => {
+                output.delta(&delta)?;
+                if output.stream_finished(&delta) {
+                    conversation
+                        .observe(swarmy_core::TurnStage::FinalTextRendered)
+                        .await;
+                }
+            }
             Notification::Transcript(TranscriptEvent::SessionIdle) => {
+                conversation
+                    .observe(swarmy_core::TurnStage::InputEnabled)
+                    .await;
                 if json && !idle_event {
                     println!(
                         "{}",
@@ -112,7 +120,7 @@ pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()
     Ok(())
 }
 
-struct Output {
+pub(crate) struct Output {
     json: bool,
     streamed: String,
     messages: HashSet<MessageId>,
@@ -120,7 +128,7 @@ struct Output {
 }
 
 impl Output {
-    fn new(json: bool) -> Self {
+    pub(crate) fn new(json: bool) -> Self {
         Self {
             json,
             streamed: String::new(),
@@ -145,6 +153,23 @@ impl Output {
         }
     }
 
+    fn stream_finished(&self, delta: &Delta) -> bool {
+        let Delta::Completed(response) = delta else {
+            return false;
+        };
+        response.stop_reason == swarmy_llm::StopReason::EndTurn
+            && !self.streamed.is_empty()
+            && response
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+                == self.streamed
+    }
+
     fn delta(&mut self, delta: &Delta) -> Result<()> {
         if self.json {
             println!(
@@ -159,7 +184,7 @@ impl Output {
         Ok(())
     }
 
-    fn event(&mut self, event: &Event) -> Result<()> {
+    pub(crate) fn event(&mut self, event: &Event) -> Result<()> {
         if self.json {
             println!(
                 "{}",
@@ -214,4 +239,12 @@ impl Output {
         std::io::stdout().flush()?;
         Ok(())
     }
+}
+
+/// Tool-call assistant messages do not finish a text turn.
+pub(crate) fn final_text(event: &Event) -> bool {
+    matches!(event, Event::InferenceCompleted { message, .. } | Event::MessageAppended { message, .. }
+        if message.role == MessageRole::Assistant
+        && message.parts.iter().any(|part| matches!(part, Part::Text { text } if !text.is_empty()))
+        && !message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })))
 }

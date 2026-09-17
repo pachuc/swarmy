@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::{future::Future, path::Path, time::Duration};
 use swarmy_config::{RemoteNode, RemoteProfile, Settings};
-use swarmy_core::NodeRecord;
+use swarmy_core::{ImageRecord, NodeRecord};
 use tokio::time::timeout;
 
 #[derive(Debug, Serialize)]
@@ -22,6 +22,8 @@ struct Status {
     registrations: Vec<Registration>,
     registration_error: Option<String>,
     nodes: Vec<NodeStatus>,
+    images: Vec<ImageRecord>,
+    image_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +75,7 @@ pub async fn run(json: bool) -> Result<()> {
             Err(_) => false,
         };
         let mut status = inspect(&node, tunnel, reachable(&node).await, || {
-            registrations(&base, &node.name)
+            inventory(&base, &node.name)
         })
         .await;
         let mut pending: Vec<_> = node.nodes.iter().collect();
@@ -105,6 +107,15 @@ pub async fn run(json: bool) -> Result<()> {
                     node.name, node.instance_id, node.instance_state, node.private_ip
                 );
             }
+            for image in status.images {
+                println!(
+                    "  image {}:{} {}",
+                    image.name, image.tag.0, image.manifest_id
+                );
+            }
+            if let Some(error) = status.image_error {
+                println!("  images: {error}");
+            }
             for record in status.registrations {
                 println!(
                     "  swarmyd {} heartbeat={}s {}",
@@ -124,23 +135,27 @@ pub async fn run(json: bool) -> Result<()> {
 async fn inspect<F, Fut>(node: &RemoteNode, tunnel: bool, reachable: bool, scan: F) -> Status
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Vec<NodeRecord>>>,
+    Fut: Future<Output = Result<(Vec<NodeRecord>, Vec<ImageRecord>)>>,
 {
     let mut status = Status {
         name: node.name.clone(),
         instance_id: node.instance_id.clone(),
         instance_state: instance_state(reachable),
         nodes: Vec::new(),
+        images: Vec::new(),
+        image_error: None,
         tunnel,
         registrations: Vec::new(),
         registration_error: None,
     };
     if !tunnel {
         status.registration_error = Some("unknown: tunnel disconnected".into());
+        status.image_error.clone_from(&status.registration_error);
         return status;
     }
     match timeout(Duration::from_secs(5), scan()).await {
-        Ok(Ok(records)) => {
+        Ok(Ok((records, images))) => {
+            status.images = images;
             let now = jiff::Timestamp::now().as_second();
             status.registrations = records
                 .into_iter()
@@ -157,13 +172,20 @@ where
                 status.registration_error = Some("no swarmyd registered in this stack".into());
             }
         }
-        Ok(Err(error)) => status.registration_error = Some(format!("store unavailable: {error}")),
-        Err(_) => status.registration_error = Some("store check timed out".into()),
+        Ok(Err(error)) => {
+            let error = format!("store unavailable: {error}");
+            status.registration_error = Some(error.clone());
+            status.image_error = Some(error);
+        }
+        Err(_) => {
+            status.registration_error = Some("store check timed out".into());
+            status.image_error.clone_from(&status.registration_error);
+        }
     }
     status
 }
 
-async fn registrations(base: &Settings, name: &str) -> Result<Vec<NodeRecord>> {
+async fn inventory(base: &Settings, name: &str) -> Result<(Vec<NodeRecord>, Vec<ImageRecord>)> {
     use std::sync::Arc;
     use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
     let mut settings = base.clone();
@@ -186,9 +208,18 @@ async fn registrations(base: &Settings, name: &str) -> Result<Vec<NodeRecord>> {
             .await?;
         records.extend(page);
         if next.is_none() {
-            return Ok(records);
+            break;
         }
         cursor = next;
+    }
+    let mut images: Vec<ImageRecord> = Vec::new();
+    loop {
+        let after = images.last().map(|image| (image.name.as_str(), &image.tag));
+        let page = store.list_images(after, MAX_SCAN_LIMIT).await?;
+        if page.is_empty() {
+            return Ok((records, images));
+        }
+        images.extend(page);
     }
 }
 
@@ -209,22 +240,36 @@ mod tests {
             cached_images: vec![],
         };
         let status = inspect(&node, true, true, || async {
-            Ok(vec![record(1), record(90)])
+            Ok((
+                vec![record(1), record(90)],
+                vec![ImageRecord {
+                    name: "base-ubuntu".into(),
+                    tag: swarmy_core::ImageTag("test".into()),
+                    manifest_id: swarmy_core::ManifestId::from_ulid(ulid::Ulid::generate()),
+                }],
+            ))
         })
         .await;
+        assert_eq!(status.images[0].name, "base-ubuntu");
+        assert_eq!(status.images[0].tag.0, "test");
+        assert!(status.image_error.is_none());
         assert!(status.registrations[0].heartbeating);
         assert!(!status.registrations[1].heartbeating);
-        let absent = inspect(&node, true, true, || async { Ok(vec![]) }).await;
+        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![])) }).await;
+        assert!(absent.images.is_empty());
+        assert!(absent.image_error.is_none());
         assert!(absent.registration_error.unwrap().contains("no swarmyd"));
         let down = inspect(&node, false, false, || async {
             panic!("disconnected status must not scan")
         })
         .await;
+        assert!(down.image_error.unwrap().contains("disconnected"));
         assert!(down.instance_state.starts_with("unknown"));
         let failed = inspect(&node, true, true, || async {
             anyhow::bail!("fake failure")
         })
         .await;
+        assert!(failed.image_error.unwrap().contains("fake failure"));
         assert!(failed.registration_error.unwrap().contains("fake failure"));
     }
 }

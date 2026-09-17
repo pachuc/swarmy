@@ -53,8 +53,25 @@ pub enum Notification {
     Transcript(TranscriptEvent),
 }
 
+struct ClientTurn {
+    id: MessageId,
+    text_rendered: bool,
+    input_enabled: bool,
+}
+
+impl ClientTurn {
+    fn new(id: MessageId) -> Self {
+        Self {
+            id,
+            text_rendered: false,
+            input_enabled: false,
+        }
+    }
+}
+
 pub struct Conversation {
     pub id: SessionId,
+    turn: Option<ClientTurn>,
     store: Store,
     bus: Bus,
     events: LiveMessages<Event>,
@@ -70,7 +87,13 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    pub async fn open(id: Option<SessionId>) -> Result<Self> {
+    pub async fn open(id: Option<SessionId>, image: Option<&str>) -> Result<Self> {
+        let settings = swarmy_config::Settings::load()?.settings;
+        let image = if id.is_none() {
+            Some(settings.session_image(image)?)
+        } else {
+            None
+        };
         let bus = bus().await?;
         let store = store().await?;
         let id = if let Some(id) = id {
@@ -91,6 +114,7 @@ impl Conversation {
                         snapshot_ref: None,
                     },
                     Timestamp::now(),
+                    image.context("new session image missing")?,
                 )
                 .await?;
             id
@@ -105,6 +129,7 @@ impl Conversation {
         .context("cannot reach scheduler: live subscription timed out")??;
         let mut conversation = Self {
             id,
+            turn: None,
             store,
             bus,
             events,
@@ -128,6 +153,9 @@ impl Conversation {
 
     pub async fn send(&mut self, text: String) -> Result<()> {
         ensure!(!text.trim().is_empty(), "message is empty");
+        let turn = MessageId::from_ulid(Ulid::generate());
+        self.turn = Some(ClientTurn::new(turn));
+        self.observe(swarmy_core::TurnStage::Submitted).await;
         let session = self
             .store
             .fetch_session(self.id)
@@ -145,14 +173,47 @@ impl Conversation {
                 &[Event::MessageAppended {
                     seq: 0,
                     message: Message {
-                        id: MessageId::from_ulid(Ulid::generate()),
+                        id: turn,
                         role: MessageRole::User,
                         parts: vec![Part::Text { text }],
                     },
                 }],
             )
             .await?;
+        self.observe(swarmy_core::TurnStage::Appended).await;
         self.wake().await
+    }
+
+    pub fn turn_id(&self) -> Option<MessageId> {
+        self.turn.as_ref().map(|turn| turn.id)
+    }
+
+    pub async fn timeline(&self) -> Result<LiveMessages<swarmy_core::TurnEvent>> {
+        Ok(self
+            .bus
+            .subscribe_live(LiveFeed::TurnTimeline(self.id))
+            .await?)
+    }
+
+    /// Called by the renderer only after output was written or input activated.
+    pub async fn observe(&mut self, stage: swarmy_core::TurnStage) {
+        let Some(turn) = &mut self.turn else {
+            return;
+        };
+        let recorded = match stage {
+            swarmy_core::TurnStage::FinalTextRendered => Some(&mut turn.text_rendered),
+            swarmy_core::TurnStage::InputEnabled => Some(&mut turn.input_enabled),
+            _ => None,
+        };
+        if let Some(recorded) = recorded {
+            if *recorded {
+                return;
+            }
+            *recorded = true;
+        }
+        self.bus
+            .record_turn(&Bus::turn_event(self.id, turn.id, stage, None))
+            .await;
     }
 
     async fn wake(&mut self) -> Result<()> {
@@ -180,6 +241,11 @@ impl Conversation {
     pub async fn next(&mut self) -> Result<Notification> {
         loop {
             if let Some(event) = self.pending.pop_front() {
+                if let Notification::Transcript(TranscriptEvent::UserMessage(message)) = &event
+                    && self.turn_id() != Some(message.id)
+                {
+                    self.turn = Some(ClientTurn::new(message.id));
+                }
                 return Ok(event);
             }
             tokio::select! {

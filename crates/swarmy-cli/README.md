@@ -1,12 +1,19 @@
 # CLI
 
-Source `.dev/env`, start the scheduler, worker, and gateway, then run:
+Source `.dev/env`, start the scheduler, worker, and gateway, and configure
+`default_image` (or `SWARMY_DEFAULT_IMAGE`) to a registered `NAME:TAG`, then run:
 
 ```sh
 swarmy run "what time is it"
 swarmy session list
 swarmy session show SESSION_ID --json
 ```
+
+Both `run` and `chat` accept `--image NAME:TAG` to override the default for a new
+session. There is no built-in default. Creation validates the registration and
+pins its manifest atomically; an unknown image reports the registered names and
+tags. Existing sessions retain their image when resumed. A node is only needed
+when the session first calls a sandbox tool.
 
 `run` creates an Idle session, records the user prompt, subscribes to both live
 feeds, and asks the scheduler to wake it. Text is flushed as model deltas arrive.

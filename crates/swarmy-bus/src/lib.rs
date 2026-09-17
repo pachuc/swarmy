@@ -25,6 +25,7 @@
 //! ```
 
 pub mod subjects;
+mod turn;
 
 use std::{future::Future, marker::PhantomData, time::Duration};
 
@@ -125,12 +126,14 @@ impl WorkQueue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveFeed {
     ModelDeltas(SessionId),
+    TurnTimeline(SessionId),
     SessionEvents(SessionId),
 }
 
 impl LiveFeed {
     fn subject(self) -> String {
         match self {
+            Self::TurnTimeline(session) => format!("session.timeline.{session}"),
             Self::ModelDeltas(session) => {
                 subjects::INFER_LIVE.replace("{session_id}", &session.to_string())
             }

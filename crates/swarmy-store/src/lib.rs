@@ -16,6 +16,7 @@ mod leases;
 mod nodes;
 mod placed_tools;
 mod placements;
+mod session_images;
 mod tool_routing;
 mod tools;
 mod volumes;
@@ -64,6 +65,10 @@ pub enum StoreError {
     VolumeMissing,
     #[error("volume already exists")]
     VolumeExists,
+    #[error("image {image:?} is not registered; registered images: {registered}")]
+    ImageMissing { image: String, registered: String },
+    #[error("expected image NAME:TAG")]
+    InvalidImage,
     #[error("manifest does not exist")]
     ManifestMissing,
     #[error("manifest id already refers to a different header")]
@@ -234,13 +239,16 @@ impl Store {
             .ok_or(StoreError::SessionMissing)
     }
 
-    /// Create an empty Idle or Runnable session. Runnable creation also indexes it.
+    /// Create an empty session and pin its registered image in the same transaction.
+    /// The separate image row preserves the binary layout of legacy session headers.
+    /// Runnable creation also indexes the session.
     /// # Errors
-    /// Rejects duplicate ids, nonempty logs, and invalid initial state.
+    /// Rejects unknown images, duplicate ids, nonempty logs, and invalid initial state.
     pub async fn create_session(
         &self,
         session: &SessionRecord,
         wake_at: jiff::Timestamp,
+        image: &str,
     ) -> Result<()> {
         if session.head_seq != 0
             || session.snapshot_ref.is_some()
@@ -248,36 +256,62 @@ impl Store {
         {
             return Err(StoreError::InvalidState);
         }
-        self.transaction(|trx| async move {
-            let key = self.session_key(session.session_id);
-            if trx.get(&key, false).await?.is_some() {
-                return Err(StoreError::SessionExists);
-            }
-            write(
-                &trx,
-                &key,
-                &StoredSession {
-                    session_id: session.session_id,
-                    agent_id: session.agent_id,
-                    state: session.state,
-                    head_seq: 0,
-                    snapshot_seq: None,
-                },
-            )?;
-            if session.state == SessionState::Runnable {
-                self.index_runnable(
+        let (name, tag) = image
+            .split_once(':')
+            .filter(|(name, tag)| !name.is_empty() && !tag.is_empty() && !tag.contains(':'))
+            .ok_or(StoreError::InvalidImage)?;
+        let tag = &swarmy_core::ImageTag(tag.into());
+        let result = self
+            .transaction(|trx| async move {
+                let key = self.session_key(session.session_id);
+                if trx.get(&key, false).await?.is_some() {
+                    return Err(StoreError::SessionExists);
+                }
+                let manifest_id =
+                    read(&trx, &self.image_key(name, tag))
+                        .await?
+                        .ok_or_else(|| StoreError::ImageMissing {
+                            image: image.into(),
+                            registered: String::new(),
+                        })?;
+                write(
                     &trx,
-                    &swarmy_core::RunnableEntry {
-                        session_id: session.session_id,
-                        priority: 0,
-                        wake_at,
+                    &self.session_image_key(session.session_id),
+                    &swarmy_core::ImageRecord {
+                        name: name.into(),
+                        tag: tag.clone(),
+                        manifest_id,
                     },
-                )
-                .await?;
-            }
-            Ok(())
-        })
-        .await
+                )?;
+                write(
+                    &trx,
+                    &key,
+                    &StoredSession {
+                        session_id: session.session_id,
+                        agent_id: session.agent_id,
+                        state: session.state,
+                        head_seq: 0,
+                        snapshot_seq: None,
+                    },
+                )?;
+                if session.state == SessionState::Runnable {
+                    self.index_runnable(
+                        &trx,
+                        &swarmy_core::RunnableEntry {
+                            session_id: session.session_id,
+                            priority: 0,
+                            wake_at,
+                        },
+                    )
+                    .await?;
+                }
+                Ok(())
+            })
+            .await;
+        if matches!(result, Err(StoreError::ImageMissing { .. })) {
+            return Err(self.unregistered_image(image).await?);
+        }
+        result
     }
 
     /// # Errors
@@ -445,6 +479,20 @@ impl Store {
                 }
                 for (key, value) in prepared {
                     trx.set(key, value);
+                }
+                for event in events {
+                    if let Event::MessageAppended { message, .. } = event
+                        && message.role == swarmy_core::MessageRole::User
+                    {
+                        write(&trx, &self.turn_key(id), &message.id)?;
+                    }
+                    if let Event::InferenceRequested { request_id, .. }
+                    | Event::ToolCallRequested { request_id, .. } = event
+                        && let Some(turn) =
+                            read::<swarmy_core::MessageId>(&trx, &self.turn_key(id)).await?
+                    {
+                        write(&trx, &self.request_turn_key(*request_id), &turn)?;
+                    }
                 }
                 session.head_seq = head;
                 write(&trx, &self.session_key(id), &session)

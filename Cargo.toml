@@ -21,6 +21,7 @@ needless_collect = "deny"
 large_stack_frames = "deny"
 
 [workspace.dependencies]
+swarmy-version = { path = "crates/swarmy-version" }
 aws-config = "1"
 aws-sdk-ec2 = "1"
 aws-sdk-ssm = "1"

@@ -1,0 +1,113 @@
+{
+  "network": {
+    "date": "2026-09-17T08:18:16+00:00",
+    "remote_instance": "i-005be6a555af2b2a8",
+    "remote_type": "m6id.xlarge",
+    "remote_az": "us-east-1a",
+    "remote_private_ip": "172.31.61.155",
+    "root_volumes": [
+      "vol-0e36191684728716d"
+    ],
+    "launcher_type": "m6i.xlarge",
+    "launcher_private_ip": "172.31.54.8",
+    "tcp_22_connect_ms": [
+      5.376314,
+      0.50088,
+      0.493968,
+      1.173276,
+      0.486519,
+      0.479068,
+      0.517876,
+      0.524751,
+      0.721226,
+      0.895836,
+      0.503989,
+      0.939996,
+      1.28658,
+      0.924454,
+      0.911749,
+      0.487211,
+      0.51425,
+      0.500703,
+      0.43217,
+      0.510451,
+      0.490476,
+      0.506092,
+      2.547672,
+      0.490729,
+      0.503145,
+      0.548694,
+      0.654948,
+      0.517236,
+      0.477887,
+      0.52913,
+      0.540158,
+      0.515367,
+      0.612243,
+      1.975208,
+      0.478607,
+      0.471352,
+      0.485164,
+      0.487605,
+      0.49238,
+      0.505316,
+      0.489823,
+      0.508479,
+      0.561013,
+      0.505479,
+      0.473067,
+      0.540476,
+      0.560576,
+      0.498036,
+      0.545024,
+      0.515708
+    ],
+    "tcp_22_p50_ms": 0.5123504999999999,
+    "tcp_22_p95_ms": 1.975208,
+    "launcher_chrony": "Reference ID    : A9FEA97B (169.254.169.123)\nStratum         : 4\nRef time (UTC)  : Thu Sep 17 08:18:08 2026\nSystem time     : 0.000000380 seconds slow of NTP time\nLast offset     : -0.000000723 seconds\nRMS offset      : 0.000004896 seconds\nFrequency       : 17.995 ppm fast\nResidual freq   : -0.000 ppm\nSkew            : 0.023 ppm\nRoot delay      : 0.000382544 seconds\nRoot dispersion : 0.000329730 seconds\nUpdate interval : 16.1 seconds\nLeap status     : Normal\n"
+  },
+  "remote_image_id": "ami-025d99823a4caad37",
+  "remote_machine": "NAME         MODEL                              SIZE MOUNTPOINTS\nloop0                                          28.4M /snap/amazon-ssm-agent/13349\nloop1                                            74M /snap/core22/2437\nloop2                                          50.1M /snap/snapd/27710\nnbd0                                              0B \nnbd1                                              0B \nnbd2                                              0B \nnbd3                                              0B \nnbd4                                              0B \nnbd5                                              0B \nnbd6                                              0B \nnbd7                                              0B \nnvme1n1      Amazon Elastic Block Store         100G \n\u251c\u2500nvme1n1p1                                      99G /\n\u251c\u2500nvme1n1p14                                      4M \n\u251c\u2500nvme1n1p15                                    106M /boot/efi\n\u2514\u2500nvme1n1p16                                    913M /boot\nnvme0n1      Amazon EC2 NVMe Instance Storage 220.7G \nnbd8                                              0B \nnbd9                                              0B \nnbd10                                             0B \nnbd11                                             0B \nnbd12                                             0B \nnbd13                                             0B \nnbd14                                             0B \nnbd15                                             0B \nnbd16                                             0B \nnbd17                                             0B \nnbd18                                             0B \nnbd19                                             0B \nnbd20                                             0B \nnbd21                                             0B \nnbd22                                             0B \nnbd23                                             0B \nnbd24                                             0B \nnbd25                                             0B \nnbd26                                             0B \nnbd27                                             0B \nnbd28                                             0B \nnbd29                                             0B \nnbd30                                             0B \nnbd31                                             0B \nnbd32                                             0B \nnbd33                                             0B \nnbd34                                             0B \nnbd35                                             0B \nnbd36                                             0B \nnbd37                                             0B \nnbd38                                             0B \nnbd39                                             0B \nnbd40                                             0B \nnbd41                                             0B \nnbd42                                             0B \nnbd43                                             0B \nnbd44                                             0B \nnbd45                                             0B \nnbd46                                             0B \nnbd47                                             0B \nnbd48                                             0B \nnbd49                                             0B \nnbd50                                             0B \nnbd51                                             0B \nnbd52                                             0B \nnbd53                                             0B \nnbd54                                             0B \nnbd55                                             0B \nnbd56                                             0B \nnbd57                                             0B \nnbd58                                             0B \nnbd59                                             0B \nnbd60                                             0B \nnbd61                                             0B \nnbd62                                             0B \nnbd63                                             0B \nReference ID    : A9FEA97B (169.254.169.123)\nStratum         : 4\nRef time (UTC)  : Thu Sep 17 08:12:35 2026\nSystem time     : 0.000004899 seconds slow of NTP time\nLast offset     : -0.000006069 seconds\nRMS offset      : 0.000005766 seconds\nFrequency       : 16.302 ppm fast\nResidual freq   : -0.020 ppm\nSkew            : 0.916 ppm\nRoot delay      : 0.000367801 seconds\nRoot dispersion : 0.000198694 seconds\nUpdate interval : 16.1 seconds\nLeap status     : Normal\nLinux ip-172-31-61-155 7.0.0-1012-aws #12~24.04.1-Ubuntu SMP PREEMPT Wed Aug 12 14:00:57 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux\n",
+  "remote_final_image": "turn-image:bench 01M2Q8XP8TTBHKRPZDMF135TTY\nsize=268435456 bytes chunks_stored=19 chunks_uploaded=14 chunks_total=1024\n",
+  "remote_binary_and_clock_audit": "8e80970c03141da83a48fa2cece5d1a3508d99cb08bdf89bb48b6be05b304760  /home/ubuntu/bin/swarmy\nce00f7abe10411b55c84b308f88b23ad864b12b80818f72c2c3002d1a550b9a9  /home/ubuntu/bin/swarmy-session\nd8dee667b59583982262a2f4e59c5fb14c25fab807ae503648bfa1c5a596a803  /home/ubuntu/bin/swarmyd\nReference ID    : A9FEA97B (169.254.169.123)\nStratum         : 4\nRef time (UTC)  : Thu Sep 17 08:35:16 2026\nSystem time     : 0.000001463 seconds slow of NTP time\nLast offset     : -0.000001634 seconds\nRMS offset      : 0.000000881 seconds\nFrequency       : 16.483 ppm fast\nResidual freq   : -0.002 ppm\nSkew            : 0.023 ppm\nRoot delay      : 0.000322752 seconds\nRoot dispersion : 0.000205813 seconds\nUpdate interval : 16.2 seconds\nLeap status     : Normal\n",
+  "client_binary_hashes": "8e80970c03141da83a48fa2cece5d1a3508d99cb08bdf89bb48b6be05b304760  /tmp/swarmy-turn-bin/swarmy\n1fb26acecdb99d298cdbd782156fbe1fc56702542c75f26ca26fcacaeff33f73  /tmp/swarmy-turn-bin/swarmy-gateway\neecd0558a4286031cf5974e44cf8e43bf93ae73c9817835f7618cf0831475f4c  /tmp/swarmy-turn-bin/swarmy-scheduler\nce00f7abe10411b55c84b308f88b23ad864b12b80818f72c2c3002d1a550b9a9  /tmp/swarmy-turn-bin/swarmy-session\na07af2fc9369809363a048e6f71991bbbcffd40e3d3a54425f8992a50ffd1175  /tmp/swarmy-turn-bin/swarmy-worker\nd8dee667b59583982262a2f4e59c5fb14c25fab807ae503648bfa1c5a596a803  /tmp/swarmy-turn-bin/swarmyd\n",
+  "direct_service_probes": [
+    {
+      "port": 4500,
+      "blocked": true,
+      "error": "[Errno 111] Connection refused"
+    },
+    {
+      "port": 4222,
+      "blocked": true,
+      "error": "[Errno 111] Connection refused"
+    },
+    {
+      "port": 8333,
+      "blocked": true,
+      "error": "[Errno 111] Connection refused"
+    }
+  ],
+  "firewall_before": "Chain OUTPUT (policy ACCEPT 8 packets, 761 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n       3      180 REJECT     6    --  *      *       0.0.0.0/0            172.31.0.0/16        owner UID match 1000 multiport dports 4500,4222,8333 /* swarmy-turn-proof */ reject-with icmp-port-unreachable\n",
+  "firewall_after": "Chain OUTPUT (policy ACCEPT 444566 packets, 138997115 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n       3      180 REJECT     6    --  *      *       0.0.0.0/0            172.31.0.0/16        owner UID match 1000 multiport dports 4500,4222,8333 /* swarmy-turn-proof */ reject-with icmp-port-unreachable\n",
+  "remote_client_connections": [
+    "ESTAB 0      236      172.31.54.8:57082  172.31.61.155:22    users:((\"ssh\",pid=102533,fd=3))             "
+  ],
+  "client_clock_after": "Reference ID    : A9FEA97B (169.254.169.123)\nStratum         : 4\nRef time (UTC)  : Thu Sep 17 09:07:27 2026\nSystem time     : 0.000000758 seconds fast of NTP time\nLast offset     : +0.000001157 seconds\nRMS offset      : 0.000000564 seconds\nFrequency       : 17.968 ppm fast\nResidual freq   : +0.000 ppm\nSkew            : 0.007 ppm\nRoot delay      : 0.000400282 seconds\nRoot dispersion : 0.000184921 seconds\nUpdate interval : 16.0 seconds\nLeap status     : Normal\n",
+  "cleanup": {
+    "queried_at": "2026-09-17T09:08:27+00:00",
+    "instances": [
+      {
+        "InstanceId": "i-005be6a555af2b2a8",
+        "State": "terminated"
+      }
+    ],
+    "volumes": [],
+    "keys": [],
+    "commands": [
+      "aws ec2 describe-instances --instance-ids i-005be6a555af2b2a8 --query \"Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}\" --output json",
+      "aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-benchmark --query \"Volumes[].{VolumeId:VolumeId,State:State}\" --output json",
+      "aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-178963 --query \"KeyPairs[].KeyName\" --output json"
+    ]
+  }
+}
