@@ -30,7 +30,11 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Subcommand)]
 pub enum Command {
     /// Start the backing stack and supervised services in the background
-    Up,
+    Up {
+        /// Start even when a service reports a different or unavailable version
+        #[arg(long)]
+        allow_version_mismatch: bool,
+    },
     /// Stop the services, supervisor, and backing stack, preserving data
     Down,
     /// Show process ids and uptime
@@ -41,7 +45,11 @@ pub enum Command {
         service: Option<String>,
     },
     #[command(hide = true)]
-    Supervise { state: PathBuf },
+    Supervise {
+        state: PathBuf,
+        #[arg(num_args = 3, required = true)]
+        binaries: Vec<PathBuf>,
+    },
 }
 
 struct Layout {
@@ -102,14 +110,16 @@ impl Layout {
 }
 
 pub async fn run(command: Command) -> Result<()> {
-    if let Command::Supervise { state } = command {
-        return supervise(&state).await;
+    if let Command::Supervise { state, binaries } = command {
+        return supervise(&state, &binaries).await;
     }
     let layout = Layout::discover()?;
     match command {
-        Command::Up => {
+        Command::Up {
+            allow_version_mismatch,
+        } => {
             let _lock = layout.lock()?;
-            up(&layout).await
+            up(&layout, allow_version_mismatch).await
         }
         Command::Down => {
             let _lock = layout.lock()?;
@@ -160,7 +170,24 @@ async fn stack(layout: &Layout, action: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-async fn up(layout: &Layout) -> Result<()> {
+async fn check_versions(allow_version_mismatch: bool) -> Result<Vec<PathBuf>> {
+    let mut binaries = Vec::new();
+    for (name, _) in SERVICES {
+        let executable = binary(name)?;
+        if let Err(error) = version_check(&executable, &format!("swarmy-{name}")).await {
+            let message = format!("{error}. Reinstall from the CLI checkout: {REINSTALL}");
+            if !allow_version_mismatch {
+                bail!("{message}\nUse --allow-version-mismatch to override.");
+            }
+            eprintln!("warning: {message} (--allow-version-mismatch)");
+        }
+        binaries.push(executable);
+    }
+    Ok(binaries)
+}
+
+async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
+    let binaries = check_versions(allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway"]
         .into_iter()
@@ -173,14 +200,6 @@ async fn up(layout: &Layout) -> Result<()> {
     let remote = Settings::load_base()?.settings.remote.profile;
     prepare_stack(layout, remote.as_deref()).await?;
     let settings = prepare_settings(layout, remote.is_some())?;
-    for (name, _) in SERVICES {
-        let executable = binary(name)?;
-        ensure!(
-            executable.is_file(),
-            "missing {}; run cargo build --workspace --locked first",
-            executable.display()
-        );
-    }
     let ready = layout.state.join("ready");
     if ready.exists() {
         fs::remove_file(&ready)?;
@@ -190,6 +209,7 @@ async fn up(layout: &Layout) -> Result<()> {
         .arg("dev")
         .arg("supervise")
         .arg(&layout.state)
+        .args(&binaries)
         .current_dir(&layout.root)
         .envs(settings.environment())
         .env("RUST_LOG", "info")
@@ -328,11 +348,54 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     Ok(settings)
 }
 
+// Keep this command aligned with docs/DEV.md's no-root installation workflow.
+pub const REINSTALL: &str = "for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
+
+pub fn service_binary(name: &str) -> Result<PathBuf> {
+    let executable =
+        crate::tools::find(name).unwrap_or(std::env::current_exe()?.with_file_name(name));
+    executable.canonicalize().with_context(|| {
+        format!(
+            "missing {name} at {}; reinstall: {REINSTALL}",
+            executable.display()
+        )
+    })
+}
+
 fn binary(name: &str) -> Result<PathBuf> {
-    Ok(std::env::current_exe()?
-        .parent()
-        .context("executable has no parent")?
-        .join(format!("swarmy-{name}")))
+    service_binary(&format!("swarmy-{name}"))
+}
+
+pub async fn version_check(executable: &Path, name: &str) -> Result<String> {
+    let output = timeout(
+        Duration::from_secs(5),
+        Process::new(executable)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .with_context(|| format!("{name} version check timed out"))?
+    .with_context(|| format!("cannot run {name} --version"))?;
+    ensure!(
+        output.status.success(),
+        "{name} version check failed ({})",
+        output.status
+    );
+    let reported = String::from_utf8(output.stdout)
+        .with_context(|| format!("{name} reported a non-UTF-8 version"))?;
+    let reported = reported.trim();
+    let identity = reported
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .unwrap_or(reported);
+    ensure!(
+        identity == swarmy_version::IDENTITY,
+        "{name} version mismatch: found {identity:?}, CLI expects {}",
+        swarmy_version::IDENTITY
+    );
+    Ok(format!("{}: {identity}", executable.display()))
 }
 
 async fn stop_services(state: &Path) -> Result<()> {
@@ -347,13 +410,13 @@ async fn stop_services(state: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn supervise(state: &Path) -> Result<()> {
+async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
     // Register signal handlers before spawning so down during startup also cleans up.
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut children = Vec::new();
     let result = tokio::select! {
-        result = serve(state, &mut children) => result,
+        result = serve(state, binaries, &mut children) => result,
         _ = interrupt.recv() => Ok(()),
         _ = terminate.recv() => Ok(()),
     };
@@ -373,10 +436,15 @@ async fn supervise(state: &Path) -> Result<()> {
     result
 }
 
-async fn serve(state: &Path, children: &mut Vec<(&'static str, Child)>) -> Result<()> {
-    for (name, _) in SERVICES {
+async fn serve(
+    state: &Path,
+    binaries: &[PathBuf],
+    children: &mut Vec<(&'static str, Child)>,
+) -> Result<()> {
+    // Use the checked absolute paths even when the supervisor changes directory.
+    for ((name, _), executable) in SERVICES.into_iter().zip(binaries) {
         let log = File::create(state.join(format!("logs/{name}.log")))?;
-        let child = Process::new(binary(name)?)
+        let child = Process::new(executable)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)

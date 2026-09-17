@@ -29,6 +29,7 @@ struct Gateway {
 
 // Boot before the runtime so the network guard outlives all database tasks.
 fn main() -> Result<()> {
+    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-gateway")?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

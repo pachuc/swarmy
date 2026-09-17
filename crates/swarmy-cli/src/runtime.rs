@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    let cli = Cli::parse();
+    let cli = swarmy_version::parse::<Cli>("swarmy-session")?;
     remote_command::select(cli.remote.as_deref())?;
     // The network guard must outlive the runtime and all database operations.
     let _network = swarmy_store::boot();
