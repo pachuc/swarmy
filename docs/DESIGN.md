@@ -718,6 +718,32 @@ implementation is therefore a Kubernetes node pool scaler. Nomad or bare
 metal are additional implementations later, not a redesign. Local development
 uses a single machine with `swarmyd` run directly.
 
+### 11.1 Laptop plus development nodes
+
+`swarmy remote` is an early deployment shape for the same service boundaries.
+An unprivileged Linux laptop runs the CLI, scheduler, step worker, and inference
+gateway; one Ubuntu EC2 node runs FoundationDB, NATS, SeaweedFS, and privileged
+`swarmyd`. SSH forwards backing-service endpoints. The current FoundationDB
+client also opens connections to the advertised private node address, so the
+measured client needed VPC reachability; SSH-only access from an external laptop
+remains an unresolved deployment requirement. Provider authentication stays
+with the laptop gateway and is never needed by the execution nodes. Agent tool
+processes and disks stay on the nodes and survive individual chat turns.
+
+Additional nodes join the first node's private backing-service endpoints and
+provide more computer capacity. They do not replicate the backing services.
+Checkpoints and session history therefore survive execution-process failure,
+but not loss or teardown of the first node's backing data. Closing the laptop
+stops control-plane progress while the cloud machines remain allocated.
+
+This path tests cloud provisioning, remote placement, and recovery before
+slice 9. It does not satisfy the cloud-deploy goal: that slice still requires
+managed orchestration, replicated stateful services, horizontal control-plane
+scaling, and the unchanged channel scenario on both GKE and EKS. See the
+[developer workflow](DEV.md#remote-node-workflow) for operation and credential
+boundaries, and the dated remote-node run in [the benchmarks](volume-benchmarks.md)
+for measured coverage and limitations.
+
 ## 12. Crate layout
 
 ```
