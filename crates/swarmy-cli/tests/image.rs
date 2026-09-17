@@ -193,3 +193,29 @@ fn check_chroot(directory: &std::path::Path, raw: &std::path::Path) {
         eprintln!("chroot: {}", String::from_utf8_lossy(&output.stdout));
     }
 }
+
+#[test]
+fn root_custom_recipe_registers_requested_name() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
+        || std::env::var_os("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || std::env::var_os("SWARMY_S3_ENDPOINT").is_none()
+    {
+        eprintln!("skipping image name test: needs root and backing services");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let recipe = dir.path().join("custom-recipe");
+    std::fs::create_dir_all(recipe.join("rootfs")).unwrap();
+    std::fs::write(recipe.join("recipe.toml"), "disk_size = 16777216\nsource_date_epoch = 1714003200\n[source]\nkind = 'directory'\npath = 'rootfs'\n").unwrap();
+    let tag = format!("override-{}", ulid::Ulid::generate());
+    let built = image_json(&[
+        "build",
+        recipe.to_str().unwrap(),
+        "--tag",
+        &tag,
+        "--name",
+        "base-ubuntu",
+    ]);
+    assert_eq!(built["name"], "base-ubuntu");
+    check_registration(&format!("base-ubuntu:{tag}"), &tag, &built);
+}

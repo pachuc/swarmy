@@ -429,7 +429,7 @@ needs local NVMe storage; caches go there and backing databases go on EBS.
 ```bash
 chmod 600 .swarmy/config.toml
 swarmy dev down                 # stop any local stack before reserving port 4500
-swarmy remote up demo           # builds on EC2; prints elapsed time and SSH command
+swarmy remote up demo           # builds binaries and base-ubuntu:demo; prints build times and SSH command
 swarmy remote connect demo
 swarmy auth login              # dedicated ChatGPT login, on the laptop
 swarmy dev up --remote demo
@@ -443,28 +443,31 @@ the private-address connection requirement above. Stop a conflicting local
 stack, disconnect, and reconnect.
 NATS and S3 alone can use automatically selected alternative local ports.
 
-A new remote has no base image. Use the SSH command printed by `up` to log in
-and run these commands **on that EC2 node**; then exit back to the laptop:
+`up` finishes by building `images/base-ubuntu` as root on the node using
+`/etc/swarmy/node.env`. It streams the build progress, reports its duration,
+and registers `base-ubuntu:demo`. `connect` copies that image into the remote
+profile's `default_image`, so new sessions need no image flag or local image
+configuration. Image construction needs node root; it never needs laptop root.
+`swarmy remote status` lists registered images while the remote is connected.
+
+Start a chat on the laptop and ask the agent to run `pwd` in its sandbox:
 
 ```bash
-cd ~/swarmy
-sudo bash -c 'set -a; . /etc/swarmy/node.env; set +a; /usr/local/bin/swarmy image build images/base-ubuntu --tag remote'
-exit
-```
-
-This registers `base-ubuntu:remote` in the remote stack. Image construction
-needs node root; it never needs laptop root. Start a disk-backed session on
-the laptop, then resume the session id printed by `run` in the chat UI:
-
-```bash
-swarmy run --remote demo --image base-ubuntu:remote 'Say ready and wait for my next instruction.'
+swarmy chat --remote demo
+# Alternatively, start a session and resume its printed id:
+swarmy run --remote demo 'Run pwd in the sandbox, then wait for my next instruction.'
 swarmy chat --remote demo SESSION_ID
 ```
 
-Starting `swarmy chat` without that session id creates or selects a session.
-Use `swarmy chat --remote demo --image base-ubuntu:remote` for a new chat, or set
-`default_image = "base-ubuntu:remote"` in the laptop configuration. In the
-session, ask the agent to use `process_start` to run
+Use `swarmy remote up demo --image-recipe images/custom` to build another recipe
+directory within the checkout. Relative paths are resolved from the checkout
+root; absolute paths must also be inside that checkout. The registered name
+remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
+without a saved default; provide an already registered image through `--image`
+or `default_image` before starting a new session. The two options cannot be
+combined. An explicit session `--image NAME:TAG` overrides the profile default.
+
+In the session, ask the agent to use `process_start` to run
 `python3 -u -m http.server 18765 --bind 127.0.0.1`. In the next turn ask it to
 fetch `http://127.0.0.1:18765/` with `bash` and verify the server is still listed
 by `process_list`. Then ask it to write a marker file and call `checkpoint`.

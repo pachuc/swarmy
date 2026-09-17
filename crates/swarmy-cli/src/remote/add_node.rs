@@ -44,6 +44,7 @@ pub async fn run(
         ssh_user: primary.ssh_user.clone(),
         ports: primary.ports,
         nodes: Vec::new(),
+        default_image: None,
         launch_settings: Some(settings.clone()),
         created_at: jiff::Timestamp::now().to_string(),
     };
