@@ -172,6 +172,69 @@ In-flight calls lose their processes on rebuild; callers must reconcile an
 unknown result and external side effects before retrying. The system does
 not promise rollback of a single call or exactly-once external effects.
 
+### 5.1 Turn timeline and proposed latency budget
+
+The user message ID identifies a turn. The store updates `("turn", session_id)`
+with the user append and saves `("request_turn", request_id)` with each request.
+A retried tool therefore retains its original turn even after another user
+message arrives. Inference carries that identity in its prompt. Neither key
+changes existing event or session encodings.
+
+Every stage emits a structured tracing event and an ephemeral
+`session.timeline.{session_id}` observation: submitted, appended, nudged,
+claimed, inference started, inference finished, tool dispatched, tool completed,
+idle, final text rendered, and input enabled. Events include the session, turn,
+optional request ID, host boot ID, monotonic nanoseconds, and UTC nanoseconds.
+Nudged means a successful JetStream publication, timestamped at submission;
+claimed means the lease transaction returned. Inference surrounds the provider
+stream, excluding its subsequent durable commit. Tool completed means the node
+returned from fenced completion. Idle follows the committed state transition.
+The client timestamps final text after its renderer writes it, and input after
+it observes the stable idle state. Final text can appear before server idle;
+input enabling follows it. Rendering and server completion overlap.
+
+Instrumentation does not append extra conversation events. Publication failure
+is logged without changing a successful operation. Timeline feeds are lossy;
+`swarmy bench turn` subscribes before submission and refuses incomplete samples
+instead of reconstructing timestamps from log arrival. Raw records retain every
+repeated scheduler, inference, and tool stage. Same-host intervals use the
+monotonic clock. Cross-host intervals use UTC and require synchronized clocks;
+raw samples flag those comparisons. End-to-end always uses the client's
+monotonic clock, from submission through input enabled.
+
+The proposed warm-turn budget for the zero-delay fake provider is **under
+100 ms locally**, and **under three client-to-node round trips plus 100 ms
+remotely**, for both a text turn and a turn with one trivial bash call. Here
+`R` is a measured client-to-node round trip. Cold computer boot, image building,
+real provider latency, and nontrivial user tool execution have separate budgets.
+The following allocations are totals per turn, including both inference passes
+for the bash shape, not allowances for every repeated step:
+
+| Work | Local allowance | Remote allowance | Reason |
+| --- | ---: | ---: | --- |
+| Submit and commit user append | 10 ms | R + 10 ms | Durable admission |
+| Wake, scheduler nudges, and lease claims | 15 ms | R + 15 ms | Dispatch must be driven by readiness, not a scan period |
+| Build and deliver inference requests | 15 ms | 15 ms | Small prompts and local control-plane work |
+| Fake provider streams | 10 ms | 10 ms | Includes both scripted passes and call logging |
+| Dispatch bash and receive fenced completion | 20 ms | R + 20 ms | Warm computer and trivial command |
+| Commit results, fold, snapshot, and commit idle | 20 ms | 20 ms | Durable completion and object-store work |
+| Render final text and enable input | 5 ms | 5 ms | Live notification; the timer is recovery only |
+| Total | 95 ms | 3R + 95 ms | Leaves 5 ms below the target |
+
+These are targets, not current guarantees. The dated turn measurements in
+[volume benchmarks](volume-benchmarks.md#2026-09-17-turn-timeline-benchmark)
+compare them to the actual default scheduler and client timers. Meeting the
+budget requires removing scan waits and the default five-second resend gate
+from ordinary progress, distinguishing a new runnable step from a duplicate
+nudge for the previous step, and removing stable-head poll waits from ordinary
+input enabling. The shorter-timer local bash run still spends about 17 ms in
+the fake provider and 31 ms on the tool, above their 10 ms and 20 ms allocations;
+those paths also need less bookkeeping and execution overhead. The remote
+budget requires batching or moving store-dependent work close to FoundationDB; today's
+launcher control plane makes more than three sequential database round trips.
+The benchmark intentionally preserves those behaviors so their cost remains
+visible.
+
 ## 6. Storage layout
 
 ### 6.1 FoundationDB
@@ -185,6 +248,8 @@ Values over 100KB are stored in object storage with a pointer in the value.
 ("agent_dir", agent_id)                     -> presence, description, tags
 ("session", session_id)                     -> SessionRecord {agent_id, state, head_seq, snapshot_ref, parent}
 ("event", session_id, seq)                  -> Event
+("turn", session_id)                        -> latest user MessageId
+("request_turn", request_id)                -> originating user MessageId
 ("snapshot", session_id, seq)               -> SnapshotRef
 ("runnable", partition, priority, wake_at, session_id) -> ()
 ("lease", session_id)                       -> {owner, expires_at, seq}
@@ -224,6 +289,7 @@ tool.remote                    remote tool calls (JetStream)
 tool.node.{node_id}            sandbox tool calls for one node (JetStream)
 node.heartbeat                 node liveness
 session.events.{session_id}    event fan-out for UIs
+session.timeline.{session_id}  ephemeral timestamped turn stages
 channel.msg.{channel_id}       live channel delivery
 ```
 

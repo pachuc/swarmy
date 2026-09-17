@@ -1809,3 +1809,237 @@ in `us-east-1`. No external S3 bucket, object prefix, or GCP resource was create
 The launcher was not a termination target. Remote state, profiles, and keys
 were removed by down. The client firewall rule and temporary localhost SSH
 authorizations were removed after the audit.
+
+## 2026-09-17 Turn timeline benchmark
+
+`swarmy bench turn` now follows the user message ID across submission, durable
+append, scheduler nudges, worker leases, inference, routed bash execution,
+committed idle, final text rendering, and input enabling. This run measured the
+line client with stdout redirected to a file. It uses the same conversation
+transport and line renderer as `swarmy run`, rendering the durable final answer
+rather than streaming deltas. It is not a PTY rendering benchmark.
+
+The client, scheduler, worker, and gateway ran as ubuntu on the launcher, an
+AWS `m6i.xlarge` with four vCPUs and 15.3 GiB available RAM. Locally, FoundationDB,
+NATS, SeaweedFS, and root `swarmyd` also ran there, on its EBS root disk. The remote
+run placed those four backing/execution services on `m6id.xlarge`
+`i-005be6a555af2b2a8` in `us-east-1a`, with four vCPUs, 16 GiB RAM, a 100 GiB gp3
+root disk, and 220.7 GiB instance-store NVMe for computer volumes. Both machines
+used Ubuntu 24.04 and kernel `7.0.0-1012-aws`. Services were FoundationDB 7.3.79,
+NATS 2.14.6, and SeaweedFS 4.47. The binaries were stripped development builds
+from Rust 1.98.1; the same node and client binaries were copied to the remote.
+No build or acceptance test ran during the measured turn samples.
+
+The fake script is [turn-fake.json](../scripts/benchmarks/turn-fake.json). Every
+user turn selects either one immediate text response or a `printf TURN_TOOL_OK`
+bash call followed by the final text. The benchmark validates the final answer,
+the number of tool calls, exit status, and tool stdout. Each shape uses one
+session and repeats the user turn within that session. One warmup per shape is
+recorded but excluded from percentiles. Bash used a 256 MiB ext4 image containing
+the launcher's bash, sleep, setsid, and their shared libraries. Image preparation
+and session creation are outside the interval; the first computer boot is in
+the excluded warmup. The warm computer remains placed between user turns.
+
+All elapsed milestones below start immediately before the client's initial
+session read and append. Repeated stages show their last occurrence in a turn;
+for example, the last claim is the worker that finishes the turn. Inference
+and tool duration rows are sums of matched request intervals, not elapsed
+milestones. Rendering can precede committed idle, so these columns are not
+additive. End-to-end ends when the client enables input, using its monotonic
+clock. Percentiles use nearest rank, without interpolation.
+
+### Default settings
+
+Five measured turns per shape, after one warmup, used the unchanged defaults:
+1,000 ms scheduler scans, 5,000 ms nudge resend suppression, and the client's
+500 ms catch-up timer. At this sample size p95 is the maximum observed value.
+
+**no_tool**, milliseconds.
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 5.003 | 5.268 | 4.919 | 48.478 |
+| nudged | 5589.049 | 5590.860 | 5457.756 | 6081.339 |
+| claimed | 5594.892 | 5596.829 | 5468.967 | 6092.089 |
+| inference_started | 46.133 | 46.381 | 259.450 | 329.343 |
+| inference_finished | 55.370 | 57.373 | 269.732 | 338.248 |
+| idle | 5616.737 | 5620.306 | 5506.928 | 6189.309 |
+| final_text_rendered | 500.201 | 500.865 | 502.106 | 502.734 |
+| input_enabled | 5999.343 | 6000.578 | 5998.844 | 6498.152 |
+| end_to_end | 5999.343 | 6000.578 | 5998.844 | 6498.152 |
+| inference_total_duration | 9.290 | 10.992 | 9.512 | 10.837 |
+
+**bash**, milliseconds.
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 5.010 | 5.066 | 8.312 | 48.889 |
+| nudged | 16589.416 | 16593.199 | 16782.733 | 16892.403 |
+| claimed | 16595.594 | 16599.141 | 16790.065 | 16900.589 |
+| inference_started | 10634.130 | 11628.889 | 11026.023 | 11858.610 |
+| inference_finished | 10645.151 | 11638.159 | 11038.004 | 11912.578 |
+| tool_dispatched | 5618.955 | 5624.962 | 5891.079 | 5984.103 |
+| tool_completed | 5650.741 | 5658.562 | 5917.678 | 6008.334 |
+| idle | 16617.556 | 16621.297 | 16818.246 | 16967.355 |
+| final_text_rendered | 11000.334 | 11999.872 | 11143.067 | 12004.017 |
+| input_enabled | 16999.834 | 17000.028 | 16998.448 | 17011.471 |
+| end_to_end | 16999.834 | 17000.028 | 16998.448 | 17011.471 |
+| inference_total_duration | 18.846 | 20.551 | 24.545 | 63.889 |
+| tool_total_duration | 31.786 | 33.600 | 23.752 | 26.597 |
+
+### Shorter scheduler timers
+
+Twenty measured turns per shape, after one warmup, used 50 ms scans and
+100 ms resend suppression, matching the earlier SSH-only proof. The client
+catch-up timer remained 500 ms. These are explicit configuration overrides;
+this change does not alter production defaults.
+
+**no_tool**, milliseconds.
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 5.199 | 5.405 | 11.654 | 50.196 |
+| nudged | 143.949 | 174.357 | 468.679 | 858.465 |
+| claimed | 149.753 | 180.057 | 478.046 | 866.533 |
+| inference_started | 46.881 | 48.234 | 92.045 | 179.454 |
+| inference_finished | 56.498 | 58.952 | 103.501 | 208.906 |
+| idle | 172.719 | 202.179 | 570.536 | 925.728 |
+| final_text_rendered | 153.601 | 183.956 | 495.129 | 507.353 |
+| input_enabled | 499.660 | 500.592 | 997.135 | 1000.694 |
+| end_to_end | 499.660 | 500.592 | 997.135 | 1000.694 |
+| inference_total_duration | 9.475 | 11.429 | 11.592 | 34.465 |
+
+**bash**, milliseconds.
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 2.920 | 5.288 | 11.213 | 24.247 |
+| nudged | 425.884 | 449.671 | 1921.136 | 2262.872 |
+| claimed | 429.295 | 455.329 | 1933.174 | 2276.610 |
+| inference_started | 315.268 | 357.457 | 1275.356 | 1653.445 |
+| inference_finished | 323.126 | 366.637 | 1292.683 | 1672.706 |
+| tool_dispatched | 161.786 | 200.972 | 667.248 | 891.509 |
+| tool_completed | 195.433 | 235.094 | 692.246 | 919.934 |
+| idle | 443.757 | 476.824 | 1968.034 | 2318.915 |
+| final_text_rendered | 433.347 | 459.341 | 1507.688 | 2029.843 |
+| input_enabled | 499.581 | 500.558 | 1999.785 | 2524.088 |
+| end_to_end | 499.581 | 500.558 | 1999.785 | 2524.088 |
+| inference_total_duration | 17.145 | 19.597 | 26.986 | 56.158 |
+| tool_total_duration | 30.702 | 35.667 | 24.471 | 29.522 |
+
+### Interpretation and reproduction
+
+The default resend gate dominates: a fresh runnable step within the same turn
+waits behind the preceding nudge's five-second suppression window. The bash
+shape passes through that window three times, compared with once for text.
+The shorter timers remove most of that wait, but client polling and the
+remaining scheduling/store work still exceed the proposed budget. Immediate
+fake inference is only a small part of end-to-end time. These observations
+motivate the per-stage targets in [design section 5.1](DESIGN.md#51-turn-timeline-and-proposed-latency-budget):
+under 100 ms locally and under three round trips plus 100 ms remotely. Neither
+configuration demonstrates that target. Meeting it needs readiness-driven
+scheduling that distinguishes new steps from resends, prompt client idle
+notification, and fewer serial remote store round trips.
+
+The remote client used `--remote turn-proof`. The local dev stack was stopped
+before connecting so the FoundationDB tunnel could bind port 4500. On the
+remote node FoundationDB advertised loopback at port 4500. Throughout remote
+measurement, this client rule blocked direct private service traffic:
+
+```sh
+sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d 172.31.0.0/16 \
+  -p tcp -m multiport --dports 4500,4222,8333 \
+  -m comment --comment swarmy-turn-proof -j REJECT
+```
+
+The proof artifact records failed direct probes, firewall counters, SSH
+connections, binary hashes, clock synchronization, and resource identifiers.
+The launcher and node are in one VPC; this is an SSH-route proof, not a WAN
+measurement. A 50-sample TCP connection probe to SSH port 22 measured a median
+0.512 ms and p95 1.975 ms; it includes connection setup, not application work.
+Only the remote tool-completed milestone and tool interval cross clock domains.
+Those use synchronized UTC; all other intervals use a shared host monotonic
+clock. Chrony reported microsecond system offsets and sub-millisecond root
+uncertainty. Three decimal places in the table do not imply microsecond
+cross-host accuracy. Raw records explicitly flag cross-host comparisons.
+
+With the dev stack and a node running, select the fake script in the project
+config's `[fake].script` and restart the control services. The script must be
+visible to the client and gateway; no real provider credentials are needed.
+The measured commands were:
+
+```sh
+/tmp/swarmy-turn-bin/swarmy dev up
+/tmp/swarmy-turn-bin/swarmy bench turn --turns 5 --image turn-image:bench \
+  --output /tmp/turn-local-default.json
+SWARMY_SCHEDULER_SCAN_INTERVAL_MS=50 SWARMY_SCHEDULER_RESEND_INTERVAL_MS=100 \
+  /tmp/swarmy-turn-bin/swarmy dev up
+/tmp/swarmy-turn-bin/swarmy bench turn --turns 20 --image turn-image:bench \
+  --output /tmp/turn-local-tuned.json
+# Stop the local node and dev stack, then connect the remote profile.
+/tmp/swarmy-turn-bin/swarmy remote connect turn-proof
+/tmp/swarmy-turn-bin/swarmy dev up --remote turn-proof
+/tmp/swarmy-turn-bin/swarmy bench turn --remote turn-proof --turns 5 \
+  --image turn-image:bench --output /tmp/turn-remote-default.json
+SWARMY_SCHEDULER_SCAN_INTERVAL_MS=50 SWARMY_SCHEDULER_RESEND_INTERVAL_MS=100 \
+  /tmp/swarmy-turn-bin/swarmy dev up --remote turn-proof
+/tmp/swarmy-turn-bin/swarmy bench turn --remote turn-proof --turns 20 \
+  --image turn-image:bench --output /tmp/turn-remote-tuned.json
+```
+
+Raw timelines include every warmup and repeated stage:
+[local defaults](benchmarks/2026-09-17-turn-local-default.json),
+[remote defaults](benchmarks/2026-09-17-turn-remote-default.json),
+[local shorter timers](benchmarks/2026-09-17-turn-local-tuned.json), and
+[remote shorter timers](benchmarks/2026-09-17-turn-remote-tuned.json).
+The [network and teardown evidence](benchmarks/2026-09-17-turn-proof.json)
+retains the audit details.
+
+### Validation and cleanup
+
+The required commands passed: `cargo fmt --all --check`,
+`cargo test --workspace --locked` (with `.dev/env` sourced; 257 passed and the
+existing dedicated-account provider test ignored), and
+`cargo clippy --workspace --all-targets --locked -- -D warnings`.
+`cargo build --workspace --locked` also passed. The opt-in timeline integration
+test ran separately against both measured stacks with
+`SWARMY_BENCH_IMAGE=turn-image:bench`; the remote run additionally set
+`SWARMY_REMOTE=turn-proof`. Both passed, checking every required stage, turn
+identity, tool presence, and percentile output for both shapes.
+
+Privileged acceptance binaries were compiled as ubuntu with
+`cargo test --workspace --locked --no-run --message-format=json`, then executed
+with `sudo -E <test-binary> --nocapture --test-threads=1`. The volume library,
+volume/image/NBD/device integration tests, CLI image/volume tests, and node
+lifecycle test passed all 39 tests, exercising actual kernel devices, OCI image
+preparation, sandbox persistence, fencing, and cleanup. The bash chaos acceptance
+binary ran with `SWARMY_TEST_IMAGE=base-ubuntu:turn-root-tests`: its full repeat
+passed all four scenarios, including twelve seeded kills. Its first run failed
+in that last scenario at the existing `failure lacks its matching recovery
+system message` assertion. The store suppresses a recovery notice for initial
+or unstarted placements, while that assertion requires one for every tool
+error. These paths are unchanged here; the initial failure is recorded rather
+than weakening the check. No NBD or ublk device remained attached after testing.
+
+The dedicated real-account provider test was not run because this task uses the
+fake provider and no dedicated provider account was supplied. This run does not
+measure WAN latency, cold image creation, or terminal drawing. Cross-host stage
+timing depends on clock synchronization; end-to-end does not.
+
+AWS teardown completed and was independently queried at `2026-09-17T09:08:27+00:00`.
+The benchmark instance `i-005be6a555af2b2a8` is `terminated`; its tagged
+100 GiB root volume query returns `[]`, and the imported key pair
+`swarmy-turn-178963` query returns `[]`. The temporary client firewall rule
+and SSH tunnel were removed. The launcher and existing network resources
+were retained. No GCP resources, external S3 bucket, or external S3 objects
+were created; the benchmark's SeaweedFS objects disappeared with the node.
+The provider queries and their results were:
+
+```sh
+aws ec2 describe-instances --instance-ids i-005be6a555af2b2a8 --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}" --output json
+# [{"InstanceId": "i-005be6a555af2b2a8", "State": "terminated"}]
+aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-benchmark --query "Volumes[].{VolumeId:VolumeId,State:State}" --output json
+# []
+aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-178963 --query "KeyPairs[].KeyName" --output json
+# []
+```

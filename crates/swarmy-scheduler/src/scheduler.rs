@@ -55,12 +55,19 @@ impl Scheduler {
         {
             return;
         }
+        let turn = self.store.turn_id(session_id).await.ok().flatten();
+        let observation = turn.map(|turn| {
+            swarmy_bus::Bus::turn_event(session_id, turn, swarmy_core::TurnStage::Nudged, None)
+        });
         match self
             .bus
             .publish_work(&WorkQueue::Runnable(partition), &Nudge { session_id })
             .await
         {
             Ok(()) => {
+                if let Some(event) = observation {
+                    self.bus.record_turn(&event).await;
+                }
                 recent.insert(session_id, Instant::now());
                 tracing::info!(%session_id, partition, "nudged runnable session");
             }

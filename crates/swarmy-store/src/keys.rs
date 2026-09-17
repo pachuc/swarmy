@@ -13,6 +13,34 @@ pub fn runnable_partition(id: SessionId) -> u16 {
 }
 
 impl Store {
+    pub(crate) fn request_turn_key(&self, id: swarmy_core::RequestId) -> Vec<u8> {
+        self.root.pack(&("request_turn", id.as_bytes().as_slice()))
+    }
+
+    /// Resolve the original user turn even when old work is redelivered later.
+    /// # Errors
+    /// Returns database and decoding errors.
+    pub async fn request_turn_id(
+        &self,
+        id: swarmy_core::RequestId,
+    ) -> Result<Option<swarmy_core::MessageId>> {
+        self.transaction(|trx| async move { read(&trx, &self.request_turn_key(id)).await })
+            .await
+    }
+
+    pub(crate) fn turn_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("turn", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    /// The latest user message identifies the turn, including after snapshots.
+    /// # Errors
+    /// Returns database and decoding errors.
+    pub async fn turn_id(&self, id: SessionId) -> Result<Option<swarmy_core::MessageId>> {
+        self.transaction(|trx| async move { read(&trx, &self.turn_key(id)).await })
+            .await
+    }
+
     pub(crate) fn volume_key(&self, id: VolumeId) -> Vec<u8> {
         self.root
             .pack(&("volume", id.as_ulid().to_bytes().as_slice()))

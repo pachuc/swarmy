@@ -1562,3 +1562,56 @@ mod tools;
 
 #[path = "store/placements.rs"]
 mod placements;
+
+#[tokio::test]
+async fn turn_identity_survives_later_messages_and_failed_appends() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let first = event("first turn");
+    let Event::MessageAppended { message, .. } = &first else {
+        unreachable!()
+    };
+    let turn = message.id;
+    let request = RequestId::for_step(id, 2);
+    test.store
+        .append_events(
+            id,
+            0,
+            &[
+                first,
+                Event::InferenceRequested {
+                    seq: 0,
+                    request_id: request,
+                    step: 2,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(test.store.turn_id(id).await.unwrap(), Some(turn));
+    assert_eq!(
+        test.store.request_turn_id(request).await.unwrap(),
+        Some(turn)
+    );
+    assert!(
+        test.store
+            .append_events(id, 0, &[event("stale")])
+            .await
+            .is_err()
+    );
+    assert_eq!(test.store.turn_id(id).await.unwrap(), Some(turn));
+    let next = event("next turn");
+    let Event::MessageAppended { message, .. } = &next else {
+        unreachable!()
+    };
+    let next_turn = message.id;
+    test.store.append_events(id, 2, &[next]).await.unwrap();
+    assert_eq!(test.store.turn_id(id).await.unwrap(), Some(next_turn));
+    assert_eq!(
+        test.store.request_turn_id(request).await.unwrap(),
+        Some(turn)
+    );
+    test.cleanup().await;
+}

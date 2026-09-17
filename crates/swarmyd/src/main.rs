@@ -81,10 +81,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut clients = JoinSet::new();
     let (shutdown, _) = tokio::sync::watch::channel(false);
-    let mut tool_server = {
-        let hosting = hosting.clone();
-        tokio::spawn(async move { tools::serve(&bus, node, &hosting, bus_config.ack_wait).await })
-    };
+    let mut tool_server = tools::spawn(bus, &store, node, &hosting, bus_config.ack_wait);
     let serving: Result<()> = async {
         loop {
             tokio::select! {

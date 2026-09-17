@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+rustix.workspace = true
+jiff.workspace = true
 async-nats.workspace = true
 futures-util.workspace = true
 serde.workspace = true

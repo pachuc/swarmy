@@ -11,10 +11,21 @@ use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
 
-pub async fn serve(
-    bus: &Bus,
+pub fn spawn(
+    bus: Bus,
+    store: &Store,
     node: NodeId,
     hosting: &Arc<crate::hosting::Hosting>,
+    ack_wait: Duration,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(serve(bus, store.clone(), node, hosting.clone(), ack_wait))
+}
+
+async fn serve(
+    bus: Bus,
+    store: Store,
+    node: NodeId,
+    hosting: Arc<crate::hosting::Hosting>,
     ack_wait: Duration,
 ) -> Result<()> {
     let queue = WorkQueue::NodeTools(node);
@@ -26,7 +37,10 @@ pub async fn serve(
             delivery = messages.next() => {
                 let message = delivery.context("node tool subscription closed")??;
                 let hosting = hosting.clone();
+                let store = store.clone();
+                let bus = bus.clone();
                 calls.spawn(async move {
+                    let turn = store.request_turn_id(message.value.request_id).await?;
                     let result = tokio::select! {
                         result = hosting.call(message.value.clone()) => result,
                         result = async {
@@ -37,7 +51,14 @@ pub async fn serve(
                         } => result,
                     };
                     match result {
-                        Ok(()) => message.acknowledge().await?,
+                        Ok(()) => {
+                            if let Some(turn) = turn {
+                                bus.record_turn(&Bus::turn_event(message.value.session_id, turn,
+                                    swarmy_core::TurnStage::ToolCompleted,
+                                    Some(message.value.request_id))).await;
+                            }
+                            message.acknowledge().await?;
+                        }
                         Err(error) => {
                             tracing::warn!(%error, request_id = %message.value.request_id, "sandbox tool refused or interrupted");
                             message.negative_acknowledge(Some(Duration::from_secs(2))).await?;

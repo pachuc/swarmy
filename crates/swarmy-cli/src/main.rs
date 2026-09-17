@@ -1,3 +1,4 @@
+mod bench_command;
 mod dev;
 mod doctor;
 mod image_command;
@@ -30,6 +31,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure conversation latency
+    Bench {
+        #[command(subcommand)]
+        command: bench_command::Command,
+    },
     /// Launch, connect to, and inspect remote development stacks
     Remote {
         #[command(subcommand)]
@@ -112,7 +118,8 @@ fn main() -> anyhow::Result<()> {
         cli.command,
         Command::Remote {
             command: remote_command::Command::Status
-        } | Command::Run { .. }
+        } | Command::Bench { .. }
+            | Command::Run { .. }
             | Command::Session { .. }
             | Command::Chat { .. }
             | Command::Vol { .. }
@@ -135,7 +142,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Remote { command } => remote::run(command, cli.json).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Run { .. }
+        Command::Bench { .. }
+        | Command::Run { .. }
         | Command::Session { .. }
         | Command::Chat { .. }
         | Command::Vol { .. }

@@ -446,6 +446,20 @@ impl Store {
                 for (key, value) in prepared {
                     trx.set(key, value);
                 }
+                for event in events {
+                    if let Event::MessageAppended { message, .. } = event
+                        && message.role == swarmy_core::MessageRole::User
+                    {
+                        write(&trx, &self.turn_key(id), &message.id)?;
+                    }
+                    if let Event::InferenceRequested { request_id, .. }
+                    | Event::ToolCallRequested { request_id, .. } = event
+                        && let Some(turn) =
+                            read::<swarmy_core::MessageId>(&trx, &self.turn_key(id)).await?
+                    {
+                        write(&trx, &self.request_turn_key(*request_id), &turn)?;
+                    }
+                }
                 session.head_seq = head;
                 write(&trx, &self.session_key(id), &session)
             }

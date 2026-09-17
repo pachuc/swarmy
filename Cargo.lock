@@ -3498,6 +3498,8 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "futures-util",
+ "jiff",
+ "rustix",
  "serde",
  "swarmy-core",
  "thiserror 2.0.20",
