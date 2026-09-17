@@ -1,10 +1,48 @@
 //! Selection policy is separate from the store's transactional capacity admission.
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
+use tokio::sync::Mutex;
 
 use anyhow::{Result, bail};
 use jiff::Timestamp;
 use swarmy_core::{AgentId, NodeRecord, NodeRole, PlacementRecord, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
+
+/// A cached route is a hint; dispatch and execution still check the stored epoch.
+#[derive(Default)]
+pub struct Cache(Mutex<HashMap<AgentId, PlacementRecord>>);
+
+impl Cache {
+    pub async fn resolve(
+        &self,
+        store: &Store,
+        agent: AgentId,
+        lease: Duration,
+    ) -> Result<PlacementRecord> {
+        {
+            let entries = self.0.lock().await;
+            if let Some(placement) = entries.get(&agent)
+                && placement.expires_at > Timestamp::now()
+            {
+                return Ok(placement.clone());
+            }
+        }
+        let placement = resolve(store, agent, lease).await?;
+        let mut entries = self.0.lock().await;
+        // Bound memory even when many short-lived agents pass through a worker.
+        if entries.len() >= 4096 {
+            entries.retain(|_, entry| entry.expires_at > Timestamp::now());
+            if entries.len() >= 4096 {
+                entries.clear();
+            }
+        }
+        entries.insert(agent, placement.clone());
+        Ok(placement)
+    }
+
+    pub async fn invalidate(&self, agent: AgentId) {
+        self.0.lock().await.remove(&agent);
+    }
+}
 
 pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<PlacementRecord> {
     // Contention can change the winner while capacity is being reserved. Re-read

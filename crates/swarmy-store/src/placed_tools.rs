@@ -152,15 +152,13 @@ impl Store {
         trx: &Transaction,
         claim: &PlacedToolClaim,
     ) -> Result<StoredPlacedClaim> {
-        self.check_live_placement(trx, &claim.placement).await?;
-        self.check_tool_dispatch(trx, &claim.job, &claim.placement)
-            .await?;
-        let current: StoredPlacedClaim = read(
-            trx,
-            &self.tool_key("placed_tool_claim", claim.job.request_id),
-        )
-        .await?
-        .ok_or(StoreError::LeaseMismatch)?;
+        let key = self.tool_key("placed_tool_claim", claim.job.request_id);
+        let ((), (), current) = futures::try_join!(
+            self.check_live_placement(trx, &claim.placement),
+            self.check_tool_dispatch(trx, &claim.job, &claim.placement),
+            read::<StoredPlacedClaim>(trx, &key),
+        )?;
+        let current = current.ok_or(StoreError::LeaseMismatch)?;
         if current.owner != claim.owner
             || current.job_digest != crate::tools::job_digest(&claim.job)?
             || current.placement != claim.placement
@@ -218,8 +216,10 @@ impl Store {
         self.transaction(|trx| {
             let event = &event;
             async move {
-                self.check_placed_tool(&trx, claim).await?;
-                let mut session = self.session(&trx, job.session_id).await?;
+                let (_, mut session) = futures::try_join!(
+                    self.check_placed_tool(&trx, claim),
+                    self.session(&trx, job.session_id),
+                )?;
                 if session.head_seq != expected_head {
                     return Err(StoreError::StaleSequence {
                         expected: expected_head,

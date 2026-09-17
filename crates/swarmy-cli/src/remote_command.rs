@@ -5,6 +5,12 @@ pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
     Up {
         name: String,
+        /// Run control-plane services on the laptop (default) or the node
+        #[arg(long)]
+        services: Option<swarmy_config::RemoteServices>,
+        /// Acknowledge that the `ChatGPT` credential file leaves this laptop over SSH
+        #[arg(long)]
+        copy_credential: bool,
         /// Skip building and registering the stack's default image
         #[arg(long, conflicts_with = "image_recipe")]
         no_image: bool,
@@ -72,6 +78,7 @@ mod tests {
                 name,
                 no_image,
                 image_recipe,
+                ..
             } = Cli::try_parse_from(args).unwrap().command
             else {
                 panic!("expected up")

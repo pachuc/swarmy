@@ -608,3 +608,64 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
     delivery.acknowledge().await.unwrap();
     f.cleanup().await;
 }
+
+#[tokio::test]
+async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let cache = crate::placement::Cache::default();
+    let duration = Duration::from_secs(30);
+    let old = cache
+        .resolve(&fixture.store, fixture.agent, duration)
+        .await
+        .unwrap();
+    let renewed = fixture
+        .store
+        .renew(&old, old.expires_at.checked_add(duration).unwrap())
+        .await
+        .unwrap();
+    // A cached route does not borrow a renewal it has not observed.
+    assert_eq!(
+        cache
+            .resolve(&fixture.store, fixture.agent, duration)
+            .await
+            .unwrap(),
+        old
+    );
+    fixture.store.release(&renewed).await.unwrap();
+    assert!(fixture.store.validate_placement(&old).await.is_err());
+    cache.invalidate(fixture.agent).await;
+    let replacement = cache
+        .resolve(&fixture.store, fixture.agent, duration)
+        .await
+        .unwrap();
+    assert!(replacement.epoch > old.epoch);
+    fixture.store.release(&replacement).await.unwrap();
+    let short = fixture
+        .store
+        .place(
+            fixture.agent,
+            fixture.nodes[0],
+            Timestamp::now()
+                .checked_add(Duration::from_millis(100))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    cache.invalidate(fixture.agent).await;
+    assert_eq!(
+        cache
+            .resolve(&fixture.store, fixture.agent, duration)
+            .await
+            .unwrap(),
+        short
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let after_expiry = cache
+        .resolve(&fixture.store, fixture.agent, duration)
+        .await
+        .unwrap();
+    assert!(after_expiry.epoch > short.epoch);
+    fixture.cleanup().await;
+}

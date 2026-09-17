@@ -138,6 +138,7 @@ pub struct Store {
     db: Arc<Database>,
     root: Subspace,
     blobs: Arc<dyn BlobStore>,
+    images: session_images::ImageCache,
 }
 
 impl Store {
@@ -166,6 +167,7 @@ impl Store {
         Ok(Self {
             db,
             root: Subspace::from_bytes(prefix),
+            images: Arc::default(),
             blobs,
         })
     }
@@ -173,7 +175,12 @@ impl Store {
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
     #[must_use]
     pub fn with_subspace(db: Arc<Database>, root: Subspace, blobs: Arc<dyn BlobStore>) -> Self {
-        Self { db, root, blobs }
+        Self {
+            db,
+            root,
+            blobs,
+            images: Arc::default(),
+        }
     }
 
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>

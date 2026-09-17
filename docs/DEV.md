@@ -474,13 +474,14 @@ by `process_list`. Then ask it to write a marker file and call `checkpoint`.
 An acknowledged checkpoint makes the disk durable; it does not save running
 processes. Escape or Ctrl-C closes chat while the session remains stored.
 
-The ChatGPT credential stays in the laptop's configured file. The local gateway
+In the default laptop-services mode, the ChatGPT credential stays in the
+laptop's configured file. The local gateway
 reads it and sends inference directly to the provider. Remote provisioning
 copies the checkout while excluding `.swarmy/`, `.dev/`, `.git/`, `target/`,
 `.env`, and `.env.*`; it does not copy the laptop's home or credential cache.
-Keep any differently named credential file outside the checkout too, since
-rsync copies other checkout files. Do not copy auth.json to the node or share
-its refresh writer with a running Codex login. Prompts, outputs, and session
+The configured credential path is also excluded from the checkout copy.
+Do not share its refresh writer with a running Codex login. Node services have
+the explicit credential-transfer option described below. Prompts, outputs, and session
 history do live in the remote backing services. The fake-provider acceptance
 run requires no ChatGPT credential; see the dated benchmark evidence.
 
@@ -590,7 +591,9 @@ overrides. Credentials, bucket, object prefix, and store directory retain their
 normal configuration. Scheduler, worker, and gateway binaries honor the same
 variable and config setting without additional flags.
 
-Remote `dev up` starts only scheduler, gateway, and worker. It records that
+Remote `dev up` starts scheduler, gateway, and worker locally only for a
+remote created with laptop services. A remote created with node services starts
+none locally, including when local service binaries are not installed. It records that
 choice so `dev down` leaves the backing services running, even without a remote
 flag. Disconnect stops only the SSH control master and removes its profile and
 cluster file; instance state and logs remain. Reconnecting a healthy tunnel is
@@ -673,3 +676,55 @@ fake provider end to end, checks doctor and a live swarmyd registration, and
 verifies that backing process IDs remain unchanged. The script removes its
 services and tunnel on exit. Without `SWARMY_REMOTE_TEST_KEY` it skips cleanly.
 Remove the temporary authorized key and network namespace after testing.
+
+### Running control-plane services on the node
+
+Laptop services are the default. They keep ChatGPT credentials local and make
+worker/gateway development convenient, but every store transaction crosses the
+tunnel. For lower turn latency, run the control plane under systemd beside the
+store:
+
+```sh
+# With provider = "fake", no credential is copied.
+swarmy remote up demo --services node
+swarmy remote connect demo
+swarmy dev up --remote demo
+swarmy chat --remote demo
+```
+
+Alternatively set `services = "node"` in `[remote]` before `remote up`.
+`--services laptop` overrides that setting. The selected mode is saved in the
+remote's launch settings; later edits to local config do not switch an existing
+node. Node mode uses the configured provider, model, reasoning effort, system
+prompt, store/bus namespace, and fake script. The fake script is sent over SSH;
+if no script exists, the default greeting script is installed.
+
+For a ChatGPT gateway, use `swarmy remote up demo --services node
+--copy-credential`. This explicit flag acknowledges that the configured
+`credential_file` leaves the laptop. A warning precedes transfer. SSH sends the
+contents on stdin, and `/etc/swarmy/auth.json` is owned by ubuntu with mode 0600.
+The ordinary checkout copy excludes the configured credential path as well as
+`.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node launch
+fails before creating resources. Do not run a laptop gateway that refreshes the
+same account concurrently. Stopping the services does not erase the copied file;
+`remote down` terminates the node and its root disk.
+
+`dev up --remote demo` stops any recorded local control-plane processes, checks
+the tunnel, and starts nothing locally in node mode. The services continue when
+the laptop disconnects. `dev down` stops only local processes; use SSH and
+`sudo systemctl stop swarmy-{scheduler,worker,gateway}` to pause node services.
+Inspect their logs with `sudo journalctl -u swarmy-worker -u swarmy-gateway
+-u swarmy-scheduler`. `remote logs` continues to follow the execution node log.
+
+Both configurations use the same port-4500 tunnel requirement, tool placement,
+rebuild notices, and teardown commands:
+
+```sh
+swarmy dev down
+swarmy remote disconnect demo
+swarmy remote down demo
+```
+
+See the dated measurements in [volume benchmarks](volume-benchmarks.md) for
+latency results and the remaining round trips. Node services are a development
+mode on one backing-store node, without replicated storage or high availability.

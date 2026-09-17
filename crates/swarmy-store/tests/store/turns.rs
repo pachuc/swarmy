@@ -217,8 +217,8 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
         .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].session_id, id);
-    let (_, claimed, turn) = store
-        .claim_step(
+    let (_, claimed, turn, tail) = store
+        .claim_step_with_tail(
             id,
             owner(),
             Timestamp::now()
@@ -230,6 +230,7 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
     assert_eq!(claimed.head_seq, 1);
     assert_eq!(claimed.state, SessionState::Leased);
     assert_eq!(turn, Some(winner.id));
+    assert_eq!(tail, store.read_events(id, 0, 64).await.unwrap());
     assert!(store.append_user_message(id, 1, &winner).await.is_err());
     test.cleanup().await;
 }

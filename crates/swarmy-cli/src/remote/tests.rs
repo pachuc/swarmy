@@ -81,10 +81,25 @@ struct FakeHost {
     fail: bool,
     fail_image: bool,
     images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
+    services: Cell<usize>,
+    credentials: RefCell<Vec<std::path::PathBuf>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
 }
 
 impl Host for FakeHost {
+    fn services(
+        &self,
+        _: &RemoteNode,
+        _: &str,
+        options: &super::services::Options<'_>,
+    ) -> impl Future<Output = Result<()>> {
+        self.services.set(self.services.get() + 1);
+        if let Some(path) = &options.credential {
+            self.credentials.borrow_mut().push(path.clone());
+        }
+        std::future::ready(Ok(()))
+    }
+
     fn build_image(
         &self,
         node: &RemoteNode,
@@ -156,7 +171,7 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -227,7 +242,7 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
             &state,
             &settings(),
             "demo",
-            Some(std::path::Path::new("images/base-ubuntu")),
+            Some(std::path::Path::new("images/base-ubuntu")).into(),
             Duration::ZERO
         )
         .await
@@ -259,7 +274,7 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
             &state,
             &settings,
             "demo",
-            Some(std::path::Path::new("images/base-ubuntu")),
+            Some(std::path::Path::new("images/base-ubuntu")).into(),
             Duration::ZERO
         )
         .await
@@ -297,7 +312,7 @@ async fn down_missing_instance_and_retry_after_key_failure() {
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -332,7 +347,7 @@ async fn down_recovers_launch_before_instance_id_was_saved() {
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -401,7 +416,7 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -442,7 +457,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -501,7 +516,7 @@ async fn failed_join_retains_child_for_cleanup() {
         &state,
         &settings(),
         "demo",
-        Some(std::path::Path::new("images/base-ubuntu")),
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
@@ -561,7 +576,7 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
             &state,
             &settings(),
             "demo",
-            recipe,
+            recipe.into(),
             Duration::ZERO,
         )
         .await;
@@ -585,5 +600,66 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
                 .map(|(_, _, path)| path.as_path()),
             recipe
         );
+    }
+}
+
+#[tokio::test]
+async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
+    for copy in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::open(&dir.path().join("remote")).unwrap();
+        let auth = dir.path().join("auth.json");
+        let script = dir.path().join("fake.json");
+        std::fs::write(&auth, "test credential").unwrap();
+        std::fs::write(&script, "{}").unwrap();
+        let settings = swarmy_config::Settings {
+            remote: RemoteSettings {
+                services: swarmy_config::RemoteServices::Node,
+                ..settings()
+            },
+            credential_file: auth.to_string_lossy().into_owned(),
+            fake: swarmy_config::Fake {
+                script: script.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cloud = FakeCloud::default();
+        cloud
+            .observations
+            .borrow_mut()
+            .push_back(Some(instance("running")));
+        let host = FakeHost::default();
+        let options = super::services::Options::new(&settings, copy, None).unwrap();
+        up::run(
+            &cloud,
+            &host,
+            &state,
+            &settings.remote,
+            "demo",
+            options,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(host.services.get(), 1);
+        assert_eq!(
+            *host.credentials.borrow(),
+            if copy { vec![auth] } else { vec![] }
+        );
+        assert_eq!(
+            state
+                .require("demo")
+                .unwrap()
+                .launch_settings
+                .unwrap()
+                .services,
+            swarmy_config::RemoteServices::Node
+        );
+        let mut chatgpt = settings;
+        chatgpt.provider = "chatgpt".into();
+        assert!(super::services::Options::new(&chatgpt, false, None).is_err());
+        chatgpt.remote.services = swarmy_config::RemoteServices::Laptop;
+        assert!(super::services::Options::new(&chatgpt, true, None).is_err());
     }
 }

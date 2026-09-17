@@ -57,28 +57,30 @@ impl Store {
             let requested = &requested;
             async move {
                 let idem_key = self.inference_key("idem", claim.request_id);
-                if let Some(value) = trx.get(&idem_key, false).await? {
+                let key = self.inference_key("inference_claim", claim.request_id);
+                let inflight_key = self.inference_key("inflight", claim.request_id);
+                let (idem, old, session, inflight) = futures::try_join!(
+                    async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
+                    read::<InferenceClaim>(&trx, &key),
+                    self.session(&trx, claim.session_id),
+                    async { Ok::<_, StoreError>(trx.get(&inflight_key, false).await?) },
+                )?;
+                if let Some(value) = idem {
                     let record: IdempotencyRecord = self.hydrate(&value).await?;
                     if record.state == IdempotencyState::Completed {
                         return Ok(false);
                     }
                 }
-                let key = self.inference_key("inference_claim", claim.request_id);
-                if let Some(old) = read::<InferenceClaim>(&trx, &key).await?
+                if let Some(old) = old
                     && old.expires_at > now
                     && old.owner != claim.owner
                 {
                     return Ok(false);
                 }
-                if self.session(&trx, claim.session_id).await?.state
-                    != SessionState::WaitingInference
-                {
+                if session.state != SessionState::WaitingInference {
                     return Err(StoreError::InvalidState);
                 }
-                let inflight = trx
-                    .get(&self.inference_key("inflight", claim.request_id), false)
-                    .await?
-                    .ok_or(StoreError::InvalidState)?;
+                let inflight = inflight.ok_or(StoreError::InvalidState)?;
                 let inflight: InflightRecord = self.hydrate(&inflight).await?;
                 if inflight.session_id != claim.session_id {
                     return Err(StoreError::InvalidState);
@@ -221,23 +223,25 @@ impl Store {
             } = prepared;
             let now = snapshot.map_or(completion.now, |_| completion.now.max(Timestamp::now()));
             let idem_key = self.inference_key("idem", claim.request_id);
-            if let Some(value) = trx.get(&idem_key, false).await? {
+            let claim_key = self.inference_key("inference_claim", claim.request_id);
+            let (idem, current, mut session) = futures::try_join!(
+                async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
+                read::<InferenceClaim>(&trx, &claim_key),
+                self.session(&trx, claim.session_id),
+            )?;
+            if let Some(value) = idem {
                 let record: IdempotencyRecord = self.hydrate(&value).await?;
                 if record.state == IdempotencyState::Completed {
                     return Ok(false);
                 }
             }
-            let claim_key = self.inference_key("inference_claim", claim.request_id);
-            let current = read::<InferenceClaim>(&trx, &claim_key)
-                .await?
-                .ok_or(StoreError::LeaseMismatch)?;
+            let current = current.ok_or(StoreError::LeaseMismatch)?;
             if current.owner != claim.owner
                 || current.session_id != claim.session_id
                 || current.expires_at <= now
             {
                 return Err(StoreError::LeaseMismatch);
             }
-            let mut session = self.session(&trx, claim.session_id).await?;
             if session.head_seq != completion.expected_head {
                 return Err(StoreError::StaleSequence {
                     expected: completion.expected_head,

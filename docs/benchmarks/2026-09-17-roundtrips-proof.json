@@ -1,0 +1,291 @@
+{
+  "recorded_at": "2026-09-17T12:52:24.639300+00:00",
+  "node": {
+    "InstanceId": "i-0030ed4607356cea9",
+    "InstanceType": "m6id.xlarge",
+    "State": "running at initial capture",
+    "Volumes": [
+      "vol-0f5e6eb21211f2d79"
+    ],
+    "LaunchTime": "2026-09-17T12:12:21+00:00"
+  },
+  "rtt": {
+    "samples_ms": [
+      2.52553,
+      0.258639,
+      0.267664,
+      0.222573,
+      0.229495,
+      0.243187,
+      0.217541,
+      0.212992,
+      0.216959,
+      0.210096,
+      0.208204,
+      0.223619,
+      0.208336,
+      0.216473,
+      0.23571,
+      0.223367,
+      0.20148,
+      0.208419,
+      0.216219,
+      0.228008,
+      0.202988,
+      0.208855,
+      0.210285,
+      0.19856,
+      0.210359,
+      0.209547,
+      0.214571,
+      0.212414,
+      0.246013,
+      0.246902,
+      0.253745,
+      0.212582,
+      0.212523,
+      0.206889,
+      0.211398,
+      0.206584,
+      0.205285,
+      0.238791,
+      0.215158,
+      0.210513
+    ],
+    "p50_ms": 0.212992,
+    "p95_ms": 0.258639,
+    "budget_ms": 100.775917
+  },
+  "private_route": {
+    "4500": "blocked",
+    "4222": "blocked",
+    "8333": "blocked",
+    "22": "reachable"
+  },
+  "firewall": "Chain OUTPUT (policy ACCEPT 191K packets, 71M bytes)\n pkts bytes target     prot opt in     out     source               destination         \n    3   180 REJECT     6    --  *      *       0.0.0.0/0            172.31.52.16         multiport dports 4500,4222,8333 owner UID match 1000 reject-with icmp-port-unreachable\n",
+  "connect": {
+    "default_image": "base-ubuntu:turn-roundtrips",
+    "fdb_cluster_file": "/home/ubuntu/workspace/.swarmy/remote/turn-roundtrips.cluster",
+    "name": "turn-roundtrips",
+    "nats_url": "nats://127.0.0.1:4222",
+    "pid": 130405,
+    "ports": {
+      "fdb": 4500,
+      "nats": 4222,
+      "s3": 8333
+    },
+    "remote_ports": {
+      "fdb": 4500,
+      "nats": 4222,
+      "s3": 8333
+    },
+    "s3_endpoint": "http://127.0.0.1:8333",
+    "timing": {
+      "address_probe_seconds": 7.256515715,
+      "elapsed_seconds": 7.518569175,
+      "reused": false,
+      "tunnel_startup_seconds": 0.262028326
+    }
+  },
+  "node_services": "credential_absent\nactive\nactive\nactive\nactive\nNTPSynchronized=yes\n10080b023a3d79e0719d7d8ec3070f7e5d63a65b416191e4b54bdee0ed5edc29  /usr/local/bin/swarmy\n46f364ac106dc8452812c0b29abb42746685477feaffdce07f1cf12715136772  /usr/local/bin/swarmy-session\n7dfbafcf66d5f7a7218b1f6cea981d3e301d2542364b30f127152881a39fa707  /usr/local/bin/swarmy-worker\n5a85680a14e465c5f4ddca9f50bb139d45a858728ebccd9a4cf99bd02cfe83c3  /usr/local/bin/swarmy-gateway\n92f602362b608804ef7fcf0c0bfa8288988a040e180a1b7fa5edba9bf569a142  /usr/local/bin/swarmy-scheduler\na7fd7e98dd2bc081631aa886ef229d8be9a9507fe61d8584d1a32eea3e5b1665  /usr/local/bin/swarmyd\n",
+  "client_hashes": "10080b023a3d79e0719d7d8ec3070f7e5d63a65b416191e4b54bdee0ed5edc29  /tmp/swarmy-roundtrips-bin/swarmy\n5a85680a14e465c5f4ddca9f50bb139d45a858728ebccd9a4cf99bd02cfe83c3  /tmp/swarmy-roundtrips-bin/swarmy-gateway\n92f602362b608804ef7fcf0c0bfa8288988a040e180a1b7fa5edba9bf569a142  /tmp/swarmy-roundtrips-bin/swarmy-scheduler\n46f364ac106dc8452812c0b29abb42746685477feaffdce07f1cf12715136772  /tmp/swarmy-roundtrips-bin/swarmy-session\n7dfbafcf66d5f7a7218b1f6cea981d3e301d2542364b30f127152881a39fa707  /tmp/swarmy-roundtrips-bin/swarmy-worker\na7fd7e98dd2bc081631aa886ef229d8be9a9507fe61d8584d1a32eea3e5b1665  /tmp/swarmy-roundtrips-bin/swarmyd\n",
+  "node_dev_up": "services: running on node turn-roundtrips; no local services started\n",
+  "chat_session": "01M2QPH24NDYFS5AY8B7JK0SE4",
+  "chat_pty": {
+    "exit": 0,
+    "tool_ok": 2,
+    "bytes": 8650
+  },
+  "chat_retry": {
+    "exit": 0,
+    "tool_ok": 3,
+    "bytes": 5674
+  },
+  "down": "Terminating i-0030ed4607356cea9\nConfirmed i-0030ed4607356cea9 is terminated or absent\nDeleting key pair swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A\nRemoved remote turn-roundtrips\n",
+  "teardown": {
+    "instances": [
+      {
+        "InstanceId": "i-0030ed4607356cea9",
+        "State": "terminated"
+      }
+    ],
+    "volumes": [],
+    "keys": [],
+    "gcp_instances": [],
+    "remaining_aws": [
+      {
+        "InstanceId": "i-074ffdebcc7a6968c",
+        "State": "running",
+        "Name": "cdx-1789646380346-536815da"
+      }
+    ]
+  },
+  "privileged_first_runs": [
+    {
+      "crate": "swarmy-volume",
+      "target": "swarmy_volume",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/swarmy_volume-bf83ca3e07b26771",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmy-volume-swarmy_volume.log"
+    },
+    {
+      "crate": "swarmy-volume",
+      "target": "nbd",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/nbd-5ef73a59aaec9e96",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 101,
+      "log": "swarmy-root-swarmy-volume-nbd.log"
+    },
+    {
+      "crate": "swarmy-volume",
+      "target": "image",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/image-13f92e225f4cef00",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmy-volume-image.log"
+    },
+    {
+      "crate": "swarmyd",
+      "target": "node",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/node-84a5b3c0a0b15104",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmyd-node.log"
+    },
+    {
+      "crate": "swarmy-cli",
+      "target": "image",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/image-14b8e9e02735a2ed",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmy-cli-image.log"
+    },
+    {
+      "crate": "swarmy-cli",
+      "target": "vol",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/vol-20d42cd4293af60f",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 101,
+      "log": "swarmy-root-swarmy-cli-vol.log"
+    },
+    {
+      "crate": "swarmy-cli",
+      "target": "session",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/session-f827233b31b7ec30",
+        "root_chat_default_image_executes_pwd",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmy-cli-session.log"
+    },
+    {
+      "crate": "swarmy-chaos",
+      "target": "bash",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/bash-2d16579e56926539",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "swarmy-root-swarmy-chaos-bash.log"
+    }
+  ],
+  "validation": {
+    "fmt": "passed",
+    "workspace": {
+      "passed": 302,
+      "failed": 0,
+      "ignored": 1,
+      "suites": 56
+    },
+    "clippy": "passed",
+    "shell_syntax": "passed"
+  },
+  "privileged_reruns": [
+    {
+      "crate": "swarmy-volume",
+      "target": "nbd",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/nbd-5ef73a59aaec9e96",
+        "boundaries::continuous_writes_and_retained_crash_images",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 0,
+      "log": "/tmp/swarmy-root-rerun-nbd.log"
+    },
+    {
+      "crate": "swarmy-cli",
+      "target": "vol",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/vol-20d42cd4293af60f",
+        "root_volume_durability_clone_crash_fencing_and_history",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 101,
+      "log": "/tmp/swarmy-root-rerun-vol.log"
+    },
+    {
+      "crate": "swarmyd",
+      "target": "node",
+      "command": [
+        "sudo",
+        "-E",
+        "/home/ubuntu/workspace/target/debug/deps/node-84a5b3c0a0b15104",
+        "",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": 101,
+      "log": "/tmp/swarmy-root-rerun-node.log"
+    }
+  ],
+  "privileged_final_node": {
+    "command": "sudo -E target/debug/deps/node-84a5b3c0a0b15104 --nocapture --test-threads=1",
+    "result": 0,
+    "seconds": 205.94
+  },
+  "attached_nbd_devices_after_tests": []
+}

@@ -186,7 +186,30 @@ async fn check_versions(allow_version_mismatch: bool) -> Result<Vec<PathBuf>> {
     Ok(binaries)
 }
 
+async fn node_services(layout: &Layout) -> Result<bool> {
+    let base = Settings::load_base()?.settings;
+    if let Some(name) = &base.remote.profile {
+        let node: swarmy_config::RemoteNode = serde_json::from_slice(&fs::read(
+            swarmy_config::remote_path(Path::new(&base.state_dir), name, "json")?,
+        )?)?;
+        if node
+            .launch_settings
+            .as_ref()
+            .is_some_and(|settings| settings.services == swarmy_config::RemoteServices::Node)
+        {
+            stop_services(&layout.state).await?;
+            prepare_stack(layout, Some(name)).await?;
+            println!("services: running on node {name}; no local services started");
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
+    if node_services(layout).await? {
+        return Ok(());
+    }
     let binaries = check_versions(allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway"]

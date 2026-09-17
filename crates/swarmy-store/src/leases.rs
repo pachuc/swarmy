@@ -81,24 +81,63 @@ impl Store {
         swarmy_core::SessionRecord,
         Option<swarmy_core::MessageId>,
     )> {
-        let (lease, session, snapshot, turn) = self
+        let (lease, session, turn, _) = self.claim_step_with_tail(id, owner, expires_at).await?;
+        Ok((lease, session, turn))
+    }
+
+    /// Claim and fetch the first replay page at the same database version.
+    /// Subsequent pages use `read_events` and stop at the returned session head.
+    /// # Errors
+    /// Rejects non-runnable sessions and storage or decoding failures.
+    pub async fn claim_step_with_tail(
+        &self,
+        id: SessionId,
+        owner: LeaseOwnerId,
+        expires_at: Timestamp,
+    ) -> Result<(
+        Lease,
+        swarmy_core::SessionRecord,
+        Option<swarmy_core::MessageId>,
+        Vec<swarmy_core::Event>,
+    )> {
+        let (lease, session, snapshot, turn, values) = self
             .transaction(|trx| async move {
-                let (lease, session) = self.claim(&trx, id, owner, expires_at).await?;
-                let snapshot = if let Some(seq) = session.snapshot_seq {
-                    Some(
-                        trx.get(&self.snapshot_key(id, seq), false)
-                            .await?
-                            .ok_or(StoreError::Corrupt)?
-                            .to_vec(),
-                    )
-                } else {
-                    None
-                };
-                let turn = read(&trx, &self.turn_key(id)).await?;
-                Ok((lease, session, snapshot, turn))
+                let turn_key = self.turn_key(id);
+                let ((lease, session), turn) = futures::try_join!(
+                    self.claim(&trx, id, owner, expires_at),
+                    read(&trx, &turn_key),
+                )?;
+                let space = self.event_space(id);
+                let mut begin = space.pack(&(session.snapshot_seq.unwrap_or(0),));
+                begin.push(0);
+                let (snapshot, values) = futures::try_join!(
+                    async {
+                        Ok::<_, StoreError>(if let Some(seq) = session.snapshot_seq {
+                            Some(
+                                trx.get(&self.snapshot_key(id, seq), false)
+                                    .await?
+                                    .ok_or(StoreError::Corrupt)?
+                                    .to_vec(),
+                            )
+                        } else {
+                            None
+                        })
+                    },
+                    scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
+                )?;
+                Ok((lease, session, snapshot, turn, values))
             })
             .await?;
-        Ok((lease, self.hydrate_session(session, snapshot).await?, turn))
+        let mut events = Vec::with_capacity(values.len());
+        for (_, value) in values {
+            events.push(self.hydrate(&value).await?);
+        }
+        Ok((
+            lease,
+            self.hydrate_session(session, snapshot).await?,
+            turn,
+            events,
+        ))
     }
 
     async fn claim(
@@ -108,7 +147,8 @@ impl Store {
         owner: LeaseOwnerId,
         expires_at: Timestamp,
     ) -> Result<(Lease, StoredSession)> {
-        let mut session = self.session(trx, id).await?;
+        let (mut session, ()) =
+            futures::try_join!(self.session(trx, id), self.remove_runnable(trx, id),)?;
         if session.state != SessionState::Runnable {
             return Err(StoreError::InvalidState);
         }
@@ -120,7 +160,6 @@ impl Store {
                 .checked_add(1)
                 .ok_or(StoreError::SequenceOverflow)?,
         };
-        self.remove_runnable(trx, id).await?;
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
         write(trx, &self.session_key(id), &session)?;
@@ -214,19 +253,23 @@ impl Store {
         state: SessionState,
         now: Timestamp,
     ) -> Result<()> {
-        self.clear_lease(trx, session.session_id).await?;
-        self.remove_runnable(trx, session.session_id).await?;
+        // Index ownership follows the state machine. Idle and waiting sessions
+        // have neither index, so reading those absent rows adds network waits.
+        match session.state {
+            SessionState::Leased => self.clear_lease(trx, session.session_id).await?,
+            SessionState::Runnable => self.remove_runnable(trx, session.session_id).await?,
+            _ => {}
+        }
         session.state = state;
         if state == SessionState::Runnable {
-            self.index_runnable(
+            self.write_runnable(
                 trx,
                 &RunnableEntry {
                     session_id: session.session_id,
                     priority: 0,
                     wake_at: now,
                 },
-            )
-            .await?;
+            )?;
         }
         write(trx, &self.session_key(session.session_id), &session)
     }
@@ -292,9 +335,9 @@ impl Store {
         lease: &Lease,
         now: Timestamp,
     ) -> Result<()> {
-        if self.verify_lease(trx, id, lease).await?.expires_at <= now
-            || self.session(trx, id).await?.state != SessionState::Leased
-        {
+        let (current, session) =
+            futures::try_join!(self.verify_lease(trx, id, lease), self.session(trx, id),)?;
+        if current.expires_at <= now || session.state != SessionState::Leased {
             return Err(StoreError::LeaseMismatch);
         }
         Ok(())

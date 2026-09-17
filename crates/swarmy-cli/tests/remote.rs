@@ -224,3 +224,40 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
     assert!(text.contains("# Connected in "));
     assert!(text.contains("address probing: 0.000s; tunnel startup: 0.000s; reused: true"));
 }
+
+#[test]
+fn node_services_dev_up_needs_no_local_binaries_and_preserves_remote_on_down() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let path = root.path().join(".swarmy/remote/test.json");
+    let mut node: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    node["launch_settings"] = serde_json::json!({"services": "node"});
+    std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
+    std::fs::write(root.path().join(".swarmy/config.toml"), "").unwrap();
+    std::fs::write(root.path().join(".swarmy/remote/test.profile.json"), serde_json::to_vec(&serde_json::json!({
+        "name": "test", "socket_path": "test.socket", "pid": 1, "ports": {},
+        "fdb_cluster_file": "test.cluster", "nats_url": "nats://localhost:4222", "s3_endpoint": "http://localhost:8333"
+    })).unwrap()).unwrap();
+    let ssh = root.path().join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = cli(root.path(), &["dev", "up", "--remote", "test"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no local services started"));
+    for service in ["supervisor", "worker", "gateway", "scheduler"] {
+        assert!(
+            !root
+                .path()
+                .join(format!(".swarmy/dev/{service}.pid"))
+                .exists()
+        );
+    }
+    let down = cli(root.path(), &["dev", "down"]);
+    assert!(down.status.success());
+    assert!(String::from_utf8_lossy(&down.stdout).contains("remote stack preserved"));
+}
