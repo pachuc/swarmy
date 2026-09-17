@@ -289,3 +289,6 @@ async fn ext4_files_fio_detach_and_readahead() {
     drop(Attachment::attach(&path, empty).await.unwrap());
     assert_detached(&path).await;
 }
+
+#[path = "nbd/boundaries.rs"]
+mod boundaries;

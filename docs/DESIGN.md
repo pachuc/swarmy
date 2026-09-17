@@ -350,19 +350,31 @@ Overwritten uploads are unreferenced objects, never published disk contents.
 By default, at most 32 uploads run concurrently across background work and publication.
 
 Every ten minutes, on explicit checkpoint, or before orderly eviction,
-flush freezes the filesystem, waits for the active upload batch, and uploads
-generations without a current hash. It
-builds the manifest, advances the volume head through the existing fenced
-FoundationDB transaction under the writer lease, and thaws. A separate write
-barrier gives unmounted flushes the same point-in-time block snapshot. Dirty
-bytes stay on local disk until publication and remain in the attachment overlay
-until detach; a new attachment after a crash starts at the last published
-manifest. Failed uploads and rejected commits retain pending data for retry.
+publication captures each pending chunk's generation and staged hash under the
+dirty-store lock. Writes then continue while uploads and the fenced head
+transaction publish exactly that boundary. An overwrite preserves the boundary's
+local overlay before changing it; clean blocks still come from the immutable
+baseline. Copies use at most 8 MiB of memory per device, then a sparse temporary
+file in the dirty directory. Prepared upload buffers are separately bounded by
+upload concurrency. In-memory copies are released when prepared for upload;
+the spill file is discarded when publication ends. Cancellation releases copies
+immediately if the dirty lock is free, or on the next write. A failed copy abandons the snapshot without rejecting the tool's
+write. Only unchanged generations become clean after publication.
 
-Consistency: before a flush the guest agent runs sync and a filesystem
-freeze, so every manifest is a clean ext4 state. Even without that, a
-manifest is equivalent to a power-loss snapshot and ext4 journal replay
-handles it.
+Snapshots are crash-consistent block images. Ext4 replays its journal on mount,
+as after power loss. Explicit checkpoints sync preceding buffered writes before
+capturing the boundary, without freezing or pausing subsequent writes.
+`swarmy vol flush --freeze` optionally freezes the discovered mount for an
+operator who needs a clean filesystem image. `--mount` validates the mount path;
+it does not enable freezing. Periodic snapshots never freeze.
+
+While any tool call runs in the node process, upload admission across all its
+volumes is limited to four concurrent chunk requests and 16 MiB/s. Requests
+already sent finish normally; new admissions yield and share the bandwidth
+budget. Tool execution never waits for upload admission or its drain. Flush JSON
+reports the current concurrency and bandwidth limits and the number of uploads
+admitted at tool priority during the flush. Outside tool activity the configured
+per-device concurrency applies, with a default of 32.
 
 Single writer: the volume writer lease is held by the node hosting the
 computer. Attaching elsewhere requires the lease to expire or be released.
@@ -373,7 +385,7 @@ unexpired lease in the same transaction as advancing the volume head.
 ### 7.3 Snapshot retention and garbage collection
 
 While a computer is resident, dirty chunks upload continuously and a snapshot
-loop publishes a clean manifest every ten minutes. Keep the last ten periodic
+loop publishes a crash-consistent manifest every ten minutes. Keep the last ten periodic
 snapshots per volume, plus its current head and any explicitly pinned
 checkpoints. An explicit checkpoint publishes immediately. Only an acknowledged
 manifest commit establishes durability; staged chunks may never become part
@@ -692,7 +704,7 @@ of a fresh container per call. `process_start` launches a managed background
 process and returns its id; `process_list` reports state, `process_log` reads
 captured output, and `process_stop` terminates it. Process ids and logs belong
 to a computer epoch; requests for an earlier epoch report that it restarted.
-`checkpoint` syncs, freezes, publishes a fenced manifest, and thaws before
+`checkpoint` syncs and publishes a fenced block-boundary manifest before
 reporting success. Processes continue between ordinary calls, but their memory
 is never included in a disk checkpoint.
 

@@ -2044,6 +2044,125 @@ aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-178963 --q
 # []
 ```
 
+
+## 2026-09-17: Generation boundaries and upload priority
+
+Measured on the launcher Ubuntu 24.04 EC2 host with four CPUs and 15 GiB of
+memory. Tests used the pinned Rust 1.98.1 development profile, NBD, ext4,
+FoundationDB, NATS, and SeaweedFS. Timing runs ran after compilation stopped.
+These are individual host observations, not a fleet percentile or a real-time
+guarantee.
+
+Periodic publication now captures dirty chunk generations under the dirty lock
+and releases it before uploading or committing metadata. An overwrite preserves
+its boundary overlay before changing the live generation. Preserved bytes use
+an 8 MiB memory budget and spill to an anonymous file in the dirty directory.
+Only generations unchanged since the boundary become clean after publication.
+The writer lease, placement fence, and retained-head transaction are unchanged.
+
+Checkpoint syncs buffered writes and uses the same unfrozen block boundary.
+Ext4 journal recovery is expected when mounting a retained image.
+`swarmy vol flush --freeze` optionally freezes the discovered mount for a clean
+filesystem image; `--mount` alone only validates the mount path. Ordinary
+snapshots and checkpoints report zero frozen time.
+
+| Root test measurement | Result |
+| --- | --- |
+| Continuous 4 KiB direct NBD writes across four snapshots | 314 observations; maximum write latency **3.372 ms**, below the 5 ms assertion |
+| Timestamp writer with fsync and a 10 ms cadence, during continuous 64 KiB direct rewrites across a preallocated 8 MiB file | 31 observations; largest inter-write gap **28.416 ms**, below the 30 ms assertion |
+| Retained ext4 images from the concurrent-write run | All four mounted, matched the known file's SHA-256, and passed `e2fsck -f -n` after journal replay and unmount |
+| Node tool call, including a 100 ms sleep | **115.935 ms** without a snapshot; **128.728 ms** during one, a **12.793 ms** difference |
+| Snapshot overlapping that tool call | **326.550 ms**, zero frozen time, nine uploads admitted at tool priority |
+
+The direct-write measurement times each `pwrite` through the kernel NBD device.
+The filesystem measurement includes its intentional 10 ms sleep, ext4 journal
+work, and competing writes. A preliminary buffered 8 MiB overwrite workload
+produced a 37.654 ms inter-fsync gap; the steady direct-I/O test preallocates its
+file to separate extent allocation and bulk writeback from snapshot contention.
+The existing lightweight benchmark below remains the comparison for the old
+approximately 330 ms block-level snapshot pause.
+
+The node shares upload admission across all its attachments. While any tool call
+is active, it admits at most four uploads and 16 MiB/s of chunk data. Previously
+admitted requests drain before new work can use the reduced limit. Prepared
+uploads yield the executor, and their dirty reads wait behind foreground mutex
+waiters. Flush JSON exposes `upload_concurrency_limit`,
+`upload_bytes_per_second` (zero means uncapped), and `tool_priority_uploads`.
+The node sample finished after the tool, so its final reported limit returned to
+32. The admission test observes the active limit of four and 16 MiB/s directly,
+checks the bandwidth duration, and verifies restoration after nested tool guards
+are dropped.
+
+The generation tests gate uploads, overwrite 40 boundary chunks, exhaust the
+8 MiB copy budget, and verify both preserved manifest bytes and new live bytes.
+A separate model checks every chunk hash of four retained 48-chunk snapshots
+after concurrent overwrites. Cancellation, commit-time writes, rejected fencing,
+and a failed spill copy are covered; a spill failure abandons publication while
+allowing the live write to proceed.
+
+The existing `scripts/benchmarks/persistent-volume.py` workload ran twice through
+`swarmy-chaos --persistent --measurements`. Each run now keeps a separate 8 MiB
+random file changing during thirteen generation checkpoints. It then stops that
+writer and uses the unchanged timestamp/fsync loop for the pause measurement.
+The checkpointed generation marker and another 8 MiB random payload provide
+independent expected hashes for restore checks.
+
+| Existing timestamp benchmark | Run 0 | Run 1 |
+| --- | --- | --- |
+| Largest inter-write gap | **24.454381 ms** | **30.299136 ms** |
+| Timestamp observations | 139 | 111 |
+| Retained snapshots | 10 | 10 |
+| Retained snapshots booted and hash-verified after collection | 10/10 | 10/10 |
+| Unreferenced bytes collected | 287,834,112 | 90,701,824 |
+
+The largest observed gap was **30.30 ms**, compared with the earlier roughly
+330 ms pause. Every retained snapshot was cloned, attached with an empty chunk
+cache, mounted, and used to start Bash with `chroot`. All twenty boots verified
+the expected generation marker and SHA-256 of the full 8 MiB payload. Boot times
+ranged from 0.742 to 0.908 seconds. Dry-run candidate bytes matched actual
+collection, and restored hashes still matched after deletion.
+
+[Raw measurements](benchmarks/volume-boundary-20260917.json) retain the neighboring
+monotonic timestamps around each largest gap, all publication counters, retained
+manifest ids, collection results, and every boot time.
+
+Validation commands and results:
+
+- `rustup show`: Rust 1.98.1 installed and selected.
+- `scripts/dev-stack.sh start`: FoundationDB, NATS, and SeaweedFS available;
+  `.dev/env` was sourced for service and root tests.
+- `cargo fmt --all --check`: passed.
+- `cargo test --workspace --locked`: passed, both with the dev stack enabled and
+  in the normal CI environment where service-dependent tests skip.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
+- `cargo build --workspace --locked`: passed.
+- `sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo umoci`:
+  installed the missing OCI test tools.
+- `cargo test --workspace --locked --no-run --message-format=json`: passed;
+  this supplied the executable paths in `/tmp/all-build.json` without building
+  as root. Targeted `--no-run` builds of the volume NBD, node, and chaos Bash
+  tests also passed.
+- `sudo -E "$(jq -r 'select(.executable != null and .target.name == "nbd") | .executable' /tmp/all-build.json)" --nocapture --test-threads=1`:
+  both NBD tests passed, including fio, detach cleanup, and the measurements above.
+- `sudo -E "$(jq -r 'select(.executable != null and (.package_id | contains("swarmy-volume")) and .target.name == "image") | .executable' /tmp/all-build.json)" --nocapture`:
+  all five image tests passed, including the root ext4, shell, and OCI cases.
+- `sudo -E "$(jq -r 'select(.executable != null and .target.name == "node") | .executable' /tmp/all-build.json)" --nocapture`:
+  passed in 207.94 seconds, including tool priority, checkpoint, crash recovery,
+  lease renewal, takeover fencing, idle eviction, and shutdown recovery.
+- `SWARMY_TEST_IMAGE=base-ubuntu:bash-test sudo -E "$(jq -r 'select(.executable != null and .target.name == "bash") | .executable' /tmp/all-build.json)" --nocapture`:
+  all four root chaos scenarios passed in 214.84 seconds, including twelve
+  scheduled process kills with seed 42.
+- With `.dev/env` sourced and `PYTHONDONTWRITEBYTECODE=1`,
+  `sudo -E target/debug/swarmy-chaos --no-start-stack --bin-dir /home/ubuntu/workspace/target/debug --persistent --image base-ubuntu:bash-test --sessions 2 --gateways 1 --kills 0 --seed 20260917 --session-timeout-secs 240 --measurements /home/ubuntu/workspace/scripts/benchmarks/persistent-volume.py`:
+  passed in 142.64 seconds, including both measured runs and all twenty boots.
+
+The final volume binaries were also executed directly with `.dev/env` sourced:
+21 library tests and 16 integration tests passed, including real writer fencing
+and object-store tests. The image tests were then rerun as root to exercise
+their privileged cases. The root NBD tests above are additional. Root tests keep
+Drop guards for unmount and device cleanup; normal CI still skips them with an
+explicit message when it lacks root.
+
 ## 2026-09-17 Event-driven turn pipeline
 
 This run compares master at `672acea` with the event-driven pipeline in this

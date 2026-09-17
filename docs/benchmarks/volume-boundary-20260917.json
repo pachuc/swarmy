@@ -1,0 +1,645 @@
+{
+  "host": {
+    "date": "2026-09-17",
+    "cloud": "AWS EC2",
+    "os": "Ubuntu 24.04",
+    "kernel": "7.0.0-1012-aws",
+    "cpus": 4,
+    "memory_gib": 15,
+    "rust": "1.98.1",
+    "profile": "dev"
+  },
+  "nbd": {
+    "writes": 314,
+    "largest_write_ms": 3.372,
+    "filesystem_timestamps": 31,
+    "largest_filesystem_gap_ms": 28.416,
+    "restored_images": 4
+  },
+  "tool": {
+    "baseline_ms": 115.935,
+    "during_snapshot_ms": 128.728,
+    "snapshot_ms": 326.55,
+    "tool_priority_uploads": 9
+  },
+  "samples": [
+    {
+      "sample": 0,
+      "checkpoints": [
+        {
+          "generation": 0,
+          "manifest_id": "01M2QANR8GE1P26SWHYHGV4ZWM",
+          "sha256": "40ec1f99ce885cecfe01658adbcc054442f65010542dc7441603ae8a1b3f24ce"
+        },
+        {
+          "generation": 1,
+          "manifest_id": "01M2QANRH16Q19MK5PATW9KVRN",
+          "sha256": "221093f0184e2b95caa623f90d418c4eec9cc51bb8521fd02e7c946205d7f8ed"
+        },
+        {
+          "generation": 2,
+          "manifest_id": "01M2QANRT4BMYJWA8RSTGKMZ8X",
+          "sha256": "858d00bfc5161c75a8504294324d2c85e63a04bfdc65dfebac9c12dfa0558a2a"
+        },
+        {
+          "generation": 3,
+          "manifest_id": "01M2QANS2KA7J642QHT68EHBJN",
+          "sha256": "6df734e8106993520e1474544841fca854fc080a1b63bded1b41948f7a6c6e0a"
+        },
+        {
+          "generation": 4,
+          "manifest_id": "01M2QANSAP9Q58QCY1660MCRVV",
+          "sha256": "aff0c741d34c3425ccf00a0dbb76df9b16e02467b385020f98dd65a4b44fe4af"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2QANSKGNNJWDQ2M7RTXWWY4",
+          "sha256": "21f5fdf93b368c608f1416042af43a446b215687be81d40feda55f2960e23cfb"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2QANSW8KNYKWWN5WF09HF81",
+          "sha256": "1b9228eb7bfa1b244eb8b2b385c7012901e33e6a9e17945877d885baa5088f53"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2QANT5YX5K8R8G7XEYDAXNW",
+          "sha256": "37e829c1ef73871f331084ce7cb1e7f3a14126cc135cd27c61c171ce68fcf8a2"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2QANTFXJ35PAGEPXWWWKN4E",
+          "sha256": "a1e1ae8b3b9f5eff5b0a83fb6aefa1c0f78a37d80c57a3438d5d87f36d15a0e5"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2QANTV3ANQ3T664PY5096YZ",
+          "sha256": "f999294e8608bbd33aec07f481f3bab0dbf75e652a2bda2bc6ec0c4fb2a9e51b"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2QANV7ABAF841GN267T5QBB",
+          "sha256": "381b4ae5423a1849678ce07780ec8a3575f68efc693004dcff99600d5c4e5e8f"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2QANVKEYX78F664XD2245HN",
+          "sha256": "630bfb76531f2948ddd5497048cf9084cbb9336421dda68b8540cb5e15fef37d"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANVZMXQE57G01M3ZNRSF9",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANX64EDSN4EB2TYWKZHVT",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANY9A20HY6S4RAR9MCW7B",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773",
+          "source": "detach"
+        }
+      ],
+      "collector": {
+        "dry": {
+          "bytes_freed": 0,
+          "candidate_bytes": 287834112,
+          "candidates": 1098,
+          "deleted": 0,
+          "dry_run": true,
+          "duration_ms": 1513,
+          "error": null,
+          "finished": true,
+          "manifests": 19,
+          "owner": "01M2QAP1AP9RS0MF541DPGREQJ",
+          "scanned": 3757,
+          "started_at": "2026-09-17T09:20:38.742820022Z"
+        },
+        "dry_seconds": 1.5513888200002839,
+        "real": {
+          "bytes_freed": 287834112,
+          "candidate_bytes": 287834112,
+          "candidates": 1098,
+          "deleted": 1098,
+          "dry_run": false,
+          "duration_ms": 8018,
+          "error": null,
+          "finished": true,
+          "manifests": 19,
+          "owner": "01M2QAP2V5DVK64E98DDZDS90B",
+          "scanned": 3757,
+          "started_at": "2026-09-17T09:20:40.293167253Z"
+        },
+        "real_seconds": 8.052058228000078
+      },
+      "pause": {
+        "checkpoint": {
+          "detached": false,
+          "device_total": {
+            "bytes_uploaded": 255069850,
+            "chunks_uploaded": 959,
+            "dirty_lock_wait": {
+              "nanos": 601419230,
+              "secs": 34
+            },
+            "object_store_requests": 2053,
+            "object_store_time": {
+              "nanos": 222892289,
+              "secs": 10
+            },
+            "referenced_chunk_bytes": 251396096
+          },
+          "elapsed": {
+            "nanos": 56290447,
+            "secs": 0
+          },
+          "freeze_wait": {
+            "nanos": 0,
+            "secs": 0
+          },
+          "frozen": {
+            "nanos": 0,
+            "secs": 0
+          },
+          "frozen_chunks_uploaded": 0,
+          "manifest_id": "01M2QANX64EDSN4EB2TYWKZHVT",
+          "tool_priority_uploads": 0,
+          "upload_bytes_per_second": 0,
+          "upload_concurrency_limit": 32,
+          "uploads": {
+            "bytes_uploaded": 2359563,
+            "chunks_uploaded": 8,
+            "dirty_lock_wait": {
+              "nanos": 50021191,
+              "secs": 0
+            },
+            "object_store_requests": 24,
+            "object_store_time": {
+              "nanos": 59393453,
+              "secs": 0
+            },
+            "referenced_chunk_bytes": 11272192
+          },
+          "volume_id": "01M2QANQYAW4H2W9K1N3EN91TE"
+        },
+        "max_gap_ns": 24454381,
+        "metric": "snapshot_writer_pause",
+        "sample_count": 139,
+        "timestamps_around_max_ns": [
+          3011252814391,
+          3011267485058,
+          3011282877514,
+          3011307331895,
+          3011322203395,
+          3011337103675
+        ]
+      },
+      "retained": [
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANY9A20HY6S4RAR9MCW7B",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANX64EDSN4EB2TYWKZHVT",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QANVZMXQE57G01M3ZNRSF9",
+          "sha256": "2fc2666dd1421d2e28a8514d8b0addd86ae60b5ed24a3f5212a992369fbcf773"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2QANVKEYX78F664XD2245HN",
+          "sha256": "630bfb76531f2948ddd5497048cf9084cbb9336421dda68b8540cb5e15fef37d"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2QANV7ABAF841GN267T5QBB",
+          "sha256": "381b4ae5423a1849678ce07780ec8a3575f68efc693004dcff99600d5c4e5e8f"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2QANTV3ANQ3T664PY5096YZ",
+          "sha256": "f999294e8608bbd33aec07f481f3bab0dbf75e652a2bda2bc6ec0c4fb2a9e51b"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2QANTFXJ35PAGEPXWWWKN4E",
+          "sha256": "a1e1ae8b3b9f5eff5b0a83fb6aefa1c0f78a37d80c57a3438d5d87f36d15a0e5"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2QANT5YX5K8R8G7XEYDAXNW",
+          "sha256": "37e829c1ef73871f331084ce7cb1e7f3a14126cc135cd27c61c171ce68fcf8a2"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2QANSW8KNYKWWN5WF09HF81",
+          "sha256": "1b9228eb7bfa1b244eb8b2b385c7012901e33e6a9e17945877d885baa5088f53"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2QANSKGNNJWDQ2M7RTXWWY4",
+          "sha256": "21f5fdf93b368c608f1416042af43a446b215687be81d40feda55f2960e23cfb"
+        }
+      ],
+      "volume": "01M2QANQYAW4H2W9K1N3EN91TE"
+    },
+    {
+      "sample": 1,
+      "checkpoints": [
+        {
+          "generation": 0,
+          "manifest_id": "01M2QAPQABTRKS06W0BPTCC389",
+          "sha256": "78f6644fb393393fc6222fd2a5c73bb12cac357207a8d8fc995a6f9760898f2f"
+        },
+        {
+          "generation": 1,
+          "manifest_id": "01M2QAPQKR2MR921YSPQ0HNN6S",
+          "sha256": "7931f9f6a709f96a1505f6ef6a2ba0f557d97bb31f71cad2d41fceef1e31ed50"
+        },
+        {
+          "generation": 2,
+          "manifest_id": "01M2QAPQWK1G6M4PQJQ31N871Y",
+          "sha256": "4892f55459c992df2bca209bc9edc5a5d21291894a18c83396433e0add4e6c28"
+        },
+        {
+          "generation": 3,
+          "manifest_id": "01M2QAPR5DWEJYNH35TFNXYZAZ",
+          "sha256": "b276e6074d0af06e05d5fc6f108083cbe0870f67273023e19add354b0faf95cd"
+        },
+        {
+          "generation": 4,
+          "manifest_id": "01M2QAPRE4KSCPECBT8JEVSFF1",
+          "sha256": "9a0d41b7c12f10b8750d4e3d3baba40dbb125f014ef1ffedbc978b32f4bb744d"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2QAPRQTG4NGDBCQYFR8VSKC",
+          "sha256": "b3d57b69f2493edd1c72d63b712d932a5a58b55047e7b82f9f4dc10c37477127"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2QAPS0RPN2RWVRJWFVEF9P1",
+          "sha256": "212a558e6c4c55c47ff35b30440e91afee790fac1983508ec5118e081ed7a065"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2QAPS9A96S41R1QPS8RYGPA",
+          "sha256": "e803b4791a840c3826d5fd7513f68932f782aca42e8c798760d36ad99298933f"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2QAPSJNAHNXC6N2DB8AWZ90",
+          "sha256": "f0679c5d1af7f351d9030eaf7a1c04486ac7fb093686d417ff472b9624aff956"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2QAPSXTDA825FJ9N22RGP4E",
+          "sha256": "a4c4bc6f93b6aa157fa624ccd0e63e3248f467cb7ca6aa76bf8b7d73c2a1fd3b"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2QAPT9Z8P6GGAZMQEDHA6TD",
+          "sha256": "dcb264a5c1c18fe35dce75958acd3c1a024c1b7a1388e3644b488c518a7f077f"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2QAPTNPK6T7E5C2VQ9XF2KV",
+          "sha256": "06f84cb30807c4d6334d377b7a91412dda4bba0bb748c7af2e7339a933dd5bca"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPV1TGC6R12AE0W0MAV60",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPW8R5WA249BBA0QZWSWY",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPXDA5D0MZ6CBD9EKKFP0",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503",
+          "source": "detach"
+        }
+      ],
+      "collector": {
+        "dry": {
+          "bytes_freed": 0,
+          "candidate_bytes": 90701824,
+          "candidates": 346,
+          "deleted": 0,
+          "dry_run": true,
+          "duration_ms": 2411,
+          "error": null,
+          "finished": true,
+          "manifests": 49,
+          "owner": "01M2QAQ0EHEACAKKF88DNMHRF0",
+          "scanned": 3719,
+          "started_at": "2026-09-17T09:21:10.609865046Z"
+        },
+        "dry_seconds": 2.4444912909998493,
+        "real": {
+          "bytes_freed": 90701824,
+          "candidate_bytes": 90701824,
+          "candidates": 346,
+          "deleted": 346,
+          "dry_run": false,
+          "duration_ms": 3765,
+          "error": null,
+          "finished": true,
+          "manifests": 49,
+          "owner": "01M2QAQ2TYS0G7PEXXM6PBM1DG",
+          "scanned": 3719,
+          "started_at": "2026-09-17T09:21:13.05472767Z"
+        },
+        "real_seconds": 3.799062142999901
+      },
+      "pause": {
+        "checkpoint": {
+          "detached": false,
+          "device_total": {
+            "bytes_uploaded": 252448410,
+            "chunks_uploaded": 949,
+            "dirty_lock_wait": {
+              "nanos": 346489618,
+              "secs": 34
+            },
+            "object_store_requests": 2039,
+            "object_store_time": {
+              "nanos": 576056915,
+              "secs": 10
+            },
+            "referenced_chunk_bytes": 250871808
+          },
+          "elapsed": {
+            "nanos": 56795924,
+            "secs": 0
+          },
+          "freeze_wait": {
+            "nanos": 0,
+            "secs": 0
+          },
+          "frozen": {
+            "nanos": 0,
+            "secs": 0
+          },
+          "frozen_chunks_uploaded": 0,
+          "manifest_id": "01M2QAPW8R5WA249BBA0QZWSWY",
+          "tool_priority_uploads": 0,
+          "upload_bytes_per_second": 0,
+          "upload_concurrency_limit": 32,
+          "uploads": {
+            "bytes_uploaded": 2097419,
+            "chunks_uploaded": 7,
+            "dirty_lock_wait": {
+              "nanos": 84071983,
+              "secs": 0
+            },
+            "object_store_requests": 24,
+            "object_store_time": {
+              "nanos": 57125996,
+              "secs": 0
+            },
+            "referenced_chunk_bytes": 11010048
+          },
+          "volume_id": "01M2QAPQ1GVA2GFCXK7R5DNR17"
+        },
+        "max_gap_ns": 30299136,
+        "metric": "snapshot_writer_pause",
+        "sample_count": 111,
+        "timestamps_around_max_ns": [
+          3043073172092,
+          3043091897851,
+          3043110802761,
+          3043141101897,
+          3043160305607,
+          3043179401899
+        ]
+      },
+      "retained": [
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPXDA5D0MZ6CBD9EKKFP0",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPW8R5WA249BBA0QZWSWY",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503"
+        },
+        {
+          "generation": 12,
+          "manifest_id": "01M2QAPV1TGC6R12AE0W0MAV60",
+          "sha256": "2d21519c591c3e886f183571ce34df3ec62c749cd9e0b9a869f31661092e5503"
+        },
+        {
+          "generation": 11,
+          "manifest_id": "01M2QAPTNPK6T7E5C2VQ9XF2KV",
+          "sha256": "06f84cb30807c4d6334d377b7a91412dda4bba0bb748c7af2e7339a933dd5bca"
+        },
+        {
+          "generation": 10,
+          "manifest_id": "01M2QAPT9Z8P6GGAZMQEDHA6TD",
+          "sha256": "dcb264a5c1c18fe35dce75958acd3c1a024c1b7a1388e3644b488c518a7f077f"
+        },
+        {
+          "generation": 9,
+          "manifest_id": "01M2QAPSXTDA825FJ9N22RGP4E",
+          "sha256": "a4c4bc6f93b6aa157fa624ccd0e63e3248f467cb7ca6aa76bf8b7d73c2a1fd3b"
+        },
+        {
+          "generation": 8,
+          "manifest_id": "01M2QAPSJNAHNXC6N2DB8AWZ90",
+          "sha256": "f0679c5d1af7f351d9030eaf7a1c04486ac7fb093686d417ff472b9624aff956"
+        },
+        {
+          "generation": 7,
+          "manifest_id": "01M2QAPS9A96S41R1QPS8RYGPA",
+          "sha256": "e803b4791a840c3826d5fd7513f68932f782aca42e8c798760d36ad99298933f"
+        },
+        {
+          "generation": 6,
+          "manifest_id": "01M2QAPS0RPN2RWVRJWFVEF9P1",
+          "sha256": "212a558e6c4c55c47ff35b30440e91afee790fac1983508ec5118e081ed7a065"
+        },
+        {
+          "generation": 5,
+          "manifest_id": "01M2QAPRQTG4NGDBCQYFR8VSKC",
+          "sha256": "b3d57b69f2493edd1c72d63b712d932a5a58b55047e7b82f9f4dc10c37477127"
+        }
+      ],
+      "volume": "01M2QAPQ1GVA2GFCXK7R5DNR17"
+    }
+  ],
+  "boots": [
+    {
+      "sample": 0,
+      "manifest": "01M2QANY9A20HY6S4RAR9MCW7B",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.846809206999751,
+      "volume": "01M2QAPAPJW651HCRGNG05MWB4"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANX64EDSN4EB2TYWKZHVT",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.8114170929998181,
+      "volume": "01M2QAPCRR16NZWDD2ZECM1S11"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANVZMXQE57G01M3ZNRSF9",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.746351266000147,
+      "volume": "01M2QAPDXC5BERKR9WRJGRJT9Q"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANVKEYX78F664XD2245HN",
+      "generation": 11,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7605964989998029,
+      "volume": "01M2QAPEZT0WPATPBGHDRV1AY6"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANV7ABAF841GN267T5QBB",
+      "generation": 10,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7964942290000181,
+      "volume": "01M2QAPG365099J21C1BN8DAV9"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANTV3ANQ3T664PY5096YZ",
+      "generation": 9,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7620174389999192,
+      "volume": "01M2QAPH799RSFYDDN0XGK6Y02"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANTFXJ35PAGEPXWWWKN4E",
+      "generation": 8,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.8879911999997603,
+      "volume": "01M2QAPJA9TNXT9X7GW9KNBXNX"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANT5YX5K8R8G7XEYDAXNW",
+      "generation": 7,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7975157920000129,
+      "volume": "01M2QAPKH4ZC28JXG6WGGK8PFZ"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANSW8KNYKWWN5WF09HF81",
+      "generation": 6,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7750085050001871,
+      "volume": "01M2QAPMNAARRPFABC5T292EET"
+    },
+    {
+      "sample": 0,
+      "manifest": "01M2QANSKGNNJWDQ2M7RTXWWY4",
+      "generation": 5,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7868585759997586,
+      "volume": "01M2QAPNRWVEHM24TAAJRATXAM"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPXDA5D0MZ6CBD9EKKFP0",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.8795979120000084,
+      "volume": "01M2QAQ6HEN8HYHJ0HSJQG61W4"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPW8R5WA249BBA0QZWSWY",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.8026030050000372,
+      "volume": "01M2QAQ8K1B6K62P61AH9CNARP"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPV1TGC6R12AE0W0MAV60",
+      "generation": 12,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7416654839998955,
+      "volume": "01M2QAQ9QCBB6DV742PGCY0FC8"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPTNPK6T7E5C2VQ9XF2KV",
+      "generation": 11,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7748867159998554,
+      "volume": "01M2QAQASQVVWG7250BD80XKCR"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPT9Z8P6GGAZMQEDHA6TD",
+      "generation": 10,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7617748960001336,
+      "volume": "01M2QAQBX4R591WT2REHPSFW18"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPSXTDA825FJ9N22RGP4E",
+      "generation": 9,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7642458860000261,
+      "volume": "01M2QAQD01NSMXDX6ZXG14PPKW"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPSJNAHNXC6N2DB8AWZ90",
+      "generation": 8,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.9078293669999766,
+      "volume": "01M2QAQE32Y9STXRE71M9KFM6Z"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPS9A96S41R1QPS8RYGPA",
+      "generation": 7,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7930578030000106,
+      "volume": "01M2QAQFANJ0W6FMQD7WW11QG5"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPS0RPN2RWVRJWFVEF9P1",
+      "generation": 6,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7752676049999536,
+      "volume": "01M2QAQGEPCC16WX1PNRVTF3V4"
+    },
+    {
+      "sample": 1,
+      "manifest": "01M2QAPRQTG4NGDBCQYFR8VSKC",
+      "generation": 5,
+      "metric": "retained_snapshot_boot",
+      "seconds": 0.7695630500002153,
+      "volume": "01M2QAQHJ7DWJGAA4AFT9X2R49"
+    }
+  ]
+}

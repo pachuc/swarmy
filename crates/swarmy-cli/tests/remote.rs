@@ -101,6 +101,8 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
         "unknown (SSH unreachable)"
     );
     assert_eq!(value[0]["tunnel"], false);
+    assert_eq!(value[0]["images"], serde_json::json!([]));
+    assert_eq!(value[0]["image_error"], "unknown: tunnel disconnected");
     assert_eq!(
         value[0]["registration_error"],
         "unknown: tunnel disconnected"
@@ -196,6 +198,7 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
         fdb_cluster_file: root.path().join("cluster"),
         nats_url: "nats://127.0.0.1:4222".into(),
         s3_endpoint: "http://127.0.0.1:8333".into(),
+        default_image: Some("base-ubuntu:test".into()),
     };
     std::fs::write(
         root.path().join(".swarmy/remote/test.profile.json"),
@@ -209,6 +212,7 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
     assert!(output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["name"], "test");
+    assert_eq!(report["default_image"], "base-ubuntu:test");
     assert_eq!(report["timing"]["reused"], true);
     assert_eq!(report["timing"]["address_probe_seconds"], 0.0);
     assert_eq!(report["timing"]["tunnel_startup_seconds"], 0.0);
@@ -216,6 +220,7 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
     let output = cli(root.path(), &["remote", "connect", "test"]);
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("# Default image: base-ubuntu:test"));
     assert!(text.contains("# Connected in "));
     assert!(text.contains("address probing: 0.000s; tunnel startup: 0.000s; reused: true"));
 }

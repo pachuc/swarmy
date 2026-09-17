@@ -79,10 +79,29 @@ impl Cloud for FakeCloud {
 struct FakeHost {
     provisioned: RefCell<Vec<RemoteNode>>,
     fail: bool,
+    fail_image: bool,
+    images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
 }
 
 impl Host for FakeHost {
+    fn build_image(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        recipe: &std::path::Path,
+    ) -> impl Future<Output = Result<()>> {
+        assert_eq!(self.provisioned.borrow().last().unwrap().name, node.name);
+        self.images
+            .borrow_mut()
+            .push((node.name.clone(), address.into(), recipe.to_owned()));
+        std::future::ready(if self.fail_image {
+            Err(anyhow::anyhow!("image build failed"))
+        } else {
+            Ok(())
+        })
+    }
+
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
         tokio::fs::write(&node.key_path, "private-test").await?;
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
@@ -131,11 +150,28 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         Some(instance("running")),
     ]);
     let host = FakeHost::default();
-    up::run(&cloud, &host, &state, &settings(), "demo", Duration::ZERO)
-        .await
-        .unwrap();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     let node = state.read("demo").unwrap().unwrap();
     assert_eq!(node.name, "demo");
+    assert_eq!(node.default_image.as_deref(), Some("base-ubuntu:demo"));
+    assert_eq!(
+        *host.images.borrow(),
+        [(
+            "demo".into(),
+            node.public_ip.clone(),
+            "images/base-ubuntu".into()
+        )]
+    );
     assert_eq!(node.region, "us-east-1");
     assert_eq!(node.instance_id, "i-test");
     assert_eq!(node.public_ip, "203.0.113.10");
@@ -185,9 +221,17 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
     assert_eq!(host.provisioned.borrow()[0].public_ip, node.public_ip);
     assert!(cloud.observations.borrow().is_empty());
     assert!(
-        up::run(&cloud, &host, &state, &settings(), "demo", Duration::ZERO)
-            .await
-            .is_err()
+        up::run(
+            &cloud,
+            &host,
+            &state,
+            &settings(),
+            "demo",
+            Some(std::path::Path::new("images/base-ubuntu")),
+            Duration::ZERO
+        )
+        .await
+        .is_err()
     );
 }
 
@@ -209,9 +253,17 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
         ..Default::default()
     };
     assert!(
-        up::run(&cloud, &host, &state, &settings, "demo", Duration::ZERO)
-            .await
-            .is_err()
+        up::run(
+            &cloud,
+            &host,
+            &state,
+            &settings,
+            "demo",
+            Some(std::path::Path::new("images/base-ubuntu")),
+            Duration::ZERO
+        )
+        .await
+        .is_err()
     );
     assert_eq!(cloud.stock_reads.get(), 0);
     assert_eq!(cloud.requests.borrow()[0].image, "ami-custom");
@@ -245,6 +297,7 @@ async fn down_missing_instance_and_retry_after_key_failure() {
         &state,
         &settings(),
         "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
         Duration::ZERO,
     )
     .await
@@ -279,6 +332,7 @@ async fn down_recovers_launch_before_instance_id_was_saved() {
         &state,
         &settings(),
         "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
         Duration::ZERO,
     )
     .await
@@ -347,6 +401,7 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
         &state,
         &settings(),
         "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
         Duration::ZERO,
     )
     .await
@@ -381,9 +436,17 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
             ..instance("running")
         }),
     ]);
-    up::run(&cloud, &host, &state, &settings(), "demo", Duration::ZERO)
-        .await
-        .unwrap();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO)
         .await
         .unwrap();
@@ -406,6 +469,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         assert_eq!(join.key_name, super::key_name(child).unwrap());
         assert_eq!(join.name, child.name);
     }
+    assert_eq!(host.images.borrow().len(), 1);
     assert!(host.primaries.borrow()[0].is_none());
     assert_eq!(
         host.primaries.borrow()[1].as_ref().unwrap().private_ip,
@@ -437,6 +501,7 @@ async fn failed_join_retains_child_for_cleanup() {
         &state,
         &settings(),
         "demo",
+        Some(std::path::Path::new("images/base-ubuntu")),
         Duration::ZERO,
     )
     .await
@@ -466,4 +531,59 @@ async fn failed_join_retains_child_for_cleanup() {
     down::run(&cloud, &state, &node, Duration::ZERO)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
+    for (recipe, fail_image, expected) in [
+        (None, false, None),
+        (
+            Some(std::path::Path::new("images/custom-recipe")),
+            false,
+            Some("base-ubuntu:demo"),
+        ),
+        (Some(std::path::Path::new("images/base-ubuntu")), true, None),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::open(dir.path()).unwrap();
+        let cloud = FakeCloud::default();
+        cloud
+            .observations
+            .borrow_mut()
+            .push_back(Some(instance("running")));
+        let host = FakeHost {
+            fail_image,
+            ..Default::default()
+        };
+        let result = up::run(
+            &cloud,
+            &host,
+            &state,
+            &settings(),
+            "demo",
+            recipe,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(result.is_err(), fail_image);
+        let node = state.require("demo").unwrap();
+        assert_eq!(node.default_image.as_deref(), expected);
+        let profile =
+            super::connect::new_profile(dir.path(), &node, node.ports, dir.path().join("socket"))
+                .unwrap();
+        let profile: swarmy_config::RemoteProfile =
+            serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        assert_eq!(profile.default_image.as_deref(), expected);
+        let mut settings = swarmy_config::Settings::default();
+        profile.apply(&mut settings);
+        assert_eq!(settings.default_image.as_deref(), expected);
+        assert_eq!(node.instance_id, "i-test");
+        assert_eq!(
+            host.images
+                .borrow()
+                .first()
+                .map(|(_, _, path)| path.as_path()),
+            recipe
+        );
+    }
 }

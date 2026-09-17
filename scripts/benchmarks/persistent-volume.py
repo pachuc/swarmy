@@ -20,18 +20,9 @@ def prepare(image):
     snapshots = []
     with Attached(volume, background=True) as disk:
         disk.mount_disk()
-        for index in range(13):
-            (disk.mount / "root/generation").write_text(str(index))
-            with (disk.mount / "root/changed").open("wb" if index == 0 else "r+b") as file:
-                data = os.urandom(8 * 1024 * 1024)
-                digest = hashlib.sha256(data).hexdigest()
-                file.write(data)
-                file.flush()
-                os.fsync(file.fileno())
-            checkpoint = cli("vol", "checkpoint", volume, "--mount", str(disk.mount))
-            snapshots.append({"manifest_id": checkpoint["manifest_id"], "generation": index, "sha256": digest})
-        # Independent writer timestamps each write before fsync. The gap includes
-        # filesystem freeze and thaw, rather than only a server's internal timer.
+        digest = write_generations(disk, snapshots)
+        # Keep the existing lightweight pause measurement comparable with the
+        # previous run; the preceding generations exercise concurrent bulk I/O.
         writer = subprocess.Popen([sys.executable, "-c", '''import os, sys, time
 with open(sys.argv[1], 'w', buffering=1) as file:
     while True:
@@ -77,6 +68,35 @@ with open(sys.argv[1], 'w', buffering=1) as file:
                           **{key: expected[item["manifest_id"]][key] for key in ("generation", "sha256")}} for item in retained],
             "collector": {"dry_seconds": dry_seconds, "real_seconds": real_seconds,
                           "dry": dry, "real": real}}
+
+
+def write_generations(disk, snapshots):
+    # Keep a second file changing while every generation checkpoint uploads.
+    # Its writes exercise preservation without changing the independently hashed
+    # generation marker and payload that each retained boot verifies.
+    writer = subprocess.Popen([sys.executable, "-c", """import os, sys
+with open(sys.argv[1], 'wb', buffering=0) as file:
+    while True:
+        file.seek(0)
+        file.write(os.urandom(8 * 1024 * 1024))
+        os.fsync(file.fileno())
+""", str(disk.mount / "root/concurrent")])
+    try:
+        for index in range(13):
+            (disk.mount / "root/generation").write_text(str(index))
+            with (disk.mount / "root/changed").open("wb" if index == 0 else "r+b") as file:
+                data = os.urandom(8 * 1024 * 1024)
+                digest = hashlib.sha256(data).hexdigest()
+                file.write(data)
+                file.flush()
+                os.fsync(file.fileno())
+            checkpoint = cli("vol", "checkpoint", disk.volume, "--mount", str(disk.mount))
+            assert writer.poll() is None, "concurrent writer exited during snapshots"
+            snapshots.append({"manifest_id": checkpoint["manifest_id"], "generation": index, "sha256": digest})
+        return digest
+    finally:
+        writer.terminate()
+        writer.wait(timeout=10)
 
 
 def boot(volume, generation, digest):

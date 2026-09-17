@@ -68,6 +68,9 @@ pub struct RemoteNode {
     pub ports: RemotePorts,
     #[serde(default)]
     pub nodes: Vec<RemoteNode>,
+    /// Registered image built for this stack, set only after a successful build.
+    #[serde(default)]
+    pub default_image: Option<String>,
     /// Resolved launch configuration, retained so joins do not depend on later edits.
     #[serde(default)]
     pub launch_settings: Option<RemoteSettings>,
@@ -91,6 +94,8 @@ pub struct RemoteProfile {
     pub fdb_cluster_file: PathBuf,
     pub nats_url: String,
     pub s3_endpoint: String,
+    #[serde(default)]
+    pub default_image: Option<String>,
 }
 
 impl RemoteProfile {
@@ -106,11 +111,14 @@ impl RemoteProfile {
         Ok(())
     }
 
-    /// Apply only endpoint overrides, preserving credentials and namespaces.
+    /// Apply stack endpoints and its default image, preserving credentials and namespaces.
     pub fn apply(&self, settings: &mut Settings) {
         settings.fdb_cluster_file = self.fdb_cluster_file.to_string_lossy().into_owned();
         settings.nats_url.clone_from(&self.nats_url);
         settings.s3_endpoint.clone_from(&self.s3_endpoint);
+        if self.default_image.is_some() {
+            settings.default_image.clone_from(&self.default_image);
+        }
     }
 
     /// # Errors
@@ -199,6 +207,18 @@ mod tests {
     }
 
     #[test]
+    fn older_profiles_preserve_the_configured_default() {
+        let profile: RemoteProfile = serde_json::from_str(r#"{"name":"old","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"http://localhost:8333"}"#).unwrap();
+        assert!(profile.default_image.is_none());
+        let mut settings = Settings {
+            default_image: Some("configured:tag".into()),
+            ..Settings::default()
+        };
+        profile.apply(&mut settings);
+        assert_eq!(settings.default_image.as_deref(), Some("configured:tag"));
+    }
+
+    #[test]
     fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join(".swarmy");
@@ -222,6 +242,7 @@ mod tests {
             fdb_cluster_file: state.join("test.cluster"),
             nats_url: "nats://127.0.0.1:14222".into(),
             s3_endpoint: "http://127.0.0.1:18333".into(),
+            default_image: Some("base-ubuntu:test".into()),
         };
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
@@ -229,10 +250,26 @@ mod tests {
         )
         .unwrap();
         let env = BTreeMap::from([
+            ("SWARMY_DEFAULT_IMAGE".into(), "local:old".into()),
             ("SWARMY_NATS_URL".into(), "nats://wrong:4222".into()),
             ("SWARMY_S3_BUCKET".into(), "custom".into()),
         ]);
         let loaded = Settings::load_from(&root.path().join("nested"), &env).unwrap();
+        assert_eq!(
+            loaded.settings.default_image.as_deref(),
+            Some("base-ubuntu:test")
+        );
+        assert_eq!(
+            loaded.settings.session_image(None).unwrap(),
+            "base-ubuntu:test"
+        );
+        assert_eq!(
+            loaded
+                .settings
+                .session_image(Some("custom:override"))
+                .unwrap(),
+            "custom:override"
+        );
         assert_eq!(loaded.settings.nats_url, profile.nats_url);
         assert_eq!(loaded.settings.s3_endpoint, profile.s3_endpoint);
         assert_eq!(
