@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-version.workspace = true
 swarmy-sandbox.workspace = true
 swarmy-volume.workspace = true
 object_store.workspace = true

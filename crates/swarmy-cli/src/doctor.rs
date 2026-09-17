@@ -78,13 +78,23 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         "swarmy-worker",
         "swarmy-gateway",
     ] {
-        let executable = std::env::current_exe()?.with_file_name(name);
-        checks.push(Check::new(name, if executable.is_file() {
-            Ok(executable.display().to_string())
+        // The companion is exec'd beside the CLI; services honor the caller's PATH.
+        let executable = if name == "swarmy-session" {
+            Ok(std::env::current_exe()?.with_file_name(name))
         } else {
-            Err(format!("{} is missing", executable.display()))
-        }, "Run the cargo install commands in README.md to install the CLI and all three services together."));
+            crate::dev::service_binary(name)
+        };
+        let result = match executable {
+            Ok(path) => crate::dev::version_check(&path, name).await,
+            Err(error) => Err(error),
+        };
+        checks.push(Check::new(
+            name,
+            result.map_err(|error| format!("{error:#}")),
+            &format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL),
+        ));
     }
+
     if let Ok(loaded) = &loaded {
         if loaded.settings.provider == "chatgpt" {
             checks.push(credentials(&loaded.settings));

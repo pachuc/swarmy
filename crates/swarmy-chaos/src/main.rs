@@ -16,7 +16,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::Parser;
 use foundationdb::{
     Database,
     directory::{Directory, DirectoryLayer},
@@ -45,7 +44,7 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let config = Config::parse();
+    let config = swarmy_version::parse::<Config>("swarmy-chaos")?;
     config.validate()?;
     if !config.no_start_stack {
         return config::with_stack();

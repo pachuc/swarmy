@@ -91,7 +91,7 @@ enum AuthCommand {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = swarmy_version::parse::<Cli>("swarmy")?;
     remote_command::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -185,13 +185,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("Saved ChatGPT credentials to {}", path.display());
             }
         }
-        Command::Version => {
-            if cli.json {
-                println!("{{\"version\":\"{}\"}}", env!("CARGO_PKG_VERSION"));
-            } else {
-                println!("swarmy {}", env!("CARGO_PKG_VERSION"));
-            }
-        }
+        Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())
 }
