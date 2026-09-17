@@ -175,7 +175,34 @@ impl Gateway {
         claim: &InferenceClaim,
     ) -> Result<()> {
         let job = &message.value;
+        let turn = job
+            .request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.id);
+        if let Some(turn) = turn {
+            self.bus
+                .record_turn(&Bus::turn_event(
+                    job.session_id,
+                    turn,
+                    swarmy_core::TurnStage::InferenceStarted,
+                    Some(job.request_id),
+                ))
+                .await;
+        }
         let result = self.infer(job).await;
+        if let Some(turn) = turn {
+            self.bus
+                .record_turn(&Bus::turn_event(
+                    job.session_id,
+                    turn,
+                    swarmy_core::TurnStage::InferenceFinished,
+                    Some(job.request_id),
+                ))
+                .await;
+        }
         let result = match result {
             Ok(response) => Ok(response),
             Err(error) if message.delivery_count()? < self.max_deliver => {

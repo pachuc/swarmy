@@ -1,4 +1,6 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
+mod bench;
+mod bench_command;
 mod chat;
 mod conversation;
 mod gc;
@@ -32,6 +34,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure conversation latency
+    Bench {
+        #[command(subcommand)]
+        command: bench_command::Command,
+    },
     /// Bounded database probe used by doctor without linking its front end to `libfdb_c`.
     #[command(hide = true)]
     DoctorFdb,
@@ -84,6 +91,7 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Bench { command } => bench::run(command, cli.json).await,
             Command::DoctorFdb => {
                 conversation::store().await?.list_sessions(None, 1).await?;
                 Ok(())

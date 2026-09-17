@@ -5,7 +5,8 @@ use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
     Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId, SandboxArguments,
-    SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob, decode, encode,
+    SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob, TurnStage,
+    decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::InferenceJob;
@@ -48,6 +49,7 @@ impl Worker {
 
     pub async fn handle(&self, message: &WorkMessage<Nudge>) -> Result<()> {
         let id = message.value.session_id;
+        let turn = self.store.turn_id(id).await?;
         let lease = match self
             .store
             .claim_lease(
@@ -64,6 +66,16 @@ impl Worker {
             Err(error) => return Err(error.into()),
         };
         tracing::info!(session_id = %id, owner = %lease.owner, step = lease.seq, "claimed step");
+        if let Some(turn) = turn {
+            self.bus
+                .record_turn(&Bus::turn_event(
+                    id,
+                    turn,
+                    swarmy_core::TurnStage::Claimed,
+                    None,
+                ))
+                .await;
+        }
         self.kill("after_claim");
         let lease = Mutex::new(Some(lease));
         tokio::select! {
@@ -305,6 +317,8 @@ impl Worker {
         events: &mut Vec<Event>,
     ) -> Result<bool> {
         let mut jobs = Vec::new();
+        let id = session.session_id;
+        let turn = self.store.turn_id(session.session_id).await?;
         for (request_id, call) in pending_tools(events) {
             let result = match self.config.harness.tools.get(&call.tool) {
                 Some(tool) if tool.sandbox_bound() => {
@@ -333,7 +347,11 @@ impl Worker {
                         Err(error) => Err(error.to_string()),
                     }
                 }
-                Some(tool) => tool.execute(call.arguments).await,
+                Some(tool) => {
+                    self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
+                        .await;
+                    tool.execute(call.arguments).await
+                }
                 None => Err(format!("unknown tool: {}", call.tool)),
             };
             self.append(
@@ -348,6 +366,8 @@ impl Worker {
                 }],
             )
             .await?;
+            self.tool_stage(id, turn, TurnStage::ToolCompleted, request_id)
+                .await;
         }
         if jobs.is_empty() {
             return Ok(false);
@@ -373,6 +393,20 @@ impl Worker {
         Ok(true)
     }
 
+    async fn tool_stage(
+        &self,
+        id: SessionId,
+        turn: Option<MessageId>,
+        stage: swarmy_core::TurnStage,
+        request: RequestId,
+    ) {
+        if let Some(turn) = turn {
+            self.bus
+                .record_turn(&Bus::turn_event(id, turn, stage, Some(request)))
+                .await;
+        }
+    }
+
     async fn place(&self, id: SessionId) -> Result<swarmy_core::PlacementRecord> {
         let agent = self
             .store
@@ -386,6 +420,17 @@ impl Worker {
     async fn route_tool(&self, job: &ToolJob) -> Result<()> {
         let placement = self.place(job.session_id).await?;
         if self.store.route_tool_job(job, &placement).await? {
+            let turn = self.store.request_turn_id(job.request_id).await?;
+            if let Some(turn) = turn {
+                self.bus
+                    .record_turn(&Bus::turn_event(
+                        job.session_id,
+                        turn,
+                        swarmy_core::TurnStage::ToolDispatched,
+                        Some(job.request_id),
+                    ))
+                    .await;
+            }
             self.bus
                 .publish_work(&WorkQueue::NodeTools(placement.node_id), job)
                 .await?;
@@ -454,6 +499,7 @@ impl Worker {
         lease: &ActiveLease,
         state: SessionState,
     ) -> Result<()> {
+        let turn = self.store.turn_id(id).await?;
         let mut token = lease.lock().await;
         self.store
             .set_state(
@@ -464,6 +510,18 @@ impl Worker {
             )
             .await?;
         *token = None;
+        if state == SessionState::Idle
+            && let Some(turn) = turn
+        {
+            self.bus
+                .record_turn(&Bus::turn_event(
+                    id,
+                    turn,
+                    swarmy_core::TurnStage::Idle,
+                    None,
+                ))
+                .await;
+        }
         Ok(())
     }
 
