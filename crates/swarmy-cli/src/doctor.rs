@@ -275,33 +275,7 @@ async fn stack(loaded: &Loaded) -> Vec<Check> {
             "",
         )];
     }
-    let coordinators = std::fs::read_to_string(cluster).ok().and_then(|text| {
-        text.lines()
-            .find(|line| !line.trim_start().starts_with('#') && line.contains('@'))
-            .and_then(|line| line.rsplit_once('@'))
-            .map(|(_, addresses)| {
-                addresses
-                    .split(',')
-                    .map(|address| address.trim().trim_end_matches(":tls").to_owned())
-                    .collect::<Vec<_>>()
-            })
-    });
-    let fdb = if let Some(addresses) = coordinators {
-        let mut reachable = false;
-        for address in addresses {
-            reachable |= connect(&address).await;
-        }
-        if reachable {
-            Ok("FoundationDB coordinator reachable".into())
-        } else {
-            Err("FoundationDB coordinators unreachable".into())
-        }
-    } else {
-        Err(format!(
-            "cannot read coordinators from {}",
-            cluster.display()
-        ))
-    };
+    let fdb = database_transaction(settings).await;
     let label = if settings.remote.profile.is_some() {
         "remote"
     } else {
@@ -312,31 +286,25 @@ async fn stack(loaded: &Loaded) -> Vec<Check> {
         fdb,
         "Run swarmy dev up; check fdb_cluster_file if the stack is remote.",
     )];
-    for (name, endpoint, default_port) in [
-        ("NATS", &settings.nats_url, 4222),
-        ("S3", &settings.s3_endpoint, 8333),
-    ] {
-        let address = url::Url::parse(endpoint).ok().and_then(|url| {
-            url.host_str().map(|host| {
-                format!(
-                    "{host}:{}",
-                    url.port_or_known_default().unwrap_or(default_port)
-                )
-            })
-        });
-        let result = match address {
-            Some(address) if connect(&address).await => {
-                Ok(format!("{name} reachable at {address}"))
-            }
-            Some(address) => Err(format!("{name} unreachable at {address}")),
-            None => Err(format!("invalid {name} endpoint")),
-        };
-        checks.push(Check::new(
-            &format!("{label} {name}"),
-            result,
-            "Run swarmy dev up; check the configured endpoint if the stack is remote.",
-        ));
-    }
+    checks.push(Check::new(
+        &format!("{label} NATS"),
+        nats_round_trip(&settings.nats_url).await,
+        "Run swarmy dev up; check the configured NATS endpoint and tunnel if remote.",
+    ));
+    let address = url::Url::parse(&settings.s3_endpoint).ok().and_then(|url| {
+        url.host_str()
+            .map(|host| format!("{host}:{}", url.port_or_known_default().unwrap_or(8333)))
+    });
+    let result = match address {
+        Some(address) if connect(&address).await => Ok(format!("S3 reachable at {address}")),
+        Some(address) => Err(format!("S3 unreachable at {address}")),
+        None => Err("invalid S3 endpoint".into()),
+    };
+    checks.push(Check::new(
+        &format!("{label} S3"),
+        result,
+        "Run swarmy dev up; check the configured endpoint if the stack is remote.",
+    ));
     checks
 }
 
@@ -344,4 +312,74 @@ async fn connect(address: &str) -> bool {
     timeout(Duration::from_secs(2), TcpStream::connect(address))
         .await
         .is_ok_and(|result| result.is_ok())
+}
+
+// Keep the public CLI runnable when libfdb_c is missing, and bound native client retries.
+async fn database_transaction(settings: &Settings) -> Result<String, String> {
+    if let Some(name) = &settings.remote.profile {
+        swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name)
+            .and_then(|profile| profile.validate_fdb_port())
+            .map_err(|error| error.to_string())?;
+    }
+    let runtime = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .with_file_name("swarmy-session");
+    let output = timeout(
+        Duration::from_secs(8),
+        Command::new(runtime)
+            .arg("doctor-fdb")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .map_err(|_| "FoundationDB transaction timed out after 8s; a reachable coordinator or SSH tunnel does not prove database usability".to_owned())?
+    .map_err(|error| format!("cannot start FoundationDB transaction probe: {error}"))?;
+    if output.success() {
+        Ok("FoundationDB session read transaction succeeded".into())
+    } else {
+        Err(format!(
+            "FoundationDB transaction failed ({output}); check the cluster file, advertised address, and tunnel"
+        ))
+    }
+}
+
+async fn nats_round_trip(endpoint: &str) -> Result<String, String> {
+    use futures_util::StreamExt;
+    timeout(Duration::from_secs(5), async {
+        let client = async_nats::connect(endpoint)
+            .await
+            .map_err(|_| "NATS connection failed")?;
+        let inbox = client.new_inbox();
+        let mut subscription = client
+            .subscribe(inbox.clone())
+            .await
+            .map_err(|_| "NATS subscribe failed")?;
+        client
+            .flush()
+            .await
+            .map_err(|_| "NATS subscription flush failed")?;
+        let payload = ulid::Ulid::generate().to_string();
+        client
+            .publish(inbox, payload.clone().into())
+            .await
+            .map_err(|_| "NATS publish failed")?;
+        client
+            .flush()
+            .await
+            .map_err(|_| "NATS publish flush failed")?;
+        let message = subscription
+            .next()
+            .await
+            .ok_or("NATS subscription closed")?;
+        if message.payload.as_ref() != payload.as_bytes() {
+            return Err("NATS round trip payload mismatch");
+        }
+        Ok("NATS publish/subscribe round trip succeeded".to_owned())
+    })
+    .await
+    .map_err(|_| "NATS round trip timed out after 5s".to_owned())?
+    .map_err(str::to_owned)
 }

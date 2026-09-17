@@ -592,8 +592,7 @@ published. Retry connect after resolving the collision.
 
 FoundationDB needs special care: the local coordinator file preserves the
 remote cluster identity and rewrites its address to the local tunnel. New
-remotes forward to the first node's private address; legacy remotes still
-forward to loopback. Its transport verifies that the connected
+remotes and joining nodes forward to the first node's loopback address. Its transport verifies that the connected
 port matches the server's advertised port. A remapped coordinator port fails
 that check even when the destination is localhost. The local `127.0.0.1:4500` endpoint must reach the same remote database.
 Free that port before connecting, or use a separate network namespace. Connect
@@ -601,6 +600,17 @@ still records and opens the alternative forward for inspection, but warns;
 doctor reports the mapping failure, and configuration loading rejects it before
 starting the native client. NATS and S3 support alternative ports normally.
 See the port assertion in [FoundationDB's transport source](https://github.com/apple/foundationdb/blob/7.3.63/fdbrpc/FlowTransport.actor.cpp).
+
+Doctor verifies a real FoundationDB session read transaction and NATS
+publish/subscribe round trip through the selected profile. It fails if server
+advertising sends database traffic outside the tunnel, even when the control
+master is healthy. Database and NATS probes have eight- and five-second limits;
+S3 remains a TCP check. Joining nodes use a systemd SSH tunnel for all three
+services; see [remote provisioning](REMOTE.md).
+
+Connect prints total elapsed time, address probing time, and tunnel startup
+time. JSON adds these seconds under `timing`, alongside `reused`; an existing
+healthy tunnel reports zero for the skipped probe and startup phases.
 
 Status reports saved instance IDs and SSH reachability. An unreachable host has
 unknown instance state; this command does not query a cloud API. For each

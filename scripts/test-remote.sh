@@ -44,7 +44,21 @@ cp "$repo/.dev/nats.pid" "$work/nats.pid"
 cp "$repo/.dev/seaweed.pid" "$work/seaweed.pid"
 "$cli" remote connect local --json > profile.json
 "$cli" remote connect local --json > profile-again.json
-cmp profile.json profile-again.json
+python3 - <<'PYTHON'
+import json
+first = json.load(open('profile.json'))
+again = json.load(open('profile-again.json'))
+assert not first['timing']['reused']
+assert again['timing']['reused']
+assert again['timing']['address_probe_seconds'] == 0
+assert again['timing']['tunnel_startup_seconds'] == 0
+for result in [first, again]:
+    timing = result.pop('timing')
+    assert timing['elapsed_seconds'] >= timing['address_probe_seconds'] + timing['tunnel_startup_seconds']
+assert first == again
+PYTHON
+"$cli" remote connect local > connect-human.txt
+grep -q 'address probing: .*tunnel startup:' connect-human.txt
 python3 - <<'PY'
 import json, os, socket
 p = json.load(open('profile.json'))

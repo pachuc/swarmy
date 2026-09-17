@@ -1639,3 +1639,173 @@ The deleted EBS volumes were `vol-01c2df92c27efcb5e` and
 were released with their instances. The pre-existing launcher, subnet, security
 group, and benchmark bucket were left intact. No Google Cloud resources or
 external S3 objects needed cleanup because this workflow created none.
+
+## 2026-09-17 SSH-only remote stack
+
+This run uses loopback advertising and SSH forwarding for FoundationDB, NATS,
+and SeaweedFS. Both EC2 nodes are `m6id.xlarge` instances in `us-east-1`, using
+Ubuntu 24.04, kernel `7.0.0-1012-aws`, and local NVMe. The ordinary launcher
+user is `ubuntu`, UID 1000. Before `remote up`, this rule blocked direct client
+connections to all three service ports throughout the private subnet:
+
+```sh
+sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d 172.31.0.0/16 \
+  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+```
+
+SSH port 22 remained available. Direct probes to all three ports on both
+`172.31.51.83` and `172.31.61.79` failed, incrementing this rule's packet counter
+six times. Cloud provisioning and the client workflow ran as ubuntu. Image
+construction and systemd administration ran with sudo over SSH on the nodes;
+local privileged acceptance tests ran separately against the local dev stack.
+
+`remote up ssh-proof` reported 525.2 seconds, including a 434-second release
+build. The first node's actual fdbserver command used both
+`-p 127.0.0.1:4500` and `-l 127.0.0.1:4500`. `remote add-node ssh-proof` installed
+a dedicated key and pinned host key, both mode 0600, and registered the second
+node through `swarmy-tunnel.service`. Both cluster files contained
+`dev:dev@127.0.0.1:4500`. The joiner had no FoundationDB, NATS, or SeaweedFS
+server process. Killing its SSH process changed the tunnel PID from 9255 to
+9423, with `NRestarts=1`; fdbcli reported the database available before and after.
+
+### Transactions, timing, and recovery
+
+The local dev stack was stopped before connecting. JSON connect reported
+7.905577024 seconds total, 7.486774309 seconds of address probing, and
+0.413775712 seconds of tunnel startup. A fresh human-output run reported:
+
+```text
+# Connected in 7.647s (address probing: 7.234s; tunnel startup: 0.413s; reused: false)
+```
+
+The public SSH address did not answer; probing fell back to private SSH.
+Reusing that control master took 0.004304175 seconds and reported zero for both
+skipped phases. All local service ports were the standard 4500, 4222, and 8333.
+
+The real fdbserver was paused with SIGSTOP while its TCP listener and SSH
+control master remained up, then resumed with SIGCONT. Both checks used control
+master PID 103901 and the same profile:
+
+| Database process | Doctor exit | SSH check | FoundationDB transaction | NATS round trip |
+| --- | ---: | --- | --- | --- |
+| Paused | 1 | pass | fail | pass |
+| Resumed | 0 | pass | pass | pass |
+
+The failure detail was `FoundationDB transaction failed (exit status: 1); check
+the cluster file, advertised address, and tunnel`. The successful detail was
+`FoundationDB session read transaction succeeded`. Full reports and timings are
+in [the raw results](benchmarks/2026-09-17-ssh-only.json).
+
+The fake provider exercised real tools without a provider credential. A normal
+`run` returned `Hello from swarmy!`. With the primary daemon stopped, session
+`01M2PG0XPNDWC4WWZECVCKJ2V9` placed agent `01M2PG0XPNNKA86MWG0Q4TJGTJ` on the
+joining node. It wrote `/root/ssh-proof-durable`, explicitly checkpointed to
+`01M2PG1EKV5S2KJ56J0KC5EAN0`, and then wrote `/root/ssh-proof-transient`.
+Both bash calls returned exit code zero; SSH verified both files on the joiner.
+
+The primary daemon was restarted. At `2026-09-17T01:36:24.762892Z`, after
+SIGKILL of the joining daemon with automatic restart disabled, the client
+requested termination of `i-0d42743c23ae24147`. After the writer lease expired,
+a real PTY `chat` resumed the same session through the profile. It displayed
+exactly one rebuild notice. The recovery bash call returned exit code zero,
+`RECOVERED-FILES`, and the checkpoint manifest ID above. SSH independently
+verified the durable marker on the surviving primary and absence of the
+uncheckpointed marker. This is cross-node recovery, not a daemon restart on the
+same machine. [The recorded tool results and notice](benchmarks/2026-09-17-ssh-only-recovery.json)
+retain the exact event contents.
+
+The existing notice's age wording still describes time until takeover as time
+before failure: it reported 168 seconds, while the recorded kill was about
+83.5 seconds after the snapshot. This task does not change that wording.
+
+### Twenty-call latency comparison
+
+The observer in `scripts/benchmarks/remote-latency.py` repeats the earlier
+measurement boundary: match `tool_call_requested` and `tool_call_completed`
+JSON records by call ID and subtract their `time.monotonic_ns()` arrival times.
+Each run issues 21 serial `printf LATENCY_OK` bash calls. The first call is
+excluded; the remaining twenty are the warm sample. Every one of the 42 calls
+returned exit code zero and exactly `LATENCY_OK` on stdout. Inference time,
+session startup, image building, and checkpoint time are outside the interval.
+
+Both runs used the same five stripped debug CLI/service binaries, verified by
+SHA-256, Rust 1.98.1, zero fake-provider delay, and scheduler scan/resend intervals
+of 50/100 ms. The first run used the blocked launcher and remote profile. Then
+its control services were stopped, and the same scheduler, worker, gateway,
+CLI, and observer ran on the primary with loopback service endpoints. The node
+services were stopped after that sample. The client block remained installed
+through both runs; its counter stayed at the six deliberate direct probes.
+The only established client connection to the primary's private IP was SSH.
+
+| Routed bash call | Mean | Median | Min–max | First call, excluded |
+| --- | ---: | ---: | ---: | ---: |
+| Blocked client through SSH | 110.710 ms | 51.281 ms | 46.323–529.594 ms | 291.837 ms |
+| Control services and observer on primary | 116.055 ms | 130.688 ms | 33.093–142.879 ms | 156.410 ms |
+| Client minus on-node | -5.345 ms | -79.407 ms | not applicable | not applicable |
+
+[Raw monotonic samples and binary hashes](benchmarks/2026-09-17-ssh-only.json)
+include all calls. These are small deployment-topology samples in one VPC.
+Moving control services also changes CPU contention. They do not isolate SSH
+transport overhead, estimate WAN latency, or show that SSH makes execution
+faster. Unlike the earlier private-advertising run, all client database traffic
+now uses the tunnel.
+
+To reproduce the sample, select the fake provider with this script and restart
+the control services with the scan/resend settings above:
+
+```json
+{"latency_ms":0,"request_based":{"steps":22,"tool_steps":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"bash_command":"printf LATENCY_OK","final_answer":"LATENCY COMPLETE"}}
+```
+
+```sh
+SWARMY_FAKE_SCRIPT=/tmp/swarmy-latency-fake.json \
+SWARMY_SCHEDULER_SCAN_INTERVAL_MS=50 SWARMY_SCHEDULER_RESEND_INTERVAL_MS=100 \
+  /tmp/swarmy-latency-bin/swarmy dev up --remote ssh-proof
+timeout 120 python3 scripts/benchmarks/remote-latency.py \
+  /tmp/swarmy-latency-remote.json /tmp/swarmy-latency-bin/swarmy run \
+  --remote ssh-proof --json --image base-ubuntu:ssh-proof \
+  'Measure 21 serial bash calls'
+```
+
+For the on-node comparison, stop the client control services, copy those same
+binaries and fake script to the primary, and start one scheduler, worker, and
+gateway there with the same settings. Run the observer there without `--remote`,
+then stop those three processes. No provider credential needs to be copied.
+
+### Validation and teardown
+
+With the local dev stack running and `.dev/env` sourced,
+`cargo test --workspace --locked` passed 246 tests with one pre-existing ignored
+test. `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed.
+The SSH acceptance script passed port collisions, mapping rejection, real NATS
+traffic, disconnect cleanup, and fresh/reused connect timing checks.
+
+Tests were compiled as ubuntu with
+`cargo test --workspace --locked --no-run --message-format=json`. Running the
+selected binaries with `sudo -E BINARY --nocapture --test-threads=1` passed 40
+tests across nine artifacts: CLI image/vol, volume library/device/image/NBD/volume,
+node, and chaos bash. No root case skipped, including OCI import. The chaos
+artifact passed persistent computers, a mid-command node kill, and twelve
+seeded randomized kills. No NBD attachment remained afterward. The proof used
+the fake provider; a real ChatGPT session and a WAN client were not measured.
+
+Teardown ran `swarmy dev down`, `swarmy remote disconnect ssh-proof`, and
+`swarmy remote down ssh-proof`. Independent EC2 SDK queries at
+`2026-09-17T01:42:04.244544Z` confirmed:
+
+| Resource | Result |
+| --- | --- |
+| `i-00abb3ca6ed0c7cd2` | terminated |
+| `i-0d42743c23ae24147` | terminated |
+| Both task EBS volume IDs | no remaining volumes |
+| Both task imported key names | no remaining key pairs |
+
+[The provider audit](benchmarks/2026-09-17-ssh-only-cleanup.json) records the exact
+IDs and queried keys. It used `describe_instances(InstanceIds=...)`,
+`describe_volumes(Filters=[{"Name":"volume-id","Values":...}])`, and
+`describe_key_pairs(Filters=[{"Name":"key-name","Values":...}])` through boto3
+in `us-east-1`. No external S3 bucket, object prefix, or GCP resource was created.
+The launcher was not a termination target. Remote state, profiles, and keys
+were removed by down. The client firewall rule and temporary localhost SSH
+authorizations were removed after the audit.

@@ -1,0 +1,473 @@
+{
+  "client_uid": 1000,
+  "blocked_destination": "172.31.0.0/16",
+  "blocked_tcp_ports": [
+    4500,
+    4222,
+    8333
+  ],
+  "rule_rejected_packets_after_workflow": 6,
+  "method": "Monotonic arrival time of JSON tool_call_completed minus tool_call_requested, matched by call_id. Each topology has 21 serial printf LATENCY_OK bash calls; the first is excluded.",
+  "binary_sha256": [
+    "2be0d8c7851922397320c2fc2ccf35c20a0d262afa0dae6fdc4ef330bbfbc50d  /tmp/swarmy-latency-bin/swarmy",
+    "0f2197fcf51f6c0f3af323e7adb2c12635c68b92a7b73e0c47a1528225fb85f3  /tmp/swarmy-latency-bin/swarmy-gateway",
+    "82c1649f63b60a89c497363a022aa7ba168c50ea2bb06bf119d9e16c77c5283a  /tmp/swarmy-latency-bin/swarmy-scheduler",
+    "79a9d6a404fe6123e0563adbc63321bd9c900d6ae4c173c1c93a3cb4274c3ab1  /tmp/swarmy-latency-bin/swarmy-session",
+    "c36994a33f8ffa43d5a038ce38392eb77489a783f09048857783dc296022a6ed  /tmp/swarmy-latency-bin/swarmy-worker"
+  ],
+  "remote": {
+    "observed_at": "2026-09-17T01:39:03.727125+00:00",
+    "command": [
+      "/tmp/swarmy-latency-bin/swarmy",
+      "run",
+      "--remote",
+      "ssh-proof",
+      "--json",
+      "--image",
+      "base-ubuntu:ssh-proof",
+      "Measure 21 serial bash calls"
+    ],
+    "session_id": "01M2PG8022TRXYH7XTSRME8VRF",
+    "first_excluded_ms": 291.837246,
+    "mean_ms": 110.7098922,
+    "median_ms": 51.280589500000005,
+    "min_ms": 46.322652,
+    "max_ms": 529.593691,
+    "samples": [
+      {
+        "call_id": "clock-0",
+        "requested_ns": 3391180804273,
+        "completed_ns": 3391472641519,
+        "milliseconds": 291.837246
+      },
+      {
+        "call_id": "clock-1",
+        "requested_ns": 3392219650883,
+        "completed_ns": 3392470989067,
+        "milliseconds": 251.338184
+      },
+      {
+        "call_id": "clock-2",
+        "requested_ns": 3393443367544,
+        "completed_ns": 3393972961235,
+        "milliseconds": 529.593691
+      },
+      {
+        "call_id": "clock-3",
+        "requested_ns": 3394903306510,
+        "completed_ns": 3394972881298,
+        "milliseconds": 69.574788
+      },
+      {
+        "call_id": "clock-4",
+        "requested_ns": 3396138660951,
+        "completed_ns": 3396470600636,
+        "milliseconds": 331.939685
+      },
+      {
+        "call_id": "clock-5",
+        "requested_ns": 3397225718002,
+        "completed_ns": 3397472049028,
+        "milliseconds": 246.331026
+      },
+      {
+        "call_id": "clock-6",
+        "requested_ns": 3398369640321,
+        "completed_ns": 3398420224086,
+        "milliseconds": 50.583765
+      },
+      {
+        "call_id": "clock-7",
+        "requested_ns": 3399708687403,
+        "completed_ns": 3399756457370,
+        "milliseconds": 47.769967
+      },
+      {
+        "call_id": "clock-8",
+        "requested_ns": 3400946875597,
+        "completed_ns": 3400996588455,
+        "milliseconds": 49.712858
+      },
+      {
+        "call_id": "clock-9",
+        "requested_ns": 3402291292391,
+        "completed_ns": 3402341844843,
+        "milliseconds": 50.552452
+      },
+      {
+        "call_id": "clock-10",
+        "requested_ns": 3403452545665,
+        "completed_ns": 3403503515360,
+        "milliseconds": 50.969695
+      },
+      {
+        "call_id": "clock-11",
+        "requested_ns": 3404781747189,
+        "completed_ns": 3404832054896,
+        "milliseconds": 50.307707
+      },
+      {
+        "call_id": "clock-12",
+        "requested_ns": 3406372154610,
+        "completed_ns": 3406422028574,
+        "milliseconds": 49.873964
+      },
+      {
+        "call_id": "clock-13",
+        "requested_ns": 3407593334056,
+        "completed_ns": 3407645255066,
+        "milliseconds": 51.92101
+      },
+      {
+        "call_id": "clock-14",
+        "requested_ns": 3408874015013,
+        "completed_ns": 3408920337665,
+        "milliseconds": 46.322652
+      },
+      {
+        "call_id": "clock-15",
+        "requested_ns": 3410114970341,
+        "completed_ns": 3410167132700,
+        "milliseconds": 52.162359
+      },
+      {
+        "call_id": "clock-16",
+        "requested_ns": 3411565523895,
+        "completed_ns": 3411614122965,
+        "milliseconds": 48.59907
+      },
+      {
+        "call_id": "clock-17",
+        "requested_ns": 3412983286335,
+        "completed_ns": 3413034877819,
+        "milliseconds": 51.591484
+      },
+      {
+        "call_id": "clock-18",
+        "requested_ns": 3414390139893,
+        "completed_ns": 3414474511213,
+        "milliseconds": 84.37132
+      },
+      {
+        "call_id": "clock-19",
+        "requested_ns": 3415898899678,
+        "completed_ns": 3415951235075,
+        "milliseconds": 52.335397
+      },
+      {
+        "call_id": "clock-20",
+        "requested_ns": 3417259632384,
+        "completed_ns": 3417307979154,
+        "milliseconds": 48.34677
+      }
+    ]
+  },
+  "on_node": {
+    "observed_at": "2026-09-17T01:40:26.362447+00:00",
+    "command": [
+      "/tmp/swarmy-latency-bin/swarmy",
+      "run",
+      "--json",
+      "--image",
+      "base-ubuntu:ssh-proof",
+      "Measure 21 serial bash calls"
+    ],
+    "session_id": "01M2PGB6D39BTJSRW1RMHK73XK",
+    "first_excluded_ms": 156.409889,
+    "mean_ms": 116.0550689,
+    "median_ms": 130.68793699999998,
+    "min_ms": 33.093425,
+    "max_ms": 142.879301,
+    "samples": [
+      {
+        "call_id": "clock-0",
+        "requested_ns": 2397913261929,
+        "completed_ns": 2398069671818,
+        "milliseconds": 156.409889
+      },
+      {
+        "call_id": "clock-1",
+        "requested_ns": 2398197879977,
+        "completed_ns": 2398290969061,
+        "milliseconds": 93.089084
+      },
+      {
+        "call_id": "clock-2",
+        "requested_ns": 2398445126517,
+        "completed_ns": 2398581570150,
+        "milliseconds": 136.443633
+      },
+      {
+        "call_id": "clock-3",
+        "requested_ns": 2398713722579,
+        "completed_ns": 2398790424142,
+        "milliseconds": 76.701563
+      },
+      {
+        "call_id": "clock-4",
+        "requested_ns": 2398977111414,
+        "completed_ns": 2399107648996,
+        "milliseconds": 130.537582
+      },
+      {
+        "call_id": "clock-5",
+        "requested_ns": 2399236205216,
+        "completed_ns": 2399290891085,
+        "milliseconds": 54.685869
+      },
+      {
+        "call_id": "clock-6",
+        "requested_ns": 2399506339601,
+        "completed_ns": 2399637177893,
+        "milliseconds": 130.838292
+      },
+      {
+        "call_id": "clock-7",
+        "requested_ns": 2399773832028,
+        "completed_ns": 2399905038921,
+        "milliseconds": 131.206893
+      },
+      {
+        "call_id": "clock-8",
+        "requested_ns": 2400041938808,
+        "completed_ns": 2400168384609,
+        "milliseconds": 126.445801
+      },
+      {
+        "call_id": "clock-9",
+        "requested_ns": 2400308783100,
+        "completed_ns": 2400438947938,
+        "milliseconds": 130.164838
+      },
+      {
+        "call_id": "clock-10",
+        "requested_ns": 2400580207470,
+        "completed_ns": 2400708727803,
+        "milliseconds": 128.520333
+      },
+      {
+        "call_id": "clock-11",
+        "requested_ns": 2400844261934,
+        "completed_ns": 2400978824036,
+        "milliseconds": 134.562102
+      },
+      {
+        "call_id": "clock-12",
+        "requested_ns": 2401111245504,
+        "completed_ns": 2401254124805,
+        "milliseconds": 142.879301
+      },
+      {
+        "call_id": "clock-13",
+        "requested_ns": 2401394747037,
+        "completed_ns": 2401527384356,
+        "milliseconds": 132.637319
+      },
+      {
+        "call_id": "clock-14",
+        "requested_ns": 2401670942693,
+        "completed_ns": 2401790726841,
+        "milliseconds": 119.784148
+      },
+      {
+        "call_id": "clock-15",
+        "requested_ns": 2401941594779,
+        "completed_ns": 2402076057490,
+        "milliseconds": 134.462711
+      },
+      {
+        "call_id": "clock-16",
+        "requested_ns": 2402222256871,
+        "completed_ns": 2402290293247,
+        "milliseconds": 68.036376
+      },
+      {
+        "call_id": "clock-17",
+        "requested_ns": 2402500347568,
+        "completed_ns": 2402635708130,
+        "milliseconds": 135.360562
+      },
+      {
+        "call_id": "clock-18",
+        "requested_ns": 2402776765731,
+        "completed_ns": 2402917584998,
+        "milliseconds": 140.819267
+      },
+      {
+        "call_id": "clock-19",
+        "requested_ns": 2403056889529,
+        "completed_ns": 2403197721808,
+        "milliseconds": 140.832279
+      },
+      {
+        "call_id": "clock-20",
+        "requested_ns": 2403333204547,
+        "completed_ns": 2403366297972,
+        "milliseconds": 33.093425
+      }
+    ]
+  },
+  "mean_difference_ms": -5.345176699999996,
+  "connect_json": {
+    "address_probe_seconds": 7.486774309,
+    "elapsed_seconds": 7.905577024,
+    "reused": false,
+    "tunnel_startup_seconds": 0.413775712
+  },
+  "connect_reused": {
+    "address_probe_seconds": 0.0,
+    "elapsed_seconds": 0.004304175,
+    "reused": true,
+    "tunnel_startup_seconds": 0.0
+  },
+  "connect_human": "# Connected in 7.647s (address probing: 7.234s; tunnel startup: 0.413s; reused: false)",
+  "doctor_paused": {
+    "checks": [
+      {
+        "detail": "/home/ubuntu/workspace/.swarmy/config.toml (valid; environment overrides applied)",
+        "name": "config",
+        "ok": true
+      },
+      {
+        "detail": "libfdb_c.so loadable; maximum API version 730",
+        "name": "libfdb_c",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-session",
+        "name": "swarmy-session",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-scheduler",
+        "name": "swarmy-scheduler",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-worker",
+        "name": "swarmy-worker",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-gateway",
+        "name": "swarmy-gateway",
+        "ok": true
+      },
+      {
+        "detail": "advertised port preserved",
+        "name": "remote FoundationDB port",
+        "ok": true
+      },
+      {
+        "detail": "ssh-proof: SSH control master healthy (pid 103901)",
+        "name": "remote tunnel",
+        "ok": true
+      },
+      {
+        "detail": "FoundationDB transaction failed (exit status: 1); check the cluster file, advertised address, and tunnel",
+        "fix": "Run swarmy dev up; check fdb_cluster_file if the stack is remote.",
+        "name": "remote FoundationDB",
+        "ok": false
+      },
+      {
+        "detail": "NATS publish/subscribe round trip succeeded",
+        "name": "remote NATS",
+        "ok": true
+      },
+      {
+        "detail": "S3 reachable at 127.0.0.1:8333",
+        "name": "remote S3",
+        "ok": true
+      }
+    ],
+    "ok": false
+  },
+  "doctor_resumed": {
+    "checks": [
+      {
+        "detail": "/home/ubuntu/workspace/.swarmy/config.toml (valid; environment overrides applied)",
+        "name": "config",
+        "ok": true
+      },
+      {
+        "detail": "libfdb_c.so loadable; maximum API version 730",
+        "name": "libfdb_c",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-session",
+        "name": "swarmy-session",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-scheduler",
+        "name": "swarmy-scheduler",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-worker",
+        "name": "swarmy-worker",
+        "ok": true
+      },
+      {
+        "detail": "/home/ubuntu/workspace/target/debug/swarmy-gateway",
+        "name": "swarmy-gateway",
+        "ok": true
+      },
+      {
+        "detail": "advertised port preserved",
+        "name": "remote FoundationDB port",
+        "ok": true
+      },
+      {
+        "detail": "ssh-proof: SSH control master healthy (pid 103901)",
+        "name": "remote tunnel",
+        "ok": true
+      },
+      {
+        "detail": "FoundationDB session read transaction succeeded",
+        "name": "remote FoundationDB",
+        "ok": true
+      },
+      {
+        "detail": "NATS publish/subscribe round trip succeeded",
+        "name": "remote NATS",
+        "ok": true
+      },
+      {
+        "detail": "S3 reachable at 127.0.0.1:8333",
+        "name": "remote S3",
+        "ok": true
+      }
+    ],
+    "ok": true
+  },
+  "session": {
+    "session_id": "01M2PG0XPNDWC4WWZECVCKJ2V9",
+    "agent_id": "01M2PG0XPNNKA86MWG0Q4TJGTJ",
+    "state": "idle",
+    "head_seq": 19,
+    "snapshot_ref": {
+      "object_key": "blobs/47a8a07cba95cc7486d4ad760213778d57cf7571114cbd4951aba849d2802e80",
+      "seq": 19
+    }
+  },
+  "checkpoint_manifest": "01M2PG1EKV5S2KJ56J0KC5EAN0",
+  "kill": {
+    "killed_at": "2026-09-17T01:36:24.762892+00:00",
+    "instance_id": "i-0d42743c23ae24147",
+    "termination": [
+      {
+        "CurrentState": {
+          "Code": 32,
+          "Name": "shutting-down"
+        },
+        "InstanceId": "i-0d42743c23ae24147",
+        "PreviousState": {
+          "Code": 16,
+          "Name": "running"
+        }
+      }
+    ]
+  }
+}

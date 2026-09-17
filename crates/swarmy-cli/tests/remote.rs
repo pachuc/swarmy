@@ -182,3 +182,40 @@ fn status_uses_private_ssh_when_public_address_is_unreachable() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value[0]["instance_state"], "running (SSH reachable)");
 }
+
+#[test]
+fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let profile = swarmy_config::RemoteProfile {
+        name: "test".into(),
+        socket_path: root.path().join("socket"),
+        pid: 123,
+        ports: swarmy_config::RemotePorts::default(),
+        remote_ports: swarmy_config::RemotePorts::default(),
+        fdb_cluster_file: root.path().join("cluster"),
+        nats_url: "nats://127.0.0.1:4222".into(),
+        s3_endpoint: "http://127.0.0.1:8333".into(),
+    };
+    std::fs::write(
+        root.path().join(".swarmy/remote/test.profile.json"),
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+    let ssh = root.path().join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nsleep 0.03\nexit 0\n").unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = cli(root.path(), &["remote", "connect", "test", "--json"]);
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["name"], "test");
+    assert_eq!(report["timing"]["reused"], true);
+    assert_eq!(report["timing"]["address_probe_seconds"], 0.0);
+    assert_eq!(report["timing"]["tunnel_startup_seconds"], 0.0);
+    assert!(report["timing"]["elapsed_seconds"].as_f64().unwrap() >= 0.03);
+    let output = cli(root.path(), &["remote", "connect", "test"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("# Connected in "));
+    assert!(text.contains("address probing: 0.000s; tunnel startup: 0.000s; reused: true"));
+}

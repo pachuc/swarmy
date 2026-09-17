@@ -3,7 +3,12 @@ use super::{
     state::{self, State},
 };
 use anyhow::{Context, Result, bail, ensure};
-use std::{net::TcpListener, path::Path, process::Stdio, time::Duration};
+use std::{
+    net::TcpListener,
+    path::Path,
+    process::Stdio,
+    time::{Duration, Instant},
+};
 use swarmy_config::{RemotePorts, RemoteProfile, remote_path};
 use tokio::{
     process::Child,
@@ -24,19 +29,27 @@ impl Drop for StartingTunnel {
 }
 
 pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Result<()> {
+    let started = Instant::now();
     let _lock = state.lock()?;
     let node = state.require(name)?;
     let path = remote_path(state_dir, name, "profile.json")?;
     if path.exists() {
         let profile = RemoteProfile::read(state_dir, name)?;
         if ssh::control(&profile, "check").await?.status.success() {
-            print(&profile, json)?;
+            print(
+                &profile,
+                json,
+                &Timing::new(started, Duration::ZERO, Duration::ZERO, true),
+            )?;
             return Ok(());
         }
         cleanup(&profile)?;
         std::fs::remove_file(&path)?;
     }
+    let probing = Instant::now();
     let address = ssh::reachable_address(&node).await?;
+    let probe_elapsed = probing.elapsed();
+    let startup = Instant::now();
     // Reserve all three ports together so an ephemeral choice cannot be reused.
     let reservations = [
         reserve(node.ports.fdb)?,
@@ -111,7 +124,11 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     // The recorded control socket is the authority for stopping this process.
     tunnel.published = true;
     let _ = socket_dir.keep();
-    print(&profile, json)
+    print(
+        &profile,
+        json,
+        &Timing::new(started, probe_elapsed, startup.elapsed(), false),
+    )
 }
 
 fn tunnel_command(
@@ -121,11 +138,6 @@ fn tunnel_command(
     address: &str,
 ) -> Result<(tokio::process::Command, std::path::PathBuf)> {
     let ports = profile.ports;
-    let destination: std::net::IpAddr = if node.launch_settings.is_some() {
-        node.private_ip.parse().context("invalid private IP")?
-    } else {
-        std::net::Ipv4Addr::LOCALHOST.into()
-    };
     let mut command = ssh::command(node)?;
     command
         .args(["-N", "-M", "-S"])
@@ -139,7 +151,7 @@ fn tunnel_command(
         ensure!(remote != 0, "remote ports must be nonzero");
         command
             .arg("-L")
-            .arg(format!("127.0.0.1:{local}:{destination}:{remote}"));
+            .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));
     }
     let log_path = remote_path(state_dir, &profile.name, "ssh.log")?;
     state::write(&log_path, b"")?;
@@ -173,9 +185,30 @@ fn reserve(preferred: u16) -> Result<TcpListener> {
     )
 }
 
-fn print(profile: &RemoteProfile, json: bool) -> Result<()> {
+#[derive(serde::Serialize)]
+struct Timing {
+    elapsed_seconds: f64,
+    address_probe_seconds: f64,
+    tunnel_startup_seconds: f64,
+    reused: bool,
+}
+
+impl Timing {
+    fn new(started: Instant, probing: Duration, startup: Duration, reused: bool) -> Self {
+        Self {
+            elapsed_seconds: started.elapsed().as_secs_f64(),
+            address_probe_seconds: probing.as_secs_f64(),
+            tunnel_startup_seconds: startup.as_secs_f64(),
+            reused,
+        }
+    }
+}
+
+fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(profile)?);
+        let mut output = serde_json::to_value(profile)?;
+        output["timing"] = serde_json::to_value(timing)?;
+        println!("{output}");
     } else {
         println!(
             "export SWARMY_REMOTE={}\n# FoundationDB: {}\n# NATS: {}\n# S3: {}",
@@ -185,6 +218,13 @@ fn print(profile: &RemoteProfile, json: bool) -> Result<()> {
             profile.s3_endpoint
         );
         println!("# swarmy dev up --remote {}", profile.name);
+        println!(
+            "# Connected in {:.3}s (address probing: {:.3}s; tunnel startup: {:.3}s; reused: {})",
+            timing.elapsed_seconds,
+            timing.address_probe_seconds,
+            timing.tunnel_startup_seconds,
+            timing.reused
+        );
     }
     if profile.validate_fdb_port().is_err() {
         eprintln!(
@@ -232,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn new_tunnel_forwards_to_private_address_and_legacy_tunnel_to_loopback() {
+    fn all_tunnels_forward_to_loopback() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("remote")).unwrap();
         let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
@@ -253,7 +293,7 @@ mod tests {
         };
         for (settings, destination) in [
             (None, "127.0.0.1"),
-            (Some(swarmy_config::RemoteSettings::default()), "10.0.0.1"),
+            (Some(swarmy_config::RemoteSettings::default()), "127.0.0.1"),
         ] {
             node.launch_settings = settings;
             let (command, _) =
