@@ -1,9 +1,16 @@
 # Remote development nodes
 
+For the complete laptop-to-chat workflow, credential handling, costs, and
+teardown queries, start with [the developer guide](DEV.md#remote-node-workflow).
+This page describes provisioning and the saved node state.
+
 Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
 EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
 NATS, SeaweedFS, and swarmyd under systemd. The local machine needs `ssh`,
 `ssh-keygen`, and `rsync`. AWS credentials use the SDK's standard credential chain.
+The current FoundationDB client additionally connects to the advertised private
+address on TCP 4500; the client machine needs a route to it. The SSH coordinator
+forward alone does not establish an external-laptop deployment.
 The subnet must provide outbound internet access and the security group must
 allow SSH from your machine and between group members. All backing services
 bind to loopback. FoundationDB advertises `127.0.0.1:4500`, and every client,

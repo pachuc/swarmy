@@ -146,6 +146,7 @@ impl Hosting {
                     .await?
             }
         };
+        self.store.claim_placement(&placement).await?;
         self.previous.lock().await.insert(agent, placement.epoch);
         Ok(placement)
     }

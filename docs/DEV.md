@@ -1,4 +1,4 @@
-# Local development
+# Development
 
 ## Quick start
 
@@ -37,7 +37,7 @@ It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
 PID records contain Linux process start times to guard against PID reuse.
 
-To run the backing services and swarmyd on EC2, see [remote development nodes](REMOTE.md).
+To run the backing services and swarmyd on EC2, see [remote node workflow](#remote-node-workflow).
 
 ## Shared configuration
 
@@ -342,7 +342,196 @@ To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
 count and environment at startup. Restart and health checks remain shared.
 
-## Use a remote stack through SSH
+## Remote node workflow
+
+The laptop runs the CLI, scheduler, worker, and inference gateway as your normal
+user. EC2 runs FoundationDB, NATS, SeaweedFS, and the privileged `swarmyd` that
+hosts agent computers. SSH forwards the coordinator, NATS, and S3 endpoints.
+The current FoundationDB client also connects to the node's advertised private
+address: this workflow presently needs direct private-network reachability to
+TCP 4500 (for example, a client in the same VPC). SSH alone from an external
+laptop is not proven to work; see the [measured limitation](volume-benchmarks.md#2026-09-17-remote-node-workflow-without-local-root).
+No local root, container runtime, NBD device, or cloud CLI is required by
+`swarmy remote`. The current client and supervisor target Linux x86-64; macOS support is not
+established by this procedure. Provisioning uses passwordless sudo **on the
+Ubuntu EC2 node**, including for packages, kernel modules, and systemd.
+
+### Prerequisites and configuration
+
+Start in a swarmy checkout with the pinned Rust toolchain, C/C++ compiler,
+pkg-config, clang/libclang, OpenSSH client (`ssh` and `ssh-keygen`), and rsync.
+Install the user-owned tools and build the local binaries:
+
+```bash
+scripts/install-dev-tools.sh
+rustup show
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
+export PATH="$PWD/target/debug:$PATH"
+```
+
+Only the FoundationDB client library is used locally in remote mode; the
+installer also supplies backing executables for local development. It needs
+no sudo. Preinstalled compilers and system prerequisites are assumed.
+
+Supply AWS credentials through the standard SDK credential chain, for example
+a profile in `~/.aws/credentials` with `export AWS_PROFILE=development`, or
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and, for temporary credentials,
+`AWS_SESSION_TOKEN`. Do not put credentials in the checkout. Provisioning needs
+EC2 DescribeImages, DescribeInstances, DescribeKeyPairs, RunInstances,
+ImportKeyPair, CreateTags, TerminateInstances, DeleteKeyPair, and SSM GetParameter
+for the default AMI. Provider cleanup queries below additionally need
+DescribeVolumes. No Google Cloud resources or credentials are needed.
+
+Choose a subnet with outbound internet access in the configured region and a
+security group in that VPC with inbound TCP 22 from your public address (`/32`)
+and **all TCP ports from that same security group**. Both nodes use that group.
+Backing services listen on all interfaces so joining nodes can reach them;
+do not admit their ports from the internet. A launcher in the same VPC can use
+the private address and group membership instead of public SSH ingress.
+
+Create `.swarmy/config.toml` with private permissions, or merge these settings
+into the existing file. Replace the subnet, group, and credential path:
+
+```toml
+provider = "chatgpt"
+model = "gpt-5"
+reasoning_effort = "medium"
+credential_file = "/home/me/.swarmy/auth.json"
+
+[remote]
+region = "us-east-1"
+subnet = "subnet-REPLACE"
+security_group = "sg-REPLACE"
+instance_type = "m6id.xlarge"
+disk_gb = 100
+managed_by_tag = "swarmy"
+# image = "ami-..."  # optional Ubuntu 24.04 amd64 override
+```
+
+Set `managed_by_tag = "codex-launcher"` for the tag-restricted benchmark identity.
+Instances, root volumes, and key pairs receive that ownership tag at creation.
+The default AMI comes from Canonical's Ubuntu 24.04 SSM parameter. The instance
+needs local NVMe storage; caches go there and backing databases go on EBS.
+
+### Up, authenticate, and chat
+
+```bash
+chmod 600 .swarmy/config.toml
+swarmy dev down                 # stop any local stack before reserving port 4500
+swarmy remote up demo           # builds on EC2; prints elapsed time and SSH command
+swarmy remote connect demo
+swarmy auth login              # dedicated ChatGPT login, on the laptop
+swarmy dev up --remote demo
+swarmy doctor --remote demo
+swarmy remote status
+```
+
+FoundationDB must bind local `127.0.0.1:4500` exactly. A local stack using that
+port prevents a usable remote connection. Preserving the port does not solve
+the private-address connection requirement above. Stop a conflicting local
+stack, disconnect, and reconnect.
+NATS and S3 alone can use automatically selected alternative local ports.
+
+A new remote has no base image. Use the SSH command printed by `up` to log in
+and run these commands **on that EC2 node**; then exit back to the laptop:
+
+```bash
+cd ~/swarmy
+sudo bash -c 'set -a; . /etc/swarmy/node.env; set +a; /usr/local/bin/swarmy image build images/base-ubuntu --tag remote'
+exit
+```
+
+This registers `base-ubuntu:remote` in the remote stack. Image construction
+needs node root; it never needs laptop root. Start a disk-backed session on
+the laptop, then resume the session id printed by `run` in the chat UI:
+
+```bash
+swarmy run --remote demo --image base-ubuntu:remote 'Say ready and wait for my next instruction.'
+swarmy chat --remote demo SESSION_ID
+```
+
+Starting `swarmy chat` without that session id creates or selects a session;
+a new chat has no image selector and cannot execute sandbox tools. In the
+resumed session, ask the agent to use `process_start` to run
+`python3 -u -m http.server 18765 --bind 127.0.0.1`. In the next turn ask it to
+fetch `http://127.0.0.1:18765/` with `bash` and verify the server is still listed
+by `process_list`. Then ask it to write a marker file and call `checkpoint`.
+An acknowledged checkpoint makes the disk durable; it does not save running
+processes. Escape or Ctrl-C closes chat while the session remains stored.
+
+The ChatGPT credential stays in the laptop's configured file. The local gateway
+reads it and sends inference directly to the provider. Remote provisioning
+copies the checkout while excluding `.swarmy/`, `.dev/`, `.git/`, `target/`,
+`.env`, and `.env.*`; it does not copy the laptop's home or credential cache.
+Keep any differently named credential file outside the checkout too, since
+rsync copies other checkout files. Do not copy auth.json to the node or share
+its refresh writer with a running Codex login. Prompts, outputs, and session
+history do live in the remote backing services. The fake-provider acceptance
+run requires no ChatGPT credential; see the dated benchmark evidence.
+
+### Add capacity and exercise recovery
+
+```bash
+swarmy remote add-node demo
+swarmy remote status
+swarmy remote logs demo         # Ctrl-C stops following the primary's journal
+swarmy dev logs worker          # local routing and placement diagnostics
+```
+
+`add-node` launches another `swarmyd` using the saved launch settings and the
+first node's private backing-service endpoints. It adds compute, not database
+replicas. The first node must remain available. For a controlled failure, locate
+the hosting node from worker/node logs and the saved JSON in
+`.swarmy/remote/demo.json`. SSH to that node with its saved key and address,
+then run `sudo systemctl kill --signal=SIGKILL swarmyd` **there**. The unit
+restarts automatically after five seconds. Submit another tool turn in chat;
+recovery must wait for expired placement and volume-writer leases. Check that
+the durable rebuild notice reports the restart, lost processes, and latest
+snapshot. An interrupted call may return the notice as an error; retry the
+read-only marker check after recovery. The checkpointed marker should survive;
+the HTTP server must be started again. A kill does not guarantee migration to the added node.
+
+### Costs, inspection, and teardown
+
+EC2 time, the 100 GiB gp3 root disk on each node, public IPv4 addresses, and
+applicable network transfer cost money. Instance storage is part of the instance
+allocation. Every `add-node` adds another instance and disk. Real inference also
+uses the operator's provider account. This development stack uses SeaweedFS on
+the first node; it does not create a managed S3 bucket. Disconnecting, closing
+chat, or stopping local services leaves cloud resources running and billable.
+
+`swarmy dev status` shows local processes. `swarmy remote status` shows saved
+instances, SSH reachability, and node heartbeat ages; it does **not** query EC2
+power state or billing. Use the AWS console or provider queries for that.
+Save the instance ids and key names before teardown, since `down` removes the
+local record. With the optional AWS CLI installed as your user:
+
+```bash
+aws ec2 describe-instances --region us-east-1 \
+  --filters Name=tag:Name,Values=demo,demo-2 \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Key:KeyName}'
+swarmy dev down
+swarmy remote disconnect demo
+swarmy remote down demo
+# Replace the following values with every id/key saved above.
+aws ec2 describe-instances --region us-east-1 --instance-ids i-FIRST i-SECOND \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
+aws ec2 describe-volumes --region us-east-1 \
+  --filters Name=tag:Name,Values=demo,demo-2 --query 'Volumes[].VolumeId'
+aws ec2 describe-key-pairs --region us-east-1 \
+  --filters Name=key-name,Values=swarmy-FIRST,swarmy-SECOND --query 'KeyPairs[].KeyName'
+```
+
+Expect `terminated` for all recorded instances (or eventual absence), and empty
+volume and key-pair lists. `down` waits for termination, deletes imported keys,
+and removes local state. It permanently deletes this stack's backing data;
+checkpoints here do not survive teardown of the first node. Failed provisioning
+retains its state for `remote down`; failed cleanup retains state for retry.
+Never delete that state to work around an error while resources still exist.
+See [remote provisioning details](REMOTE.md) for the state contract and node
+service configuration.
+
+### Tunnel and profile reference
 
 `swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
 SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
@@ -432,6 +621,9 @@ no instance address. Store failures and disconnected tunnels report unknown
 registration rather than claiming the node is absent. `--json` emits the same
 information for scripts.
 
+### Maintainer tunnel acceptance tests
+
+These localhost tests are separate from the no-root EC2 workflow above.
 To run the SSH acceptance test on the launcher, authorize a temporary SSH key for
 `ubuntu@127.0.0.1`, then run:
 

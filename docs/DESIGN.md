@@ -198,6 +198,7 @@ Values over 100KB are stored in object storage with a pointer in the value.
 ("image", name, tag)                        -> manifest_id
 ("placement", agent_id)                     -> {agent_id, node_id, epoch, expires_at, last_change_reason, last_changed_at}
 ("placement_by_node", node_id, agent_id)     -> PlacementRecord
+("placement_hosting", agent_id)             -> {claimed, last_renewed, failure_estimate}
 ("placement_epoch", agent_id)               -> retained epoch counter, including after release
 ("placement_count", node_id)                -> occupied computer slots
 ("node", node_id)                           -> {roles, capacity, last_heartbeat, cached_images}
@@ -539,7 +540,7 @@ States are `Absent`, `Placing`, `Booting`, `Running`, and `Dead`; future
 host-local memory pause is an optimization, not a durability mechanism.
 
 FoundationDB has one placement record per agent: agent id, node id, epoch,
-lease expiry, last epoch change reason (`initial`, `failure`, or `eviction`),
+lease expiry, last epoch change reason (`initial`, `failure`, `eviction`, or `unstarted`),
 and change time. The store API is `place`, `renew`, `release`, `take_over`,
 `get_by_agent`, and `list_by_node`. Place requires absence and a registered
 sandbox node with capacity. Registration already advertises the maximum as
@@ -554,7 +555,8 @@ the placement and node index, and returns capacity. The epoch counter survives
 release. Place increments it, recording `initial` on the first grant and
 `eviction` when rebuilding after release. Takeover checks the observed node
 and epoch, requires expiry, and atomically transfers capacity and the node
-index while increasing the epoch and recording `failure`. Competing takeovers
+index while increasing the epoch. It records `failure` if a node claimed the
+old epoch for hosting, or `unstarted` if no node ever claimed it. Competing takeovers
 cannot both win. Rebuilding on the same node also increases the epoch.
 
 Every mutating transaction on an existing placement checks its epoch. Tool
@@ -575,11 +577,24 @@ manifest. Placement prefers nodes with the base image cached, then any node
 with capacity. After failure, wait for lease expiry and take over with a new
 epoch; all memory and running processes are lost.
 
+Hosting claims and successful lease renewal times are stored transactionally in
+`placement_hosting`, separate from the existing binary placement record and
+its dispatch fences. The node claims before booting or executing tools, so an
+interrupted boot conservatively counts as possible computer loss. Takeover
+resets hosting state and retains the lost epoch's latest claim or renewal as
+an estimated failure time. Existing placements without this metadata retain
+failure behavior, with no failure estimate. This change requires upgrading
+node writers along with the store users so all new hosting claims are recorded.
+
 Rebuild messaging derives from the new epoch's reason and time. An initial
-grant needs no restart notice. A failure notice says the computer restarted,
-processes were lost, and files returned to the latest snapshot, including its
-time and the possible lost-write window. An eviction notice says the computer
-was stopped while idle and rebuilt from its final checkpoint. Deliver these
+grant or takeover of an unstarted placement needs no restart notice. A failure
+notice says recovery began, processes were lost, and files return to the latest
+snapshot, including its
+time and its age before recovery. The change time is labeled as the start of
+recovery, since routing precedes sandbox boot and cannot establish when boot
+finished or when the old computer failed. When available, the lost placement's
+last claim or renewal time is explicitly labeled as an estimated failure time.
+An eviction notice says the computer was stopped while idle and rebuilt from its final checkpoint. Deliver these
 notices durably to the main session, deduplicated by agent id and epoch, before
 new tool results are folded. Never claim that successful tool output implies
 that its disk changes survived. The placement record retains the latest change;
@@ -717,6 +732,32 @@ nested-virt node pool gives Firecracker. The first `NodeProvider`
 implementation is therefore a Kubernetes node pool scaler. Nomad or bare
 metal are additional implementations later, not a redesign. Local development
 uses a single machine with `swarmyd` run directly.
+
+### 11.1 Laptop plus development nodes
+
+`swarmy remote` is an early deployment shape for the same service boundaries.
+An unprivileged Linux laptop runs the CLI, scheduler, step worker, and inference
+gateway; one Ubuntu EC2 node runs FoundationDB, NATS, SeaweedFS, and privileged
+`swarmyd`. SSH forwards backing-service endpoints. The current FoundationDB
+client also opens connections to the advertised private node address, so the
+measured client needed VPC reachability; SSH-only access from an external laptop
+remains an unresolved deployment requirement. Provider authentication stays
+with the laptop gateway and is never needed by the execution nodes. Agent tool
+processes and disks stay on the nodes and survive individual chat turns.
+
+Additional nodes join the first node's private backing-service endpoints and
+provide more computer capacity. They do not replicate the backing services.
+Checkpoints and session history therefore survive execution-process failure,
+but not loss or teardown of the first node's backing data. Closing the laptop
+stops control-plane progress while the cloud machines remain allocated.
+
+This path tests cloud provisioning, remote placement, and recovery before
+slice 9. It does not satisfy the cloud-deploy goal: that slice still requires
+managed orchestration, replicated stateful services, horizontal control-plane
+scaling, and the unchanged channel scenario on both GKE and EKS. See the
+[developer workflow](DEV.md#remote-node-workflow) for operation and credential
+boundaries, and the dated remote-node run in [the benchmarks](volume-benchmarks.md)
+for measured coverage and limitations.
 
 ## 12. Crate layout
 
