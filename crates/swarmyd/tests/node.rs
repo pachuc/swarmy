@@ -375,6 +375,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         0
     );
     eprintln!("acceptance 3 passed: a new volume from the final manifest contains jq");
+    snapshot_tool_latency(&node, &store, &sandbox, next).await;
     pause_resume_timeout(&node, sandbox).await;
     crash_recovery(&mut node, &store, volume).await;
     node.stop().await;
@@ -502,5 +503,57 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     node.destroy(recovered).await;
     eprintln!(
         "acceptance 4 passed: SIGKILL during exec, fresh registration, clean mount, and committed-head recovery"
+    );
+}
+
+async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, volume: VolumeId) {
+    use swarmy_volume::server::{self, ServerConfig};
+    let config = ServerConfig {
+        directory: node.root.path().join(".swarmy/volumes"),
+        node: node.id,
+        store: store.clone(),
+        objects: node.settings.object_store().unwrap(),
+    };
+    let command = "sleep 0.1; echo tool-priority";
+    let start = std::time::Instant::now();
+    assert_eq!(node.exec(sandbox, command, 10_000).await.0.exit_code, 0);
+    let baseline = start.elapsed();
+    assert_eq!(
+        node.exec(
+            sandbox,
+            "dd if=/dev/urandom of=/snapshot-load bs=1M count=32 status=none; sync",
+            30_000
+        )
+        .await
+        .0
+        .exit_code,
+        0
+    );
+    let tool = async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let start = std::time::Instant::now();
+        let result = node.exec(sandbox, command, 10_000).await;
+        assert_eq!(result.0.exit_code, 0);
+        start.elapsed()
+    };
+    let snapshot = async {
+        server::control_flush(&config, volume, None, false)
+            .await
+            .unwrap()
+    };
+    let (during, flushed) = tokio::join!(tool, snapshot);
+    eprintln!(
+        "snapshot tool latency: baseline_ms={:.3}, during_ms={:.3}, snapshot_ms={:.3}, priority_uploads={}, final_limit={}",
+        baseline.as_secs_f64() * 1000.0,
+        during.as_secs_f64() * 1000.0,
+        flushed.elapsed.as_secs_f64() * 1000.0,
+        flushed.tool_priority_uploads,
+        flushed.upload_concurrency_limit
+    );
+    assert!(flushed.tool_priority_uploads > 0);
+    assert_eq!(flushed.frozen, Duration::ZERO);
+    assert!(
+        during <= baseline + Duration::from_millis(50),
+        "baseline={baseline:?}, during={during:?}"
     );
 }

@@ -30,6 +30,8 @@ struct Request {
     detach: bool,
     #[serde(default)]
     discard: bool,
+    #[serde(default)]
+    freeze: bool,
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
@@ -79,11 +81,25 @@ pub async fn control_flush(
     mount: Option<PathBuf>,
     detach: bool,
 ) -> Result<FlushResult> {
+    control_flush_with_freeze(config, id, mount, detach, false).await
+}
+
+/// Optionally freeze the discovered mount for an operator-requested clean image.
+/// # Errors
+/// Returns transport, freeze, publication, or attachment errors.
+pub async fn control_flush_with_freeze(
+    config: &ServerConfig,
+    id: VolumeId,
+    mount: Option<PathBuf>,
+    detach: bool,
+    freeze: bool,
+) -> Result<FlushResult> {
     let request = Request {
         node: config.node,
         mount,
         detach,
         discard: false,
+        freeze,
     };
     let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
     socket.write_all(&serde_json::to_vec(&request)?).await?;
@@ -110,6 +126,7 @@ pub async fn discard(config: &ServerConfig, id: VolumeId) -> Result<()> {
         mount: None,
         detach: true,
         discard: true,
+        freeze: false,
     };
     let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
     socket.write_all(&serde_json::to_vec(&request)?).await?;
@@ -243,16 +260,10 @@ async fn serve(
     let (path, attachment) = attach_kernel(path, device.clone()).await?;
     let mut attachment = Some(attachment);
     let _background = background.then(|| writer.background(Duration::from_millis(250)));
-    // Hold this gate through mount discovery, freeze, and detach so a periodic
+    // Hold this gate through publication and detach so a periodic
     // publication cannot race unmounting or the final publication.
     let operations = Arc::new(tokio::sync::Mutex::new(()));
-    let snapshots = start_snapshots(
-        writer.clone(),
-        device,
-        path.clone(),
-        operations.clone(),
-        policy,
-    );
+    let snapshots = start_snapshots(writer.clone(), device, operations.clone(), policy);
     let (_renewal, mut lost_rx) = start_renewal(writer.clone());
     ready(&path)?;
     tokio::pin!(shutdown);
@@ -287,7 +298,6 @@ async fn serve(
 fn start_snapshots(
     writer: Arc<VolumeWriter>,
     device: Arc<VolumeDevice>,
-    path: PathBuf,
     operations: Arc<tokio::sync::Mutex<()>>,
     policy: swarmy_config::VolumeSnapshots,
 ) -> crate::SnapshotLoop {
@@ -296,13 +306,11 @@ fn start_snapshots(
         move || {
             let operations = operations.clone();
             let writer = writer.clone();
-            let path = path.clone();
             let device = device.clone();
             async move {
                 let _operation = operations.lock().await;
                 if device.has_unpublished_changes().await {
-                    let mount = mountpoint(&path).await?;
-                    writer.flush_if_dirty(mount.as_deref()).await?;
+                    writer.flush_if_dirty(None).await?;
                 }
                 Ok::<_, Error>(())
             }
@@ -398,8 +406,16 @@ async fn handle(
                     "--mount is not this volume's mount point"
                 );
             }
+            let mount = request.mount.as_deref().or(detected.as_deref());
+            ensure!(
+                !request.freeze || mount.is_some(),
+                "--freeze requires a mounted filesystem"
+            );
+            if !request.freeze {
+                crate::flush::sync_mount(mount).await?;
+            }
             writer
-                .flush(request.mount.as_deref().or(detected.as_deref()))
+                .flush(if request.freeze { mount } else { None })
                 .await?
         };
         Ok::<_, Error>((Some(manifest), request.detach))

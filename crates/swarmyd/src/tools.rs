@@ -74,6 +74,7 @@ pub async fn execute(
         store.claim_placed_tool(&claim).await?,
         "tool call already claimed"
     );
+    let _activity = swarmy_volume::priority::ToolActivity::begin();
     tokio::select! {
         result = run(store, runtime, &claim) => result,
         result = heartbeat(store, &claim) => result,

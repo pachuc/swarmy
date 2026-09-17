@@ -26,6 +26,9 @@ pub struct FlushResult {
     pub frozen_chunks_uploaded: u64,
     pub uploads: UploadStats,
     pub device_total: UploadStats,
+    pub upload_concurrency_limit: usize,
+    pub upload_bytes_per_second: u64,
+    pub tool_priority_uploads: u64,
 }
 
 /// Owns a writer's fencing token and committed head. Renew independently of
@@ -88,30 +91,37 @@ impl VolumeWriter {
         self.publish(mount, &mut head).await
     }
 
-    /// Publish immediately, even if no chunks changed, and return the new head.
+    /// Sync the mount without freezing, publish a block boundary, and return its head.
     /// # Errors
-    /// Returns freeze, storage, or writer fencing errors.
+    /// Returns sync, storage, or writer fencing errors.
     pub async fn checkpoint(&self, mount: Option<&Path>) -> Result<ManifestId> {
-        Ok(self.flush(mount).await?.manifest_id)
+        sync_mount(mount).await?;
+        Ok(self.flush(None).await?.manifest_id)
     }
 
     /// Skip idle periods without freezing or contacting the metadata store.
     /// The check shares the publication lock with checkpoints and legacy flushes.
     /// # Errors
-    /// Returns freeze, storage, or writer fencing errors.
+    /// Returns storage or writer fencing errors. The mount is never frozen.
     pub async fn flush_if_dirty(&self, mount: Option<&Path>) -> Result<Option<FlushResult>> {
         let mut head = self.head.lock().await;
         if !self.device.has_unpublished_changes().await {
             return Ok(None);
         }
-        self.publish(mount, &mut head).await.map(Some)
+        let _ = mount;
+        self.publish(None, &mut head).await.map(Some)
     }
 
     async fn publish(&self, mount: Option<&Path>, head: &mut ManifestId) -> Result<FlushResult> {
         let start = Instant::now();
         let before = self.device.upload_stats();
+        let priority_before = self.device.stats().tool_priority_uploads;
         let frozen = FrozenMount::freeze(mount).await?;
-        let freeze_wait = start.elapsed();
+        let freeze_wait = if mount.is_some() {
+            start.elapsed()
+        } else {
+            Duration::ZERO
+        };
         let frozen_start = Instant::now();
         let frozen_before = self.device.upload_stats();
         let next = ManifestId::from_ulid(ulid::Ulid::generate());
@@ -156,6 +166,7 @@ impl VolumeWriter {
         thaw?;
         let frozen_time = frozen_start.elapsed();
         let device_total = self.device.upload_stats();
+        let limits = self.device.stats();
         let result = FlushResult {
             manifest_id: next,
             elapsed: start.elapsed(),
@@ -172,9 +183,15 @@ impl VolumeWriter {
             },
             uploads: device_total.since(before),
             device_total,
+            tool_priority_uploads: limits.tool_priority_uploads - priority_before,
+            upload_concurrency_limit: limits.upload_concurrency_limit,
+            upload_bytes_per_second: limits.upload_bytes_per_second,
         };
         tracing::info!(
             volume = %self.id,
+            upload_concurrency_limit = result.upload_concurrency_limit,
+            upload_bytes_per_second = result.upload_bytes_per_second,
+            tool_priority_uploads = result.tool_priority_uploads,
             chunks_uploaded = result.uploads.chunks_uploaded,
             object_store_requests = result.uploads.object_store_requests,
             bytes_uploaded = result.uploads.bytes_uploaded,
@@ -243,6 +260,9 @@ impl Drop for BackgroundUploader {
 struct FrozenMount(Option<PathBuf>);
 impl FrozenMount {
     async fn freeze(mount: Option<&Path>) -> Result<Self> {
+        if mount.is_none() {
+            return Ok(Self(None));
+        }
         let path = mount.map(Path::to_owned);
         tokio::task::spawn_blocking(move || {
             if let Some(path) = &path {
@@ -284,6 +304,25 @@ fn freeze_command(operation: &str, path: &Path) -> Result<()> {
             path.display(),
             String::from_utf8_lossy(&output.stderr)
         ))));
+    }
+    Ok(())
+}
+
+// Checkpoints drain preceding buffered writes without excluding new writes.
+pub(crate) async fn sync_mount(mount: Option<&Path>) -> Result<()> {
+    if let Some(mount) = mount {
+        let output = tokio::process::Command::new("sync")
+            .arg("-f")
+            .arg("--")
+            .arg(mount)
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+            .into());
+        }
     }
     Ok(())
 }

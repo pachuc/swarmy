@@ -55,3 +55,11 @@ pub async fn attach(
     .await?;
     Ok(())
 }
+
+pub async fn flush(id: VolumeId, mount: Option<PathBuf>, freeze: bool, json: bool) -> Result<()> {
+    let flushed =
+        server::control_flush_with_freeze(&config().await?, id, mount, false, freeze).await?;
+    let mut value = serde_json::to_value(&flushed)?;
+    value["volume_id"] = serde_json::to_value(id)?;
+    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)
+}

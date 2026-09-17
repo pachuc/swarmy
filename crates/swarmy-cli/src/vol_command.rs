@@ -18,14 +18,17 @@ pub enum Command {
     /// Publish a durable manifest from the attached writer
     Flush {
         volume: ulid::Ulid,
-        /// Freeze this mount before publishing (otherwise discover the mount)
+        /// Freeze the filesystem for a clean image; defaults to a block boundary
+        #[arg(long)]
+        freeze: bool,
+        /// Validate this mount belongs to the volume
         #[arg(long)]
         mount: Option<PathBuf>,
     },
     /// Immediately publish the attached volume and print its new manifest id
     Checkpoint {
         volume: ulid::Ulid,
-        /// Freeze this mount before publishing (otherwise discover the mount)
+        /// Validate this mount belongs to the volume
         #[arg(long)]
         mount: Option<PathBuf>,
     },

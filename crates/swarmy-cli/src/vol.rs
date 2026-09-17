@@ -14,7 +14,14 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             crate::vol_server::attach(VolumeId::from_ulid(volume), device, background, json)
                 .await?;
         }
-        Command::Flush { volume, mount } | Command::Checkpoint { volume, mount } => {
+        Command::Flush {
+            volume,
+            mount,
+            freeze,
+        } => {
+            crate::vol_server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
+        }
+        Command::Checkpoint { volume, mount } => {
             crate::vol_server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
         }
         Command::Snapshot { volume } => {

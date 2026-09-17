@@ -2,6 +2,7 @@
 mod device;
 pub mod gc;
 mod metrics;
+pub mod priority;
 pub use metrics::UploadStats;
 mod snapshot;
 pub use snapshot::SnapshotLoop;
