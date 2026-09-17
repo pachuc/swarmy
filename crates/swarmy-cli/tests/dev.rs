@@ -135,12 +135,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
             .unwrap()
             .contains("Hello from swarmy!")
     );
-    let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
-    assert_eq!(state.matches("uptime").count(), 7, "{state}");
-    assert!(
-        !state.contains("uptime 0s"),
-        "uptime did not advance: {state}"
-    );
+    check_uptime(&fixture).await;
     let first = fixture.output(&["--json", "session", "list"]).await.stdout;
     assert_eq!(
         first
@@ -189,6 +184,17 @@ async fn dev_up_run_recover_reconfigure_and_down() {
         "{status}"
     );
     assert_gone(&running);
+}
+
+async fn check_uptime(fixture: &Fixture) {
+    // A fast turn no longer guarantees that the uptime counter has advanced.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
+    assert_eq!(state.matches("uptime").count(), 7, "{state}");
+    assert!(
+        !state.contains("uptime 0s"),
+        "uptime did not advance: {state}"
+    );
 }
 
 async fn check_startup(fixture: &Fixture) {

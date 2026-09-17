@@ -10,21 +10,26 @@ use swarmy_core::{
     Event, IdempotencyState, LeaseOwnerId, Message, MessageId, MessageRole, RequestId,
 };
 use swarmy_llm::{Delta, InferenceJob, Provider, Response};
-use swarmy_store::{InferenceClaim, InferenceCompletion, Store, blob::ObjectBlobStore};
+use swarmy_store::{
+    InferenceClaim, InferenceCompletion, Store,
+    blob::{BlobStore, ObjectBlobStore},
+};
 use tokio::{
     sync::Semaphore,
     task::JoinSet,
-    time::{interval, sleep},
+    time::{Instant, interval_at, sleep},
 };
 use tracing::{error, info, warn};
 use ulid::Ulid;
 
 struct Gateway {
     store: Store,
+    blobs: Arc<dyn BlobStore>,
     bus: Bus,
     provider: Arc<dyn Provider>,
     ack_wait: Duration,
     max_deliver: i64,
+    resend_interval: Duration,
 }
 
 // Boot before the runtime so the network guard outlives all database tasks.
@@ -46,10 +51,11 @@ fn main() -> Result<()> {
 }
 
 async fn run(config: config::Config) -> Result<()> {
+    let blobs = Arc::new(ObjectBlobStore::from_env()?);
     let store = Store::open(
         Some(&config.cluster),
         Some(&config.directory),
-        Arc::new(ObjectBlobStore::from_env()?),
+        blobs.clone(),
     )
     .await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
@@ -58,10 +64,12 @@ async fn run(config: config::Config) -> Result<()> {
     let mut messages = bus.consume::<InferenceJob>(&queue).await?;
     let gateway = Arc::new(Gateway {
         store,
+        blobs,
         bus,
         provider: config.provider,
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
+        resend_interval: config.resend_interval,
     });
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
     let mut tasks = JoinSet::new();
@@ -114,20 +122,21 @@ impl Gateway {
             expires_at: Timestamp::now(),
         };
         loop {
-            if self.completed(job.request_id).await? {
-                return Ok(message.acknowledge().await?);
-            }
             let now = Timestamp::now();
             claim.expires_at = now.checked_add(self.ack_wait)?;
             if self.store.start_inference(&claim, now).await? {
                 break;
+            }
+            if self.completed(job.request_id).await? {
+                return Ok(message.acknowledge().await?);
             }
             message.extend_deadline().await?;
             sleep(self.ack_wait / 3).await;
         }
         let work = self.process(message, &claim);
         tokio::pin!(work);
-        let mut heartbeat = interval(self.ack_wait / 3);
+        let period = self.ack_wait / 3;
+        let mut heartbeat = interval_at(Instant::now() + period, period);
         loop {
             tokio::select! {
                 result = &mut work => return result,
@@ -232,17 +241,33 @@ impl Gateway {
                 error: error.clone(),
             },
         };
+        self.persist_response(job, claim, event, &result, turn)
+            .await?;
+        message.acknowledge().await?;
+        Ok(())
+    }
+
+    async fn persist_response(
+        &self,
+        job: &InferenceJob,
+        claim: &InferenceClaim,
+        mut event: Event,
+        result: &std::result::Result<Response, String>,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
         // Keep the finished response and renew the deadline during store outages.
         // Retrying only this transaction avoids spending another provider call.
         loop {
-            if self.completed(job.request_id).await? {
-                break;
-            }
             let session = self
                 .store
                 .fetch_session(job.session_id)
                 .await?
                 .context("session missing")?;
+            if session.state != swarmy_core::SessionState::WaitingInference
+                && self.completed(job.request_id).await?
+            {
+                break;
+            }
             ensure!(
                 session.state == swarmy_core::SessionState::WaitingInference,
                 "session is not waiting for inference"
@@ -253,15 +278,127 @@ impl Gateway {
                 event: event.clone(),
                 now: Timestamp::now(),
             };
-            match self.store.complete_inference(&completion, &result).await {
-                Ok(()) => break,
+            let snapshot = match self.terminal_snapshot(job, &completion).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    warn!(%error, "retrying terminal snapshot upload");
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let committed = if let Some(snapshot) = &snapshot {
+                self.store
+                    .complete_inference_and_idle(&completion, result, snapshot)
+                    .await
+            } else {
+                self.store.complete_inference(&completion, result).await
+            };
+            match committed {
+                Ok(false) => break,
+                Ok(true) => {
+                    event.set_seq(session.head_seq + 1);
+                    self.notify_completion(job.session_id, &event, turn, snapshot.as_ref())
+                        .await;
+                    break;
+                }
                 Err(error) => {
                     warn!(%error, "retrying terminal store update");
                     sleep(Duration::from_millis(100)).await;
                 }
             }
         }
-        message.acknowledge().await?;
         Ok(())
+    }
+
+    async fn terminal_snapshot(
+        &self,
+        job: &InferenceJob,
+        completion: &InferenceCompletion,
+    ) -> Result<Option<swarmy_core::SnapshotRef>> {
+        // A concurrent log append is not in the immutable request. Let the
+        // worker replay it instead of advancing a snapshot over unseen events.
+        if completion.expected_head != job.step {
+            return Ok(None);
+        }
+        let Event::InferenceCompleted { message, .. } = &completion.event else {
+            return Ok(None);
+        };
+        if message
+            .parts
+            .iter()
+            .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
+        {
+            return Ok(None);
+        }
+        // The worker's immutable request contains the complete replayed message
+        // history. Replay the response with the same harness that resumes it.
+        let mut events: Vec<_> = job
+            .request
+            .messages
+            .iter()
+            .cloned()
+            .map(|message| Event::MessageAppended { seq: 0, message })
+            .collect();
+        events.push(completion.event.clone());
+        let bytes = swarmy_core::encode(&swarmy_harness::Snapshot::default().replay(&events))?;
+        let snapshot = swarmy_core::SnapshotRef {
+            seq: completion
+                .expected_head
+                .checked_add(2)
+                .context("sequence overflow")?,
+            object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+        };
+        self.blobs.put(&snapshot.object_key, bytes.into()).await?;
+        Ok(Some(snapshot))
+    }
+
+    async fn notify_completion(
+        &self,
+        id: swarmy_core::SessionId,
+        event: &Event,
+        turn: Option<MessageId>,
+        snapshot: Option<&swarmy_core::SnapshotRef>,
+    ) {
+        if let Err(error) = self
+            .bus
+            .publish_live(LiveFeed::SessionEvents(id), event)
+            .await
+        {
+            warn!(%error, "completion event publication failed; client will catch up");
+        }
+        if let Some(snapshot) = snapshot {
+            if let Some(turn) = turn {
+                self.bus
+                    .record_turn(&Bus::turn_event(
+                        id,
+                        turn,
+                        swarmy_core::TurnStage::Idle,
+                        None,
+                    ))
+                    .await;
+            }
+            if let Err(error) = self
+                .bus
+                .publish_live(
+                    LiveFeed::SessionEvents(id),
+                    &Event::StateChanged {
+                        seq: snapshot.seq,
+                        from: swarmy_core::SessionState::WaitingInference,
+                        to: swarmy_core::SessionState::Idle,
+                    },
+                )
+                .await
+            {
+                warn!(%error, "idle event publication failed; client will catch up");
+            }
+            return;
+        }
+        if let Err(error) = self
+            .bus
+            .nudge(id, event.seq(), turn, self.resend_interval, false)
+            .await
+        {
+            warn!(%error, "completion nudge failed; scheduler will recover");
+        }
     }
 }

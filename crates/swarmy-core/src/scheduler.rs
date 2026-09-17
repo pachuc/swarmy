@@ -27,6 +27,14 @@ pub enum WakeReply {
     Failed(String),
 }
 
+pub const RUNNABLE_PARTITIONS: u16 = 256;
+
+/// Stable BLAKE3 partition of the session's 16 ULID bytes.
+#[must_use]
+pub fn runnable_partition(id: SessionId) -> u16 {
+    u16::from(blake3::hash(&id.as_ulid().to_bytes()).as_bytes()[0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -64,26 +64,67 @@ impl Store {
         owner: LeaseOwnerId,
         expires_at: Timestamp,
     ) -> Result<Lease> {
-        self.transaction(|trx| async move {
-            let mut session = self.session(&trx, id).await?;
-            if session.state != SessionState::Runnable {
-                return Err(StoreError::InvalidState);
-            }
-            let lease = Lease {
-                owner,
-                expires_at,
-                seq: session
-                    .head_seq
-                    .checked_add(1)
-                    .ok_or(StoreError::SequenceOverflow)?,
-            };
-            self.remove_runnable(&trx, id).await?;
-            self.store_lease(&trx, id, &lease)?;
-            session.state = SessionState::Leased;
-            write(&trx, &self.session_key(id), &session)?;
-            Ok(lease)
-        })
-        .await
+        self.transaction(|trx| async move { Ok(self.claim(&trx, id, owner, expires_at).await?.0) })
+            .await
+    }
+
+    /// Claim work and read its session and turn from the same database version.
+    /// # Errors
+    /// Rejects non-runnable sessions and storage or snapshot decoding failures.
+    pub async fn claim_step(
+        &self,
+        id: SessionId,
+        owner: LeaseOwnerId,
+        expires_at: Timestamp,
+    ) -> Result<(
+        Lease,
+        swarmy_core::SessionRecord,
+        Option<swarmy_core::MessageId>,
+    )> {
+        let (lease, session, snapshot, turn) = self
+            .transaction(|trx| async move {
+                let (lease, session) = self.claim(&trx, id, owner, expires_at).await?;
+                let snapshot = if let Some(seq) = session.snapshot_seq {
+                    Some(
+                        trx.get(&self.snapshot_key(id, seq), false)
+                            .await?
+                            .ok_or(StoreError::Corrupt)?
+                            .to_vec(),
+                    )
+                } else {
+                    None
+                };
+                let turn = read(&trx, &self.turn_key(id)).await?;
+                Ok((lease, session, snapshot, turn))
+            })
+            .await?;
+        Ok((lease, self.hydrate_session(session, snapshot).await?, turn))
+    }
+
+    async fn claim(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        owner: LeaseOwnerId,
+        expires_at: Timestamp,
+    ) -> Result<(Lease, StoredSession)> {
+        let mut session = self.session(trx, id).await?;
+        if session.state != SessionState::Runnable {
+            return Err(StoreError::InvalidState);
+        }
+        let lease = Lease {
+            owner,
+            expires_at,
+            seq: session
+                .head_seq
+                .checked_add(1)
+                .ok_or(StoreError::SequenceOverflow)?,
+        };
+        self.remove_runnable(trx, id).await?;
+        self.store_lease(trx, id, &lease)?;
+        session.state = SessionState::Leased;
+        write(trx, &self.session_key(id), &session)?;
+        Ok((lease, session))
     }
 
     pub(crate) async fn verify_lease(

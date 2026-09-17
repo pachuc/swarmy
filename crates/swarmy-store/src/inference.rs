@@ -25,6 +25,13 @@ pub struct InferenceCompletion {
     pub now: Timestamp,
 }
 
+struct PreparedCompletion {
+    event: Vec<u8>,
+    response: Vec<u8>,
+    completed: Vec<u8>,
+    idle: Option<(Vec<u8>, Vec<u8>)>,
+}
+
 impl Store {
     fn inference_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
         self.root.pack(&(kind, id.as_bytes().as_slice()))
@@ -104,7 +111,8 @@ impl Store {
     /// Store the full result, append its event, clear inflight and the claim, mark
     /// idempotency complete, and index Runnable in one transaction. Large result
     /// and event values use the blob path before the transaction starts.
-    /// Repeating a committed completion is harmless, even with a stale head.
+    /// Returns true only for a newly committed result. A duplicate returns false,
+    /// so callers never fan out an event that lost to another completion.
     /// # Errors
     /// Rejects stale heads, expired/replaced claims, unrelated events, invalid
     /// states, and storage failures. Unknown commits can be resolved by idempotency.
@@ -112,7 +120,40 @@ impl Store {
         &self,
         completion: &InferenceCompletion,
         response: &T,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        self.complete_inference_inner(completion, response, None)
+            .await
+    }
+
+    /// Commit a terminal assistant response, its snapshot, and idle state together.
+    /// The inference claim replaces the worker lease while inference is in flight.
+    /// # Errors
+    /// Rejects nonterminal responses, inconsistent snapshots, and stale claims or heads.
+    pub async fn complete_inference_and_idle<T: Serialize>(
+        &self,
+        completion: &InferenceCompletion,
+        response: &T,
+        snapshot: &swarmy_core::SnapshotRef,
+    ) -> Result<bool> {
+        if !matches!(&completion.event, Event::InferenceCompleted { message, .. }
+            if message.role == swarmy_core::MessageRole::Assistant
+                && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::ToolCall { .. })))
+            || completion.expected_head.checked_add(2) != Some(snapshot.seq)
+            || RequestId::for_step(completion.claim.session_id, completion.expected_head)
+                != completion.claim.request_id
+        {
+            return Err(StoreError::InvalidState);
+        }
+        self.complete_inference_inner(completion, response, Some(snapshot))
+            .await
+    }
+
+    async fn complete_inference_inner<T: Serialize>(
+        &self,
+        completion: &InferenceCompletion,
+        response: &T,
+        snapshot: Option<&swarmy_core::SnapshotRef>,
+    ) -> Result<bool> {
         let claim = &completion.claim;
         let head = completion
             .expected_head
@@ -136,48 +177,102 @@ impl Store {
                 result_ref: Some(format!("inference_result/{}", claim.request_id)),
             })
             .await?;
-        self.transaction(|trx| {
-            let (event, response, completed) = (&event, &response, &completed);
-            async move {
-                let idem_key = self.inference_key("idem", claim.request_id);
-                if let Some(value) = trx.get(&idem_key, false).await? {
-                    let record: IdempotencyRecord = self.hydrate(&value).await?;
-                    if record.state == IdempotencyState::Completed {
-                        return Ok(());
-                    }
+        let idle = if let Some(snapshot) = snapshot {
+            Some((
+                self.prepare(&Event::StateChanged {
+                    seq: snapshot.seq,
+                    from: SessionState::WaitingInference,
+                    to: SessionState::Idle,
+                })
+                .await?,
+                self.prepare(snapshot).await?,
+            ))
+        } else {
+            None
+        };
+        self.commit_inference(
+            completion,
+            head,
+            snapshot,
+            &PreparedCompletion {
+                event,
+                response,
+                completed,
+                idle,
+            },
+        )
+        .await
+    }
+
+    async fn commit_inference(
+        &self,
+        completion: &InferenceCompletion,
+        head: u64,
+        snapshot: Option<&swarmy_core::SnapshotRef>,
+        prepared: &PreparedCompletion,
+    ) -> Result<bool> {
+        let claim = &completion.claim;
+        self.transaction(|trx| async move {
+            let PreparedCompletion {
+                event,
+                response,
+                completed,
+                idle,
+            } = prepared;
+            let now = snapshot.map_or(completion.now, |_| completion.now.max(Timestamp::now()));
+            let idem_key = self.inference_key("idem", claim.request_id);
+            if let Some(value) = trx.get(&idem_key, false).await? {
+                let record: IdempotencyRecord = self.hydrate(&value).await?;
+                if record.state == IdempotencyState::Completed {
+                    return Ok(false);
                 }
-                let claim_key = self.inference_key("inference_claim", claim.request_id);
-                let current = read::<InferenceClaim>(&trx, &claim_key)
-                    .await?
-                    .ok_or(StoreError::LeaseMismatch)?;
-                if current.owner != claim.owner
-                    || current.session_id != claim.session_id
-                    || current.expires_at <= completion.now
-                {
-                    return Err(StoreError::LeaseMismatch);
-                }
-                let mut session = self.session(&trx, claim.session_id).await?;
-                if session.head_seq != completion.expected_head {
-                    return Err(StoreError::StaleSequence {
-                        expected: completion.expected_head,
-                        actual: session.head_seq,
-                    });
-                }
-                if session.state != SessionState::WaitingInference {
-                    return Err(StoreError::InvalidState);
-                }
-                trx.set(&self.event_space(claim.session_id).pack(&(head,)), event);
-                trx.set(
-                    &self.inference_key("inference_result", claim.request_id),
-                    response,
-                );
-                trx.set(&idem_key, completed);
-                trx.clear(&self.inference_key("inflight", claim.request_id));
-                trx.clear(&claim_key);
-                session.head_seq = head;
-                self.transition(&trx, session, SessionState::Runnable, completion.now)
-                    .await
             }
+            let claim_key = self.inference_key("inference_claim", claim.request_id);
+            let current = read::<InferenceClaim>(&trx, &claim_key)
+                .await?
+                .ok_or(StoreError::LeaseMismatch)?;
+            if current.owner != claim.owner
+                || current.session_id != claim.session_id
+                || current.expires_at <= now
+            {
+                return Err(StoreError::LeaseMismatch);
+            }
+            let mut session = self.session(&trx, claim.session_id).await?;
+            if session.head_seq != completion.expected_head {
+                return Err(StoreError::StaleSequence {
+                    expected: completion.expected_head,
+                    actual: session.head_seq,
+                });
+            }
+            if session.state != SessionState::WaitingInference {
+                return Err(StoreError::InvalidState);
+            }
+            trx.set(&self.event_space(claim.session_id).pack(&(head,)), event);
+            trx.set(
+                &self.inference_key("inference_result", claim.request_id),
+                response,
+            );
+            trx.set(&idem_key, completed);
+            trx.clear(&self.inference_key("inflight", claim.request_id));
+            trx.clear(&claim_key);
+            session.head_seq = head;
+            let state = if let (Some(snapshot), Some((event, reference))) = (snapshot, idle) {
+                trx.set(
+                    &self.event_space(claim.session_id).pack(&(snapshot.seq,)),
+                    event,
+                );
+                trx.set(
+                    &self.snapshot_key(claim.session_id, snapshot.seq),
+                    reference,
+                );
+                session.head_seq = snapshot.seq;
+                session.snapshot_seq = Some(snapshot.seq);
+                SessionState::Idle
+            } else {
+                SessionState::Runnable
+            };
+            self.transition(&trx, session, state, now).await?;
+            Ok(true)
         })
         .await
     }

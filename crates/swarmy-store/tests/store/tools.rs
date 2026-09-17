@@ -355,6 +355,7 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         placement: placement.clone(),
         expires_at: expiry(),
     };
+    check_tool_admission(store, &claim.job, &placement).await;
     assert!(store.claim_placed_tool(&claim).await.unwrap());
     assert!(!store.claim_placed_tool(&claim).await.unwrap());
     store.renew(&placement, expiry()).await.unwrap();
@@ -371,6 +372,10 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         .await
         .unwrap();
     assert_eq!(store.list_volumes(None, 64).await.unwrap(), before);
+    assert_eq!(
+        store.tool_agent(&claim.job, node.node_id).await.unwrap(),
+        None
+    );
     let claim = swarmy_core::PlacedToolClaim {
         job: jobs[1].clone(),
         owner: owner(),
@@ -399,12 +404,45 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         store.renew_writer_lease(volume, &writer, expiry()).await,
         Err(StoreError::LeaseMismatch)
     ));
+    check_stale_publication(store, volume, &writer, image).await;
+    assert!(matches!(
+        store.agent_volume(session, &next).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.cleanup().await;
+}
+
+async fn check_tool_admission(
+    store: &Store,
+    job: &ToolJob,
+    placement: &swarmy_core::PlacementRecord,
+) {
+    // Legacy jobs acquire their dispatch fence through recovery.
+    assert!(store.route_tool_job(job, placement).await.unwrap());
+    assert_eq!(
+        store.tool_agent(job, placement.node_id).await.unwrap(),
+        Some(placement.agent_id)
+    );
+    assert!(matches!(
+        store
+            .tool_agent(job, NodeId::from_ulid(Ulid::generate()))
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+}
+
+async fn check_stale_publication(
+    store: &Store,
+    volume: swarmy_core::VolumeId,
+    writer: &swarmy_core::Lease,
+    image: ManifestId,
+) {
     let header = store.get_manifest(image).await.unwrap().unwrap();
     assert!(matches!(
         store
             .advance_volume(
                 volume,
-                &writer,
+                writer,
                 image,
                 ManifestId::from_ulid(Ulid::generate()),
                 &header
@@ -412,8 +450,81 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
             .await,
         Err(StoreError::LeaseMismatch)
     ));
+}
+
+#[tokio::test]
+async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let agent = store.fetch_session(id).await.unwrap().unwrap().agent_id;
+    let node = node();
+    store.put_node(&node).await.unwrap();
+    let expiry = Timestamp::now()
+        .checked_add(Duration::from_secs(60))
+        .unwrap();
+    let placement = store.place(agent, node.node_id, expiry).await.unwrap();
+    let lease = store.claim_lease(id, owner(), expiry).await.unwrap();
+    let calls: Vec<_> = (0..2)
+        .map(|index| ToolCallRecord {
+            call_id: ToolCallId(format!("call-{index}")),
+            tool: "bash".into(),
+            arguments: serde_json::json!({"command": "true", "timeout_ms": 1000}),
+            result: None,
+        })
+        .collect();
+    let replaced = swarmy_core::Lease {
+        owner: owner(),
+        ..lease.clone()
+    };
     assert!(matches!(
-        store.agent_volume(session, &next).await,
+        store
+            .dispatch_tool_calls(id, 0, &replaced, &calls, &placement)
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let stale = swarmy_core::PlacementRecord {
+        epoch: placement.epoch + 1,
+        ..placement.clone()
+    };
+    assert!(matches!(
+        store
+            .dispatch_tool_calls(id, 0, &lease, &calls, &stale)
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    assert!(matches!(
+        store
+            .dispatch_tool_calls(id, 1, &lease, &calls, &placement)
+            .await,
+        Err(StoreError::StaleSequence { .. })
+    ));
+    assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
+    assert!(store.scan_tool_jobs(None, 64).await.unwrap().is_empty());
+    let (events, jobs) = store
+        .dispatch_tool_calls(id, 0, &lease, &calls, &placement)
+        .await
+        .unwrap();
+    assert_eq!(store.read_events(id, 0, 64).await.unwrap(), events);
+    assert_eq!(events.len(), 2);
+    assert_eq!(jobs.len(), 2);
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.head_seq, 2);
+    assert_eq!(session.state, SessionState::WaitingTools);
+    for job in jobs {
+        assert_eq!(
+            store.tool_placement(job.request_id).await.unwrap(),
+            Some(placement.clone())
+        );
+        assert_eq!(
+            store.tool_agent(&job, node.node_id).await.unwrap(),
+            Some(agent)
+        );
+    }
+    assert!(matches!(
+        store.release_lease(id, &lease, Timestamp::now()).await,
         Err(StoreError::LeaseMismatch)
     ));
     test.cleanup().await;

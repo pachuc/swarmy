@@ -23,6 +23,36 @@ impl Store {
         .await
     }
 
+    /// Check delivery admission and find its agent in one read transaction.
+    /// Execution still requires a live placement and a fenced tool claim.
+    /// # Errors
+    /// Rejects delivery to another node, stale placements, and missing sessions.
+    pub async fn tool_agent(
+        &self,
+        job: &ToolJob,
+        node: swarmy_core::NodeId,
+    ) -> Result<Option<swarmy_core::AgentId>> {
+        self.transaction(|trx| async move {
+            if read::<bool>(&trx, &self.tool_key("tool_done", job.request_id))
+                .await?
+                .unwrap_or(false)
+            {
+                return Ok(None);
+            }
+            if let Some(placement) =
+                read::<PlacementRecord>(&trx, &self.tool_key("tool_placement", job.request_id))
+                    .await?
+            {
+                if placement.node_id != node {
+                    return Err(StoreError::LeaseMismatch);
+                }
+                self.check_live_placement(&trx, &placement).await?;
+            }
+            Ok(Some(self.session(&trx, job.session_id).await?.agent_id))
+        })
+        .await
+    }
+
     /// Resolve a pending dispatch against the current placement on every retry.
     /// A changed epoch completes the old call as failed instead of repeating its effects.
     /// Returns false when the job was completed or recovered and must not be published.

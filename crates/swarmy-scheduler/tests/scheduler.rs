@@ -519,3 +519,30 @@ async fn wake_received_by_another_partition_owner_is_found_by_the_owner_scan() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn scan_recovers_an_atomic_user_append_whose_nudge_was_lost() {
+    run(|f| async move {
+        f.start("7", &f.prefix).await;
+        let session = f.create(7, SessionState::Idle, Timestamp::now()).await;
+        let mut observer = f.observe(&f.prefix).await;
+        let message = swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text {
+                text: "lost publication".into(),
+            }],
+        };
+        // Simulate a client dying after commit and before its NATS publication.
+        f.store
+            .append_user_message(session, 0, &message)
+            .await
+            .unwrap();
+        assert_eq!(
+            timeout(SCAN * 3, next(&mut observer)).await.unwrap(),
+            session
+        );
+        assert_eq!(f.state(session).await, SessionState::Runnable);
+    })
+    .await;
+}

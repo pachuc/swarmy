@@ -16,12 +16,12 @@ use foundationdb::{
     Database,
     directory::{Directory, DirectoryLayer},
 };
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
-    Event, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionState,
-    ToolCallId, ToolCallRecord, ToolResult, WakeReply,
+    Event, LeaseOwnerId, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
+    SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
 use swarmy_store::{Store, blob::MemoryBlobStore};
@@ -76,6 +76,19 @@ impl Fixture {
         })
         .await
         .unwrap();
+        let admin = async_nats::connect(&self.url).await.unwrap();
+        let context = async_nats::jetstream::new(admin);
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+            if let Err(error) = context
+                .delete_stream(format!("{}_{stream}", self.prefix))
+                .await
+            {
+                assert!(
+                    matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref error) if error.code() == 404),
+                    "stream cleanup failed: {error}"
+                );
+            }
+        }
     }
 }
 
@@ -138,7 +151,7 @@ fn assistant() -> Event {
 
 async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
     let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
-    assert_eq!(session.state, SessionState::Idle);
+    assert_eq!(session.state, SessionState::Runnable);
     assert_eq!(
         fixture.store.session_image(id).await.unwrap(),
         fixture
@@ -229,31 +242,25 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
 }
 
 async fn serve(fixture: &Fixture, live: bool) -> tokio::task::JoinHandle<()> {
+    let mut messages = nudges(fixture).await;
     let server = fixture.clone();
-    let task = tokio::spawn(async move {
-        server
-            .bus
-            .serve_wake_requests(|request| {
-                let server = &server;
-                async move {
-                    if server
-                        .store
-                        .fetch_session(request.session_id)
-                        .await
-                        .unwrap()
-                        .is_none()
-                    {
-                        return WakeReply::NotFound;
-                    }
-                    worker(server, request.session_id, live).await;
-                    WakeReply::Runnable
-                }
-            })
-            .await
-            .unwrap();
-    });
-    wait_for_scheduler(fixture).await;
-    task
+    tokio::spawn(async move {
+        while let Some(message) = messages.next().await {
+            let nudge: Nudge = decode(&message.payload).unwrap();
+            worker(&server, nudge.session_id, live).await;
+        }
+    })
+}
+
+async fn nudges(fixture: &Fixture) -> async_nats::Subscriber {
+    fixture.bus.setup(&[]).await.unwrap();
+    let client = async_nats::connect(&fixture.url).await.unwrap();
+    let messages = client
+        .subscribe(format!("{}.sched.runnable.*", fixture.prefix))
+        .await
+        .unwrap();
+    client.flush().await.unwrap();
+    messages
 }
 
 async fn wait_for_scheduler(fixture: &Fixture) {
@@ -279,10 +286,15 @@ async fn wait_for_scheduler(fixture: &Fixture) {
 }
 
 #[tokio::test]
-async fn run_streams_standin_answer_and_tools_then_show_and_list_paginate() {
+async fn idle_event_enables_input_without_polling_and_history_still_paginates() {
     run(|fixture| async move {
         let server = serve(&fixture, true).await;
+        let start = Instant::now();
         let output = fixture.output(&["run", "hello"]).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "waited for store poll"
+        );
         server.abort();
         assert!(
             output.status.success(),
@@ -404,27 +416,32 @@ async fn run_json_emits_only_machine_readable_records() {
 }
 
 #[tokio::test]
-async fn absent_and_unresponsive_scheduler_fail_within_five_seconds() {
+async fn append_nudges_without_any_scheduler_and_leaves_durable_recovery_work() {
     run(|fixture| async move {
-        let admin = async_nats::connect(&fixture.url).await.unwrap();
-        for silent in [false, true] {
-            let _subscription = if silent {
-                Some(
-                    admin
-                        .subscribe(format!("{}.sched.wake", fixture.prefix))
-                        .await
-                        .unwrap(),
-                )
-            } else {
-                None
-            };
-            admin.flush().await.unwrap();
-            let start = Instant::now();
-            let output = fixture.output(&["run", "hello"]).await;
-            assert!(start.elapsed() < Duration::from_secs(5));
-            assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("scheduler"));
-        }
+        let mut messages = nudges(&fixture).await;
+        let mut child = fixture
+            .command(&["run", "hello"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let message = timeout(Duration::from_secs(3), messages.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let nudge: Nudge = decode(&message.payload).unwrap();
+        let session = fixture
+            .store
+            .fetch_session(nudge.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.state, SessionState::Runnable);
+        assert_eq!(session.head_seq, 1);
+        assert!(message.subject.ends_with(&format!(
+            ".{}",
+            swarmy_store::runnable_partition(nudge.session_id)
+        )));
+        child.kill().await.unwrap();
     })
     .await;
 }
@@ -435,37 +452,14 @@ async fn serve_until_claim(
     tokio::task::JoinHandle<()>,
     tokio::sync::mpsc::Receiver<SessionId>,
 ) {
-    let server = fixture.clone();
+    let mut messages = nudges(fixture).await;
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let service = tokio::spawn(async move {
-        server
-            .bus
-            .serve_wake_requests(|request| {
-                let server = &server;
-                let sender = &sender;
-                async move {
-                    if server
-                        .store
-                        .fetch_session(request.session_id)
-                        .await
-                        .unwrap()
-                        .is_none()
-                    {
-                        return WakeReply::NotFound;
-                    }
-                    server
-                        .store
-                        .wake_session(request.session_id, Timestamp::now())
-                        .await
-                        .unwrap();
-                    sender.send(request.session_id).await.unwrap();
-                    WakeReply::Runnable
-                }
-            })
-            .await
-            .unwrap();
+        while let Some(message) = messages.next().await {
+            let nudge: Nudge = decode(&message.payload).unwrap();
+            sender.send(nudge.session_id).await.unwrap();
+        }
     });
-    wait_for_scheduler(fixture).await;
     (service, receiver)
 }
 

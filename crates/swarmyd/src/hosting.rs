@@ -58,22 +58,9 @@ impl Hosting {
     }
 
     pub async fn call(self: &Arc<Self>, job: ToolJob) -> Result<()> {
-        if self.store.tool_completed(job.request_id).await? {
+        let Some(agent) = self.store.tool_agent(&job, self.node).await? else {
             return Ok(());
-        }
-        if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
-            anyhow::ensure!(
-                dispatched.node_id == self.node,
-                "tool dispatched to another node"
-            );
-            self.store.validate_placement(&dispatched).await?;
-        }
-        let agent = self
-            .store
-            .fetch_session(job.session_id)
-            .await?
-            .context("session missing")?
-            .agent_id;
+        };
         let (reply, response) = oneshot::channel();
         let calls = {
             let mut entries = self.entries.lock().await;

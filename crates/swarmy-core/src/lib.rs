@@ -21,7 +21,7 @@ pub use id::{
     SessionId, VolumeId,
 };
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
-pub use scheduler::{Nudge, WakeReply, WakeRequest};
+pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
 pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};

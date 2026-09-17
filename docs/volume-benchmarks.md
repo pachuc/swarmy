@@ -2162,3 +2162,223 @@ and object-store tests. The image tests were then rerun as root to exercise
 their privileged cases. The root NBD tests above are additional. Root tests keep
 Drop guards for unmount and device cleanup; normal CI still skips them with an
 explicit message when it lacks root.
+
+## 2026-09-17 Event-driven turn pipeline
+
+This run compares master at `672acea` with the event-driven pipeline in this
+change. User appends atomically make the session runnable and publish its nudge.
+Gateway and sandbox completions also publish nudges. Publishers share the
+partition rule and suppress repeated publications for the same durable head;
+a new head is immediately eligible. The scheduler scan and client store poll
+both run every five seconds as recovery paths. The client renders committed
+assistant events and enables input on the committed idle event. A response with
+no tool calls finishes directly in the gateway: it replays the immutable request
+history and response through the harness, uploads the snapshot, and commits the
+assistant event, snapshot reference, and idle event under the inference claim.
+The direct idle commit requires the log head to still match the inference
+request; concurrent appends take the worker replay path so the snapshot cannot
+skip their events. Responses needing tools still wake the worker. Worker-side idle transitions also
+publish their committed idle event.
+
+The worker claims its session, snapshot reference, and turn identity together.
+Inference input, its event, the inflight outbox, and lease release share one
+transaction; a folded tool result joins that transaction too. Sandbox call
+requests and their fenced dispatch also commit together. Idle, its log
+event, and the snapshot reference commit together. Initial tool publication
+uses the dispatch transaction's checked placement instead of resolving it
+again. Node admission reads share a transaction, and execution still checks
+both the current placement epoch and tool claim. Worker and gateway heartbeat
+renewals begin at the normal renewal deadline, rather than immediately after
+claiming.
+
+Both revisions were built with Rust 1.98.1 using
+`CARGO_PROFILE_DEV_OPT_LEVEL=3 cargo build --workspace --bins --locked` and
+stripped before copying. This optimizes the workspace crates; the repository
+already optimizes dependencies in the development profile, except the large
+AWS clients. There were no builds or test suites running during these samples.
+The fake script was `scripts/benchmarks/turn-fake.json`, with no model delay.
+The pinned `turn-image:bench` was a 256 MiB ext4 image containing bash, sleep,
+setsid, and their shared libraries. It executes the same
+`printf TURN_TOOL_OK` command as the preceding benchmark section.
+
+Each shape uses its own persistent session and excludes one cold warmup.
+Before runs measured five turns per shape; after runs measured thirty.
+Percentiles use nearest rank. End-to-end is client monotonic time from
+submission through input enabled. Repeated milestones retain every raw event;
+the tables show the last occurrence, and inference/tool durations sum their
+matched spans. Rendering uses the normal line client writing redirected stdout;
+separate PTY tests exercise chat input readiness and terminal restoration.
+
+Local services, client, and root sandbox node run on the launcher. The remote
+case keeps the client, scheduler, worker, and gateway on the launcher and puts
+FoundationDB, NATS, SeaweedFS, and the root sandbox node on an AWS
+`m6id.xlarge` in `us-east-1`, with node volume storage on local NVMe; backing
+service data stays on the root EBS disk. Baseline samples used instance
+`i-0ded0f4e47b5ecab3`. Final samples used a fresh instance of the same type and
+configuration, `i-04aec8f7ccb782c82`, after the baseline node was terminated.
+For each revision, the same binary hashes run on both hosts. An OUTPUT firewall rule rejects the launcher's
+direct private-subnet connections to ports 4500, 4222, and 8333. The remote
+profile uses SSH forwarding, including local port 4500 for FoundationDB.
+
+Final sampling follows `sync` and a three-second settling period. The CLI uses
+the head from its idle observation for the atomic append, avoiding a separate
+read; competing submissions still fail the store's head/state checks. The fake
+gateway skips per-delta timer scheduling when the configured delay is zero;
+nonzero scripted delays and its durable call log are unchanged.
+
+**End-to-end results (milliseconds).** Both local shapes meet the proposed
+under-100 ms p95 budget: 18.196 ms for text and 66.321 ms for bash. This is a
+single warm, sequential run with short conversations, not a concurrency or
+long-history guarantee. The remote run improves substantially but does **not**
+meet its proposed budget. Fifty TCP connections to SSH measured p50 0.214 ms
+and p95 0.239 ms; using the latter gives a target below 100.717 ms. That TCP
+measurement does not include application processing or SSH channel queuing.
+The remote stage timings retain long claim and handoff delays; this run does
+not isolate their cause or demonstrate the three-round-trip target.
+
+| Location | Shape | Before p50 | Before p95 | After p50 | After p95 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| local | no_tool | 5999.637 | 6000.037 | 16.840 | 18.196 |
+| local | bash | 17000.388 | 17999.891 | 59.855 | 66.321 |
+| remote | no_tool | 5999.895 | 6001.014 | 90.798 | 204.932 |
+| remote | bash | 16838.011 | 18007.351 | 348.638 | 535.562 |
+
+**no_tool, after (milliseconds).**
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 1.733 | 1.857 | 5.037 | 7.607 |
+| nudged | 1.747 | 1.867 | 5.051 | 7.619 |
+| claimed | 3.789 | 4.000 | 11.927 | 68.515 |
+| inference_started | 9.712 | 10.364 | 73.787 | 185.243 |
+| inference_finished | 12.505 | 13.340 | 77.985 | 189.423 |
+| idle | 16.598 | 17.920 | 90.120 | 204.415 |
+| final_text_rendered | 16.822 | 18.176 | 90.574 | 204.913 |
+| input_enabled | 16.840 | 18.196 | 90.798 | 204.932 |
+| inference_total_duration | 2.696 | 3.162 | 4.151 | 4.272 |
+
+**bash, after (milliseconds).**
+
+| Stage | Local p50 | Local p95 | SSH remote p50 | SSH remote p95 |
+| --- | ---: | ---: | ---: | ---: |
+| appended | 1.818 | 1.936 | 6.250 | 9.830 |
+| nudged | 43.539 | 48.951 | 215.290 | 357.139 |
+| claimed | 45.855 | 51.612 | 245.772 | 378.221 |
+| inference_started | 52.008 | 58.350 | 283.344 | 513.152 |
+| inference_finished | 54.978 | 61.278 | 287.632 | 517.380 |
+| tool_dispatched | 21.112 | 22.879 | 190.662 | 329.654 |
+| tool_completed | 43.082 | 48.435 | 214.759 | 356.693 |
+| idle | 59.584 | 66.101 | 348.096 | 534.973 |
+| final_text_rendered | 59.833 | 66.296 | 348.618 | 535.537 |
+| input_enabled | 59.855 | 66.321 | 348.638 | 535.562 |
+| inference_total_duration | 5.767 | 6.157 | 8.414 | 8.598 |
+| tool_total_duration | 22.222 | 25.556 | 26.087 | 30.415 |
+
+Raw samples: [local before](benchmarks/2026-09-17-turn-events-local-before.json),
+[local after](benchmarks/2026-09-17-turn-events-local-after.json),
+[SSH remote before](benchmarks/2026-09-17-turn-events-remote-before.json), and
+[SSH remote after](benchmarks/2026-09-17-turn-events-remote-after.json).
+The [machine, clock, routing, binary-hash, and teardown proof](benchmarks/2026-09-17-turn-events-proof.json)
+includes rejected direct connections on all three service ports, firewall
+counters, matching stripped binary hashes, and both `chronyc tracking` outputs.
+Both clocks reported normal synchronization with sub-microsecond system offsets
+at the recorded check. Cross-host stages use UTC; end-to-end remains entirely
+on the client's monotonic clock.
+
+The exact measurement commands, after selecting the corresponding built binary
+directory and starting services with the fake script, were:
+
+```sh
+/tmp/swarmy-turn-run/before/swarmy bench turn --turns 5 --image turn-image:bench --output /tmp/swarmy-turn-run/local-before.json
+/tmp/swarmy-turn-run/after/swarmy bench turn --turns 30 --image turn-image:bench --output /tmp/swarmy-turn-run/local-after.json
+/tmp/swarmy-turn-run/before/swarmy bench turn --remote turn-events --turns 5 --image turn-image:bench --output /tmp/swarmy-turn-run/remote-before.json
+/tmp/swarmy-turn-run/after/swarmy bench turn --remote turn-events --turns 30 --image turn-image:bench --output /tmp/swarmy-turn-run/remote-after.json
+```
+
+Before used the original 1,000 ms scheduler scan, 5,000 ms resend interval, and
+500 ms client poll. After used 5,000 ms scan/resend/poll intervals. All services
+used `TOKIO_WORKER_THREADS=4`; nodes advertised 16 computer slots for repeat
+benchmark sessions. Only one computer ran measured commands at a time.
+One early attempt exhausted the original single slot because a previous
+placement was retained; another remote setup attempt omitted required capacity
+fields. Both stopped during warmup without producing a complete sample file.
+The corrected setup drained pending work before measuring.
+
+**Development runs retained for comparison.** These are intermediate revisions
+or different build/sampling conditions, not additional samples of the final
+revision. The first two rows used the repository's default unoptimized workspace
+profile. `local-after-unoptimized` had the initial event path and transaction
+batching. The next two rows added optimized builds, removed redundant routing
+and renewal work, and combined tool dispatch and result folding. Terminal
+inference completion then removed the final worker claim/idle commit pair.
+Its first run immediately followed a build and showed stalls across unrelated
+stages; `local-terminal-contended` retains it rather than silently dropping it.
+The next run drained disk writes and settled before sampling. The next pair removed zero-delay fake timers and the pre-append store read;
+the final run above also includes the correctness guard for concurrent log
+appends during inference. Both earlier completed runs remain in the archive.
+
+All completed development samples, including warmups, are in this
+[gzipped JSON archive](benchmarks/2026-09-17-turn-events-development.json.gz).
+The table reports end-to-end p95 in milliseconds.
+
+| Run | Text p95 | Bash p95 |
+| --- | ---: | ---: |
+| local-before-unoptimized | 6499.312 | 18000.100 |
+| remote-before-unoptimized | 6000.733 | 18351.820 |
+| local-after-unoptimized | 42.910 | 157.530 |
+| local-intermediate-optimized | 36.163 | 128.584 |
+| local-batched-intermediate | 42.863 | 118.784 |
+| local-terminal-contended | 25.256 | 1483.549 |
+| local-terminal-before-zero-delay | 26.418 | 102.799 |
+| local-before-final-guard | 22.341 | 97.920 |
+| remote-before-final-guard | 212.272 | 505.798 |
+
+**Validation.** With `scripts/dev-stack.sh start` and `source .dev/env`,
+`cargo fmt --all --check`, `cargo test --workspace --locked`, and
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed. The
+workspace reported 282 passed tests and one intentionally ignored live-provider
+account test. `scripts/chaos-ci.sh --bin-dir "$PWD/target/debug"` passed its
+reduced chaos and targeted node-loss, eviction, and managed-process checks.
+
+Root test binaries were built as the normal user with
+`cargo test --workspace --locked --no-run --message-format=json`, then selected
+from that output and executed with `sudo -E <binary> --nocapture --test-threads=1`
+and `SWARMY_TEST_IMAGE=base-ubuntu:bash-test`. The selected suites were all
+`swarmy-volume` tests, `swarmyd`'s `node`, `swarmy-chaos`'s `bash`, and the CLI's
+`image`, `vol`, and `session` (filtered to `root_chat_default_image_executes_pwd`).
+All 41 selected tests passed, including four real bash chaos scenarios, the
+12-kill seed-42 run, lease and epoch fencing, and NBD/ext4/fio. The OCI recipe
+case initially skipped because skopeo was missing; after installing skopeo and
+umoci, rerunning `root_oci_recipe_applies_layer_deletions` as root passed.
+The prebuilt `turn` integration test also passed against both final benchmark
+stacks. No attached NBD devices remained after cleanup.
+
+**Cloud teardown.** Both temporary `m6id.xlarge` instances, their root volumes,
+and imported key pairs were tagged `managed-by=codex-launcher` at creation.
+The baseline node's final queries at 2026-09-17 10:59:17 UTC returned:
+
+```text
+aws ec2 describe-instances --instance-ids i-0ded0f4e47b5ecab3
+[{"InstanceId":"i-0ded0f4e47b5ecab3","State":"terminated"}]
+aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-events-1789638028
+[]
+aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-events-1789638028
+[]
+```
+
+The final revision's replacement node was also removed. Its queries at
+2026-09-17 11:32:53 UTC returned:
+
+```text
+aws ec2 describe-instances --instance-ids i-04aec8f7ccb782c82
+[{"InstanceId":"i-04aec8f7ccb782c82","State":"terminated"}]
+aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-events-1789644115
+[]
+aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-events-1789644115
+[]
+```
+
+The displayed results use the field projections retained in the proof JSON.
+The local SSH tunnel and private-route rejection rule were removed and the local
+dev stack was restored. This run used the remote node's SeaweedFS, created no
+external S3 objects or buckets, and used no Google Cloud resources.

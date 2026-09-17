@@ -379,25 +379,36 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
 }
 
 #[tokio::test]
-async fn chat_names_missing_scheduler_and_restores_terminal() {
-    run(|fixture| async move {
-        let mut terminal = Terminal::new_session(&fixture).await;
-        let start = Instant::now();
-        terminal.type_text("hello\r");
-        terminal.exit(false).await;
-        assert!(start.elapsed() < Duration::from_secs(5));
-        assert!(terminal.parser.screen().contents().contains("scheduler"));
-        // The append succeeded before the failed wake. Resume retries that wake.
-        let id = session_id(&fixture).await;
-        let server = serve(&fixture, false).await;
-        let mut terminal = Terminal::open(&fixture, Some(id));
-        let screen = terminal.ready().await;
-        assert!(screen.contains("Agent: scripted answer"));
-        terminal.type_text("\x1b");
-        terminal.exit(true).await;
-        server.abort();
-    })
-    .await;
+async fn chat_enables_input_from_idle_events_and_recovers_missed_events() {
+    for live in [true, false] {
+        run(|fixture| async move {
+            let server = serve(&fixture, live).await;
+            let mut terminal = Terminal::new_session(&fixture).await;
+            let start = Instant::now();
+            terminal.type_text("hello\r");
+            let screen = terminal
+                .screen(|screen| {
+                    screen.contains("Agent: scripted answer") && screen.contains("Enter: send")
+                })
+                .await;
+            if live {
+                assert!(
+                    start.elapsed() < Duration::from_secs(3),
+                    "idle waited for a store poll"
+                );
+            } else {
+                assert!(
+                    start.elapsed() >= Duration::from_secs(3),
+                    "test did not exercise fallback polling"
+                );
+            }
+            assert_eq!(screen.matches("Agent: scripted answer").count(), 1);
+            terminal.type_text("\x1b");
+            terminal.exit(true).await;
+            server.abort();
+        })
+        .await;
+    }
 }
 
 #[tokio::test]

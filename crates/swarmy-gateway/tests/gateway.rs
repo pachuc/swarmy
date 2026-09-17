@@ -22,7 +22,10 @@ use swarmy_core::{
 use swarmy_llm::{
     Delta, GenerationSettings, InferenceJob, Request, Response, StopReason, TokenUsage,
 };
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{
+    Store,
+    blob::{BlobStore, ObjectBlobStore},
+};
 use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
@@ -232,16 +235,49 @@ impl Fixture {
             loop {
                 let events = self.store.read_events(job.session_id, 1, 64).await.unwrap();
                 if let Some(event) = events.first() {
-                    assert_eq!(events.len(), 1);
+                    let idle = matches!(event, Event::InferenceCompleted { message, .. }
+                        if !message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
+                    assert_eq!(events.len(), if idle { 2 } else { 1 });
+                    let session = self
+                        .store
+                        .fetch_session(job.session_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
                     assert_eq!(
-                        self.store
-                            .fetch_session(job.session_id)
-                            .await
-                            .unwrap()
-                            .unwrap()
-                            .state,
-                        SessionState::Runnable
+                        session.state,
+                        if idle {
+                            SessionState::Idle
+                        } else {
+                            SessionState::Runnable
+                        }
                     );
+                    if idle {
+                        assert!(matches!(
+                            events.last(),
+                            Some(Event::StateChanged {
+                                to: SessionState::Idle,
+                                ..
+                            })
+                        ));
+                        let reference = session.snapshot_ref.unwrap();
+                        assert_eq!(reference.seq, session.head_seq);
+                        let bytes = ObjectBlobStore::from_env()
+                            .unwrap()
+                            .get(&reference.object_key)
+                            .await
+                            .unwrap();
+                        let snapshot: swarmy_harness::Snapshot =
+                            swarmy_core::decode(&bytes).unwrap();
+                        let Event::InferenceCompleted { message, .. } = event else {
+                            unreachable!()
+                        };
+                        assert_eq!(snapshot.messages().last(), Some(message));
+                        assert_eq!(
+                            &snapshot.messages()[..snapshot.messages().len() - 1],
+                            job.request.messages
+                        );
+                    }
                     assert!(
                         self.store
                             .get_inflight(job.request_id)
@@ -335,7 +371,14 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
         let expected = f.script(100, false, "hello");
         f.start(4);
         f.start(4);
-        let job = f.job().await;
+        let mut job = f.job().await;
+        job.request.messages.push(swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![Part::Text {
+                text: "preserve this history".into(),
+            }],
+        });
         let result = AssertUnwindSafe(async {
             f.publish(&job).await;
             f.publish(&job).await;
@@ -498,6 +541,71 @@ async fn invalid_request_id_is_acknowledged_without_provider_call() {
                     .unwrap()
                     .is_empty()
             );
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_response_leaves_intervening_events_for_worker_replay() {
+    run(|mut f| async move {
+        f.script(100, false, "answer");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            let mut live = f
+                .bus
+                .subscribe_live::<Delta>(LiveFeed::ModelDeltas(job.session_id))
+                .await
+                .unwrap();
+            f.publish(&job).await;
+            timeout(WAIT, live.next()).await.unwrap().unwrap().unwrap();
+            let notice = Event::MessageAppended {
+                seq: 0,
+                message: swarmy_core::Message {
+                    id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::System,
+                    parts: vec![Part::Text {
+                        text: "concurrent notice".into(),
+                    }],
+                },
+            };
+            f.store
+                .append_events(job.session_id, 1, &[notice])
+                .await
+                .unwrap();
+            timeout(WAIT, async {
+                loop {
+                    let session = f
+                        .store
+                        .fetch_session(job.session_id)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if session.state == SessionState::Runnable {
+                        assert_eq!(session.head_seq, 3);
+                        assert!(session.snapshot_ref.is_none());
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let events = f.store.read_events(job.session_id, 1, 64).await.unwrap();
+            assert!(matches!(
+                events.as_slice(),
+                [
+                    Event::MessageAppended { seq: 2, .. },
+                    Event::InferenceCompleted { seq: 3, .. }
+                ]
+            ));
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
         })
         .catch_unwind()
         .await;
