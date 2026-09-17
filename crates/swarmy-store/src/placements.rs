@@ -1,12 +1,73 @@
 use foundationdb::Transaction;
 use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 use swarmy_core::{
     AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
 };
 
 use crate::{Result, Store, StoreError, check_limit, read, scan, write};
 
+// Keep new metadata separate so existing postcard placement records and nested
+// dispatch fences remain readable without changing their binary schema.
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct PlacementHosting {
+    claimed: Option<Timestamp>,
+    last_renewed: Option<Timestamp>,
+    pub(crate) failure_estimate: Option<Timestamp>,
+}
+
 impl Store {
+    pub(crate) async fn read_placement_hosting(
+        &self,
+        trx: &Transaction,
+        placement: &PlacementRecord,
+    ) -> Result<Option<PlacementHosting>> {
+        read(
+            trx,
+            &self.placement_key("placement_hosting", placement.agent_id),
+        )
+        .await
+    }
+
+    /// Read the failure estimate for this epoch. Legacy placements have no estimate.
+    /// # Errors
+    /// Rejects replaced placements and storage failures.
+    pub async fn placement_failure_estimate(
+        &self,
+        expected: &PlacementRecord,
+    ) -> Result<Option<Timestamp>> {
+        self.transaction(|trx| async move {
+            self.checked_placement(&trx, expected).await?;
+            Ok(self
+                .read_placement_hosting(&trx, expected)
+                .await?
+                .and_then(|hosting| hosting.failure_estimate))
+        })
+        .await
+    }
+
+    /// Claim a live epoch before creating its sandbox or executing any tools.
+    /// Recording this before local work conservatively treats interrupted boots as
+    /// possible computer loss, while grants that no node claimed remain silent.
+    /// # Errors
+    /// Rejects stale or expired placements and storage failures.
+    pub async fn claim_placement(&self, expected: &PlacementRecord) -> Result<()> {
+        self.transaction(|trx| async move {
+            self.check_live_placement(&trx, expected).await?;
+            let mut hosting = self
+                .read_placement_hosting(&trx, expected)
+                .await?
+                .unwrap_or_default();
+            hosting.claimed.get_or_insert_with(Timestamp::now);
+            write(
+                &trx,
+                &self.placement_key("placement_hosting", expected.agent_id),
+                &hosting,
+            )
+        })
+        .await
+    }
+
     fn placement_key(&self, kind: &str, agent: AgentId) -> Vec<u8> {
         self.root
             .pack(&(kind, agent.as_ulid().to_bytes().as_slice()))
@@ -139,6 +200,11 @@ impl Store {
                 last_changed_at: now,
             };
             self.write_placement(&trx, &record)?;
+            write(
+                &trx,
+                &self.placement_key("placement_hosting", agent),
+                &PlacementHosting::default(),
+            )?;
             Ok(record)
         })
         .await
@@ -156,9 +222,24 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             let mut current = self.checked_placement(&trx, expected).await?;
-            if current.expires_at <= Timestamp::now() || expires_at <= current.expires_at {
+            let now = Timestamp::now();
+            if current.expires_at <= now || expires_at <= current.expires_at {
                 return Err(StoreError::LeaseMismatch);
             }
+            let mut hosting = self
+                .read_placement_hosting(&trx, &current)
+                .await?
+                // A legacy holder may already have a resident computer.
+                .unwrap_or(PlacementHosting {
+                    claimed: Some(now),
+                    ..Default::default()
+                });
+            hosting.last_renewed = Some(now);
+            write(
+                &trx,
+                &self.placement_key("placement_hosting", current.agent_id),
+                &hosting,
+            )?;
             current.expires_at = expires_at;
             self.write_placement(&trx, &current)?;
             Ok(current)
@@ -178,13 +259,15 @@ impl Store {
             }
             self.free_computer(&trx, current.node_id).await?;
             trx.clear(&self.placement_key("placement", current.agent_id));
+            trx.clear(&self.placement_key("placement_hosting", current.agent_id));
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             Ok(())
         })
         .await
     }
 
-    /// Replace the observed epoch only after expiry, recording Failure and a new epoch.
+    /// Replace the observed epoch only after expiry. Only claimed or legacy placements
+    /// record Failure; an expired unclaimed grant records Unstarted.
     /// Competing takeovers conflict on the placement and only one can commit.
     /// # Errors
     /// Rejects live or replaced placements, invalid expiry, unavailable capacity,
@@ -203,6 +286,14 @@ impl Store {
             }
             self.free_computer(&trx, current.node_id).await?;
             self.reserve_computer(&trx, node).await?;
+            let hosting = self.read_placement_hosting(&trx, &current).await?;
+            // Missing metadata predates claim tracking, so do not assume that
+            // an existing resident computer was never started.
+            let lost_computer = hosting.as_ref().is_none_or(|h| h.claimed.is_some());
+            let estimated_failure_at = hosting.and_then(|h| {
+                h.claimed
+                    .map(|claimed| h.last_renewed.unwrap_or(claimed).max(claimed))
+            });
             let record = PlacementRecord {
                 node_id: node,
                 epoch: current
@@ -210,12 +301,24 @@ impl Store {
                     .checked_add(1)
                     .ok_or(StoreError::SequenceOverflow)?,
                 expires_at,
-                last_change_reason: PlacementChangeReason::Failure,
+                last_change_reason: if lost_computer {
+                    PlacementChangeReason::Failure
+                } else {
+                    PlacementChangeReason::Unstarted
+                },
                 last_changed_at: now,
                 ..current
             };
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             self.write_placement(&trx, &record)?;
+            write(
+                &trx,
+                &self.placement_key("placement_hosting", current.agent_id),
+                &PlacementHosting {
+                    failure_estimate: estimated_failure_at,
+                    ..Default::default()
+                },
+            )?;
             Ok(record)
         })
         .await
