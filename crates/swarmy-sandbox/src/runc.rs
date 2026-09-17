@@ -275,7 +275,7 @@ impl RuncRuntime {
 
     /// Publish the attached disk while keeping its container alive.
     /// # Errors
-    /// Returns missing sandbox, freeze, or fenced publication errors.
+    /// Returns missing sandbox, sync, or fenced publication errors.
     pub async fn checkpoint(&self, sandbox: &Sandbox) -> Result<swarmy_core::ManifestId> {
         let entry = self.running(sandbox.agent_id).await?;
         let running = entry.lock().await;
@@ -395,6 +395,7 @@ impl SandboxRuntime for RuncRuntime {
                 "exec requires arguments and a positive timeout".into(),
             ));
         }
+        let _activity = swarmy_volume::priority::ToolActivity::begin();
         let entry = self.running(sb.agent_id).await?;
         let running = entry.lock().await;
         let token = ulid::Ulid::generate().to_string();

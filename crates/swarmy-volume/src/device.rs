@@ -17,10 +17,12 @@ use swarmy_core::{CHUNK_SIZE, ContentHash, encode};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex, RwLock},
+    sync::{Mutex, MutexGuard, Notify},
 };
 
-use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, ManifestBuilder, Result, VolumeError};
+#[cfg(test)]
+use crate::ManifestBuilder;
+use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, Result, VolumeError};
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
@@ -37,6 +39,10 @@ pub struct DeviceStats {
     pub dirty_bytes: u64,
     /// Chunk uploads currently waiting for object storage, including existence checks.
     pub uploads_in_flight: u64,
+    pub upload_concurrency_limit: usize,
+    /// Zero means no bandwidth cap.
+    pub upload_bytes_per_second: u64,
+    pub tool_priority_uploads: u64,
 }
 
 #[derive(Default)]
@@ -47,6 +53,7 @@ struct Counters {
     readahead_fetches: AtomicU64,
     dirty_bytes: AtomicU64,
     uploads_in_flight: AtomicU64,
+    tool_priority_uploads: AtomicU64,
 }
 
 // Decrement on cancellation as well as success or failure.
@@ -71,8 +78,33 @@ struct Dirty {
     generations: HashMap<u64, u64>,
     last_write: HashMap<u64, Instant>,
     published: Manifest,
+    boundary: Option<boundary::Boundary>,
     // Hold an exclusive advisory lock for the lifetime of this writer.
     _lock: std::fs::File,
+}
+
+// Wake background preparation after the lock has actually been released. It
+// does not join the mutex queue ahead of the next foreground request.
+struct DirtyGuard<'a> {
+    guard: Option<MutexGuard<'a, Dirty>>,
+    available: &'a Notify,
+}
+impl std::ops::Deref for DirtyGuard<'_> {
+    type Target = Dirty;
+    fn deref(&self) -> &Dirty {
+        self.guard.as_deref().unwrap()
+    }
+}
+impl std::ops::DerefMut for DirtyGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Dirty {
+        self.guard.as_deref_mut().unwrap()
+    }
+}
+impl Drop for DirtyGuard<'_> {
+    fn drop(&mut self) {
+        self.guard.take();
+        self.available.notify_waiters();
+    }
 }
 
 impl Dirty {
@@ -91,10 +123,10 @@ pub struct VolumeDevice {
     manifest: Manifest,
     cache_dir: PathBuf,
     dirty: Mutex<Dirty>,
+    dirty_available: Notify,
     // Serialize upload batches, including publication, without excluding writes.
     uploading: Mutex<()>,
-    // Publication also works without a filesystem mount (journal fallback).
-    writing: RwLock<()>,
+    dirty_dir: PathBuf,
     leaves: Mutex<HashMap<usize, Vec<ContentHash>>>,
     prefetched: Mutex<HashSet<ContentHash>>,
     fills: [Mutex<()>; 64],
@@ -220,12 +252,14 @@ impl VolumeDevice {
                 generations: HashMap::new(),
                 last_write: HashMap::new(),
                 published: manifest,
+                boundary: None,
                 present,
                 previous_end: None,
                 _lock: lock,
             }),
+            dirty_available: Notify::new(),
             uploading: Mutex::new(()),
-            writing: RwLock::new(()),
+            dirty_dir: dirty_dir.to_owned(),
             leaves: Mutex::new(HashMap::new()),
             prefetched: Mutex::new(HashSet::new()),
             fills: std::array::from_fn(|_| Mutex::new(())),
@@ -250,6 +284,7 @@ impl VolumeDevice {
 
     #[must_use]
     pub fn stats(&self) -> DeviceStats {
+        let tool_active = crate::priority::tool_active();
         DeviceStats {
             cache_hits: self.counters.cache_hits.load(Ordering::Relaxed),
             cold_reads: self.counters.cold_reads.load(Ordering::Relaxed),
@@ -257,6 +292,17 @@ impl VolumeDevice {
             readahead_fetches: self.counters.readahead_fetches.load(Ordering::Relaxed),
             dirty_bytes: self.counters.dirty_bytes.load(Ordering::Relaxed),
             uploads_in_flight: self.counters.uploads_in_flight.load(Ordering::Relaxed),
+            tool_priority_uploads: self.counters.tool_priority_uploads.load(Ordering::Relaxed),
+            upload_concurrency_limit: if tool_active {
+                self.upload_concurrency.get().min(4)
+            } else {
+                self.upload_concurrency.get()
+            },
+            upload_bytes_per_second: if tool_active {
+                crate::priority::TOOL_UPLOAD_BYTES_PER_SECOND
+            } else {
+                0
+            },
         }
     }
 
@@ -266,11 +312,38 @@ impl VolumeDevice {
         self.uploads.snapshot()
     }
 
-    async fn lock_dirty(&self) -> tokio::sync::MutexGuard<'_, Dirty> {
+    async fn lock_dirty(&self) -> DirtyGuard<'_> {
         let start = Instant::now();
         let guard = self.dirty.lock().await;
         self.uploads.record_lock_wait(start);
-        guard
+        DirtyGuard {
+            guard: Some(guard),
+            available: &self.dirty_available,
+        }
+    }
+
+    // Upload preparation must not queue a batch of disk reads ahead of the
+    // next NBD request. Foreground readers and writers use the fair mutex queue;
+    // backup work retries only when that queue has drained.
+    async fn lock_upload_dirty(&self) -> DirtyGuard<'_> {
+        let start = Instant::now();
+        loop {
+            let available = self.dirty_available.notified();
+            tokio::pin!(available);
+            available.as_mut().enable();
+            if let Ok(guard) = self.dirty.try_lock() {
+                self.uploads.record_lock_wait(start);
+                return DirtyGuard {
+                    guard: Some(guard),
+                    available: &self.dirty_available,
+                };
+            }
+            tokio::select! {
+                () = &mut available => {},
+                // Cancellation cleanup and test probes can take the raw mutex.
+                () = tokio::time::sleep(Duration::from_millis(1)) => {},
+            }
+        }
     }
 
     pub(crate) fn validate(&self, offset: u64, length: usize) -> Result<()> {
@@ -335,13 +408,13 @@ impl VolumeDevice {
     /// Panics if a chunk exhausts its u64 generation counter in one attachment.
     pub async fn write(&self, offset: u64, bytes: &[u8]) -> Result<()> {
         self.validate(offset, bytes.len())?;
-        let _writing = self.writing.read().await;
         let mut dirty = self.lock_dirty().await;
         // Invalidate before writing: a partial failed write must never retain
         // an uploaded hash for bytes that are no longer present locally.
         for number in offset / u64::from(CHUNK_SIZE)
             ..(offset + bytes.len() as u64).div_ceil(u64::from(CHUNK_SIZE))
         {
+            Self::preserve_boundary(&mut dirty, number).await;
             let generation = dirty.generations.entry(number).or_default();
             *generation = generation
                 .checked_add(1)
@@ -455,17 +528,31 @@ impl VolumeDevice {
             if let Err(error) = result {
                 failure.get_or_insert(error);
             }
+            // Ready object-store futures can otherwise consume an entire batch
+            // on one executor turn before a ready NBD request gets to run.
+            tokio::task::yield_now().await;
         }
         // Drain even on failure so a retry remembers acknowledged generations.
         failure.map_or(Ok(()), Err)
     }
 
+    async fn admit_upload(&self) -> crate::priority::UploadAdmission {
+        let permit = crate::priority::admit().await;
+        if permit.throttled {
+            self.counters
+                .tool_priority_uploads
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        permit
+    }
+
     async fn upload_chunk(&self, number: u64, debounce: Duration) -> Result<()> {
+        let _priority = self.admit_upload().await;
         // Fetch immutable baseline data before locking the overlay: a cold GET
         // must not block sandbox writes either.
         let mut bytes = self.chunk(number, false).await?.to_vec();
         let generation = {
-            let mut dirty = self.lock_dirty().await;
+            let mut dirty = self.lock_upload_dirty().await;
             if !dirty.pending.contains(&number)
                 || dirty.uploaded.contains_key(&number)
                 || dirty
@@ -483,7 +570,7 @@ impl VolumeDevice {
             .fetch_add(1, Ordering::Relaxed);
         let _guard = UploadGuard(&self.counters.uploads_in_flight);
         let result = self.store.put_chunk(&bytes).await?;
-        let mut dirty = self.lock_dirty().await;
+        let mut dirty = self.lock_upload_dirty().await;
         if dirty.generations.get(&number).copied().unwrap_or(0) == generation {
             dirty.uploaded.insert(number, result.hash);
         }
@@ -517,44 +604,6 @@ impl VolumeDevice {
                 .await?;
         }
         Ok(())
-    }
-
-    /// Hold writes across the snapshot and publication so journal fallback is a
-    /// single point in the block stream. On failure all changes remain pending.
-    pub(crate) async fn publish<F, Fut>(&self, commit: F) -> Result<Manifest>
-    where
-        F: FnOnce(swarmy_core::ManifestHeader) -> Fut,
-        Fut: Future<Output = Result<()>>,
-    {
-        let _writing = self.writing.write().await;
-        let _uploading = self.uploading.lock().await;
-        let pending = self.lock_dirty().await.pending_uploads();
-        for batch in pending.chunks(self.upload_concurrency.get()) {
-            self.upload_batch(batch, Duration::ZERO).await?;
-        }
-        let dirty = self.lock_dirty().await;
-        let mut builder = ManifestBuilder::new(self.store.inner.clone(), dirty.published.clone());
-        for &number in &dirty.pending {
-            builder.set_chunk(number, dirty.uploaded[&number])?;
-        }
-        drop(dirty);
-        let manifest = builder.build().await?;
-        commit(manifest.header().clone()).await?;
-        let mut dirty = self.lock_dirty().await;
-        self.uploads.record_referenced(
-            dirty
-                .pending
-                .iter()
-                .filter(|number| dirty.uploaded[number] != ContentHash::ZERO)
-                .count() as u64
-                * u64::from(CHUNK_SIZE),
-        );
-        dirty.published = manifest.clone();
-        dirty.pending.clear();
-        dirty.uploaded.clear();
-        // The original manifest remains the read baseline. Retain the overlay
-        // until detach; new attachments start from the committed manifest.
-        Ok(manifest)
     }
 
     async fn hash(&self, number: u64) -> Result<ContentHash> {
@@ -639,6 +688,8 @@ impl VolumeDevice {
 
 #[cfg(test)]
 mod upload_tests;
+
+mod boundary;
 
 #[cfg(test)]
 mod tests {

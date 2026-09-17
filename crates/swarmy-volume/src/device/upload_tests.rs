@@ -327,7 +327,21 @@ async fn uploaded_versions_do_not_take_space_in_later_batches() {
                 .unwrap();
         }
         objects.peak.store(0, Ordering::Relaxed);
-        upload(&device, publish).await.unwrap();
+        // Hold the requests until every slot is occupied. Preparation yields to
+        // foreground I/O, so a fixed 5 ms PUT delay is not an overlap barrier.
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *objects.gate.lock().unwrap() = Some(gate.clone());
+        let uploading = device.clone();
+        let task = tokio::spawn(async move { upload(&uploading, publish).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while objects.active.load(Ordering::Relaxed) != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        gate.add_permits(4);
+        task.await.unwrap().unwrap();
         assert_eq!(objects.peak.load(Ordering::Relaxed), 4);
         assert_eq!(objects.checks.lock().unwrap().values().sum::<usize>(), 20);
         assert_eq!(device.stats().uploads_in_flight, 0);
@@ -556,4 +570,191 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     let record = store.get_volume(volume).await.unwrap().unwrap();
     assert_eq!(record.head_manifest, committed.manifest_id);
     assert!(device.dirty.lock().await.pending.is_empty());
+}
+
+#[tokio::test]
+async fn boundary_overwrites_preserve_memory_and_spilled_generations() {
+    // One blocked upload leaves more than the 8 MiB copy budget awaiting upload.
+    let (dir, objects, device) = fixture(40, 1, Duration::ZERO).await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *objects.gate.lock().unwrap() = Some(gate.clone());
+    let publishing = device.clone();
+    let task = tokio::spawn(async move { publishing.publish(|_| async { Ok(()) }).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while objects.active.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    for number in 0..40 {
+        device
+            .write(number * u64::from(CHUNK_SIZE), &[99; 8192])
+            .await
+            .unwrap();
+    }
+    {
+        let dirty = device.dirty.lock().await;
+        let boundary = dirty.boundary.as_ref().unwrap();
+        assert_eq!(boundary.memory, 8 * 1024 * 1024);
+        assert!(boundary.spill.metadata().await.unwrap().len() > 0);
+    }
+    gate.add_permits(80);
+    let manifest = task.await.unwrap().unwrap();
+    let restored = VolumeDevice::open(
+        ChunkStore::new(objects.clone()),
+        manifest,
+        dir.path().join("restore-cache"),
+        dir.path().join("restore-dirty"),
+        0,
+    )
+    .await
+    .unwrap();
+    for number in 0..40_u8 {
+        let offset = u64::from(number) * u64::from(CHUNK_SIZE);
+        let expected = [vec![number + 1; 4096], vec![0; CHUNK_SIZE as usize - 4096]].concat();
+        assert_eq!(
+            blake3::hash(&restored.read(offset, CHUNK_SIZE as usize).await.unwrap()),
+            blake3::hash(&expected)
+        );
+        assert_eq!(device.read(offset, 8192).await.unwrap(), vec![99; 8192]);
+    }
+    assert_eq!(device.dirty.lock().await.pending.len(), 40);
+    device.publish(|_| async { Ok(()) }).await.unwrap();
+    assert!(!device.has_unpublished_changes().await);
+}
+
+#[tokio::test]
+async fn cancelled_boundary_is_abandoned_and_commit_does_not_block_writes() {
+    let (_dir, objects, device) = fixture(2, 1, Duration::ZERO).await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *objects.gate.lock().unwrap() = Some(gate.clone());
+    let publishing = device.clone();
+    let task = tokio::spawn(async move { publishing.publish(|_| async { Ok(()) }).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while objects.active.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    device
+        .write(u64::from(CHUNK_SIZE), &[77; 4096])
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    device
+        .write(u64::from(CHUNK_SIZE), &[88; 4096])
+        .await
+        .unwrap();
+    assert!(device.dirty.lock().await.boundary.is_none());
+    gate.add_permits(2);
+    device
+        .publish(|_| async {
+            // The metadata commit itself can stall without excluding live writes.
+            device.write(0, &[99; 4096]).await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(device.has_unpublished_changes().await);
+    assert_eq!(device.read(0, 4096).await.unwrap(), vec![99; 4096]);
+}
+
+#[tokio::test]
+async fn every_retained_boundary_matches_the_independent_write_model() {
+    let (dir, objects, device) = fixture(48, 4, Duration::ZERO).await;
+    let mut retained = Vec::new();
+    for round in 0..4_u8 {
+        let mut expected = Vec::new();
+        for number in 0..48_u8 {
+            let bytes = vec![number + round + 1; CHUNK_SIZE as usize];
+            device
+                .write(u64::from(number) * u64::from(CHUNK_SIZE), &bytes)
+                .await
+                .unwrap();
+            expected.push(blake3::hash(&bytes));
+        }
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *objects.gate.lock().unwrap() = Some(gate.clone());
+        let publishing = device.clone();
+        let task = tokio::spawn(async move { publishing.publish(|_| async { Ok(()) }).await });
+        // Wait for boundary capture, including rounds whose first chunks dedup.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while device.dirty.lock().await.boundary.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        for number in 0..48 {
+            device
+                .write(
+                    number * u64::from(CHUNK_SIZE),
+                    &vec![200 + round; CHUNK_SIZE as usize],
+                )
+                .await
+                .unwrap();
+        }
+        gate.add_permits(48);
+        retained.push((task.await.unwrap().unwrap(), expected));
+    }
+    for (index, (manifest, expected)) in retained.into_iter().enumerate() {
+        let restored = VolumeDevice::open(
+            ChunkStore::new(objects.clone()),
+            manifest,
+            dir.path().join(format!("model-cache-{index}")),
+            dir.path().join(format!("model-dirty-{index}")),
+            0,
+        )
+        .await
+        .unwrap();
+        for (number, hash) in expected.into_iter().enumerate() {
+            let bytes = restored
+                .read(number as u64 * u64::from(CHUNK_SIZE), CHUNK_SIZE as usize)
+                .await
+                .unwrap();
+            assert_eq!(
+                blake3::hash(&bytes),
+                hash,
+                "snapshot {index}, chunk {number}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn spill_failure_abandons_backup_without_rejecting_live_writes() {
+    let (dir, objects, device) = fixture(40, 1, Duration::ZERO).await;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *objects.gate.lock().unwrap() = Some(gate.clone());
+    let publishing = device.clone();
+    let task = tokio::spawn(async move {
+        publishing
+            .publish(|_| async { panic!("invalid boundary must not commit") })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while objects.active.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    device.dirty.lock().await.boundary.as_mut().unwrap().spill =
+        fs::File::open(dir.path().join("dirty/data")).await.unwrap();
+    for number in 0..40 {
+        device
+            .write(number * u64::from(CHUNK_SIZE), &[88; 4096])
+            .await
+            .unwrap();
+    }
+    gate.add_permits(40);
+    assert!(task.await.unwrap().is_err());
+    assert!(device.has_unpublished_changes().await);
+    assert_eq!(
+        device.read(39 * u64::from(CHUNK_SIZE), 4096).await.unwrap(),
+        vec![88; 4096]
+    );
 }
