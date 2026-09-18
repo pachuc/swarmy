@@ -117,6 +117,7 @@ pub async fn verify(
                 ExecRequest {
                     args: vec!["/bin/cat".into(), "/root/swarmy-lines".into()],
                     timeout_ms: 30_000,
+                    stdin: Vec::new(),
                 },
                 send
             ),

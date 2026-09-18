@@ -180,6 +180,7 @@ impl Store {
                 agent_id,
             }),
             computer_deleted: false,
+            plan: Vec::new(),
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
@@ -253,6 +254,12 @@ impl Store {
             }
         };
         write(trx, &self.session_image_key(id), &selected)?;
+        swarmy_core::UpdatePlanArguments {
+            plan: session.plan.clone(),
+        }
+        .validate()
+        .map_err(|_| StoreError::InvalidState)?;
+        write(trx, &self.session_plan_key(id), &session.plan)?;
         write(trx, &self.session_kind_key(id), &session.kind)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         write(trx, &self.session_idle_key(id), &now)?;
@@ -267,6 +274,7 @@ impl Store {
                 snapshot_seq: None,
                 kind: session.kind,
                 computer_deleted: false,
+                plan: Vec::new(),
             },
         )?;
         if session.state == SessionState::Runnable {
@@ -329,6 +337,7 @@ impl Store {
                 state: SessionState::Idle,
                 head_seq: 0,
                 snapshot_ref: None,
+                plan: Vec::new(),
             };
             self.create_session_in(&trx, &session, now, None).await?;
             record.main_session = Some(id);

@@ -459,6 +459,34 @@ impl Worker {
                             Err(error) => Err(error.to_string()),
                         }
                     }
+                    Some(_) if call.tool == "update_plan" => {
+                        self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
+                            .await;
+                        let event = {
+                            let token = lease.lock().await;
+                            self.store
+                                .complete_plan_tool(
+                                    id,
+                                    session.head_seq,
+                                    token.as_ref().context("lease released")?,
+                                    request_id,
+                                    &call,
+                                )
+                                .await?
+                        };
+                        session.head_seq = event.seq();
+                        if let Ok(arguments) =
+                            swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
+                        {
+                            session.plan = arguments.plan;
+                        }
+                        self.publish_events(id, std::slice::from_ref(&event))
+                            .await?;
+                        events.push(event);
+                        self.tool_stage(id, turn, TurnStage::ToolCompleted, request_id)
+                            .await;
+                        continue;
+                    }
                     Some(tool) => {
                         self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
                             .await;

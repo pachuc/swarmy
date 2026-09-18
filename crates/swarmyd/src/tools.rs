@@ -154,6 +154,8 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
                 .tool_result()
             } else if exit.exit_code != 0 {
                 ToolResult::Error { error: stderr }
+            } else if arguments.is_file_tool() {
+                serde_json::from_str(&stdout)?
             } else {
                 completed(arguments.name(), &serde_json::from_str(&stdout)?)
             }
@@ -182,10 +184,28 @@ fn completed(name: &str, value: &serde_json::Value) -> ToolResult {
 }
 
 fn request(arguments: &SandboxArguments, epoch: u64) -> ExecRequest {
+    if arguments.is_file_tool() {
+        // Install the embedded version on the agent disk, including older images.
+        // JSON travels on stdin so large writes do not hit the argv size limit.
+        return ExecRequest {
+            args: vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                format!(
+                    "import pathlib, runpy; p = pathlib.Path('/usr/local/lib/swarmy/files.py'); p.parent.mkdir(parents=True, exist_ok=True); p.write_text({}); runpy.run_path(str(p), run_name='__main__')",
+                    serde_json::json!(include_str!("files.py"))
+                ),
+                arguments.name().into(),
+            ],
+            stdin: arguments.parameters().to_string().into_bytes(),
+            timeout_ms: 120_000,
+        };
+    }
     if let SandboxArguments::Bash(arguments) = arguments {
         return ExecRequest {
             args: vec!["/bin/bash".into(), "-c".into(), arguments.command.clone()],
             timeout_ms: arguments.timeout_ms,
+            stdin: Vec::new(),
         };
     }
     let (id, command) = match arguments {
@@ -209,6 +229,7 @@ fn request(arguments: &SandboxArguments, epoch: u64) -> ExecRequest {
             command,
         ],
         timeout_ms: 10_000,
+        stdin: Vec::new(),
     }
 }
 

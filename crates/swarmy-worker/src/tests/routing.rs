@@ -32,6 +32,10 @@ impl Fixture {
         let prefix = format!("routing_{}", Ulid::generate());
         let mut config = config(cluster.clone(), url.clone(), &prefix, Arc::default());
         config.harness.tools.register(Box::new(swarmy_tools::Bash));
+        config
+            .harness
+            .tools
+            .register(Box::new(swarmy_tools::UpdatePlan));
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
         let blobs = Arc::new(MemoryBlobStore::default());
@@ -103,6 +107,7 @@ impl Fixture {
                     snapshot_ref: None,
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
+                    plan: Vec::new(),
                 },
                 Timestamp::now(),
                 "routing:test",
@@ -860,4 +865,51 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
         Err(StoreError::LeaseMismatch)
     ));
     f.cleanup().await;
+}
+
+#[tokio::test]
+async fn update_plan_runs_in_store_without_placing_a_computer() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let id = fixture.session().await;
+    let plan = json!([{"step":"Implement tools", "status":"in_progress"}]);
+    fixture
+        .store
+        .append_events(
+            id,
+            1,
+            &[Event::InferenceCompleted {
+                seq: 0,
+                request_id: RequestId::for_step(id, 2),
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts: vec![Part::ToolCall {
+                        call_id: ToolCallId("plan".into()),
+                        tool: "update_plan".into(),
+                        input: json!({"plan":plan}),
+                    }],
+                },
+            }],
+        )
+        .await
+        .unwrap();
+    fixture.step(id).await;
+    let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(session.plan).unwrap(), plan);
+    assert!(
+        fixture
+            .store
+            .get_by_agent(fixture.agent)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let events = fixture.store.read_events(id, 0, 64).await.unwrap();
+    assert!(events.iter().any(|event| matches!(event,
+        Event::ToolCallCompleted { result: ToolResult::Completed { title, output, .. }, .. }
+        if title == "update_plan" && serde_json::from_str::<Value>(output).unwrap() == plan
+    )));
+    fixture.cleanup().await;
 }
