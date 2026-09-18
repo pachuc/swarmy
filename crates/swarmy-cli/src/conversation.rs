@@ -23,6 +23,10 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub enum TranscriptEvent {
     UserMessage(Message),
     SystemMessage(Message),
+    SessionChanged {
+        previous: SessionId,
+        current: SessionId,
+    },
     AssistantTextDelta {
         index: usize,
         text: String,
@@ -194,6 +198,9 @@ impl Conversation {
     }
 
     pub async fn send(&mut self, text: String) -> Result<()> {
+        if self.agent_name.is_some() {
+            self.catch_up().await?;
+        }
         ensure!(!text.trim().is_empty(), "message is empty");
         let turn = MessageId::from_ulid(Ulid::generate());
         self.turn = Some(ClientTurn::new(turn));
@@ -328,6 +335,9 @@ impl Conversation {
                 }
                 event = self.events.next(), if self.events_open => {
                     match event {
+                        Some(Ok(Event::StateChanged { to: SessionState::Completed, .. })) => {
+                            self.needs_catch_up = true;
+                        }
                         Some(Ok(event)) if event.seq() == self.after + 1 => {
                             let idle = matches!(event, Event::StateChanged { to: SessionState::Idle, .. })
                                 && event.seq() > self.submitted_head;
@@ -368,37 +378,70 @@ impl Conversation {
     }
 
     async fn catch_up(&mut self) -> Result<()> {
-        let session = self
-            .store
-            .fetch_session(self.id)
-            .await?
-            .context("session disappeared")?;
-        while self.after < session.head_seq {
-            let events = self
+        loop {
+            let session = self
                 .store
-                .read_events(self.id, self.after, MAX_SCAN_LIMIT)
-                .await?;
-            ensure!(
-                !events.is_empty(),
-                "session log ended before its recorded head"
-            );
-            for event in events
-                .into_iter()
-                .take_while(|event| event.seq() <= session.head_seq)
-            {
-                self.record(event);
+                .fetch_session(self.id)
+                .await?
+                .context("session disappeared")?;
+            while self.after < session.head_seq {
+                let events = self
+                    .store
+                    .read_events(self.id, self.after, MAX_SCAN_LIMIT)
+                    .await?;
+                ensure!(
+                    !events.is_empty(),
+                    "session log ended before its recorded head"
+                );
+                for event in events
+                    .into_iter()
+                    .take_while(|event| event.seq() <= session.head_seq)
+                {
+                    self.record(event);
+                }
             }
+            if session.state == SessionState::Completed
+                && let Some(current) = self.store.next_session(self.id).await?
+            {
+                let events = self
+                    .bus
+                    .subscribe_live(LiveFeed::SessionEvents(current))
+                    .await?;
+                let deltas = self
+                    .bus
+                    .subscribe_live(LiveFeed::ModelDeltas(current))
+                    .await?;
+                let previous = self.id;
+                self.id = current;
+                self.events = events;
+                self.deltas = deltas;
+                self.events_open = true;
+                self.deltas_open = true;
+                self.after = 0;
+                self.submitted_head = 0;
+                self.state = None;
+                self.replay = Replay::default();
+                self.turn = None;
+                self.pending.retain(|event| {
+                    !matches!(
+                        event,
+                        Notification::Transcript(TranscriptEvent::State(SessionState::Completed))
+                    )
+                });
+                self.emit(TranscriptEvent::SessionChanged { previous, current });
+                continue;
+            }
+            if session.state == SessionState::Idle
+                && session.head_seq >= self.submitted_head
+                && !self.replay.pending_user
+            {
+                self.idle();
+            } else if self.state != Some(session.state) {
+                self.emit(TranscriptEvent::State(session.state));
+                self.state = Some(session.state);
+            }
+            return Ok(());
         }
-        if session.state == SessionState::Idle
-            && session.head_seq >= self.submitted_head
-            && !self.replay.pending_user
-        {
-            self.idle();
-        } else if self.state != Some(session.state) {
-            self.emit(TranscriptEvent::State(session.state));
-            self.state = Some(session.state);
-        }
-        Ok(())
     }
 
     fn record(&mut self, event: Event) {

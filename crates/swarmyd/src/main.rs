@@ -1,4 +1,5 @@
 mod hosting;
+mod memory;
 mod service;
 mod tools;
 
@@ -82,10 +83,12 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut clients = JoinSet::new();
     let (shutdown, _) = tokio::sync::watch::channel(false);
+    let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
             tokio::select! {
+                result = &mut memory_server => { result??; break; }
                 result = &mut tool_server => { result??; break; }
                 connection = listener.accept() => {
                     let (socket, _) = connection?;
@@ -107,6 +110,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
         }
         Ok(())
     }.await;
+    memory_server.abort();
     tool_server.abort();
     if !tool_server.is_finished() {
         let _ = tool_server.await;

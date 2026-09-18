@@ -97,6 +97,56 @@ impl RuncRuntime {
         self.root.join("bundles").join(id.to_string())
     }
 
+    /// Fingerprint regular memory files without a sandbox exec. The published
+    /// manifest alone cannot detect writes still buffered in the mounted disk.
+    /// # Errors
+    /// Rejects paths outside the computer and returns metadata failures.
+    pub async fn memory_fingerprint(&self, agent: AgentId, directory: &str) -> Result<u64> {
+        use std::{
+            hash::{Hash, Hasher},
+            os::unix::fs::MetadataExt,
+        };
+        let _running = self.running(agent).await?;
+        let relative = std::path::Path::new(directory)
+            .strip_prefix("/")
+            .map_err(|_| Error::State)?;
+        if relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(Error::State);
+        }
+        let mut path = self.bundle(agent).join("rootfs").canonicalize()?;
+        for part in relative.components() {
+            path.push(part);
+            match path.symlink_metadata() {
+                Ok(metadata) if metadata.file_type().is_symlink() => return Err(Error::State),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for entry in entries {
+            let meta = entry.path().symlink_metadata()?;
+            if meta.is_file() {
+                entry.file_name().hash(&mut hash);
+                (
+                    meta.ino(),
+                    meta.len(),
+                    meta.mtime(),
+                    meta.mtime_nsec(),
+                    meta.ctime(),
+                    meta.ctime_nsec(),
+                )
+                    .hash(&mut hash);
+            }
+        }
+        Ok(hash.finish())
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new("runc");
         command.arg("--root").arg(self.root.join("runc"));

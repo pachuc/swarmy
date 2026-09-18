@@ -110,3 +110,6 @@ impl Harness {
         }
     }
 }
+
+/// A durable summary request is recognizable without changing stored job encodings.
+pub const SUMMARY_PROMPT: &str = "Summarize this conversation for a fresh session. Return only a JSON object with four string fields: goals, state_of_work, open_questions, facts_to_keep. Preserve concrete paths, decisions, unfinished work, and user constraints. Do not continue the task or call tools.";

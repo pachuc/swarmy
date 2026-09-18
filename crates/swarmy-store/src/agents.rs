@@ -456,6 +456,111 @@ impl Store {
         .await
     }
 
+    /// Replace a leased main session with a fresh idle session containing a summary.
+    /// Archival, both links, opening context, and the pointer commit together.
+    /// # Errors
+    /// Rejects stale heads or leases, a changed main pointer, and storage failures.
+    pub async fn summarize_main_session(
+        &self,
+        old: SessionId,
+        expected_head: u64,
+        lease: &swarmy_core::Lease,
+        opening: &swarmy_core::Message,
+    ) -> Result<(SessionId, swarmy_core::Event)> {
+        if opening.role != swarmy_core::MessageRole::System {
+            return Err(StoreError::InvalidState);
+        }
+        let id = SessionId::from_ulid(ulid::Ulid::generate());
+        let event = swarmy_core::Event::MessageAppended {
+            seq: 1,
+            message: opening.clone(),
+        };
+        let opening = self.prepare(&event).await?;
+        let head = expected_head
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        let archived = swarmy_core::Event::StateChanged {
+            seq: head,
+            from: SessionState::Leased,
+            to: SessionState::Completed,
+        };
+        let archived_value = self.prepare(&archived).await?;
+        self.transaction(|trx| {
+            let (opening, archived_value) = (&opening, &archived_value);
+            async move {
+                let now = Timestamp::now();
+                self.check_worker_lease(&trx, old, lease, now).await?;
+                let mut previous = self.session(&trx, old).await?;
+                if previous.head_seq != expected_head {
+                    return Err(StoreError::StaleSequence {
+                        expected: expected_head,
+                        actual: previous.head_seq,
+                    });
+                }
+                let mut agent = self
+                    .read_agent(&trx, previous.agent_id)
+                    .await?
+                    .ok_or(StoreError::AgentMissing)?;
+                if agent.main_session != Some(old) {
+                    return Err(StoreError::InvalidMainSession);
+                }
+                let session = SessionRecord {
+                    session_id: id,
+                    agent_id: agent.agent_id,
+                    kind: SessionKind::Named {
+                        agent_id: agent.agent_id,
+                    },
+                    computer_deleted: false,
+                    state: SessionState::Idle,
+                    head_seq: 0,
+                    snapshot_ref: None,
+                    plan: Vec::new(),
+                };
+                self.create_session_in(&trx, &session, now, None).await?;
+                let mut created = self.session(&trx, id).await?;
+                created.head_seq = 1;
+                write(&trx, &self.session_key(id), &created)?;
+                trx.set(&self.event_space(id).pack(&(1_u64,)), opening);
+                trx.set(&self.event_space(old).pack(&(head,)), archived_value);
+                previous.head_seq = head;
+                self.transition(&trx, previous, SessionState::Completed, now)
+                    .await?;
+                write(&trx, &self.session_link_key("next", old), &id)?;
+                write(&trx, &self.session_link_key("previous", id), &old)?;
+                agent.main_session = Some(id);
+                write(&trx, &self.agent_key(agent.agent_id), &agent)
+            }
+        })
+        .await?;
+        Ok((id, archived))
+    }
+
+    fn session_link_key(&self, direction: &str, id: SessionId) -> Vec<u8> {
+        self.root.pack(&(
+            "session_chain",
+            direction,
+            id.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    /// The successor of an archived main session, if it has been summarized.
+    /// # Errors
+    /// Returns database or decoding failures.
+    pub async fn next_session(&self, id: SessionId) -> Result<Option<SessionId>> {
+        self.transaction(|trx| async move { read(&trx, &self.session_link_key("next", id)).await })
+            .await
+    }
+
+    /// The conversation whose summary opened this session.
+    /// # Errors
+    /// Returns database or decoding failures.
+    pub async fn previous_session(&self, id: SessionId) -> Result<Option<SessionId>> {
+        self.transaction(
+            |trx| async move { read(&trx, &self.session_link_key("previous", id)).await },
+        )
+        .await
+    }
+
     pub(crate) async fn read_agent(
         &self,
         trx: &Transaction,

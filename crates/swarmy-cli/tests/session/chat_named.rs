@@ -199,3 +199,97 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn open_chat_follows_a_summarized_main_with_a_notice() {
+    run(|fixture| async move {
+        let agent = fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
+        let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
+        chat.ready().await;
+        let old = fixture.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session.unwrap();
+        fixture.store.wake_session(old, Timestamp::now()).await.unwrap();
+        let (lease, session, _) = fixture.store.claim_step(old, LeaseOwnerId::from_ulid(Ulid::generate()), Timestamp::now().checked_add(Duration::from_secs(30)).unwrap()).await.unwrap();
+        let (new, event) = fixture.store.summarize_main_session(old, session.head_seq, &lease, &Message {
+            id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::System,
+            parts: vec![Part::Text { text: "Goals: fix parser. State: tests pass. Open questions: release date. Facts: project path.".into() }],
+        }).await.unwrap();
+        fixture.bus.publish_live(LiveFeed::SessionEvents(old), &event).await.unwrap();
+        let screen = chat.screen(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send")).await;
+        assert!(screen.contains("archived;"));
+        chat.type_text("Continue the work\r");
+        timeout(WAIT, async {
+            loop {
+                if fixture.store.read_events(new, 0, 64).await.unwrap().iter().any(|event| matches!(event,
+                    Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
+                sleep(Duration::from_millis(25)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(fixture.store.fetch_session(old).await.unwrap().unwrap().state, SessionState::Completed);
+        let listing = fixture.output(&["session", "list", "--json"]).await;
+        assert!(listing.status.success());
+        let listing = String::from_utf8(listing.stdout).unwrap();
+        let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["session_id"] == old.to_string()).unwrap();
+        assert_eq!(archived["archived"], true);
+        assert_eq!(archived["next_session"], new.to_string());
+        assert!(fixture.output(&["session", "show", &old.to_string(), "--json"]).await.status.success());
+        chat.type_text("\x1b");
+        chat.exit(true).await;
+    }).await;
+}
+
+#[tokio::test]
+async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
+    if std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .unwrap()
+        .stdout
+        != b"0\n"
+    {
+        eprintln!("skipping root memory test: run the built test with sudo");
+        return;
+    }
+    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
+        eprintln!("skipping root memory test: SWARMY_TEST_IMAGE is unset");
+        return;
+    };
+    run(|fixture| async move {
+        let (services, _node) = root_services(&fixture, &image, r#"{
+            "request_by_prompt": {
+                "save": {"steps": 2, "tool_steps": [0], "bash_command": "mkdir -p /home/agent/memory; printf 'Remember: the launch code is violet.' > /home/agent/memory/a.txt; head -c 40000 /dev/zero | tr '\\0' x > /home/agent/memory/z.txt", "final_answer": "Saved memory"},
+                "remember": {"steps": 1, "tool_steps": [], "final_answer": "Read memory"},
+                "update": {"steps": 2, "tool_steps": [0], "bash_command": "printf 'Remember: the launch code is orange.' > /home/agent/memory/a.txt", "final_answer": "Updated memory"}
+            }
+        }"#).await;
+        fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
+        let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
+        chat.ready().await;
+        let id = session_id(&fixture).await;
+        chat.type_text("save\r");
+        bash_result(&fixture, id, &services).await;
+        chat.screen(|screen| screen.contains("Saved memory") && screen.contains("Enter: send")).await;
+        let agent = fixture.store.fetch_session(id).await.unwrap().unwrap().agent_id;
+        let volume = swarmy_core::VolumeId::from_ulid(agent.as_ulid());
+        let manifest = fixture.store.get_volume(volume).await.unwrap().unwrap().head_manifest;
+        let memory_reads = || std::fs::read_to_string(services.files.path().join("node.log")).unwrap().matches("reading agent memory with sandbox exec").count();
+        assert_eq!(memory_reads(), 1);
+        for (prompt, answer, fact) in [("remember", "Read memory", "violet"), ("update", "Updated memory", "orange")] {
+            let before = fixture.store.fetch_session(id).await.unwrap().unwrap().head_seq;
+            chat.type_text(&format!("{prompt}\r"));
+            chat.screen(|screen| screen.contains(answer) && screen.contains("Enter: send")).await;
+            let events = fixture.store.read_events(id, before, 64).await.unwrap();
+            let request = events.iter().rev().find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. } => Some(*request_id), _ => None,
+            }).unwrap();
+            let job = fixture.store.get_inference_input::<swarmy_llm::InferenceJob>(request).await.unwrap().unwrap();
+            assert!(job.request.system_prompt.contains(&format!("launch code is {fact}")));
+            assert!(job.request.system_prompt.contains("Agent memory truncated at memory_max_bytes"));
+            assert!(job.request.system_prompt.find("a.txt").unwrap() < job.request.system_prompt.find("z.txt").unwrap());
+            assert!(job.request.system_prompt.len() < 34000);
+            assert_eq!(memory_reads(), if prompt == "remember" { 1 } else { 2 });
+        }
+        assert_eq!(fixture.store.get_volume(volume).await.unwrap().unwrap().head_manifest, manifest, "memory updates must not require a checkpoint");
+        chat.type_text("\x1b");
+        chat.exit(true).await;
+    }).await;
+}

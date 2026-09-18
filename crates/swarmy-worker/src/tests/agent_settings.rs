@@ -108,7 +108,13 @@ impl Fixture {
 }
 
 fn assert_request(job: &InferenceJob, prompt: &str, model: &str, effort: ReasoningEffort) {
-    assert_eq!(job.request.system_prompt, prompt);
+    // A named agent's prompt is followed by its memory block; the configured prompt
+    // must still lead, with the memory directory placeholder substituted.
+    assert!(
+        job.request.system_prompt.starts_with(prompt),
+        "prompt {:?} does not start with {prompt:?}",
+        job.request.system_prompt
+    );
     assert_eq!(job.request.settings.model, model);
     assert_eq!(job.request.settings.reasoning_effort, Some(effort));
     assert_eq!(job.request.messages.len(), 1);

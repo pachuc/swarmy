@@ -64,6 +64,11 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                         .is_some_and(|agent| agent.main_session == Some(session.session_id));
                     let name = agent.map(|agent| agent.name);
                     let mut value = serde_json::to_value(&session)?;
+                    let successor = store.next_session(session.session_id).await?;
+                    value["archived"] = successor.is_some().into();
+                    value["next_session"] = serde_json::to_value(successor)?;
+                    value["previous_session"] =
+                        serde_json::to_value(store.previous_session(session.session_id).await?)?;
                     value["main"] = main.into();
                     value["agent_name"] = serde_json::to_value(&name)?;
                     let kind = match session.kind {
@@ -73,12 +78,13 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     crate::vol::output(
                         &value,
                         &format!(
-                            "{} {:?} kind={kind} agent={} head={} computer_deleted={} main={main}",
+                            "{} {:?} kind={kind} agent={} head={} computer_deleted={} archived={} main={main}",
                             session.session_id,
                             session.state,
                             name.as_deref().unwrap_or("-"),
                             session.head_seq,
-                            session.computer_deleted
+                            session.computer_deleted,
+                            successor.is_some()
                         ),
                         json,
                     )?;
@@ -141,7 +147,6 @@ pub async fn chat_json(
 }
 
 async fn until_idle(conversation: &mut Conversation, json: bool) -> Result<()> {
-    let id = conversation.id;
     let mut output = Output::new(json);
     let mut idle_event = false;
     loop {
@@ -176,10 +181,22 @@ async fn until_idle(conversation: &mut Conversation, json: bool) -> Result<()> {
                 if json && !idle_event {
                     println!(
                         "{}",
-                        serde_json::json!({"event": "session_idle", "session_id": id})
+                        serde_json::json!({"event": "session_idle", "session_id": conversation.id})
                     );
                 }
                 break;
+            }
+            Notification::Transcript(TranscriptEvent::SessionChanged { previous, current }) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"event": "session_summarized", "previous_session_id": previous, "session_id": current})
+                    );
+                } else {
+                    eprintln!(
+                        "Conversation summarized. Session {previous} archived; continuing in {current}."
+                    );
+                }
             }
             Notification::Transcript(TranscriptEvent::State(SessionState::Completed)) => break,
             Notification::Transcript(_) => {}

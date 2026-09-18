@@ -89,6 +89,15 @@ pub struct Lease {
     pub seq: u64,
 }
 
+/// Opening context preserved when a main conversation is summarized.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ConversationSummary {
+    pub goals: String,
+    pub state_of_work: String,
+    pub open_questions: String,
+    pub facts_to_keep: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

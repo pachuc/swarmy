@@ -24,6 +24,7 @@
 //! # }
 //! ```
 
+mod memory;
 mod nudge;
 pub mod subjects;
 mod turn;
