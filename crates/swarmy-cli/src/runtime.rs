@@ -72,18 +72,24 @@ enum Command {
         /// Base image in NAME:TAG form for this session's disk.
         #[arg(long)]
         image: Option<String>,
-        /// Open a new session on a named agent (name or agent id)
+        /// Resume the main session on a named agent (name or agent id)
         #[arg(long, conflicts_with = "image")]
         agent: Option<String>,
+        /// Create a side conversation on the named agent
+        #[arg(long, requires = "agent")]
+        new: bool,
     },
     Chat {
         session_id: Option<ulid::Ulid>,
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
         image: Option<String>,
-        /// Open a new session on a named agent (name or agent id)
+        /// Resume the main session on a named agent (name or agent id)
         #[arg(long, conflicts_with_all = ["image", "session_id"])]
         agent: Option<String>,
+        /// Create a side conversation on the named agent
+        #[arg(long, requires = "agent")]
+        new: bool,
     },
     Session {
         #[command(subcommand)]
@@ -123,17 +129,19 @@ fn main() -> anyhow::Result<()> {
                 prompt,
                 image,
                 agent,
-            } => session::run(prompt, image, agent, cli.json).await,
+                new,
+            } => session::run(prompt, image, agent, new, cli.json).await,
             Command::Chat {
                 session_id,
                 image,
                 agent,
+                new,
             } => {
                 let id = session_id.map(swarmy_core::SessionId::from_ulid);
                 if cli.json {
-                    session::chat_json(id, image, agent).await
+                    session::chat_json(id, image, agent, new).await
                 } else {
-                    chat::run(id, image, agent).await
+                    chat::run(id, image, agent, new).await
                 }
             }
             Command::Session { command } => session::inspect(command, cli.json).await,

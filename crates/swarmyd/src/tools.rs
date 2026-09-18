@@ -140,6 +140,8 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
                 }
             } else if exit.exit_code != 0 {
                 ToolResult::Error { error: stderr }
+            } else if arguments.is_file_tool() {
+                serde_json::from_str(&stdout)?
             } else {
                 let mut value: serde_json::Value = serde_json::from_str(&stdout)?;
                 if matches!(arguments, SandboxArguments::Bash(_)) {
@@ -185,6 +187,23 @@ fn completed(name: &str, value: &serde_json::Value) -> ToolResult {
 }
 
 fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecRequest {
+    if arguments.is_file_tool() {
+        // Install the embedded version on the agent disk, including older images.
+        // JSON travels on stdin so large writes do not hit the argv size limit.
+        return ExecRequest {
+            args: vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                format!(
+                    "import pathlib, runpy; p = pathlib.Path('/usr/local/lib/swarmy/files.py'); p.parent.mkdir(parents=True, exist_ok=True); p.write_text({}); runpy.run_path(str(p), run_name='__main__')",
+                    serde_json::json!(include_str!("files.py"))
+                ),
+                arguments.name().into(),
+            ],
+            stdin: arguments.parameters().to_string().into_bytes(),
+            timeout_ms: 120_000,
+        };
+    }
     if let SandboxArguments::WebFetch(arguments) = arguments {
         return ExecRequest {
             args: vec![
@@ -194,6 +213,7 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
                 arguments.url.clone(),
             ],
             timeout_ms: 35_000,
+            stdin: Vec::new(),
         };
     }
     let new_id = || swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
@@ -230,6 +250,7 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
         // The helper enforces the command's wait limit. This guard is only for
         // a stalled helper; detached managed commands remain in their own group.
         timeout_ms: wait_ms + 10_000,
+        stdin: Vec::new(),
     }
 }
 

@@ -205,6 +205,7 @@ mod tests {
             snapshot_ref: None,
             kind: swarmy_core::SessionKind::Ephemeral,
             computer_deleted: false,
+            plan: Vec::new(),
         };
         let mut events = vec![
             Event::InferenceRequested {

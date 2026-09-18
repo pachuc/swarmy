@@ -159,6 +159,7 @@ impl Fixture {
                     snapshot_ref: None,
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
+                    plan: Vec::new(),
                 },
                 now,
                 settings.session_image(None).unwrap(),

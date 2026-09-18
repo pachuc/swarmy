@@ -158,6 +158,7 @@ impl Fixture {
                     snapshot_ref: None,
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
+                    plan: Vec::new(),
                 },
                 wake_at,
                 image_fixture::image(&self.store).await,

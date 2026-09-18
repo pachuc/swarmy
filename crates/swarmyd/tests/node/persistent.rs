@@ -42,6 +42,7 @@ async fn dispatch_arguments(
         snapshot_ref: None,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
+        plan: Vec::new(),
     };
     let id = session.session_id;
     if store.get_agent(agent).await.unwrap().is_some() {
@@ -956,4 +957,74 @@ async fn wait_status(store: &Store, agent: AgentId, holder: Option<SessionId>, q
     })
     .await
     .expect("holder or queue depth was not reported");
+}
+
+pub(super) async fn file_tools(node: &Node, store: &Store, bus: &Bus) {
+    use serde_json::json;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let path = "/tmp/swarmy-file-tools/nested/text.txt";
+    for (name, arguments, expected) in [
+        (
+            "write",
+            json!({"path":path,"content":"first\nsecond\n"}),
+            "Wrote",
+        ),
+        ("read", json!({"path":path,"limit":1}), "offset=2"),
+        (
+            "edit",
+            json!({"path":path,"old_string":"second","new_string":"changed"}),
+            "+changed",
+        ),
+        (
+            "glob",
+            json!({"path":"/tmp/swarmy-file-tools","pattern":"**/*.txt"}),
+            path,
+        ),
+        (
+            "grep",
+            json!({"path":"/tmp/swarmy-file-tools","pattern":"changed"}),
+            "text.txt:2:changed",
+        ),
+        ("ls", json!({"path":"/tmp/swarmy-file-tools"}), "nested/"),
+    ] {
+        let job = dispatch_arguments(
+            store,
+            bus,
+            node.id,
+            agent,
+            swarmy_core::SandboxArguments::parse(name, arguments).unwrap(),
+        )
+        .await;
+        let result = tool_result(store, &job).await;
+        let ToolResult::Completed { output, .. } = result else {
+            panic!("{name}: {result:?}");
+        };
+        assert!(output.contains(expected), "{name}: {output}");
+    }
+    // Exercise stdin beyond Linux's per-argument limit through the real exec path.
+    let content = "literal $(false) `false` ' \" \\ \n".repeat(6000);
+    let job = dispatch_arguments(
+        store,
+        bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::parse("write", json!({"path":path,"content":content}))
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(
+        tool_result(store, &job).await,
+        ToolResult::Completed { .. }
+    ));
+    let file = node
+        .root
+        .path()
+        .join(".swarmy/node/bundles")
+        .join(agent.to_string())
+        .join("rootfs")
+        .join(path.trim_start_matches('/'));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), content);
+    eprintln!(
+        "file tools passed: all six tools ran in a container on the agent disk, including a large stdin write"
+    );
 }

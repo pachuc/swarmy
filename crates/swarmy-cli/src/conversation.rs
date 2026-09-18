@@ -69,9 +69,15 @@ impl ClientTurn {
     }
 }
 
+pub enum Opened {
+    Created,
+    Resumed,
+}
+
 pub struct Conversation {
     pub id: SessionId,
     pub agent_name: Option<String>,
+    pub opened: Opened,
     turn: Option<ClientTurn>,
     store: Store,
     bus: Bus,
@@ -94,11 +100,13 @@ impl Conversation {
         id: Option<SessionId>,
         image: Option<&str>,
         agent: Option<&str>,
+        new: bool,
     ) -> Result<Self> {
         ensure!(
             agent.is_none() || (image.is_none() && id.is_none()),
             "--agent cannot be combined with --image or a session id"
         );
+        ensure!(!new || agent.is_some(), "--new requires --agent");
         let settings = swarmy_config::Settings::load()?.settings;
         let image = if id.is_none() && agent.is_none() {
             Some(settings.session_image(image)?)
@@ -107,26 +115,32 @@ impl Conversation {
         };
         let bus = bus().await?;
         let store = store().await?;
-        let session = if let Some(id) = id {
-            store
-                .fetch_session(id)
-                .await?
-                .context("session not found")?
+        let (id, created) = if let Some(id) = id {
+            (id, false)
         } else {
             let agent = if let Some(name) = agent {
                 Some(crate::agent::resolve(&store, name).await?.agent_id)
             } else {
                 None
             };
-            store
-                .create_session_for_agent(
-                    SessionId::from_ulid(Ulid::generate()),
-                    agent,
-                    image,
-                    Timestamp::now(),
-                )
-                .await?
+            if let Some(agent) = agent.filter(|_| !new) {
+                store.open_main_session(agent, Timestamp::now()).await?
+            } else {
+                let session = store
+                    .create_session_for_agent(
+                        SessionId::from_ulid(Ulid::generate()),
+                        agent,
+                        image,
+                        Timestamp::now(),
+                    )
+                    .await?;
+                (session.session_id, true)
+            }
         };
+        let session = store
+            .fetch_session(id)
+            .await?
+            .context("session not found")?;
         let id = session.session_id;
         let agent_name = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             Some(store.get_agent(session.agent_id).await?.map_or_else(
@@ -147,6 +161,11 @@ impl Conversation {
         let mut conversation = Self {
             id,
             agent_name,
+            opened: if created {
+                Opened::Created
+            } else {
+                Opened::Resumed
+            },
             turn: None,
             store,
             bus,

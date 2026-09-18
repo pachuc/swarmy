@@ -1,5 +1,5 @@
 use super::*;
-use swarmy_core::SessionKind;
+use swarmy_core::{AgentRecord, AgentSettings, ReasoningEffort, SessionKind};
 
 #[tokio::test]
 async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
@@ -124,9 +124,10 @@ async fn assert_named_session_pin(
             .unwrap()
             .contains(&agent.image.manifest_id)
     );
+    store.set_main_session(agent.agent_id, id).await.unwrap();
     assert!(matches!(
         store.close_session(id, timestamp(1)).await,
-        Err(StoreError::NamedSessionClose)
+        Err(StoreError::MainSessionClose)
     ));
     assert_eq!(
         store
@@ -281,5 +282,440 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
                 .computer_deleted
         );
     }
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn agent_inference_settings_create_and_independent_updates() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = image_fixture::image(store).await;
+    let settings = AgentSettings {
+        system_prompt: Some("  Review carefully.\n".into()),
+        model: Some("agent-model".into()),
+        reasoning_effort: Some(ReasoningEffort::High),
+    };
+    let mut expected = store
+        .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
+        .await
+        .unwrap();
+    assert_eq!(expected.system_prompt, settings.system_prompt);
+    assert_eq!(expected.model, settings.model);
+    assert_eq!(expected.reasoning_effort, settings.reasoning_effort);
+    assert_eq!(
+        store.get_agent(expected.agent_id).await.unwrap(),
+        Some(expected.clone())
+    );
+    for patch in [
+        AgentSettings {
+            system_prompt: Some(String::new()),
+            ..Default::default()
+        },
+        AgentSettings {
+            model: Some("other-model".into()),
+            ..Default::default()
+        },
+        AgentSettings {
+            reasoning_effort: Some(ReasoningEffort::None),
+            ..Default::default()
+        },
+    ] {
+        if let Some(prompt) = &patch.system_prompt {
+            expected.system_prompt = Some(prompt.clone());
+        }
+        if let Some(model) = &patch.model {
+            expected.model = Some(model.clone());
+        }
+        if let Some(effort) = patch.reasoning_effort {
+            expected.reasoning_effort = Some(effort);
+        }
+        assert_eq!(
+            store.set_agent(expected.agent_id, &patch).await.unwrap(),
+            expected
+        );
+        assert_eq!(
+            store.get_agent_by_name("custom").await.unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            store.list_agents(None, 64).await.unwrap(),
+            [expected.clone()]
+        );
+    }
+    concurrent_settings_and_rejected_updates(store, expected, image).await;
+    test.cleanup().await;
+}
+
+async fn concurrent_settings_and_rejected_updates(
+    store: &Store,
+    mut expected: AgentRecord,
+    image: &str,
+) {
+    // Transaction retries must preserve independent concurrent changes.
+    let prompt = AgentSettings {
+        system_prompt: Some("concurrent prompt".into()),
+        ..Default::default()
+    };
+    let model = AgentSettings {
+        model: Some("concurrent model".into()),
+        ..Default::default()
+    };
+    let (a, b) = tokio::join!(
+        store.set_agent(expected.agent_id, &prompt),
+        store.set_agent(expected.agent_id, &model)
+    );
+    a.unwrap();
+    b.unwrap();
+    expected.system_prompt = prompt.system_prompt;
+    expected.model = model.model;
+    assert_eq!(
+        store.get_agent(expected.agent_id).await.unwrap(),
+        Some(expected.clone())
+    );
+    let oversized = AgentSettings {
+        system_prompt: Some("x".repeat(100_000)),
+        ..Default::default()
+    };
+    assert!(matches!(
+        store.set_agent(expected.agent_id, &oversized).await,
+        Err(StoreError::TooLarge)
+    ));
+    assert_eq!(
+        store.get_agent(expected.agent_id).await.unwrap(),
+        Some(expected.clone())
+    );
+    assert!(matches!(
+        store
+            .create_agent_with_settings("oversized", image, "", &oversized, timestamp(0))
+            .await,
+        Err(StoreError::TooLarge)
+    ));
+    assert!(
+        store
+            .get_agent_by_name("oversized")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    store.delete_agent(expected.agent_id).await.unwrap();
+    assert!(matches!(
+        store
+            .set_agent(expected.agent_id, &AgentSettings::default())
+            .await,
+        Err(StoreError::AgentMissing)
+    ));
+}
+
+#[tokio::test]
+async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = image_fixture::image(store).await;
+    let mut expected = store
+        .create_agent("legacy", image, "old record", timestamp(0))
+        .await
+        .unwrap();
+    // This tuple has exactly the five fields of the original Postcard record.
+    let legacy = encode(&(
+        expected.agent_id,
+        &expected.name,
+        &expected.image,
+        &expected.description,
+        expected.created_at,
+    ))
+    .unwrap();
+    let key = test
+        .root
+        .pack(&("agent", expected.agent_id.as_ulid().to_bytes().as_slice()));
+    test.db
+        .run(|trx, _| {
+            let key = &key;
+            let legacy = &legacy;
+            async move {
+                trx.set(key, legacy);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert!(expected.main_session.is_none());
+    assert!(expected.system_prompt.is_none());
+    assert!(expected.model.is_none());
+    assert!(expected.reasoning_effort.is_none());
+    assert_eq!(
+        store.get_agent(expected.agent_id).await.unwrap(),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        store.get_agent_by_name("legacy").await.unwrap(),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        store.list_agents(None, 64).await.unwrap(),
+        [expected.clone()]
+    );
+    assert!(
+        store
+            .live_manifests()
+            .await
+            .unwrap()
+            .contains(&expected.image.manifest_id)
+    );
+    store
+        .create_session_for_agent(
+            SessionId::from_ulid(Ulid::generate()),
+            Some(expected.agent_id),
+            None,
+            timestamp(1),
+        )
+        .await
+        .unwrap();
+    let mut json = serde_json::to_value(&expected).unwrap();
+    for field in ["main_session", "system_prompt", "model", "reasoning_effort"] {
+        json.as_object_mut().unwrap().remove(field);
+    }
+    assert_eq!(
+        serde_json::from_value::<AgentRecord>(json).unwrap(),
+        expected
+    );
+    expected.model = Some("updated".into());
+    assert_eq!(
+        store
+            .set_agent(
+                expected.agent_id,
+                &AgentSettings {
+                    model: expected.model.clone(),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        store.get_agent(expected.agent_id).await.unwrap(),
+        Some(expected)
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn main_session_creation_replacement_and_close_are_atomic() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = image_fixture::image(store).await;
+    let agent = store
+        .create_agent("main", image, "", timestamp(0))
+        .await
+        .unwrap();
+    assert_eq!(agent.main_session, None);
+    let side = store
+        .create_session_for_agent(
+            SessionId::from_ulid(Ulid::generate()),
+            Some(agent.agent_id),
+            None,
+            timestamp(0),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_agent(agent.agent_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .main_session,
+        None
+    );
+    let (first, second) = tokio::join!(
+        store.open_main_session(agent.agent_id, timestamp(0)),
+        store.open_main_session(agent.agent_id, timestamp(0)),
+    );
+    let (first, created) = first.unwrap();
+    let (second, also_created) = second.unwrap();
+    assert_eq!(first, second);
+    assert_ne!(created, also_created);
+    assert_eq!(
+        store
+            .list_sessions_by_agent(agent.agent_id, None, 64)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        store
+            .get_agent_by_name("main")
+            .await
+            .unwrap()
+            .unwrap()
+            .main_session,
+        Some(first)
+    );
+    store
+        .set_main_session(agent.agent_id, side.session_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_agent(agent.agent_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .main_session,
+        Some(side.session_id)
+    );
+    assert!(matches!(
+        store.close_session(side.session_id, timestamp(1)).await,
+        Err(StoreError::MainSessionClose)
+    ));
+    store.close_session(first, timestamp(1)).await.unwrap();
+    store.close_session(first, timestamp(1)).await.unwrap();
+    let closed = store.fetch_session(first).await.unwrap().unwrap();
+    assert_eq!(closed.state, SessionState::Completed);
+    assert!(!closed.computer_deleted);
+    store
+        .ensure_session_computer(side.session_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.set_main_session(agent.agent_id, first).await,
+        Err(StoreError::InvalidMainSession)
+    ));
+    assert_eq!(
+        store
+            .open_main_session(agent.agent_id, timestamp(1))
+            .await
+            .unwrap(),
+        (side.session_id, false)
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn legacy_agents_acquire_a_main_session_without_losing_their_image() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = image_fixture::image(store).await;
+    let agent = store
+        .create_agent("legacy", image, "description", timestamp(0))
+        .await
+        .unwrap();
+    // Tuples have the same postcard representation as the old five-field record.
+    let bytes = swarmy_core::encode(&(
+        agent.agent_id,
+        &agent.name,
+        &agent.image,
+        &agent.description,
+        agent.created_at,
+    ))
+    .unwrap();
+    let key = test
+        .root
+        .pack(&("agent", agent.agent_id.as_ulid().to_bytes().as_slice()));
+    test.db
+        .run(|trx, _| {
+            let (key, bytes) = (&key, &bytes);
+            async move {
+                trx.set(key, bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_agent(agent.agent_id).await.unwrap(),
+        Some(agent.clone())
+    );
+    assert_eq!(
+        store.get_agent_by_name("legacy").await.unwrap(),
+        Some(agent.clone())
+    );
+    assert_eq!(
+        store.list_agents(None, 64).await.unwrap(),
+        vec![agent.clone()]
+    );
+    assert!(
+        store
+            .live_manifests()
+            .await
+            .unwrap()
+            .contains(&agent.image.manifest_id)
+    );
+    let (main, created) = store
+        .open_main_session(agent.agent_id, timestamp(1))
+        .await
+        .unwrap();
+    assert!(created);
+    assert_eq!(
+        store
+            .get_agent(agent.agent_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .main_session,
+        Some(main)
+    );
+    store.delete_agent(agent.agent_id).await.unwrap();
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = image_fixture::image(store).await;
+    let agent = store
+        .create_agent("main", image, "", timestamp(0))
+        .await
+        .unwrap();
+    let other = store
+        .create_agent("other", image, "", timestamp(0))
+        .await
+        .unwrap();
+    for owner in [None, Some(other.agent_id)] {
+        let foreign = store
+            .create_session_for_agent(
+                SessionId::from_ulid(Ulid::generate()),
+                owner,
+                owner.is_none().then_some(image),
+                timestamp(0),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .set_main_session(agent.agent_id, foreign.session_id)
+                .await,
+            Err(StoreError::InvalidMainSession)
+        ));
+    }
+    let side = store
+        .create_session_for_agent(
+            SessionId::from_ulid(Ulid::generate()),
+            Some(agent.agent_id),
+            None,
+            timestamp(0),
+        )
+        .await
+        .unwrap();
+    let (set, close) = tokio::join!(
+        store.set_main_session(agent.agent_id, side.session_id),
+        store.close_session(side.session_id, timestamp(1)),
+    );
+    assert!(matches!(
+        (set, close),
+        (Ok(()), Err(StoreError::MainSessionClose)) | (Err(StoreError::InvalidMainSession), Ok(()))
+    ));
     test.cleanup().await;
 }

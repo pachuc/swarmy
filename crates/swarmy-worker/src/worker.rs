@@ -355,8 +355,22 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &ActiveLease,
         preceding: &[Event],
-        request: swarmy_llm::Request,
+        mut request: swarmy_llm::Request,
     ) -> Result<()> {
+        // Resolve on every inference so existing sessions see later agent updates.
+        if let swarmy_core::SessionKind::Named { agent_id } = session.kind
+            && let Some(agent) = self.store.get_agent(agent_id).await?
+        {
+            if let Some(prompt) = agent.system_prompt {
+                request.system_prompt = prompt;
+            }
+            if let Some(model) = agent.model {
+                request.settings.model = model;
+            }
+            if let Some(effort) = agent.reasoning_effort {
+                request.settings.reasoning_effort = Some(effort);
+            }
+        }
         let id = session.session_id;
         let step = session
             .head_seq
@@ -444,6 +458,34 @@ impl Worker {
                             }
                             Err(error) => Err(error.to_string()),
                         }
+                    }
+                    Some(_) if call.tool == "update_plan" => {
+                        self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
+                            .await;
+                        let event = {
+                            let token = lease.lock().await;
+                            self.store
+                                .complete_plan_tool(
+                                    id,
+                                    session.head_seq,
+                                    token.as_ref().context("lease released")?,
+                                    request_id,
+                                    &call,
+                                )
+                                .await?
+                        };
+                        session.head_seq = event.seq();
+                        if let Ok(arguments) =
+                            swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
+                        {
+                            session.plan = arguments.plan;
+                        }
+                        self.publish_events(id, std::slice::from_ref(&event))
+                            .await?;
+                        events.push(event);
+                        self.tool_stage(id, turn, TurnStage::ToolCompleted, request_id)
+                            .await;
+                        continue;
                     }
                     Some(tool) => {
                         self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)

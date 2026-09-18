@@ -45,16 +45,7 @@ pub struct GenerationSettings {
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-}
+pub use swarmy_core::ReasoningEffort;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {

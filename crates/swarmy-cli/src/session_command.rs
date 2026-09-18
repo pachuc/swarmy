@@ -8,6 +8,6 @@ pub enum Command {
     /// List stored sessions in id order
     #[command(name = "ls", alias = "list")]
     List,
-    /// Close an ephemeral session and delete its computer
+    /// Close a side session, or an ephemeral session and its computer
     Close { session_id: Ulid },
 }

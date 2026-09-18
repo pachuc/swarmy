@@ -69,6 +69,8 @@ pub struct SessionRecord {
     pub kind: SessionKind,
     #[serde(default)]
     pub computer_deleted: bool,
+    #[serde(default)]
+    pub plan: Vec<crate::PlanStep>,
     pub session_id: SessionId,
     pub agent_id: AgentId,
     pub state: SessionState,
@@ -139,6 +141,7 @@ mod tests {
             snapshot_ref: None,
             kind: SessionKind::Ephemeral,
             computer_deleted: false,
+            plan: Vec::new(),
         };
         assert_round_trip(&session);
         session.kind = SessionKind::Named {

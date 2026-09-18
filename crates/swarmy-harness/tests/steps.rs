@@ -28,6 +28,7 @@ fn session() -> SessionRecord {
         snapshot_ref: None,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
+        plan: Vec::new(),
     }
 }
 
@@ -549,6 +550,15 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         ("checkpoint", json!({})),
         ("write_stdin", json!({"process_id":id, "text":"hello\n"})),
         ("web_fetch", json!({"url":"http://localhost/"})),
+        ("read", json!({"path":"text"})),
+        ("write", json!({"path":"text", "content":"hello"})),
+        (
+            "edit",
+            json!({"path":"text", "old_string":"hello", "new_string":"world"}),
+        ),
+        ("glob", json!({"pattern":"*.rs"})),
+        ("grep", json!({"pattern":"hello"})),
+        ("ls", json!({})),
     ] {
         let call = ToolCallRecord {
             call_id: ToolCallId(name.into()),
@@ -583,9 +593,77 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         }
         assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
     }
-    assert_eq!(registry.definitions().len(), 8);
+    assert_eq!(registry.definitions().len(), 15);
     assert!(
         swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
             .is_err()
     );
+}
+
+#[test]
+fn file_tool_schemas_reject_invalid_arguments() {
+    for (name, arguments) in [
+        ("read", json!({"path":"a", "offset":0})),
+        ("read", json!({"path":"a", "limit":0})),
+        ("read", json!({"path":"a", "offset":1.5})),
+        ("write", json!({"path":"a"})),
+        ("write", json!({"path":"", "content":"hello"})),
+        (
+            "edit",
+            json!({"path":"a", "old_string":"", "new_string":"hello"}),
+        ),
+        (
+            "edit",
+            json!({"path":"a", "old_string":"hello", "new_string":"bye", "replace_all":1}),
+        ),
+        ("glob", json!({"pattern":""})),
+        ("grep", json!({"pattern":"a", "path":4})),
+        ("ls", json!({"path":""})),
+    ] {
+        assert!(
+            swarmy_core::SandboxArguments::parse(name, arguments).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn update_plan_dispatches_without_a_sandbox_and_validates_steps() {
+    use swarmy_core::UpdatePlanArguments;
+    let mut registry = ToolRegistry::default();
+    swarmy_tools::register(&mut registry);
+    let tool = registry.get("update_plan").unwrap();
+    assert!(!tool.sandbox_bound());
+    let arguments = json!({"plan":[
+        {"step":"Read", "status":"completed"},
+        {"step":"Implement", "status":"in_progress"},
+        {"step":"Test", "status":"pending"}
+    ]});
+    let call = ToolCallRecord {
+        call_id: ToolCallId("plan".into()),
+        tool: "update_plan".into(),
+        arguments: arguments.clone(),
+        result: None,
+    };
+    assert_eq!(
+        step(&[user_event(), inference_event(std::slice::from_ref(&call))]),
+        Action::DispatchTools(vec![call])
+    );
+    assert_eq!(UpdatePlanArguments::parse(arguments).unwrap().plan.len(), 3);
+    assert!(
+        UpdatePlanArguments::parse(json!({"plan":[]}))
+            .unwrap()
+            .plan
+            .is_empty()
+    );
+    for invalid in [
+        json!({"plan":[{"step":"One", "status":"in_progress"},{"step":"Two", "status":"in_progress"}]}),
+        json!({"plan":[{"step":" ", "status":"pending"}]}),
+        json!({"plan":[{"step":"One", "status":"running"}]}),
+        json!({"plan":[{"step":"One", "status":"pending", "extra":true}]}),
+        json!({"plan":[], "extra":true}),
+        json!({}),
+    ] {
+        assert!(UpdatePlanArguments::parse(invalid).is_err());
+    }
 }

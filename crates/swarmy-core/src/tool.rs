@@ -71,6 +71,12 @@ pub enum SandboxArguments {
     Checkpoint(EmptyArguments),
     WriteStdin(WriteStdinArguments),
     WebFetch(WebFetchArguments),
+    Read(crate::ReadArguments),
+    Write(crate::WriteArguments),
+    Edit(crate::EditArguments),
+    Glob(crate::SearchArguments),
+    Grep(crate::SearchArguments),
+    Ls(crate::LsArguments),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -78,7 +84,7 @@ pub enum SandboxArgumentError {
     #[error("{0}")]
     Decode(#[from] serde_json::Error),
     #[error(
-        "invalid sandbox arguments: command/URL must be nonempty, timeout_ms must be 1..=3600000, yield_seconds 0..=3600, and output_budget_bytes 1024..=32768"
+        "invalid tool arguments: paths, patterns, commands, URLs, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be 1..=3600000, yield_seconds 0..=3600, and output_budget_bytes 1024..=32768"
     )]
     Invalid,
 }
@@ -103,6 +109,11 @@ impl SandboxArguments {
             Self::Bash(arguments) => arguments.valid(),
             Self::ProcessStart(arguments) => !arguments.command.is_empty(),
             Self::WebFetch(arguments) => !arguments.url.is_empty(),
+            Self::Read(a) => !a.path.is_empty() && a.offset > 0 && a.limit > 0,
+            Self::Write(a) => !a.path.is_empty(),
+            Self::Edit(a) => !a.path.is_empty() && !a.old_string.is_empty(),
+            Self::Glob(a) | Self::Grep(a) => !a.path.is_empty() && !a.pattern.is_empty(),
+            Self::Ls(a) => !a.path.is_empty(),
             _ => true,
         }
     }
@@ -118,12 +129,36 @@ impl SandboxArguments {
             Self::Checkpoint(_) => "checkpoint",
             Self::WriteStdin(_) => "write_stdin",
             Self::WebFetch(_) => "web_fetch",
+            Self::Read(_) => "read",
+            Self::Write(_) => "write",
+            Self::Edit(_) => "edit",
+            Self::Glob(_) => "glob",
+            Self::Grep(_) => "grep",
+            Self::Ls(_) => "ls",
         }
+    }
+
+    #[must_use]
+    pub const fn is_file_tool(&self) -> bool {
+        matches!(
+            self,
+            Self::Read(_)
+                | Self::Write(_)
+                | Self::Edit(_)
+                | Self::Glob(_)
+                | Self::Grep(_)
+                | Self::Ls(_)
+        )
     }
 
     #[must_use]
     pub fn parameters(&self) -> serde_json::Value {
         match self {
+            Self::Read(value) => serde_json::json!(value),
+            Self::Write(value) => serde_json::json!(value),
+            Self::Edit(value) => serde_json::json!(value),
+            Self::Glob(value) | Self::Grep(value) => serde_json::json!(value),
+            Self::Ls(value) => serde_json::json!(value),
             Self::Bash(value) => serde_json::json!(value),
             Self::WriteStdin(value) => serde_json::json!(value),
             Self::WebFetch(value) => serde_json::json!(value),
