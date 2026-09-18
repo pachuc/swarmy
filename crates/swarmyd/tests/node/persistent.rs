@@ -38,6 +38,8 @@ async fn dispatch_arguments(
         state: SessionState::Idle,
         head_seq: 0,
         snapshot_ref: None,
+        kind: swarmy_core::SessionKind::Ephemeral,
+        computer_deleted: false,
     };
     let id = session.session_id;
     store
@@ -166,7 +168,7 @@ async fn evicted(store: &Store, agent: AgentId) {
     .expect("idle placement was not released");
 }
 
-async fn start(
+pub(super) async fn start(
     settings: swarmy_config::Settings,
     store: &Store,
     base: ManifestId,
@@ -788,4 +790,56 @@ async fn stop_and_rebuild(
         matches!(tool_result(store, &job).await, ToolResult::Error { error } if error.contains("sandbox restarted"))
     );
     evicted(store, agent).await;
+}
+
+pub(super) async fn deleted_computer(node: &Node, store: &Store, bus: &Bus) {
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "touch /deletion-started; sleep 100",
+    )
+    .await;
+    written(node, agent, "deletion-started").await;
+    let path = device(node, agent);
+    store.delete_computer(agent).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while node
+            .root
+            .path()
+            .join(format!(".swarmy/node/bundles/{agent}"))
+            .exists()
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("deleted computer was not destroyed on renewal");
+    absent(node, agent, &path);
+    assert!(store.get_by_agent(agent).await.unwrap().is_none());
+    assert!(
+        store
+            .get_volume(VolumeId::from_ulid(agent.as_ulid()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!store.tool_completed(job.request_id).await.unwrap());
+    assert!(matches!(
+        store.tool_agent(&job, node.id).await,
+        Err(swarmy_store::StoreError::ComputerDeleted)
+    ));
+    assert!(
+        store
+            .fetch_session(job.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .computer_deleted
+    );
+    eprintln!(
+        "computer deletion acceptance: in-flight call stopped, container destroyed and NBD detached on renewal failure"
+    );
 }

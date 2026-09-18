@@ -309,7 +309,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
             return;
         }
     }
-    let _network = swarmy_store::boot();
+    boot_network();
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -556,4 +556,42 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
         during <= baseline + Duration::from_millis(50),
         "baseline={baseline:?}, during={during:?}"
     );
+}
+
+fn boot_network() {
+    static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
+        std::sync::OnceLock::new();
+    NETWORK.get_or_init(swarmy_store::boot);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        eprintln!("skipping computer deletion acceptance: run the built executable with sudo");
+        return;
+    }
+    for variable in [
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_NATS_URL",
+    ] {
+        if std::env::var_os(variable).is_none() {
+            eprintln!("skipping computer deletion acceptance: {variable} is unset");
+            return;
+        }
+    }
+    boot_network();
+    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let images = store(&settings).await;
+    let base = base_image(&settings, &images).await;
+    settings.store_directory = format!("swarmy-deletion-test-{}", ulid::Ulid::generate());
+    let store = store(&settings).await;
+    store
+        .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
+        .await
+        .unwrap();
+    // Node's Drop guard also destroys containers and detaches devices on assertion failure.
+    let (mut node, bus) = persistent::start(settings, &store, base, 3).await;
+    persistent::deleted_computer(&node, &store, &bus).await;
+    node.stop().await;
 }

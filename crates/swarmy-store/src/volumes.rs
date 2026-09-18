@@ -411,7 +411,7 @@ impl Store {
     pub async fn live_manifests(&self) -> Result<BTreeSet<ManifestId>> {
         self.transaction(|trx| async move {
             let mut live = BTreeSet::new();
-            for kind in ["volume", "image"] {
+            for kind in ["volume", "image", "agent"] {
                 let space = self.root.subspace(&(kind,));
                 let (mut begin, end) = space.range();
                 loop {
@@ -421,7 +421,13 @@ impl Store {
                         break;
                     }
                     for (key, value) in page {
-                        if kind == "image" {
+                        if kind == "agent" {
+                            live.insert(
+                                swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
+                                    .image
+                                    .manifest_id,
+                            );
+                        } else if kind == "image" {
                             live.insert(swarmy_core::decode::<ManifestId>(&value)?);
                         } else {
                             let volume: VolumeRecord = swarmy_core::decode(&value)?;
@@ -483,7 +489,7 @@ impl Store {
         Ok(snapshots)
     }
 
-    fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
+    pub(crate) fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
         self.root
             .pack(&("volume_snapshots", id.as_ulid().to_bytes().as_slice()))
     }
@@ -512,6 +518,8 @@ impl Store {
         id: VolumeId,
         record: &VolumeRecord,
     ) -> Result<()> {
+        self.check_computer(trx, swarmy_core::AgentId::from_ulid(id.as_ulid()))
+            .await?;
         let key = self.volume_key(id);
         if read::<VolumeRecord>(trx, &key).await?.is_some() {
             return Err(StoreError::VolumeExists);

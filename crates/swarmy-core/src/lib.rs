@@ -22,7 +22,7 @@ pub use id::{
 };
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
-pub use session::{Lease, SessionRecord, SessionState, SnapshotRef, can_transition};
+pub use session::{Lease, SessionKind, SessionRecord, SessionState, SnapshotRef, can_transition};
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
@@ -51,3 +51,6 @@ pub use rebuild::computer_rebuilt_message;
 
 mod turn;
 pub use turn::{TurnEvent, TurnStage};
+
+mod agent;
+pub use agent::AgentRecord;

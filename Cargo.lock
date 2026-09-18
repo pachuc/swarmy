@@ -3807,6 +3807,7 @@ name = "swarmyd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "foundationdb",
  "jiff",
  "object_store",
  "serde",

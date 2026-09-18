@@ -78,6 +78,7 @@ pub struct Settings {
     pub state_dir: String,
     pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
+    pub ephemeral_retention_seconds: std::num::NonZeroU64,
     pub sandbox_idle_seconds: std::num::NonZeroU64,
     pub placement_lease_seconds: std::num::NonZeroU64,
     pub gc: GarbageCollection,
@@ -134,6 +135,7 @@ impl Default for Settings {
             state_dir: ".swarmy".into(),
             remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
+            ephemeral_retention_seconds: std::num::NonZeroU64::new(86400).unwrap(),
             sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
             gc: GarbageCollection::default(),
@@ -369,6 +371,10 @@ impl Settings {
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
         for (name, target) in [
+            (
+                "SWARMY_EPHEMERAL_RETENTION_SECONDS",
+                &mut self.ephemeral_retention_seconds,
+            ),
             (
                 "SWARMY_SANDBOX_IDLE_SECONDS",
                 &mut self.sandbox_idle_seconds,
@@ -665,6 +671,10 @@ impl Settings {
             environment.insert(name.into(), value);
         }
         environment.insert(
+            "SWARMY_EPHEMERAL_RETENTION_SECONDS".into(),
+            self.ephemeral_retention_seconds.to_string(),
+        );
+        environment.insert(
             "SWARMY_SANDBOX_IDLE_SECONDS".into(),
             self.sandbox_idle_seconds.to_string(),
         );
@@ -762,6 +772,7 @@ mod tests {
     fn hosting_policy_defaults_and_overrides() {
         let mut settings = Settings::default();
         assert_eq!(settings.sandbox_idle_seconds.get(), 1800);
+        assert_eq!(settings.ephemeral_retention_seconds.get(), 86400);
         assert_eq!(settings.placement_lease_seconds.get(), 30);
         let environment = BTreeMap::from([
             ("SWARMY_SANDBOX_IDLE_SECONDS".into(), "2".into()),
@@ -771,11 +782,16 @@ mod tests {
         for (key, value) in environment {
             assert_eq!(settings.environment()[&key], value);
         }
-        for field in ["sandbox_idle_seconds", "placement_lease_seconds"] {
+        for field in [
+            "sandbox_idle_seconds",
+            "placement_lease_seconds",
+            "ephemeral_retention_seconds",
+        ] {
             assert!(toml::from_str::<Settings>(&format!("{field} = 0")).is_err());
         }
         for name in [
             "SWARMY_SANDBOX_IDLE_SECONDS",
+            "SWARMY_EPHEMERAL_RETENTION_SECONDS",
             "SWARMY_PLACEMENT_LEASE_SECONDS",
         ] {
             assert!(

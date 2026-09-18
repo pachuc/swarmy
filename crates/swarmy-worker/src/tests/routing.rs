@@ -101,6 +101,8 @@ impl Fixture {
                     state: SessionState::Idle,
                     head_seq: 0,
                     snapshot_ref: None,
+                    kind: swarmy_core::SessionKind::Ephemeral,
+                    computer_deleted: false,
                 },
                 Timestamp::now(),
                 "routing:test",
@@ -668,4 +670,45 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .unwrap();
     assert!(after_expiry.epoch > short.epoch);
     fixture.cleanup().await;
+}
+
+#[tokio::test]
+async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = f.session().await;
+    f.step(id).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    let delivery = f.delivery(placement.node_id).await;
+    let claim = f.claim(delivery.value.clone(), placement.clone()).await;
+    f.store.delete_computer(f.agent).await.unwrap();
+    assert!(matches!(
+        f.complete(&claim).await,
+        Err(StoreError::ComputerDeleted)
+    ));
+    f.worker.recover_tools().await.unwrap();
+    f.worker.recover_tools().await.unwrap();
+    assert!(f.store.get_by_agent(f.agent).await.unwrap().is_none());
+    assert!(f.store.scan_tool_jobs(None, 64).await.unwrap().is_empty());
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    let errors: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ToolCallCompleted {
+                result: ToolResult::Error { error },
+                ..
+            } => Some(error.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        errors,
+        ["This session's computer has been deleted. Create a new session to run tools."]
+    );
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    f.cleanup().await;
 }

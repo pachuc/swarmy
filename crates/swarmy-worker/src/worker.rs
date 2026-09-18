@@ -255,14 +255,17 @@ impl Worker {
                         .await;
                 }
                 Action::DispatchTools(calls) => {
-                    if calls.iter().all(|call| {
-                        self.config
-                            .harness
-                            .tools
-                            .get(&call.tool)
-                            .is_some_and(swarmy_harness::Tool::sandbox_bound)
-                            && SandboxArguments::parse(&call.tool, call.arguments.clone()).is_ok()
-                    }) {
+                    if self.store.ensure_session_computer(id).await.is_ok()
+                        && calls.iter().all(|call| {
+                            self.config
+                                .harness
+                                .tools
+                                .get(&call.tool)
+                                .is_some_and(swarmy_harness::Tool::sandbox_bound)
+                                && SandboxArguments::parse(&call.tool, call.arguments.clone())
+                                    .is_ok()
+                        })
+                    {
                         return self.dispatch_calls(&session, lease, &calls, turn).await;
                     }
                     let batch: Vec<_> = calls
@@ -412,39 +415,43 @@ impl Worker {
         let mut jobs = Vec::new();
         let id = session.session_id;
         for (request_id, call) in pending_tools(events) {
-            let result = match self.config.harness.tools.get(&call.tool) {
-                Some(tool) if tool.sandbox_bound() => {
-                    match SandboxArguments::parse(&call.tool, call.arguments.clone()) {
-                        Ok(arguments) => {
-                            let step = events
-                                .iter()
-                                .find_map(|event| match event {
-                                    Event::ToolCallRequested {
-                                        seq,
-                                        request_id: requested,
-                                        ..
-                                    } if *requested == request_id => Some(*seq),
-                                    _ => None,
-                                })
-                                .context("tool request missing")?;
-                            jobs.push(ToolJob {
-                                session_id: session.session_id,
-                                request_id,
-                                call_id: call.call_id,
-                                step,
-                                arguments,
-                            });
-                            continue;
+            let result = match self.store.ensure_session_computer(id).await {
+                Err(StoreError::ComputerDeleted) => Err(StoreError::ComputerDeleted.to_string()),
+                Err(error) => return Err(error.into()),
+                Ok(()) => match self.config.harness.tools.get(&call.tool) {
+                    Some(tool) if tool.sandbox_bound() => {
+                        match SandboxArguments::parse(&call.tool, call.arguments.clone()) {
+                            Ok(arguments) => {
+                                let step = events
+                                    .iter()
+                                    .find_map(|event| match event {
+                                        Event::ToolCallRequested {
+                                            seq,
+                                            request_id: requested,
+                                            ..
+                                        } if *requested == request_id => Some(*seq),
+                                        _ => None,
+                                    })
+                                    .context("tool request missing")?;
+                                jobs.push(ToolJob {
+                                    session_id: session.session_id,
+                                    request_id,
+                                    call_id: call.call_id,
+                                    step,
+                                    arguments,
+                                });
+                                continue;
+                            }
+                            Err(error) => Err(error.to_string()),
                         }
-                        Err(error) => Err(error.to_string()),
                     }
-                }
-                Some(tool) => {
-                    self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
-                        .await;
-                    tool.execute(call.arguments).await
-                }
-                None => Err(format!("unknown tool: {}", call.tool)),
+                    Some(tool) => {
+                        self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
+                            .await;
+                        tool.execute(call.arguments).await
+                    }
+                    None => Err(format!("unknown tool: {}", call.tool)),
+                },
             };
             self.append(
                 session,
@@ -600,6 +607,9 @@ impl Worker {
     }
 
     async fn route_tool(&self, job: &ToolJob) -> Result<()> {
+        if self.store.fail_deleted_computer_tool(job).await? {
+            return Ok(());
+        }
         let placement = self.place(job.session_id).await?;
         if self.store.route_tool_job(job, &placement).await? {
             let turn = self.store.request_turn_id(job.request_id).await?;

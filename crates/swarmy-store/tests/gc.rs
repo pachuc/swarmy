@@ -507,3 +507,197 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
     assert_eq!(chunks.get_chunk(old.hash).await.unwrap(), data);
     test.clear().await;
 }
+
+#[tokio::test]
+async fn deleted_computer_releases_placement_and_collects_all_disk_revisions() {
+    use swarmy_core::AgentId;
+    let Some(test) = Fixture::new() else {
+        return;
+    };
+    let store = &test.store;
+    let (volume, head, lease) = test.volume().await;
+    let agent = AgentId::from_ulid(volume.as_ulid());
+    let (session, placement) = computer_session(store, agent, head).await;
+    let (roots, head) = deletion_revisions(&test, volume, head, &lease).await;
+    let live = store.live_manifests().await.unwrap();
+    assert!(roots.iter().all(|root| live.contains(root)));
+    test.age_chunks().await;
+    assert_eq!(
+        collect(store, test.objects.clone(), policy(), false)
+            .await
+            .unwrap()
+            .deleted,
+        0
+    );
+    store.delete_computer(agent).await.unwrap();
+    store.delete_computer(agent).await.unwrap();
+    assert!(store.get_by_agent(agent).await.unwrap().is_none());
+    assert!(store.get_volume(volume).await.unwrap().is_none());
+    assert!(matches!(
+        store.volume_snapshots(volume).await,
+        Err(StoreError::VolumeMissing)
+    ));
+    let live = store.live_manifests().await.unwrap();
+    assert!(roots.iter().all(|root| !live.contains(root)));
+    assert!(matches!(
+        store
+            .renew(
+                &placement,
+                placement
+                    .expires_at
+                    .checked_add(Duration::from_secs(1))
+                    .unwrap()
+            )
+            .await,
+        Err(StoreError::ComputerDeleted)
+    ));
+    assert!(matches!(
+        store
+            .place(agent, placement.node_id, placement.expires_at)
+            .await,
+        Err(StoreError::ComputerDeleted)
+    ));
+    assert!(matches!(
+        store.create_volume(volume, head).await,
+        Err(StoreError::ComputerDeleted)
+    ));
+    // Capacity was returned exactly once despite repeating deletion.
+    store
+        .place(
+            AgentId::from_ulid(Ulid::generate()),
+            placement.node_id,
+            placement.expires_at,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        collect(store, test.objects.clone(), policy(), false)
+            .await
+            .unwrap()
+            .deleted,
+        2
+    );
+    assert_eq!(
+        store
+            .read_events(session.session_id, 0, 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .fetch_session(session.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .computer_deleted
+    );
+    test.clear().await;
+}
+
+async fn computer_session(
+    store: &Store,
+    agent: swarmy_core::AgentId,
+    head: ManifestId,
+) -> (swarmy_core::SessionRecord, swarmy_core::PlacementRecord) {
+    use swarmy_core::{
+        Event, Message, MessageId, MessageRole, NodeCapacity, NodeId, NodeRecord, NodeRole, Part,
+        SessionId,
+    };
+    store
+        .put_image("base", &ImageTag("test".into()), head)
+        .await
+        .unwrap();
+    let session = swarmy_core::SessionRecord {
+        session_id: SessionId::from_ulid(Ulid::generate()),
+        agent_id: agent,
+        kind: swarmy_core::SessionKind::Ephemeral,
+        computer_deleted: false,
+        state: swarmy_core::SessionState::Idle,
+        head_seq: 0,
+        snapshot_ref: None,
+    };
+    store
+        .create_session(&session, Timestamp::now(), "base:test")
+        .await
+        .unwrap();
+    store
+        .append_events(
+            session.session_id,
+            0,
+            &[Event::MessageAppended {
+                seq: 0,
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::User,
+                    parts: vec![Part::Text {
+                        text: "transcript survives deletion".into(),
+                    }],
+                },
+            }],
+        )
+        .await
+        .unwrap();
+    let node = NodeRecord {
+        node_id: NodeId::from_ulid(Ulid::generate()),
+        roles: vec![NodeRole::Sandbox],
+        capacity: NodeCapacity {
+            sandboxes: 1,
+            cpu_millis: 4000,
+            memory_bytes: 1024 * 1024,
+            disk_bytes: 1024 * 1024,
+        },
+        last_heartbeat: Timestamp::now(),
+        cached_images: vec![],
+    };
+    store.put_node(&node).await.unwrap();
+    let placement = store
+        .place(
+            agent,
+            node.node_id,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(600))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    (session, placement)
+}
+
+async fn deletion_revisions(
+    test: &Fixture,
+    volume: VolumeId,
+    mut head: ManifestId,
+    lease: &Lease,
+) -> (Vec<ManifestId>, ManifestId) {
+    let store = &test.store;
+    let chunks = ChunkStore::new(test.objects.clone());
+    let mut manifest = Manifest::empty(u64::from(CHUNK_SIZE) * 2).unwrap();
+    let mut roots = Vec::new();
+    for value in [21, 22] {
+        let hash = chunks
+            .put_chunk(&vec![value; CHUNK_SIZE as usize])
+            .await
+            .unwrap()
+            .hash;
+        let mut builder = ManifestBuilder::new(test.objects.clone(), manifest);
+        builder.set_chunk(0, hash).unwrap();
+        manifest = builder.build().await.unwrap();
+        let next = manifest_id();
+        store
+            .advance_volume_retained(
+                volume,
+                lease,
+                head,
+                next,
+                manifest.header(),
+                NonZeroUsize::new(10).unwrap(),
+            )
+            .await
+            .unwrap();
+        head = next;
+        roots.push(next);
+    }
+    (roots, head)
+}

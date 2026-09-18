@@ -130,6 +130,7 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<PlacementRecord> {
+        self.check_computer(trx, expected.agent_id).await?;
         let current: PlacementRecord =
             read(trx, &self.placement_key("placement", expected.agent_id))
                 .await?
@@ -173,6 +174,7 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
+            self.check_computer(&trx, agent).await?;
             let now = Timestamp::now();
             if expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
@@ -361,5 +363,23 @@ impl Store {
                 .collect()
         })
         .await
+    }
+}
+
+impl Store {
+    pub(crate) async fn release_deleted_computer(
+        &self,
+        trx: &Transaction,
+        agent: AgentId,
+    ) -> Result<()> {
+        if let Some(current) =
+            read::<PlacementRecord>(trx, &self.placement_key("placement", agent)).await?
+        {
+            self.free_computer(trx, current.node_id).await?;
+            trx.clear(&self.placement_key("placement", agent));
+            trx.clear(&self.placement_key("placement_hosting", agent));
+            trx.clear(&self.placement_node_key(current.node_id, agent));
+        }
+        Ok(())
     }
 }

@@ -69,7 +69,8 @@ impl Store {
             cursor = next;
         };
         self.transaction(|trx| async move {
-            self.session(&trx, id).await?;
+            let session = self.session(&trx, id).await?;
+            self.check_computer(&trx, session.agent_id).await?;
             let selected: swarmy_core::NodeRecord = read(&trx, &self.node_key(node))
                 .await?
                 .ok_or(StoreError::InvalidState)?;
@@ -364,6 +365,8 @@ impl Store {
                 return Err(StoreError::LeaseMismatch);
             }
             let job = &claim.job;
+            let session = self.session(&trx, job.session_id).await?;
+            self.check_computer(&trx, session.agent_id).await?;
             let Some(value) = trx
                 .get(&self.tool_key("tool_job", job.request_id), false)
                 .await?
