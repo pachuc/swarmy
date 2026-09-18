@@ -57,20 +57,24 @@ swarmy agent create tommy --image base-ubuntu:dev --description "Compiler work"
 swarmy agent ls
 swarmy chat --agent tommy
 # In another terminal, open a separate session on the same computer:
-swarmy chat --agent tommy
+swarmy chat --agent tommy --new
 swarmy run --agent tommy "Inspect the background processes"
 swarmy agent show tommy
 swarmy agent delete tommy --yes
 ```
 
 Agent creation uses `default_image` if `--image` is omitted. Names contain 1-64
-ASCII letters, digits, hyphens, or underscores. `--agent` accepts a name or agent
-id, opens a new session, and rejects `--image`; it uses the agent's pinned image
-without requiring a configured default. It also cannot accompany a chat session
-id. Both chats use the same computer and placement epoch. Closing either client
-keeps that computer; `session close` refuses named sessions and points to
-`agent delete`. Delete asks for confirmation unless `--yes` is supplied, removes
-the named identity and computer, and retains session transcripts.
+ASCII letters, digits, hyphens, or underscores. `--agent` accepts a name or
+agent id, resumes its main session (creating it on first use), and rejects
+`--image`; it uses the agent's pinned image without requiring a configured
+default. It also cannot accompany a chat session id. Both chats use the same
+computer and placement epoch. Closing either client keeps that computer. Add
+`--new` to `chat --agent` or `run --agent` for a side conversation without
+changing the main pointer. `--new` requires `--agent`. `session close` refuses
+the main session and points to `agent delete`; closing a side session preserves
+the shared computer. Closed sessions cannot become main. Delete asks for
+confirmation unless `--yes` is supplied, removes the named identity and
+computer, and retains session transcripts.
 
 The chat status bar shows the agent name or `ephemeral`, session id, state, and
 provider. Named conversations label system notices with their session id so
@@ -80,13 +84,16 @@ emits the run event protocol, waiting for idle between prompts; EOF closes the
 client. The other agent and session commands also support `--json`, and all of
 these commands accept `--remote NAME` before or after the subcommand.
 
-`agent show` reports placement node and epoch, every session's state, and last
-disk snapshot time and age from the committed manifest's ULID timestamp. Before
-the computer has a volume, snapshot fields are empty (null in JSON). The node
-currently has no sandbox-status query, so sandbox state is explicitly `unknown`
-with `node status reporting unavailable`; placement is not a liveness report.
-See the [CLI README](../crates/swarmy-cli/README.md) for output fields and the
-root acceptance test that verifies a background process across two named chats.
+`agent show` reports `main_session` and marks the main session in its text
+listing. `session ls` includes a `main` boolean in JSON and `main=true` or
+`main=false` in text output. `agent show` also reports placement node and epoch,
+every session's state, and last disk snapshot time and age from the committed
+manifest's ULID timestamp. Before the computer has a volume, snapshot fields are
+empty (null in JSON). The node currently has no sandbox-status query, so sandbox
+state is explicitly `unknown` with `node status reporting unavailable`;
+placement is not a liveness report. See the [CLI
+README](../crates/swarmy-cli/README.md) for output fields and the root
+acceptance test that verifies a background process across two named chats.
 
 ## Shared configuration
 
@@ -569,7 +576,7 @@ Create a named agent to keep a computer independently of any one conversation:
 swarmy agent create tommy --remote demo --description 'Shared development computer'
 swarmy chat --agent tommy --remote demo
 # In a second terminal, open another session on the same computer:
-swarmy chat --agent tommy --remote demo
+swarmy chat --agent tommy --new --remote demo
 swarmy agent ls --remote demo
 swarmy agent show tommy --remote demo --json
 swarmy run --agent tommy --remote demo 'Read the files created in the other chat'
@@ -586,7 +593,9 @@ or stale samples mean unknown activity. Busy includes computer startup.
 
 Creation pins `default_image` or an explicit `--image NAME:TAG`. New sessions
 on the named agent use that pin, so `--agent` cannot be combined with `--image`
-or a resume session id. Names and agent ids both work. Quitting either client
+or a resume session id. Names and agent ids both work. `chat --agent` and
+`run --agent` resume the main session by default, creating it if absent. `--new`
+opens a side conversation without changing that pointer. Quitting either client
 leaves the agent available, and ephemeral retention never deletes it.
 
 Ask for `checkpoint` before the daemon-kill procedure below. After recovery,
@@ -602,7 +611,8 @@ swarmy session show FIRST_SESSION_ID --remote demo --json
 swarmy session show SECOND_SESSION_ID --remote demo --json
 ```
 
-`session close` refuses named sessions and points to `agent delete` instead.
+`session close` refuses the main session and points to `agent delete` instead.
+Side sessions can be closed while retaining the shared computer.
 Deletion removes the identity, placement, and disk references immediately;
 physical processes and attachments disappear on the node's next failed renewal.
 Transcripts remain readable and further sandbox tools are refused. Recreating

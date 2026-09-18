@@ -30,7 +30,7 @@ impl Terminal {
         image: Option<&str>,
         default: &str,
     ) -> Self {
-        Self::with_agent(fixture, id, image, default, None)
+        Self::with_agent(fixture, id, image, default, None, false)
     }
 
     fn with_agent(
@@ -39,9 +39,13 @@ impl Terminal {
         image: Option<&str>,
         default: &str,
         agent: Option<&str>,
+        new: bool,
     ) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
         command.arg("chat");
+        if new {
+            command.arg("--new");
+        }
         if let Some(agent) = agent {
             command.args(["--agent", agent]);
         }
