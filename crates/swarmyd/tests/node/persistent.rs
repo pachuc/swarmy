@@ -20,6 +20,8 @@ async fn dispatch(
         swarmy_core::SandboxArguments::Bash(BashArguments {
             command: command.into(),
             timeout_ms: 120_000,
+            yield_seconds: 10,
+            output_budget_bytes: 32768,
         }),
     )
     .await
@@ -40,6 +42,7 @@ async fn dispatch_arguments(
         snapshot_ref: None,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
+        plan: Vec::new(),
     };
     let id = session.session_id;
     if store.get_agent(agent).await.unwrap().is_some() {
@@ -616,7 +619,7 @@ async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
     result.clone()
 }
 
-async fn invoke(
+pub(super) async fn invoke(
     node: &Node,
     store: &Store,
     bus: &Bus,
@@ -694,9 +697,21 @@ async fn managed_tools(node: &Node, store: &Store, bus: &Bus) {
         .unwrap(),
     )
     .await;
-    assert!(
-        matches!(tool_result(store, &job).await, ToolResult::Error { error } if error.contains("timed out"))
-    );
+    let ToolResult::Completed { output, .. } = tool_result(store, &job).await else {
+        panic!("timeout must background the command");
+    };
+    let background: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(background["timed_out"], true);
+    assert_eq!(background["backgrounded"], true);
+    invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_stop",
+        json!({"process_id":background["process_id"]}),
+    )
+    .await;
     let fetched = invoke(
         node,
         store,
@@ -734,7 +749,13 @@ async fn check_log_and_checkpoint(
         json!({"process_id":id}),
     )
     .await;
-    assert_eq!(tail["output"].as_str().unwrap().len(), 65536);
+    assert!(tail["output"].as_str().unwrap().len() <= 32768);
+    assert!(
+        tail["output"]
+            .as_str()
+            .unwrap()
+            .contains("bytes elided; full output at")
+    );
     assert_eq!(tail["truncated"], true);
     let snapshot = invoke(node, store, bus, agent, "checkpoint", json!({})).await;
     let volume = VolumeId::from_ulid(agent.as_ulid());
@@ -782,7 +803,7 @@ async fn stop_and_rebuild(
     .await;
     assert_ne!(fetched["exit_code"], 0);
     eprintln!(
-        "managed tools passed: background HTTP, later bash, list, logs, idle protection, isolated timeout, checkpoint head, and stop"
+        "managed tools passed: background HTTP, later bash, list, logs, idle protection, timeout backgrounding, checkpoint head, and stop"
     );
     evicted(store, agent).await;
     let job = dispatch_arguments(
@@ -936,4 +957,74 @@ async fn wait_status(store: &Store, agent: AgentId, holder: Option<SessionId>, q
     })
     .await
     .expect("holder or queue depth was not reported");
+}
+
+pub(super) async fn file_tools(node: &Node, store: &Store, bus: &Bus) {
+    use serde_json::json;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let path = "/tmp/swarmy-file-tools/nested/text.txt";
+    for (name, arguments, expected) in [
+        (
+            "write",
+            json!({"path":path,"content":"first\nsecond\n"}),
+            "Wrote",
+        ),
+        ("read", json!({"path":path,"limit":1}), "offset=2"),
+        (
+            "edit",
+            json!({"path":path,"old_string":"second","new_string":"changed"}),
+            "+changed",
+        ),
+        (
+            "glob",
+            json!({"path":"/tmp/swarmy-file-tools","pattern":"**/*.txt"}),
+            path,
+        ),
+        (
+            "grep",
+            json!({"path":"/tmp/swarmy-file-tools","pattern":"changed"}),
+            "text.txt:2:changed",
+        ),
+        ("ls", json!({"path":"/tmp/swarmy-file-tools"}), "nested/"),
+    ] {
+        let job = dispatch_arguments(
+            store,
+            bus,
+            node.id,
+            agent,
+            swarmy_core::SandboxArguments::parse(name, arguments).unwrap(),
+        )
+        .await;
+        let result = tool_result(store, &job).await;
+        let ToolResult::Completed { output, .. } = result else {
+            panic!("{name}: {result:?}");
+        };
+        assert!(output.contains(expected), "{name}: {output}");
+    }
+    // Exercise stdin beyond Linux's per-argument limit through the real exec path.
+    let content = "literal $(false) `false` ' \" \\ \n".repeat(6000);
+    let job = dispatch_arguments(
+        store,
+        bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::parse("write", json!({"path":path,"content":content}))
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(
+        tool_result(store, &job).await,
+        ToolResult::Completed { .. }
+    ));
+    let file = node
+        .root
+        .path()
+        .join(".swarmy/node/bundles")
+        .join(agent.to_string())
+        .join("rootfs")
+        .join(path.trim_start_matches('/'));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), content);
+    eprintln!(
+        "file tools passed: all six tools ran in a container on the agent disk, including a large stdin write"
+    );
 }

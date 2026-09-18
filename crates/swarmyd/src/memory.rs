@@ -96,6 +96,7 @@ impl Memory {
                     request.max_bytes.to_string(),
                 ],
                 timeout_ms: 10_000,
+                stdin: Vec::new(),
             },
         )
         .await?;

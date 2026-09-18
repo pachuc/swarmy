@@ -43,7 +43,7 @@ mod tool;
 pub use tool::{
     BashArguments, BashResult, EmptyArguments, PlaceReply, PlaceRequest, PlacedToolClaim,
     ProcessArguments, ProcessStartArguments, SandboxArgumentError, SandboxArguments, SandboxRecord,
-    ToolClaim, ToolJob,
+    ToolClaim, ToolJob, WebFetchArguments, WriteStdinArguments,
 };
 
 mod placement;
@@ -56,7 +56,15 @@ mod turn;
 pub use turn::{TurnEvent, TurnStage};
 
 mod agent;
-pub use agent::AgentRecord;
+pub use agent::{AgentRecord, AgentSettings};
 
 mod memory;
 pub use memory::MemoryRequest;
+
+mod files;
+pub use files::{EditArguments, LsArguments, ReadArguments, SearchArguments, WriteArguments};
+mod plan;
+pub use plan::{PlanStatus, PlanStep, UpdatePlanArguments};
+
+mod reasoning;
+pub use reasoning::{InvalidReasoningEffort, ReasoningEffort};

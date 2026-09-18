@@ -40,15 +40,10 @@ impl Config {
             "empty store directory component"
         );
         let prefix = settings.bus_prefix;
-        let effort = match settings.reasoning_effort.as_str() {
-            "none" => ReasoningEffort::None,
-            "minimal" => ReasoningEffort::Minimal,
-            "low" => ReasoningEffort::Low,
-            "medium" => ReasoningEffort::Medium,
-            "high" => ReasoningEffort::High,
-            "xhigh" => ReasoningEffort::Xhigh,
-            _ => bail!("invalid SWARMY_REASONING_EFFORT"),
-        };
+        let effort = settings
+            .reasoning_effort
+            .parse::<ReasoningEffort>()
+            .context("invalid SWARMY_REASONING_EFFORT")?;
         let kill_point = settings.worker_kill_point;
         ensure!(
             kill_point.as_deref().is_none_or(|value| matches!(

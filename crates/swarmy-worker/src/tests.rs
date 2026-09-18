@@ -160,6 +160,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 snapshot_ref: None,
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
+                plan: Vec::new(),
             },
             Timestamp::now(),
             image_fixture::image(&store).await,
@@ -282,6 +283,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
                 snapshot_ref: None,
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
+                plan: Vec::new(),
             },
             Timestamp::now(),
             image_fixture::image(&store).await,
@@ -333,3 +335,5 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
         if error == "This session's computer has been deleted. Create a new session to run tools.")));
     cleanup(&cluster, &url, &prefix).await;
 }
+
+mod agent_settings;
