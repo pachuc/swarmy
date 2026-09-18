@@ -518,6 +518,33 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
     let start = std::time::Instant::now();
     assert_eq!(node.exec(sandbox, command, 10_000).await.0.exit_code, 0);
     let baseline = start.elapsed();
+    // Priority is shared by every volume in the node. Keep a real tool open
+    // in another sandbox until publication finishes, so the reported limit
+    // cannot race the measured tool's exit or depend on new upload admissions.
+    let priority_volume = VolumeId::from_ulid(ulid::Ulid::generate());
+    let head = store
+        .get_volume(volume)
+        .await
+        .unwrap()
+        .unwrap()
+        .head_manifest;
+    store.create_volume(priority_volume, head).await.unwrap();
+    let priority_sandbox = node.create(priority_volume).await;
+    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = gate.local_addr().unwrap().port();
+    let mut priority_tool = connect(
+        &node.socket(),
+        exec(
+            &priority_sandbox,
+            &format!("read -r release </dev/tcp/127.0.0.1/{port}"),
+            60_000,
+        ),
+    )
+    .await;
+    let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
+        .await
+        .expect("priority tool did not reach its gate")
+        .unwrap();
     assert_eq!(
         node.exec(
             sandbox,
@@ -530,7 +557,6 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
         0
     );
     let tool = async {
-        tokio::time::sleep(Duration::from_millis(10)).await;
         let start = std::time::Instant::now();
         let result = node.exec(sandbox, command, 10_000).await;
         assert_eq!(result.0.exit_code, 0);
@@ -542,6 +568,11 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
             .unwrap()
     };
     let (during, flushed) = tokio::join!(tool, snapshot);
+    release.write_all(b"release\n").await.unwrap();
+    assert!(
+        matches!(read(&mut priority_tool).await, Response::Exited(result) if result.exit_code == 0 && !result.timed_out)
+    );
+    node.destroy(priority_sandbox).await;
     eprintln!(
         "snapshot tool latency: baseline_ms={:.3}, during_ms={:.3}, snapshot_ms={:.3}, priority_uploads={}, final_limit={}",
         baseline.as_secs_f64() * 1000.0,
@@ -550,7 +581,11 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
         flushed.tool_priority_uploads,
         flushed.upload_concurrency_limit
     );
-    assert!(flushed.tool_priority_uploads > 0);
+    assert_eq!(flushed.upload_concurrency_limit, 4);
+    assert_eq!(
+        flushed.upload_bytes_per_second,
+        swarmy_volume::priority::TOOL_UPLOAD_BYTES_PER_SECOND
+    );
     assert_eq!(flushed.frozen, Duration::ZERO);
     assert!(
         during <= baseline + Duration::from_millis(50),
