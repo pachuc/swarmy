@@ -1,0 +1,173 @@
+use std::{
+    fmt::Write as _,
+    io::{IsTerminal, Write as _},
+};
+
+use anyhow::{Context, Result, ensure};
+use jiff::Timestamp;
+use swarmy_core::{AgentId, AgentRecord, SessionRecord, VolumeId};
+use swarmy_store::{MAX_SCAN_LIMIT, Store};
+
+use crate::{agent_command::Command, conversation::store, vol::output};
+
+pub async fn resolve(store: &Store, name: &str) -> Result<AgentRecord> {
+    // Prefer a literal name, including names that happen to parse as a ULID.
+    if let Some(agent) = store.get_agent_by_name(name).await? {
+        return Ok(agent);
+    }
+    if let Ok(id) = name.parse::<ulid::Ulid>()
+        && let Some(agent) = store.get_agent(AgentId::from_ulid(id)).await?
+    {
+        return Ok(agent);
+    }
+    anyhow::bail!("agent {name} not found")
+}
+
+async fn sessions(store: &Store, id: AgentId) -> Result<Vec<SessionRecord>> {
+    let mut records = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store
+            .list_sessions_by_agent(id, after, MAX_SCAN_LIMIT)
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|session| session.session_id);
+        records.extend(page);
+    }
+    Ok(records)
+}
+
+pub async fn run(command: Command, json: bool) -> Result<()> {
+    let store = store().await?;
+    match command {
+        Command::Create {
+            name,
+            image,
+            description,
+        } => {
+            let settings = swarmy_config::Settings::load()?.settings;
+            let agent = store
+                .create_agent(
+                    &name,
+                    settings.session_image(image.as_deref())?,
+                    &description,
+                    Timestamp::now(),
+                )
+                .await?;
+            output(
+                &serde_json::to_value(&agent)?,
+                &format!(
+                    "Created agent {} {} image={}:{}",
+                    agent.name, agent.agent_id, agent.image.name, agent.image.tag.0
+                ),
+                json,
+            )?;
+        }
+        Command::Ls => {
+            let mut after = None;
+            loop {
+                let page = store.list_agents(after, MAX_SCAN_LIMIT).await?;
+                if page.is_empty() {
+                    break;
+                }
+                for agent in page {
+                    after = Some(agent.agent_id);
+                    show(&store, &agent, false, json).await?;
+                }
+            }
+        }
+        Command::Show { name } => show(&store, &resolve(&store, &name).await?, true, json).await?,
+        Command::Delete { name, yes } => {
+            let agent = resolve(&store, &name).await?;
+            if !yes {
+                confirm(&agent.name)?;
+            }
+            store.delete_agent(agent.agent_id).await?;
+            output(
+                &serde_json::json!({"event": "agent_deleted", "agent_id": agent.agent_id, "name": agent.name}),
+                &format!("Deleted agent {} {}", agent.name, agent.agent_id),
+                json,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn confirm(name: &str) -> Result<()> {
+    ensure!(
+        std::io::stdin().is_terminal(),
+        "agent delete requires confirmation; pass --yes for noninteractive deletion"
+    );
+    eprint!("Delete agent {name} and its computer? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    ensure!(
+        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+        "agent deletion cancelled"
+    );
+    Ok(())
+}
+
+async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> Result<()> {
+    let sessions = sessions(store, agent.agent_id).await?;
+    let placement = store.get_by_agent(agent.agent_id).await?;
+    let node = placement.as_ref().map(|record| record.node_id);
+    let mut value = serde_json::to_value(agent)?;
+    value["node_id"] = serde_json::to_value(node)?;
+    value["session_count"] = sessions.len().into();
+    let mut text = format!(
+        "{} {} image={}:{} node={} sessions={} created={}",
+        agent.name,
+        agent.agent_id,
+        agent.image.name,
+        agent.image.tag.0,
+        node.map_or_else(|| "-".into(), |id| id.to_string()),
+        sessions.len(),
+        agent.created_at
+    );
+    if detail {
+        let volume = store
+            .get_volume(VolumeId::from_ulid(agent.agent_id.as_ulid()))
+            .await?;
+        // Manifest ULIDs supply the same snapshot timestamp used in recovery notices.
+        let snapshot_at = volume
+            .as_ref()
+            .map(|volume| {
+                Timestamp::from_millisecond(
+                    i64::try_from(volume.head_manifest.as_ulid().timestamp_ms())
+                        .context("snapshot timestamp overflow")?,
+                )
+                .map_err(anyhow::Error::from)
+            })
+            .transpose()?;
+        let age = snapshot_at.map(|time| Timestamp::now().duration_since(time).as_secs().max(0));
+        let state = "unknown (node status reporting unavailable)";
+        value["placement"] = serde_json::to_value(&placement)?;
+        value["sandbox_state"] = "unknown".into();
+        value["sandbox_state_reason"] = "node status reporting unavailable".into();
+        value["last_snapshot_at"] = serde_json::to_value(snapshot_at)?;
+        value["last_snapshot_age_seconds"] = serde_json::to_value(age)?;
+        value["sessions"] = serde_json::to_value(&sessions)?;
+        write!(
+            text,
+            "\ndescription={}\nplacement_epoch={}\nsandbox_state={state}\nlast_snapshot={} age_seconds={}",
+            agent.description,
+            placement
+                .as_ref()
+                .map_or_else(|| "-".into(), |record| record.epoch.to_string()),
+            snapshot_at.map_or_else(|| "-".into(), |time| time.to_string()),
+            age.map_or_else(|| "-".into(), |age| age.to_string())
+        )?;
+        for session in sessions {
+            write!(
+                text,
+                "\nsession={} state={:?} computer_deleted={}",
+                session.session_id, session.state, session.computer_deleted
+            )?;
+        }
+    }
+    output(&value, &text, json)
+}

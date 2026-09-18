@@ -40,6 +40,54 @@ PID records contain Linux process start times to guard against PID reuse.
 
 To run the backing services and swarmyd on EC2, see [remote node workflow](#remote-node-workflow).
 
+## Ephemeral sessions and named agents
+
+A new `swarmy run` or `swarmy chat` conversation is ephemeral by default and
+gets its own computer. Esc or Ctrl-C closes the chat client; the session can
+still be resumed with `swarmy chat SESSION_ID`. Use `swarmy session close ID` to
+complete an ephemeral session and delete its computer while retaining its log.
+`swarmy session ls` (also spelled `session list`) displays kind, agent name,
+state, and whether the computer was deleted.
+
+For conversations that should share files and running processes, create a named
+agent after registering an image:
+
+```sh
+swarmy agent create tommy --image base-ubuntu:dev --description "Compiler work"
+swarmy agent ls
+swarmy chat --agent tommy
+# In another terminal, open a separate session on the same computer:
+swarmy chat --agent tommy
+swarmy run --agent tommy "Inspect the background processes"
+swarmy agent show tommy
+swarmy agent delete tommy --yes
+```
+
+Agent creation uses `default_image` if `--image` is omitted. Names contain 1-64
+ASCII letters, digits, hyphens, or underscores. `--agent` accepts a name or agent
+id, opens a new session, and rejects `--image`; it uses the agent's pinned image
+without requiring a configured default. It also cannot accompany a chat session
+id. Both chats use the same computer and placement epoch. Closing either client
+keeps that computer; `session close` refuses named sessions and points to
+`agent delete`. Delete asks for confirmation unless `--yes` is supplied, removes
+the named identity and computer, and retains session transcripts.
+
+The chat status bar shows the agent name or `ephemeral`, session id, state, and
+provider. Named conversations label system notices with their session id so
+notices remain attributable when several chats share a computer. `--agent` skips
+the recent-session picker. `chat --json` reads one prompt per stdin line and
+emits the run event protocol, waiting for idle between prompts; EOF closes the
+client. The other agent and session commands also support `--json`, and all of
+these commands accept `--remote NAME` before or after the subcommand.
+
+`agent show` reports placement node and epoch, every session's state, and last
+disk snapshot time and age from the committed manifest's ULID timestamp. Before
+the computer has a volume, snapshot fields are empty (null in JSON). The node
+currently has no sandbox-status query, so sandbox state is explicitly `unknown`
+with `node status reporting unavailable`; placement is not a liveness report.
+See the [CLI README](../crates/swarmy-cli/README.md) for output fields and the
+root acceptance test that verifies a background process across two named chats.
+
 ## Shared configuration
 
 Every binary searches upward from its current directory for
@@ -75,7 +123,7 @@ script = ".swarmy/dev/fake.json"
 call_log = ".swarmy/dev/calls.log"
 ```
 
-Every new session needs a registered image, including sessions that only use
+Every new ephemeral session needs a registered image, including sessions that only use
 remote tools. Set `default_image = "NAME:TAG"` or `SWARMY_DEFAULT_IMAGE`, or pass
 `--image NAME:TAG` to `swarmy run` or `swarmy chat`. The flag overrides the
 setting, which has no built-in default. Unknown images fail before a session is

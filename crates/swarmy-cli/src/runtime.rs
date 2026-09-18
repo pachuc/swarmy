@@ -1,4 +1,6 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
+mod agent;
+mod agent_command;
 mod bench;
 mod bench_command;
 mod chat;
@@ -34,6 +36,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create and manage named agents
+    Agent {
+        #[command(subcommand)]
+        command: agent_command::Command,
+    },
     /// Measure conversation latency
     Bench {
         #[command(subcommand)]
@@ -65,12 +72,18 @@ enum Command {
         /// Base image in NAME:TAG form for this session's disk.
         #[arg(long)]
         image: Option<String>,
+        /// Open a new session on a named agent (name or agent id)
+        #[arg(long, conflicts_with = "image")]
+        agent: Option<String>,
     },
     Chat {
         session_id: Option<ulid::Ulid>,
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
         image: Option<String>,
+        /// Open a new session on a named agent (name or agent id)
+        #[arg(long, conflicts_with_all = ["image", "session_id"])]
+        agent: Option<String>,
     },
     Session {
         #[command(subcommand)]
@@ -105,13 +118,23 @@ fn main() -> anyhow::Result<()> {
             Command::Gc { dry_run } => gc::run(dry_run, cli.json).await,
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
-            Command::Run { prompt, image } => session::run(prompt, image, cli.json).await,
-            Command::Chat { session_id, image } => {
-                anyhow::ensure!(
-                    !cli.json,
-                    "chat is a terminal interface and does not support --json"
-                );
-                chat::run(session_id.map(swarmy_core::SessionId::from_ulid), image).await
+            Command::Agent { command } => agent::run(command, cli.json).await,
+            Command::Run {
+                prompt,
+                image,
+                agent,
+            } => session::run(prompt, image, agent, cli.json).await,
+            Command::Chat {
+                session_id,
+                image,
+                agent,
+            } => {
+                let id = session_id.map(swarmy_core::SessionId::from_ulid);
+                if cli.json {
+                    session::chat_json(id, image, agent).await
+                } else {
+                    chat::run(id, image, agent).await
+                }
             }
             Command::Session { command } => session::inspect(command, cli.json).await,
         }

@@ -1,3 +1,4 @@
+mod agent_command;
 mod bench_command;
 mod dev;
 mod doctor;
@@ -31,6 +32,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create and manage named agents
+    Agent {
+        #[command(subcommand)]
+        command: agent_command::Command,
+    },
     /// Measure conversation latency
     Bench {
         #[command(subcommand)]
@@ -70,6 +76,9 @@ enum Command {
         prompt: String,
         #[arg(long)]
         image: Option<String>,
+        /// Open a new session on a named agent (name or agent id)
+        #[arg(long, conflicts_with = "image")]
+        agent: Option<String>,
     },
     /// Open a terminal conversation, or resume a session
     Chat {
@@ -77,6 +86,9 @@ enum Command {
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
         image: Option<String>,
+        /// Open a new session on a named agent (name or agent id)
+        #[arg(long, conflicts_with_all = ["image", "session_id"])]
+        agent: Option<String>,
     },
     /// Inspect stored sessions
     Session {
@@ -125,6 +137,7 @@ fn main() -> anyhow::Result<()> {
             command: remote_command::Command::Status
         } | Command::Bench { .. }
             | Command::Run { .. }
+            | Command::Agent { .. }
             | Command::Session { .. }
             | Command::Chat { .. }
             | Command::Vol { .. }
@@ -149,6 +162,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Bench { .. }
         | Command::Run { .. }
+        | Command::Agent { .. }
         | Command::Session { .. }
         | Command::Chat { .. }
         | Command::Vol { .. }

@@ -12,6 +12,26 @@ pub use crate::session_command::Command;
 pub async fn inspect(command: Command, json: bool) -> Result<()> {
     let store = store().await?;
     match command {
+        Command::Close { session_id } => {
+            let id = SessionId::from_ulid(session_id);
+            let session = store
+                .fetch_session(id)
+                .await?
+                .context("session not found")?;
+            if let swarmy_core::SessionKind::Named { agent_id } = session.kind {
+                let name = store
+                    .get_agent(agent_id)
+                    .await?
+                    .map_or_else(|| agent_id.to_string(), |agent| agent.name);
+                bail!("cannot close a named agent's session; use swarmy agent delete {name}");
+            }
+            store.close_session(id, jiff::Timestamp::now()).await?;
+            crate::vol::output(
+                &serde_json::json!({"event": "session_closed", "session_id": id}),
+                &format!("Closed session {id}"),
+                json,
+            )?;
+        }
         Command::Show { session_id } => {
             let id = SessionId::from_ulid(session_id);
             let session = store
@@ -45,14 +65,32 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     break;
                 }
                 for session in sessions {
-                    if json {
-                        println!("{}", serde_json::to_string(&session)?);
+                    let name = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+                        store
+                            .get_agent(session.agent_id)
+                            .await?
+                            .map(|agent| agent.name)
                     } else {
-                        println!(
-                            "{} {:?} head={}",
-                            session.session_id, session.state, session.head_seq
-                        );
-                    }
+                        None
+                    };
+                    let mut value = serde_json::to_value(&session)?;
+                    value["agent_name"] = serde_json::to_value(&name)?;
+                    let kind = match session.kind {
+                        swarmy_core::SessionKind::Ephemeral => "ephemeral",
+                        swarmy_core::SessionKind::Named { .. } => "named",
+                    };
+                    crate::vol::output(
+                        &value,
+                        &format!(
+                            "{} {:?} kind={kind} agent={} head={} computer_deleted={}",
+                            session.session_id,
+                            session.state,
+                            name.as_deref().unwrap_or("-"),
+                            session.head_seq,
+                            session.computer_deleted
+                        ),
+                        json,
+                    )?;
                     after = Some(session.session_id);
                 }
             }
@@ -61,20 +99,60 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()> {
-    let mut conversation = Conversation::open(None, image.as_deref()).await?;
-    let id = conversation.id;
-    let mut output = Output::new(json);
+pub async fn run(
+    prompt: String,
+    image: Option<String>,
+    agent: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let mut conversation = Conversation::open(None, image.as_deref(), agent.as_deref()).await?;
+    announce(&conversation, json, "session_created")?;
+    conversation.send(prompt).await?;
+    until_idle(&mut conversation, json).await
+}
+
+fn announce(conversation: &Conversation, json: bool, event: &str) -> Result<()> {
     if json {
         println!(
             "{}",
-            serde_json::json!({"event": "session_created", "session_id": id})
+            serde_json::json!({"event": event, "session_id": conversation.id, "agent_name": conversation.agent_name})
         );
     } else {
-        eprintln!("Session {id}");
+        eprintln!("Session {}", conversation.id);
     }
     std::io::stdout().flush()?;
-    conversation.send(prompt).await?;
+    Ok(())
+}
+
+/// JSON chat accepts one prompt per input line and emits the run event protocol.
+pub async fn chat_json(
+    id: Option<SessionId>,
+    image: Option<String>,
+    agent: Option<String>,
+) -> Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    let mut conversation = Conversation::open(id, image.as_deref(), agent.as_deref()).await?;
+    announce(
+        &conversation,
+        true,
+        if id.is_some() {
+            "session_opened"
+        } else {
+            "session_created"
+        },
+    )?;
+    until_idle(&mut conversation, true).await?;
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    while let Some(prompt) = lines.next_line().await? {
+        conversation.send(prompt).await?;
+        until_idle(&mut conversation, true).await?;
+    }
+    Ok(())
+}
+
+async fn until_idle(conversation: &mut Conversation, json: bool) -> Result<()> {
+    let id = conversation.id;
+    let mut output = Output::new(json);
     let mut idle_event = false;
     loop {
         match conversation.next().await? {
@@ -113,6 +191,7 @@ pub async fn run(prompt: String, image: Option<String>, json: bool) -> Result<()
                 }
                 break;
             }
+            Notification::Transcript(TranscriptEvent::State(SessionState::Completed)) => break,
             Notification::Transcript(_) => {}
         }
     }

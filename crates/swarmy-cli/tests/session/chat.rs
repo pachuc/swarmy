@@ -30,6 +30,31 @@ impl Terminal {
         image: Option<&str>,
         default: &str,
     ) -> Self {
+        Self::with_agent(fixture, id, image, default, None)
+    }
+
+    fn with_agent(
+        fixture: &Fixture,
+        id: Option<SessionId>,
+        image: Option<&str>,
+        default: &str,
+        agent: Option<&str>,
+    ) -> Self {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
+        command.arg("chat");
+        if let Some(agent) = agent {
+            command.args(["--agent", agent]);
+        }
+        if let Some(image) = image {
+            command.args(["--image", image]);
+        }
+        if let Some(id) = id {
+            command.arg(id.to_string());
+        }
+        Self::command(fixture, command, default)
+    }
+
+    fn command(fixture: &Fixture, mut command: CommandBuilder, default: &str) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -38,14 +63,6 @@ impl Terminal {
                 pixel_height: 0,
             })
             .unwrap();
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
-        command.arg("chat");
-        if let Some(image) = image {
-            command.args(["--image", image]);
-        }
-        if let Some(id) = id {
-            command.arg(id.to_string());
-        }
         command.env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster);
         command.env("SWARMY_NATS_URL", &fixture.url);
         command.env("SWARMY_STORE_DIRECTORY", &fixture.directory);
@@ -83,7 +100,7 @@ impl Terminal {
             .screen(|screen| screen.contains("New session"))
             .await;
         terminal.type_text("\r");
-        terminal.ready().await;
+        assert!(terminal.ready().await.contains("ephemeral |"));
         terminal
     }
 
@@ -645,35 +662,10 @@ async fn root_chat_default_image_executes_pwd() {
         return;
     };
     run(|fixture| async move {
-        let settings = swarmy_config::Settings::load().unwrap().settings;
-        let images = Store::open(Some(&settings.fdb_cluster_file), Some(&settings.store_directory.split('/').map(str::to_owned).collect::<Vec<_>>()), Arc::new(MemoryBlobStore::default())).await.unwrap();
-        let (name, tag) = image.split_once(':').unwrap();
-        let manifest = images.get_image(name, &swarmy_core::ImageTag(tag.into())).await.unwrap().expect("build SWARMY_TEST_IMAGE first");
-        fixture.store.put_manifest(manifest, &images.get_manifest(manifest).await.unwrap().unwrap()).await.unwrap();
-        fixture.store.put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest).await.unwrap();
-        let files = tempfile::tempdir().unwrap();
-        std::fs::create_dir(files.path().join(".swarmy")).unwrap();
-        std::fs::write(files.path().join(".swarmy/config.toml"), "").unwrap();
-        std::fs::write(files.path().join("script.json"), r#"{
+        let (services, _node) = root_services(&fixture, &image, r#"{
             "request_based": {"steps": 2, "tool_steps": [0], "bash_command": "pwd", "final_answer": "pwd completed"}
-        }"#).unwrap();
-        let mut services = Services {
-            files,
-            children: Vec::new(),
-            bin: PathBuf::from(env!("CARGO_BIN_EXE_swarmy")).parent().unwrap().to_owned(),
-        };
-        for name in ["scheduler", "worker", "gateway"] { services.launch(&fixture, name); }
-        wait_for_scheduler(&fixture).await;
-        let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
-        let _node = Node { root: services.files.path().join(".swarmy/node"), child: std::process::Command::new(services.bin.join("swarmyd"))
-            .current_dir(services.files.path())
-            .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
-            .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
-            .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
-            .env("SWARMY_BUS_PREFIX", &fixture.prefix)
-            .env("SWARMY_NATS_URL", &fixture.url)
-            .env("TOKIO_WORKER_THREADS", "2")
-            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap() };
+        }"#).await;
+        let manifest = fixture.store.get_image("fixture", &swarmy_core::ImageTag("test".into())).await.unwrap().unwrap();
         let mut terminal = Terminal::new_session(&fixture).await;
         let id = session_id(&fixture).await;
         assert_eq!(fixture.store.session_image(id).await.unwrap(), Some(manifest));
@@ -703,3 +695,76 @@ async fn root_chat_default_image_executes_pwd() {
         terminal.exit(true).await;
     }).await;
 }
+
+async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
+    let settings = swarmy_config::Settings::load().unwrap().settings;
+    let images = Store::open(
+        Some(&settings.fdb_cluster_file),
+        Some(
+            &settings
+                .store_directory
+                .split('/')
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        ),
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let (name, tag) = image.split_once(':').unwrap();
+    let manifest = images
+        .get_image(name, &swarmy_core::ImageTag(tag.into()))
+        .await
+        .unwrap()
+        .expect("build SWARMY_TEST_IMAGE first");
+    fixture
+        .store
+        .put_manifest(
+            manifest,
+            &images.get_manifest(manifest).await.unwrap().unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .store
+        .put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest)
+        .await
+        .unwrap();
+    let files = tempfile::tempdir().unwrap();
+    std::fs::create_dir(files.path().join(".swarmy")).unwrap();
+    std::fs::write(files.path().join(".swarmy/config.toml"), "").unwrap();
+    std::fs::write(files.path().join("script.json"), script).unwrap();
+    let mut services = Services {
+        files,
+        children: Vec::new(),
+        bin: PathBuf::from(env!("CARGO_BIN_EXE_swarmy"))
+            .parent()
+            .unwrap()
+            .to_owned(),
+    };
+    for name in ["scheduler", "worker", "gateway"] {
+        services.launch(fixture, name);
+    }
+    wait_for_scheduler(fixture).await;
+    let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
+    let node = Node {
+        root: services.files.path().join(".swarmy/node"),
+        child: std::process::Command::new(services.bin.join("swarmyd"))
+            .current_dir(services.files.path())
+            .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
+            .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
+            .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
+            .env("SWARMY_BUS_PREFIX", &fixture.prefix)
+            .env("SWARMY_NATS_URL", &fixture.url)
+            .env("TOKIO_WORKER_THREADS", "2")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap(),
+    };
+
+    (services, node)
+}
+
+#[path = "chat_named.rs"]
+mod named;

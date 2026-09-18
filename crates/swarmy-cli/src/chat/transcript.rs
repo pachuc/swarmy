@@ -13,6 +13,7 @@ use crate::conversation::{TranscriptEvent, message_text};
 #[derive(Default)]
 pub struct Transcript {
     entries: Vec<Entry>,
+    notice_session: Option<SessionId>,
     partial: BTreeMap<usize, String>,
     messages: HashSet<MessageId>,
     pub state: Option<SessionState>,
@@ -34,6 +35,13 @@ enum Entry {
 }
 
 impl Transcript {
+    pub fn new(notice_session: Option<SessionId>) -> Self {
+        Self {
+            notice_session,
+            ..Self::default()
+        }
+    }
+
     pub fn apply(&mut self, event: TranscriptEvent) {
         match event {
             TranscriptEvent::UserMessage(message) => {
@@ -87,7 +95,12 @@ impl Transcript {
         let mut lines = Vec::new();
         for entry in &self.entries {
             match entry {
-                Entry::System(text) => append_lines(&mut lines, "System", text, Color::Yellow),
+                Entry::System(text) => {
+                    let label = self
+                        .notice_session
+                        .map_or_else(|| "System".into(), |id| format!("System [session {id}]"));
+                    append_lines(&mut lines, &label, text, Color::Yellow);
+                }
                 Entry::User(text) => append_lines(&mut lines, "You", text, Color::Cyan),
                 Entry::Assistant(text) => append_lines(&mut lines, "Agent", text, Color::Reset),
                 Entry::Error(text) => append_lines(&mut lines, "Error", text, Color::Reset),
@@ -134,7 +147,7 @@ impl Transcript {
         Paragraph::new(self.lines()).wrap(Wrap { trim: false })
     }
 
-    pub fn status(&self, id: SessionId, provider: &str) -> Line<'static> {
+    pub fn status(&self, id: SessionId, provider: &str, agent: Option<&str>) -> Line<'static> {
         let state = self
             .state
             .map_or_else(|| "Loading".into(), |state| format!("{state:?}"));
@@ -143,7 +156,10 @@ impl Transcript {
         } else {
             "input locked"
         };
-        Line::raw(format!("{id} | {state} | {provider} | {input} | Esc: quit"))
+        let agent = clean(agent.unwrap_or("ephemeral"));
+        Line::raw(format!(
+            "{agent} | {id} | {state} | {provider} | {input} | Esc: quit"
+        ))
     }
 }
 
@@ -355,20 +371,28 @@ mod recovery_tests {
             }],
         };
         let event = Event::MessageAppended { seq: 1, message };
-        let mut replay = Replay::default();
-        let mut transcript = Transcript::default();
-        transcript.apply(replay.record(&event).unwrap());
-        assert!(replay.record(&event).is_none());
-        let text = transcript
-            .lines()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(text.contains("System"));
-        assert_eq!(
-            text.matches("Computer rebuilt from its snapshot.").count(),
-            1
-        );
+        let id = SessionId::from_ulid(ulid::Ulid::generate());
+        for agent in [None, Some("tommy")] {
+            let mut replay = Replay::default();
+            let mut transcript = Transcript::new(agent.map(|_| id));
+            transcript.apply(replay.record(&event).unwrap());
+            assert!(replay.record(&event).is_none());
+            let text = transcript
+                .lines()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let label =
+                agent.map_or_else(|| "System:".into(), |_| format!("System [session {id}]:"));
+            assert!(text.contains(&label));
+            assert_eq!(
+                text.matches("Computer rebuilt from its snapshot.").count(),
+                1
+            );
+            let status = transcript.status(id, "fake", agent).to_string();
+            assert!(status.starts_with(agent.unwrap_or("ephemeral")));
+            assert!(status.contains(&id.to_string()));
+        }
     }
 }
