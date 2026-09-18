@@ -56,6 +56,39 @@ all orchestration logic is in house.
 | **Principal** | Anything that can be a channel member: an agent, a human, or the system. |
 | **Node** | A Linux host running `swarmyd`. Advertises roles and capacity. |
 
+### 3.1 Ephemeral conversations and named agents
+
+A new `chat` or `run` without `--agent` creates an **ephemeral session** with
+its own anonymous identity and computer. Two ephemeral sessions have separate
+writable disks. Exiting the client leaves the conversation resumable. Explicit
+`session close ID` completes it and deletes its computer; the scheduler also
+closes Idle ephemeral sessions after the retention period (24 hours by default,
+configured by `SWARMY_EPHEMERAL_RETENTION_SECONDS`). Active sessions are excluded.
+The idle clock starts at creation and resets on each transition into Idle.
+
+`agent create NAME` creates a **named agent**, pinning its selected image.
+Every `chat --agent NAME` or `run --agent NAME` opens another conversation on
+that identity. These sessions share one computer, writable disk, and background
+processes, while retaining separate transcripts. Calls from all sessions queue
+for serial execution on that computer. Quitting a client and the ephemeral
+retention sweep do not delete named agents. `session close` refuses named
+sessions; `agent delete NAME` deletes the identity and shared computer.
+
+Computer deletion atomically removes placement and volume references and fences
+further tools. The node stops processes and detaches the disk when renewal
+fails. Object storage chunks become eligible for collection after the configured
+grace period if no other image, volume, or snapshot references them. Conversation
+logs stay readable after either kind of deletion; they do not keep deleted disks
+alive. Reusing a deleted name creates a new identity.
+
+Both kinds use the same checkpoint and recovery rules. A checkpoint preserves
+files, not processes. After node failure, a named agent's rebuild notice is
+recorded once per epoch in every existing session, including idle sessions,
+before recovered tool results. `agent show` reports sampled call occupancy and
+snapshot age; unknown occupancy must not be inferred to mean an idle computer.
+See [the store lifetime contract](agent-lifecycle.md) and the
+[command walkthrough](DEV.md#ephemeral-sessions-and-named-agents).
+
 ## 4. Services
 
 Control-plane services are stateless Rust binaries. Node agents own local
@@ -673,7 +706,7 @@ recovery, since routing precedes sandbox boot and cannot establish when boot
 finished or when the old computer failed. When available, the lost placement's
 last claim or renewal time is explicitly labeled as an estimated failure time.
 An eviction notice says the computer was stopped while idle and rebuilt from its final checkpoint. Deliver these
-notices durably to the main session, deduplicated by agent id and epoch, before
+notices durably to every existing session, deduplicated per session and epoch, before
 new tool results are folded. Never claim that successful tool output implies
 that its disk changes survived. The placement record retains the latest change;
 message delivery must persist each observed notice and its delivery cursor.

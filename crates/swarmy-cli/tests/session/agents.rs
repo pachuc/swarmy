@@ -527,6 +527,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
         assert!(shown["last_snapshot_age_seconds"].is_number());
         // Placement must not be presented as an observed running sandbox.
         assert_eq!(shown["sandbox_state"], "unknown");
+        check_call_status(&fixture, &placement).await;
     })
     .await;
 }
@@ -608,4 +609,66 @@ async fn new_commands_use_the_selected_remote_profile() {
         );
     })
     .await;
+}
+
+async fn check_call_status(fixture: &Fixture, placement: &swarmy_core::PlacementRecord) {
+    let mut status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: placement.node_id,
+        epoch: placement.epoch,
+        holder_session_id: Some(SessionId::from_ulid(Ulid::generate())),
+        queued_calls: 2,
+        observed_at: Timestamp::now(),
+        expires_at: placement.expires_at,
+    };
+    for expected in ["busy", "idle"] {
+        fixture.store.put_agent_call_status(&status).await.unwrap();
+        let shown: serde_json::Value = serde_json::from_str(&success(
+            fixture.output(&["agent", "show", "placed", "--json"]).await,
+        ))
+        .unwrap();
+        assert_eq!(shown["sandbox_state"], expected);
+        assert_eq!(shown["call_status"], serde_json::to_value(&status).unwrap());
+        let text = success(fixture.output(&["agent", "show", "placed"]).await);
+        for field in [
+            format!("sandbox_state={expected}"),
+            format!("queued_calls={}", status.queued_calls),
+            format!("observed_at={}", status.observed_at),
+            format!("expires_at={}", status.expires_at),
+            format!(
+                "call_holder={}",
+                status
+                    .holder_session_id
+                    .map_or_else(|| "-".into(), |id| id.to_string())
+            ),
+        ] {
+            assert!(text.contains(&field), "missing {field}: {text}");
+        }
+        status.holder_session_id = None;
+        status.queued_calls = 0;
+        status.observed_at = Timestamp::now();
+    }
+    // A once-idle observation must not survive expiry or placement release.
+    status.expires_at = Timestamp::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap();
+    fixture.store.put_agent_call_status(&status).await.unwrap();
+    assert_unknown_call_status(fixture).await;
+    status.expires_at = placement.expires_at;
+    fixture.store.put_agent_call_status(&status).await.unwrap();
+    fixture.store.release(placement).await.unwrap();
+    assert_unknown_call_status(fixture).await;
+}
+
+async fn assert_unknown_call_status(fixture: &Fixture) {
+    let shown: serde_json::Value = serde_json::from_str(&success(
+        fixture.output(&["agent", "show", "placed", "--json"]).await,
+    ))
+    .unwrap();
+    assert_eq!(shown["sandbox_state"], "unknown");
+    assert!(shown["call_status"].is_null());
+    assert_eq!(
+        shown["sandbox_state_reason"],
+        "no current node call observation"
+    );
 }

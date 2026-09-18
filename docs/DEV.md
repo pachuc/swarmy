@@ -409,10 +409,9 @@ count and environment at startup. Restart and health checks remain shared.
 The laptop runs the CLI, scheduler, worker, and inference gateway as your normal
 user. EC2 runs FoundationDB, NATS, SeaweedFS, and the privileged `swarmyd` that
 hosts agent computers. SSH forwards the coordinator, NATS, and S3 endpoints.
-The current FoundationDB client also connects to the node's advertised private
-address: this workflow presently needs direct private-network reachability to
-TCP 4500 (for example, a client in the same VPC). SSH alone from an external
-laptop is not proven to work; see the [measured limitation](volume-benchmarks.md#2026-09-17-remote-node-workflow-without-local-root).
+FoundationDB advertises loopback port 4500, and all three backing services
+are reached through SSH. The [SSH-only proof](volume-benchmarks.md#2026-09-17-ssh-only-remote-stack)
+blocks direct private-network service traffic from the client user.
 No local root, container runtime, NBD device, or cloud CLI is required by
 `swarmy remote`. The current client and supervisor target Linux x86-64; macOS support is not
 established by this procedure. Provisioning uses passwordless sudo **on the
@@ -489,9 +488,7 @@ swarmy remote status
 ```
 
 FoundationDB must bind local `127.0.0.1:4500` exactly. A local stack using that
-port prevents a usable remote connection. Preserving the port does not solve
-the private-address connection requirement above. Stop a conflicting local
-stack, disconnect, and reconnect.
+port prevents a usable remote connection. Stop a conflicting local stack, disconnect, and reconnect.
 NATS and S3 alone can use automatically selected alternative local ports.
 
 `up` finishes by building `images/base-ubuntu` as root on the node using
@@ -535,6 +532,97 @@ Do not share its refresh writer with a running Codex login. Node services have
 the explicit credential-transfer option described below. Prompts, outputs, and session
 history do live in the remote backing services. The fake-provider acceptance
 run requires no ChatGPT credential; see the dated benchmark evidence.
+
+### Ephemeral sessions and named agents
+
+Without `--agent`, each new conversation gets its own computer and writable disk:
+
+```bash
+swarmy chat --remote demo
+# In another terminal, create a separate ephemeral conversation:
+swarmy chat --remote demo
+swarmy session ls --remote demo
+swarmy chat --remote demo SESSION_ID   # resume an existing conversation
+swarmy session close SESSION_ID --remote demo
+swarmy session show SESSION_ID --remote demo --json
+```
+
+Escape, Ctrl-C, or EOF in `chat --json` closes the client only. The session
+and computer remain available for resume. `session close` completes an ephemeral
+session and deletes its computer while keeping its transcript. The scheduler
+also closes Idle ephemeral sessions after 24 hours by default. For a disposable
+retention test, set the interval on the scheduler before starting services:
+
+```bash
+swarmy dev down
+SWARMY_EPHEMERAL_RETENTION_SECONDS=90 swarmy dev up --remote demo
+```
+
+This override applies to local services in the default laptop mode. Node services
+need the override in their systemd environment and a scheduler restart. The sweep
+runs every 60 seconds or every retention interval if shorter. Only idle sessions
+strictly older than the cutoff qualify; active sessions and named agents do not.
+
+Create a named agent to keep a computer independently of any one conversation:
+
+```bash
+swarmy agent create tommy --remote demo --description 'Shared development computer'
+swarmy chat --agent tommy --remote demo
+# In a second terminal, open another session on the same computer:
+swarmy chat --agent tommy --remote demo
+swarmy agent ls --remote demo
+swarmy agent show tommy --remote demo --json
+swarmy run --agent tommy --remote demo 'Read the files created in the other chat'
+```
+
+Ask the first chat to write a file and use `process_start` to start
+`python3 -u -m http.server 18765 --bind 127.0.0.1`. Ask the second to read that
+file, fetch the server with `curl`, and list managed processes. Both sessions
+share those files and processes. Simultaneous tool calls queue for the shared
+computer, with one call running at a time. Each conversation has its own log.
+`agent show` reports the sampled holder session, queued call count, node, epoch,
+and observation expiry, plus the last committed disk snapshot time. Missing
+or stale samples mean unknown activity. Busy includes computer startup.
+
+Creation pins `default_image` or an explicit `--image NAME:TAG`. New sessions
+on the named agent use that pin, so `--agent` cannot be combined with `--image`
+or a resume session id. Names and agent ids both work. Quitting either client
+leaves the agent available, and ephemeral retention never deletes it.
+
+Ask for `checkpoint` before the daemon-kill procedure below. After recovery,
+both transcripts receive the same rebuild notice, including idle chats. Read
+the checkpointed file from both sessions and restart the server: files survive
+at the snapshot boundary, while background processes and memory are lost.
+Then delete the shared computer:
+
+```bash
+swarmy agent delete tommy --remote demo            # interactive confirmation
+# For scripts, use --yes on the same command.
+swarmy session show FIRST_SESSION_ID --remote demo --json
+swarmy session show SECOND_SESSION_ID --remote demo --json
+```
+
+`session close` refuses named sessions and points to `agent delete` instead.
+Deletion removes the identity, placement, and disk references immediately;
+physical processes and attachments disappear on the node's next failed renewal.
+Transcripts remain readable and further sandbox tools are refused. Recreating
+`tommy` makes a new identity and computer.
+
+Chunks are reclaimed separately. On an isolated disposable stack with no
+pending writes, wait beyond a short grace window, inspect candidates, collect,
+and confirm a subsequent pass has nothing more to delete:
+
+```bash
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --dry-run --json
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --json
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --dry-run --json
+```
+
+Use the normal six-hour grace for ongoing work. Images, other volumes, and
+retained snapshots protect shared chunks, so freed bytes need not equal the
+logical disk size. These commands report object bytes, not SeaweedFS filesystem
+space after compaction. See the dated lifecycle run in
+[volume benchmarks](volume-benchmarks.md) for transcript and reclamation evidence.
 
 ### Add capacity and exercise recovery
 

@@ -43,17 +43,21 @@ Quitting either chat leaves the named agent available.
 time. `agent show` adds description, placement epoch, each session's state, and
 last disk snapshot time and age in seconds, using the committed head manifest's
 ULID timestamp as recovery notices do. Before a volume exists, snapshot fields
-are null. The current node API does not expose sandbox status: the command
-reports `unknown` with the reason `node status reporting unavailable`, even if
-a placement exists. A placement alone does not prove a sandbox is running.
+are null. The command reads the node's sampled call status: `busy` means a call holds
+the computer (including startup) or calls are queued; `idle` means a resident
+computer has no holder or queued calls. Missing, expired, or replaced-placement
+observations report `unknown`. Samples expire after three node heartbeat
+intervals. This is call occupancy, not a health probe or execution authority.
 
 Every agent and session command supports global `--json` and `--remote NAME`.
 JSON create returns an agent record; ls emits one record per line with
 `node_id` and `session_count`; show adds `placement`, `sandbox_state`,
-`sandbox_state_reason`, `last_snapshot_at`, `last_snapshot_age_seconds`, and
+`sandbox_state_reason`, `call_status`, `last_snapshot_at`, `last_snapshot_age_seconds`, and
 `sessions`. Delete and close emit `agent_deleted` and `session_closed` records.
 `--json` still requires confirmation for deletion unless `--yes` is supplied;
-prompts go to stderr. `session list` remains an alias for `session ls`.
+prompts go to stderr. `call_status` is null when unknown; otherwise it includes
+`agent_id`, `node_id`, `epoch`, `holder_session_id`, `queued_calls`, `observed_at`,
+and `expires_at`. Text output includes the same observation fields. `session list` remains an alias for `session ls`.
 
 Both `run` and `chat` accept `--image NAME:TAG` to override the default for a new
 session. There is no built-in default. Creation validates the registration and

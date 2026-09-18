@@ -144,10 +144,9 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
             })
             .transpose()?;
         let age = snapshot_at.map(|time| Timestamp::now().duration_since(time).as_secs().max(0));
-        let state = "unknown (node status reporting unavailable)";
+        let status = store.agent_call_status(agent.agent_id).await?;
+        let state = call_status(&mut value, &mut text, status.as_ref())?;
         value["placement"] = serde_json::to_value(&placement)?;
-        value["sandbox_state"] = "unknown".into();
-        value["sandbox_state_reason"] = "node status reporting unavailable".into();
         value["last_snapshot_at"] = serde_json::to_value(snapshot_at)?;
         value["last_snapshot_age_seconds"] = serde_json::to_value(age)?;
         value["sessions"] = serde_json::to_value(&sessions)?;
@@ -170,4 +169,39 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         }
     }
     output(&value, &text, json)
+}
+
+fn call_status(
+    value: &mut serde_json::Value,
+    text: &mut String,
+    status: Option<&swarmy_core::AgentCallStatus>,
+) -> Result<&'static str> {
+    let state = match status {
+        Some(status) if status.holder_session_id.is_some() || status.queued_calls > 0 => "busy",
+        Some(_) => "idle",
+        None => "unknown",
+    };
+    value["sandbox_state"] = state.into();
+    value["sandbox_state_reason"] = if status.is_some() {
+        "sampled node call occupancy"
+    } else {
+        "no current node call observation"
+    }
+    .into();
+    value["call_status"] = serde_json::to_value(status)?;
+    if let Some(status) = status {
+        write!(
+            text,
+            "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
+            status
+                .holder_session_id
+                .map_or_else(|| "-".into(), |id| id.to_string()),
+            status.queued_calls,
+            status.observed_at,
+            status.expires_at,
+            status.node_id,
+            status.epoch,
+        )?;
+    }
+    Ok(state)
 }
