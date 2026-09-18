@@ -172,9 +172,37 @@ async fn scenarios(f: &mut Fixture, nodes: &mut Nodes) -> Result<()> {
         "process survived rebuild"
     );
     notice(f, snapshot, PlacementChangeReason::Failure).await?;
+    continue_shared(f, &current, snapshot).await?;
     tracing::info!(seconds = start.elapsed().as_secs_f64(), %snapshot, "persistent node kill with background server passed; time includes lease expiry");
     eviction(f, agent, volume, first, second).await?;
     rehydration(f, nodes, agent, second).await
+}
+
+async fn continue_shared(
+    f: &mut Fixture,
+    current: &swarmy_core::PlacementRecord,
+    snapshot: swarmy_core::ManifestId,
+) -> Result<()> {
+    let first = f.sessions[0];
+    let second = f.sessions[1];
+    bash(
+        f,
+        first,
+        "test $(cat /root/persistent) = durable && echo rebuilt > /root/continued",
+    )
+    .await?;
+    bash(f, second, "test $(cat /root/continued) = rebuilt").await?;
+    ensure!(
+        f.store
+            .get_by_agent(current.agent_id)
+            .await?
+            .context("placement missing")?
+            .epoch
+            == current.epoch,
+        "sessions did not continue on the same rebuilt computer"
+    );
+    notice(f, snapshot, PlacementChangeReason::Failure).await?;
+    Ok(())
 }
 
 async fn wait_for_dead_writer(
@@ -385,7 +413,6 @@ async fn notice(
         f.store.placement_failure_estimate(&placement).await?,
     )
     .context("notice missing")?;
-    let mut count = 0;
     for id in &f.sessions {
         let session = f
             .store
@@ -394,12 +421,12 @@ async fn notice(
             .context("session missing")?;
         let mut events = Vec::new();
         crate::read_through(&f.store, *id, &mut events, session.head_seq).await?;
-        count += events.iter().filter(|e| matches!(e, Event::MessageAppended {message, ..} if message.role == MessageRole::System && message.parts == [Part::Text {text: expected.clone()}])).count();
+        let count = events.iter().filter(|e| matches!(e, Event::MessageAppended {message, ..} if message.role == MessageRole::System && message.parts == [Part::Text {text: expected.clone()}])).count();
+        ensure!(
+            count == 1,
+            "session {id}: expected one durable notice with exact snapshot time, got {count}: {expected}"
+        );
     }
-    ensure!(
-        count == 1,
-        "expected one durable notice with exact snapshot time, got {count}: {expected}"
-    );
     Ok(())
 }
 

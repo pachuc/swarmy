@@ -42,10 +42,17 @@ async fn dispatch_arguments(
         computer_deleted: false,
     };
     let id = session.session_id;
-    store
-        .create_session(&session, jiff::Timestamp::now(), "persistent:test")
-        .await
-        .unwrap();
+    if store.get_agent(agent).await.unwrap().is_some() {
+        store
+            .create_session_for_agent(id, Some(agent), None, jiff::Timestamp::now())
+            .await
+            .unwrap();
+    } else {
+        store
+            .create_session(&session, jiff::Timestamp::now(), "persistent:test")
+            .await
+            .unwrap();
+    }
     store
         .wake_session(id, jiff::Timestamp::now())
         .await
@@ -842,4 +849,91 @@ pub(super) async fn deleted_computer(node: &Node, store: &Store, bus: &Bus) {
     eprintln!(
         "computer deletion acceptance: in-flight call stopped, container destroyed and NBD detached on renewal failure"
     );
+}
+
+pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
+    let agent = store
+        .create_agent(
+            "shared-calls",
+            "persistent:test",
+            "",
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap()
+        .agent_id;
+    let first = dispatch(store, bus, node.id, agent,
+        "echo first-start; echo first-error >&2; touch /first-started; while test ! -e /release-first; do sleep 0.05; done; echo first-end").await;
+    written(node, agent, "first-started").await;
+    let second = dispatch(store, bus, node.id, agent,
+        "echo second-start; echo second-error >&2; touch /second-started; while test ! -e /release-second; do sleep 0.05; done; echo second-end").await;
+    wait_status(store, agent, Some(first.session_id), 1).await;
+    let rootfs = node
+        .root
+        .path()
+        .join(format!(".swarmy/node/bundles/{agent}/rootfs"));
+    assert!(
+        !rootfs.join("second-started").exists(),
+        "second call ran while first held sandbox"
+    );
+    assert!(!store.tool_completed(first.request_id).await.unwrap());
+    assert!(!store.tool_completed(second.request_id).await.unwrap());
+    std::fs::write(rootfs.join("release-first"), "").unwrap();
+    written(node, agent, "second-started").await;
+    wait_status(store, agent, Some(second.session_id), 0).await;
+    let result = completed(store, &first).await;
+    assert_eq!(result["stdout"], "first-start\nfirst-end\n");
+    assert_eq!(result["stderr"], "first-error\n");
+    std::fs::write(rootfs.join("release-second"), "").unwrap();
+    let result = completed(store, &second).await;
+    assert_eq!(result["stdout"], "second-start\nsecond-end\n");
+    assert_eq!(result["stderr"], "second-error\n");
+    wait_status(store, agent, None, 0).await;
+    let observation = store.agent_call_status(agent).await.unwrap().unwrap();
+    // Delayed older samples cannot overwrite the node's current observation.
+    let mut stale = observation.clone();
+    stale.observed_at = stale
+        .observed_at
+        .checked_sub(Duration::from_secs(1))
+        .unwrap();
+    stale.holder_session_id = Some(first.session_id);
+    store.put_agent_call_status(&stale).await.unwrap();
+    assert_eq!(
+        store
+            .agent_call_status(agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .holder_session_id,
+        None
+    );
+    evicted(store, agent).await;
+    assert!(store.agent_call_status(agent).await.unwrap().is_none());
+    assert!(matches!(
+        store.put_agent_call_status(&observation).await,
+        Err(swarmy_store::StoreError::LeaseMismatch)
+    ));
+    eprintln!(
+        "shared calls passed: FIFO serialization, separate stdout/stderr, holder handoff, queue depth, idle and released status"
+    );
+}
+
+async fn wait_status(store: &Store, agent: AgentId, holder: Option<SessionId>, queued: u64) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if store
+                .agent_call_status(agent)
+                .await
+                .unwrap()
+                .is_some_and(|status| {
+                    status.holder_session_id == holder && status.queued_calls == queued
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("holder or queue depth was not reported");
 }

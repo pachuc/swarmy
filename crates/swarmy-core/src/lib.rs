@@ -44,7 +44,7 @@ pub use tool::{
 };
 
 mod placement;
-pub use placement::{PlacementChangeReason, PlacementRecord};
+pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 
 mod rebuild;
 pub use rebuild::computer_rebuilt_message;

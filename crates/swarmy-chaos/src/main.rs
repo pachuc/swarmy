@@ -26,8 +26,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Part, SessionId, SessionRecord, SessionState,
-    WakeReply,
+    Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
 };
 use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
@@ -266,7 +265,21 @@ impl Fixture {
     }
 
     async fn create_sessions(&mut self, count: usize, shared: bool) -> Result<()> {
-        let agent = AgentId::from_ulid(Ulid::generate());
+        let agent = if shared {
+            Some(
+                self.store
+                    .create_agent(
+                        "persistent-shared",
+                        "chaos:test",
+                        "Two sessions sharing a computer",
+                        Timestamp::now(),
+                    )
+                    .await?
+                    .agent_id,
+            )
+        } else {
+            None
+        };
         for _ in 0..count {
             let id = loop {
                 let id = SessionId::from_ulid(Ulid::generate());
@@ -276,22 +289,11 @@ impl Fixture {
             };
             self.sessions.push(id);
             self.store
-                .create_session(
-                    &SessionRecord {
-                        session_id: id,
-                        agent_id: if shared {
-                            agent
-                        } else {
-                            AgentId::from_ulid(Ulid::generate())
-                        },
-                        state: SessionState::Idle,
-                        head_seq: 0,
-                        snapshot_ref: None,
-                        kind: swarmy_core::SessionKind::Ephemeral,
-                        computer_deleted: false,
-                    },
+                .create_session_for_agent(
+                    id,
+                    agent,
+                    if shared { None } else { Some("chaos:test") },
                     Timestamp::now(),
-                    "chaos:test",
                 )
                 .await?;
             self.store
