@@ -20,6 +20,8 @@ macro_rules! sandbox_tool {
     };
 }
 
+mod timers;
+pub use timers::{CancelTimer, ListTimers, SetTimer};
 mod files;
 pub use files::{Edit, Glob, Grep, Ls, Read, UpdatePlan, Write};
 
@@ -88,6 +90,9 @@ fn process_parameters() -> Value {
 }
 
 pub fn register(tools: &mut ToolRegistry) {
+    tools.register(Box::new(SetTimer));
+    tools.register(Box::new(ListTimers));
+    tools.register(Box::new(CancelTimer));
     tools.register(Box::new(Read));
     tools.register(Box::new(Write));
     tools.register(Box::new(Edit));

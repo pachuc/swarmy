@@ -51,16 +51,16 @@ impl Snapshot {
         match event {
             Event::MessageAppended { message, .. } => {
                 self.messages.push(message.clone());
-                // New user messages must not interrupt external work already in flight.
+                // Incoming messages, including timer notes, must not interrupt external work.
                 if !matches!(
                     self.phase,
                     Phase::WaitingInference { .. } | Phase::Tools { .. }
                 ) || message.role == MessageRole::Tool
                 {
                     self.phase = match message.role {
-                        MessageRole::User | MessageRole::Tool => Phase::Ready,
+                        // Between turns, a system note delivered by a timer starts inference.
+                        MessageRole::User | MessageRole::Tool | MessageRole::System => Phase::Ready,
                         MessageRole::Assistant => Phase::EndTurn,
-                        MessageRole::System => self.phase.clone(),
                     };
                 }
             }

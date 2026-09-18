@@ -18,7 +18,7 @@ pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use event::Event;
 pub use id::{
     AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
-    SessionId, VolumeId,
+    SessionId, TimerId, VolumeId,
 };
 pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
@@ -68,3 +68,9 @@ pub use plan::{PlanStatus, PlanStep, UpdatePlanArguments};
 
 mod reasoning;
 pub use reasoning::{InvalidReasoningEffort, ReasoningEffort};
+
+mod timer;
+pub use timer::{
+    CancelTimerArguments, MAX_AGENT_TIMERS, MAX_TIMER_NOTE_BYTES, SetTimerArguments, TimerRecord,
+    TimerStatus,
+};

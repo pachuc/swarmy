@@ -31,6 +31,10 @@ macro_rules! ulid_id {
 }
 
 ulid_id!(
+    /// Identifies a durable wakeup belonging to an agent.
+    TimerId
+);
+ulid_id!(
     /// Identifies a managed process within one sandbox lifetime.
     ProcessId
 );

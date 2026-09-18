@@ -593,7 +593,7 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         }
         assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
     }
-    assert_eq!(registry.definitions().len(), 15);
+    assert_eq!(registry.definitions().len(), 18);
     assert!(
         swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
             .is_err()
@@ -665,5 +665,70 @@ fn update_plan_dispatches_without_a_sandbox_and_validates_steps() {
         json!({}),
     ] {
         assert!(UpdatePlanArguments::parse(invalid).is_err());
+    }
+}
+
+#[test]
+fn system_timer_note_starts_a_turn_but_does_not_interrupt_inflight_work() {
+    let note = Event::MessageAppended {
+        seq: 8,
+        message: Message {
+            id: message_id(9),
+            role: MessageRole::System,
+            parts: vec![Part::Text {
+                text: "timer reminder".into(),
+            }],
+        },
+    };
+    for history in [vec![], vec![user_event(), inference_event(&[])]] {
+        let snapshot = Snapshot::default().replay(&history);
+        let Action::BuildInference(request) = harness().step(
+            &session(),
+            &snapshot,
+            std::slice::from_ref(&note),
+            message_id(10),
+        ) else {
+            panic!("system note did not start inference")
+        };
+        assert_eq!(request.messages.last().unwrap().role, MessageRole::System);
+    }
+    for history in [&fixture()[..2], &fixture()[..5]] {
+        let snapshot = Snapshot::default().replay(history);
+        assert_eq!(
+            harness().step(
+                &session(),
+                &snapshot,
+                std::slice::from_ref(&note),
+                message_id(10)
+            ),
+            Action::Wait
+        );
+    }
+}
+
+#[test]
+fn timer_tools_dispatch_without_a_sandbox() {
+    let mut registry = ToolRegistry::default();
+    swarmy_tools::register(&mut registry);
+    for (name, arguments) in [
+        ("set_timer", json!({"delay_seconds":120,"note":"remember"})),
+        ("list_timers", json!({})),
+        (
+            "cancel_timer",
+            json!({"timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}),
+        ),
+    ] {
+        let tool = registry.get(name).unwrap();
+        assert!(!tool.sandbox_bound());
+        let call = ToolCallRecord {
+            call_id: ToolCallId(name.into()),
+            tool: name.into(),
+            arguments,
+            result: None,
+        };
+        assert_eq!(
+            step(&[user_event(), inference_event(std::slice::from_ref(&call))]),
+            Action::DispatchTools(vec![call])
+        );
     }
 }

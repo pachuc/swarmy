@@ -494,24 +494,21 @@ impl Worker {
                             Err(error) => Err(error.to_string()),
                         }
                     }
-                    Some(_) if call.tool == "update_plan" => {
+                    Some(_)
+                        if matches!(
+                            call.tool.as_str(),
+                            "update_plan" | "set_timer" | "list_timers" | "cancel_timer"
+                        ) =>
+                    {
                         self.tool_stage(id, turn, TurnStage::ToolDispatched, request_id)
                             .await;
-                        let event = {
-                            let token = lease.lock().await;
-                            self.store
-                                .complete_plan_tool(
-                                    id,
-                                    session.head_seq,
-                                    token.as_ref().context("lease released")?,
-                                    request_id,
-                                    &call,
-                                )
-                                .await?
-                        };
+                        let event = self
+                            .complete_store_tool(session, lease, request_id, &call)
+                            .await?;
                         session.head_seq = event.seq();
-                        if let Ok(arguments) =
-                            swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
+                        if call.tool == "update_plan"
+                            && let Ok(arguments) =
+                                swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
                         {
                             session.plan = arguments.plan;
                         }
@@ -550,6 +547,39 @@ impl Worker {
         }
         self.dispatch_pending(session, lease, jobs, turn).await?;
         Ok(true)
+    }
+
+    async fn complete_store_tool(
+        &self,
+        session: &SessionRecord,
+        lease: &ActiveLease,
+        request_id: RequestId,
+        call: &ToolCallRecord,
+    ) -> Result<Event> {
+        let token = lease.lock().await;
+        let token = token.as_ref().context("lease released")?;
+        let event = if call.tool == "update_plan" {
+            self.store
+                .complete_plan_tool(
+                    session.session_id,
+                    session.head_seq,
+                    token,
+                    request_id,
+                    call,
+                )
+                .await?
+        } else {
+            self.store
+                .complete_timer_tool(
+                    session.session_id,
+                    session.head_seq,
+                    token,
+                    request_id,
+                    call,
+                )
+                .await?
+        };
+        Ok(event)
     }
 
     async fn dispatch_calls(

@@ -1,5 +1,6 @@
 mod check;
 mod config;
+mod continuity;
 mod disk;
 mod measure;
 mod persistent;
@@ -171,6 +172,33 @@ impl Fixture {
                     "bash_command": config.image.as_ref().map(|_| "printf 'swarmy\\n' >> /root/swarmy-lines; sleep 2; cat /root/swarmy-lines") }
             }))?,
         )?;
+        let environment = self.service_environment(config)?;
+        for (kind, count) in [
+            (Kind::Scheduler, config.schedulers),
+            (Kind::Worker, config.workers),
+            (Kind::Gateway, config.gateways),
+            (
+                Kind::Node,
+                usize::from(config.image.is_some() && !config.agent_checks.persistent),
+            ),
+        ] {
+            for index in 0..count {
+                self.processes.push(Process::start(
+                    kind,
+                    index,
+                    binaries,
+                    self.files.path(),
+                    &environment,
+                )?);
+            }
+        }
+        self.ready().await?;
+        self.environment = environment;
+        self.create_sessions(config.sessions, config.agent_checks.persistent)
+            .await
+    }
+
+    fn service_environment(&self, config: &Config) -> Result<Vec<(OsString, OsString)>> {
         let mut environment: Vec<(OsString, OsString)> = [
             ("SWARMY_PROVIDER", "fake"),
             ("SWARMY_STORE_DIRECTORY", &self.prefix),
@@ -198,7 +226,14 @@ impl Fixture {
             .collect::<Vec<(OsString, OsString)>>();
         shared.append(&mut environment);
         environment = shared;
-        if config.persistent {
+        if config.agent_checks.continuity {
+            environment.extend([
+                ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
+                ("SWARMY_SCHEDULER_PARTITIONS".into(), "0-255".into()),
+                ("SWARMY_SUMMARIZE_AT_TOKENS".into(), "10".into()),
+            ]);
+        }
+        if config.agent_checks.persistent {
             environment.push(("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()));
         }
         environment.push((
@@ -215,29 +250,7 @@ impl Fixture {
                 self.files.path().join("calls").into_os_string(),
             ),
         ]);
-        for (kind, count) in [
-            (Kind::Scheduler, config.schedulers),
-            (Kind::Worker, config.workers),
-            (Kind::Gateway, config.gateways),
-            (
-                Kind::Node,
-                usize::from(config.image.is_some() && !config.persistent),
-            ),
-        ] {
-            for index in 0..count {
-                self.processes.push(Process::start(
-                    kind,
-                    index,
-                    binaries,
-                    self.files.path(),
-                    &environment,
-                )?);
-            }
-        }
-        self.ready().await?;
-        self.environment = environment;
-        self.create_sessions(config.sessions, config.persistent)
-            .await
+        Ok(environment)
     }
 
     async fn ready(&mut self) -> Result<()> {
@@ -433,7 +446,10 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
     let result = tokio::select! {
         result = async {
             timeout(Duration::from_secs(60), fixture.start(config, binaries)).await.context("session setup timed out")??;
-            if config.persistent {
+            if config.agent_checks.continuity {
+                continuity::exercise(&mut fixture).await?;
+                Ok(0)
+            } else if config.agent_checks.persistent {
                 persistent::exercise(&mut fixture, binaries, config.node_driver.as_deref()).await?;
                 if let Some(script) = &config.measurements { measure::run(&fixture, binaries, &script.canonicalize()?).await?; }
                 Ok(0)
