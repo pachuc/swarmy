@@ -163,6 +163,10 @@ impl Store {
         self.root
             .pack(&("agent", id.as_ulid().to_bytes().as_slice()))
     }
+    pub(crate) fn agent_github_token_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
+        self.root
+            .pack(&("agent_github_token", id.as_ulid().to_bytes().as_slice()))
+    }
     pub(crate) fn agent_name_key(&self, name: &str) -> Vec<u8> {
         self.root.pack(&("agent_by_name", name))
     }

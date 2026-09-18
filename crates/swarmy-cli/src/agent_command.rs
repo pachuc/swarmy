@@ -31,12 +31,21 @@ pub enum Command {
         description: String,
         #[command(flatten)]
         inference: InferenceArgs,
+        /// GitHub token, stored only in `FoundationDB`
+        #[arg(long)]
+        github_token: Option<String>,
     },
-    /// Change inference settings for all sessions of an agent
+    /// Change inference settings or rotate the GitHub token for an agent
     Set {
         name: String,
         #[command(flatten)]
         inference: InferenceArgs,
+        /// GitHub token, stored only in `FoundationDB`
+        #[arg(long, conflicts_with = "clear_github_token")]
+        github_token: Option<String>,
+        /// Remove the stored GitHub token
+        #[arg(long)]
+        clear_github_token: bool,
     },
     /// List named agents
     #[command(alias = "list")]

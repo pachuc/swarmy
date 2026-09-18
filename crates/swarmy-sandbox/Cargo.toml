@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 swarmy-core.workspace = true
+swarmy-store.workspace = true
 swarmy-volume.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
