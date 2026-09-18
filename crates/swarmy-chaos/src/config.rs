@@ -6,9 +6,8 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(about = "Verify durable sessions while killing and restarting services")]
 pub struct Config {
-    /// Exercise shared computers, background-process loss, and idle eviction.
-    #[arg(long)]
-    pub persistent: bool,
+    #[command(flatten)]
+    pub agent_checks: AgentChecks,
     /// Executable controlling a remote first node: start, kill, and stop.
     /// Receives the node settings as environment variables. Used by cloud benchmarks.
     #[arg(long, requires = "persistent")]
@@ -54,6 +53,16 @@ pub struct Config {
     pub bin_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct AgentChecks {
+    /// Exercise shared computers, background-process loss, and idle eviction.
+    #[arg(long)]
+    pub persistent: bool,
+    /// Prove named-agent memory, tools, and timers survive summarization and a full restart.
+    #[arg(long, requires = "image", conflicts_with = "persistent")]
+    pub continuity: bool,
+}
+
 impl Config {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -85,7 +94,13 @@ impl Config {
                 "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
             );
         }
-        if self.persistent {
+        if self.agent_checks.continuity {
+            ensure!(
+                self.gateways == 1 && self.kills == 0,
+                "--continuity requires --gateways 1 --kills 0"
+            );
+        }
+        if self.agent_checks.persistent {
             ensure!(self.image.is_some(), "--persistent requires --image");
             ensure!(
                 self.sessions == 2 && self.gateways == 1 && self.kills == 0,

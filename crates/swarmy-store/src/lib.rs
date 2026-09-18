@@ -20,6 +20,7 @@ mod placed_tools;
 mod placements;
 mod plans;
 mod session_images;
+mod timers;
 mod tool_routing;
 mod tools;
 mod turns;

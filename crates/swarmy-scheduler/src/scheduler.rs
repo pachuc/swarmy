@@ -21,6 +21,7 @@ impl Scheduler {
         tokio::select! {
             () = self.scan_loop() => {},
             () = self.reaper_loop() => {},
+            () = self.timer_loop() => {},
             result = self.bus.serve_place_requests(|request| async move {
                 match self.store.place_sandbox(request.session_id, Timestamp::now()).await {
                     Ok(record) => swarmy_core::PlaceReply::Placed(record),
@@ -71,6 +72,51 @@ impl Scheduler {
                     tracing::warn!(partition, %error, "runnable scan failed; will retry");
                 }
             }
+        }
+    }
+
+    async fn timer_loop(&self) {
+        let mut interval = tokio::time::interval(self.config.scan_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = self.scan_timers().await {
+                tracing::warn!(%error, "timer scan failed; will retry");
+            }
+        }
+    }
+
+    async fn scan_timers(&self) -> Result<(), StoreError> {
+        let now = Timestamp::now();
+        let mut cursor = None;
+        loop {
+            let page = self.store.scan_due_timers(now, cursor.as_ref()).await?;
+            for timer in &page {
+                match self
+                    .store
+                    .fire_timer(timer.agent_id, timer.timer_id, now)
+                    .await
+                {
+                    Ok(Some((id, event))) => {
+                        if let Err(error) = self
+                            .bus
+                            .publish_live(swarmy_bus::LiveFeed::SessionEvents(id), &event)
+                            .await
+                        {
+                            tracing::warn!(%error, "timer event notification failed");
+                        }
+                        self.nudge(id, false).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(timer_id = %timer.timer_id, %error, "timer append failed; will retry");
+                    }
+                }
+            }
+            if page.len() < MAX_SCAN_LIMIT {
+                return Ok(());
+            }
+            cursor = page.last().cloned();
         }
     }
 

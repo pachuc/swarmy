@@ -84,6 +84,19 @@ impl Process {
         Ok(())
     }
 
+    pub fn start_stopped(&mut self) -> Result<()> {
+        ensure!(
+            self.child.try_wait()?.is_some(),
+            "{} is still running",
+            self.name
+        );
+        self.child = self
+            .command
+            .spawn()
+            .with_context(|| format!("start {} after full stop", self.name))?;
+        Ok(())
+    }
+
     pub fn kill_now(&mut self) {
         let _ = self.child.start_kill();
         for _ in 0..500 {

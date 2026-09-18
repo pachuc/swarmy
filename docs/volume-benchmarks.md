@@ -2855,3 +2855,95 @@ lease fencing, twelve seeded service/node kills, deterministic Ubuntu builds,
 OCI layer deletion, NBD checksums and crash images, and upload priority. Skopeo
 and umoci were installed before the OCI test. Final inspection found no attached
 NBD devices or remaining sandbox mounts.
+
+## 2026-09-18 Persistent agent continuity across summarization and restart
+
+Ran on the Ubuntu 24.04 EC2 launcher with root, the real local FoundationDB,
+NATS, SeaweedFS, and runc node stack. Built all service binaries from this
+checkout and built `base-ubuntu:continuity` from `images/base-ubuntu`. The image
+has an 8 GiB disk and 3,299 nonzero chunks. One scheduler, worker, gateway, and
+`swarmyd` ran with the scripted fake provider in an isolated store directory
+and bus namespace.
+
+The reproducible fixture is `swarmy-chaos --continuity`, exercised by the root
+integration test below. It creates Tommy, writes the fact through `write`,
+installs the previously absent `tree` package through `bash`, and acknowledges
+an explicit `checkpoint`. It then calls `set_timer` with `delay_seconds: 120`
+and forces summarization with `SWARMY_SUMMARIZE_AT_TOKENS=10` and a scripted
+100-token response. The structured summary deliberately omits the fact.
+The fixture checks the changed main pointer and both the old transcript and
+new opening context.
+
+It stops every Swarmy service and the node process before restarting any of
+them. Shutdown must release the computer placement and detach the home volume.
+FoundationDB, NATS, and SeaweedFS remain running; this is a complete Swarmy
+service and node-process restart, not an EC2 reboot. After restart, the fixture
+checks the unchanged pending timer, executes `tree --version`, reads the memory
+file, and verifies that the actual final inference input contains the fact in
+its memory context. The scripted answer alone cannot satisfy that assertion.
+
+Commands, with compilation performed as the ordinary user:
+
+```sh
+scripts/dev-stack.sh start
+source .dev/env
+cargo build --workspace
+sudo -E target/debug/swarmy --json image build images/base-ubuntu --tag continuity
+export SWARMY_TEST_IMAGE=base-ubuntu:continuity
+cargo test -p swarmy-chaos --test continuity --no-run
+test_binary=$(cargo test -p swarmy-chaos --test continuity --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.name == "continuity") | .executable')
+sudo -E "$test_binary" --nocapture
+```
+
+Transcript excerpt, with tracing prefixes and package-install progress removed.
+All times are UTC on 2026-09-18:
+
+```text
+20:50:18.695 User: Remember this fact in your memory files: Tommy's favorite
+                 observatory is Violet Ridge. Install the tree tool and
+                 checkpoint your disk.
+20:50:43.780 write: Wrote /home/agent/memory/facts.txt.
+20:50:43.780 bash: Selecting previously unselected package tree.
+                  Setting up tree (2.1.1-2ubuntu3) ...
+                  tree v2.1.1; exit_code=0
+20:50:43.780 checkpoint: manifest_id=01M2V4HX5B7W3FJQ9J4006AHZY
+20:50:43.794 User: Set a two-minute timer with the observatory notebook reminder,
+                 then summarize.
+20:50:43.902 set_timer: timer_id=01M2V4JAZMEZJA18B6ZN682P3C
+                      due_at=2026-09-18T20:52:43.828291592Z
+                      note="Two-minute reminder: check the observatory notebook."
+                      status=Pending
+20:50:43.903 Summarized; fact absent from new transcript.
+             Previous main: 01M2V4HJDNGVN4F6FXG94C2G6M
+             Current main:  01M2V4JB0ZS1J8XMTVEXTPG52G
+20:50:44.167 All Swarmy services and node stopped.
+20:50:44.199 All Swarmy services and node restarted.
+20:50:44.204 User: What observatory did I ask you to remember? Read your memory
+                 file and verify tree is still installed.
+20:50:44.992 bash: tree v2.1.1; exit_code=0
+20:50:44.992 read: 1: Tommy's favorite observatory is Violet Ridge.
+20:50:44.995 Assistant: My memory file says: Tommy's favorite observatory is
+                      Violet Ridge.
+20:52:43.950 Timer delivered once and processed after restart:
+             "Two-minute reminder: check the observatory notebook."
+             Fired receipt: current main, message sequence 17.
+20:52:44.634 root_persistent_agent_continuity ... ok
+             1 passed; 0 failed; finished in 146.06s
+```
+
+Result: memory recall, installed-tool continuity, main-session summarization,
+and timer delivery all passed. The fixture observed the timer's completed turn
+122 ms after its scheduled due time, including its polling delay. It required
+exactly one system note in the new main conversation and an assistant response
+to that note. Cleanup stopped the node, unmounted the filesystem, detached the
+device, and removed the isolated metadata and bus streams; no NBD mount remained.
+
+Validation also passed `cargo fmt --all --check`,
+`cargo test --workspace --locked`, and
+`cargo clippy --workspace --all-targets --locked -- -D warnings`. The workspace
+run used the dev-stack environment and reported 363 passing test cases, including
+root-only cases that skip when unprivileged; the continuity test above was then
+executed separately with root. Timer tests cover delay and absolute-time
+validation, set/list/cancel, due-time fencing, a failed append followed by retry,
+concurrent delivery, a lost nudge, reopening the store after restart, main-session
+replacement, a missing main conversation, agent isolation, and deletion.

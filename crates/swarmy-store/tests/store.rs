@@ -1904,3 +1904,6 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
     assert_eq!(events.len(), 4);
     test.cleanup().await;
 }
+
+#[path = "store/timers.rs"]
+mod timers;

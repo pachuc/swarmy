@@ -67,10 +67,11 @@ configured by `SWARMY_EPHEMERAL_RETENTION_SECONDS`). Active sessions are exclude
 The idle clock starts at creation and resets on each transition into Idle.
 
 `agent create NAME` creates a **named agent**, pinning its selected image.
-Every `chat --agent NAME` or `run --agent NAME` opens another conversation on
-that identity. These sessions share one computer, writable disk, and background
-processes, while retaining separate transcripts. Calls from all sessions queue
-for serial execution on that computer. Quitting a client and the ephemeral
+By default, `chat --agent NAME` and `run --agent NAME` resume its main
+conversation, creating it atomically if absent. `--new` opens a side conversation
+without changing the main pointer. These sessions share one computer, writable
+disk, and background processes, while retaining separate transcripts. Calls from
+all sessions queue for serial execution on that computer. Quitting a client and the ephemeral
 retention sweep do not delete named agents. `session close` refuses named
 sessions; `agent delete NAME` deletes the identity and shared computer.
 
@@ -88,6 +89,59 @@ before recovered tool results. `agent show` reports sampled call occupancy and
 snapshot age; unknown occupancy must not be inferred to mean an idle computer.
 See [the store lifetime contract](agent-lifecycle.md) and the
 [command walkthrough](DEV.md#ephemeral-sessions-and-named-agents).
+
+### 3.2 Persistent agent configuration and continuity
+
+Each named agent stores optional system prompt, model, and reasoning-effort
+settings. The worker resolves those overrides against the stack defaults before
+inference. Updating an agent affects subsequent requests; it does not create a
+new identity, disk, or conversation. The selected base image remains pinned.
+
+The agent's main-session pointer is durable and changes only through an explicit
+main-session selection or summarization. When a completed main turn reaches
+`SWARMY_SUMMARIZE_AT_TOKENS` (by default 75% of the configured context window),
+the worker requests a structured summary containing goals, state of work, open
+questions, and facts to keep. A
+valid summary archives the old session and opens a fresh idle session. The
+summary, previous/next links, and main pointer commit together under the worker
+lease. Invalid or failed summaries leave the existing conversation usable. Side
+sessions do not automatically summarize the main conversation, and old
+transcripts remain readable.
+
+Memory files live on the agent's home volume, by default under
+`/home/agent/memory`, configured with `SWARMY_MEMORY_DIR`. Agents use the file tools
+to record facts there. Before ordinary inference, the worker asks the current
+node for a bounded, sorted memory excerpt and includes it in the system prompt.
+The node checks placement authority and caches excerpts by file metadata.
+Unavailable computers contribute no excerpt until a tool places and opens the
+computer again. Memory files and installed packages share the disk snapshot
+contract: use `checkpoint` to acknowledge durable storage before a failure test.
+Summarization preserves conversation context; it does not replace these files.
+
+`set_timer` stores a note and either a positive `delay_seconds` or an absolute
+RFC 3339 `at` timestamp. Past absolute times are eligible immediately. Timers
+belong to named agents, including timers set from side conversations, and always
+deliver to the current main conversation, opening it if absent. Each agent can
+have 32 pending timers; notes are bounded to 1,024 UTF-8 bytes. `list_timers` returns pending timers and
+`cancel_timer` cancels one by its ULID. Cancellation is idempotent and cannot
+retract a delivered note. Timer mutations and their tool completions commit
+under the same worker head and lease fence, so replay cannot create duplicates.
+
+The scheduler pages the durable due-time index on its scan tick. Busy main
+conversations leave due timers pending until they become idle; summarization
+therefore cannot strand a note in an archived session. Delivery resolves the
+main pointer, appends the note as a system message, makes the session runnable,
+and records the fired status with the session and event sequence in one
+transaction. Competing schedulers cannot deliver twice. A failed append leaves
+the timer pending for the next tick. A lost publication after a successful
+append is recovered from the runnable index without appending the note again.
+All timer state survives scheduler restarts. Deleted agents' due timers are
+retired without waking their old sessions. Delivery is at or after the due time,
+subject to service availability and completion of the current turn.
+
+The [real-node acceptance](volume-benchmarks.md#2026-09-18-persistent-agent-continuity-across-summarization-and-restart) exercises
+memory, installed tools, summarization, and a two-minute timer across a full
+stop and restart of all Swarmy services and the node process.
 
 ## 4. Services
 
@@ -305,7 +359,9 @@ Values over 100KB are stored in object storage with a pointer in the value.
 ("member", channel_id, principal_id)        -> MemberRecord
 ("cursor", principal_id, channel_id)        -> seq
 ("inbox", agent_id, seq)                    -> {channel_id, msg_seq}
-("timer", wake_at, session_id)              -> ()
+("timer", agent_id, timer_id)                -> TimerRecord {due_at, note, status}
+("timer_active", agent_id, timer_id)         -> pending TimerRecord
+("timer_due", due_millis, agent_id, timer_id) -> pending TimerRecord
 ```
 
 Partition count for `runnable` is fixed at creation, for example 256, and

@@ -302,7 +302,7 @@ impl Store {
         result
     }
 
-    async fn create_session_in(
+    pub(crate) async fn create_session_in(
         &self,
         trx: &Transaction,
         session: &SessionRecord,
