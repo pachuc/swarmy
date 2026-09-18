@@ -332,3 +332,5 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
         if error == "This session's computer has been deleted. Create a new session to run tools.")));
     cleanup(&cluster, &url, &prefix).await;
 }
+
+mod agent_settings;

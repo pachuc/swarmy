@@ -71,8 +71,10 @@ pub enum StoreError {
     SessionImageRequired,
     #[error("This session's computer has been deleted. Create a new session to run tools.")]
     ComputerDeleted,
-    #[error("only ephemeral sessions can be closed")]
-    NamedSessionClose,
+    #[error("cannot close an agent main session; use swarmy agent delete to delete the agent")]
+    MainSessionClose,
+    #[error("main session must be an open session belonging to the agent")]
+    InvalidMainSession,
     #[error("node does not exist")]
     NodeMissing,
     #[error("node has no computer capacity available")]
