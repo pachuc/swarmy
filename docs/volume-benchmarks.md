@@ -2591,3 +2591,267 @@ remaining running AWS instance is the launcher, `i-074ffdebcc7a6968c`.
 This run used SeaweedFS on the terminated node and created no external S3
 objects, GCP buckets, or HMAC keys. The SSH master, network namespace, route
 rejection rules, and NAT rule were removed, and IP forwarding was restored.
+
+## 2026-09-18 Ephemeral sessions and named agents
+
+This run used the ordinary `ubuntu` launcher user (UID 1000), the scripted fake
+provider, and two Ubuntu 24.04 `m6id.xlarge` EC2 nodes in `us-east-1`. Both nodes
+ran kernel `7.0.0-1012-aws`, with 100 GiB EBS root disks and 220.7 GiB local NVMe
+caches. The primary hosted FoundationDB, NATS, and SeaweedFS; the launcher hosted
+the scheduler, worker, and gateway. No ChatGPT credential was used.
+
+The run used `remote up lifetimes`, `remote add-node lifetimes`, `remote connect
+lifetimes`, and `dev up --remote lifetimes`. Remote provisioning commands were
+serialized because they hold the remote state lock. Up took 644.7 seconds,
+including a 439-second release build and a 111.5-second image build. Connect
+took 7.720 seconds and preserved local ports 4500, 4222, and 8333. Doctor passed
+a FoundationDB session read, a NATS publish/subscribe round trip, and S3 reachability.
+The following rule remained installed throughout the remote scenarios:
+
+```sh
+sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d 172.31.0.0/16 \
+  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+```
+
+Direct probes to all three ports on both `172.31.63.59` and `172.31.56.252`
+failed and incremented the rule's counter six times. Client commands ran without
+sudo. SSH administration used sudo on the nodes. The raw
+[proof archive](benchmarks/2026-09-18-lifetimes.json.gz) includes the profile,
+doctor report, firewall counters, binary hashes, commands, and transcripts.
+
+### Separate ephemeral disks, explicit close, and retention
+
+Two concurrently open `chat --remote lifetimes --json` clients created these
+sessions. Each ran `test ! -e /root/owner`, wrote its own marker and 8 MiB of
+random data, and explicitly called `checkpoint`. Commands used `set -eu`, so
+an existing marker or a failed write would fail the tool. Both bash calls
+returned exit code zero. The node had two containers and two NBD attachments.
+
+| Chat | Session | Computer / volume | Checkpoint |
+| --- | --- | --- | --- |
+| A | `01M2SH3FD2C6BB27726FAREC41` | `01M2SH3FD2QCCBJ7KFQZZGW1EV` | `01M2SH3FR0DJ45WER65YPAFB01` |
+| B | `01M2SH3GECD88MWX3RNK82V8SF` | `01M2SH3GECAJ5KTZTSEH9DNX45` | `01M2SH3GNJ8EWTBHQ612FBPNBH` |
+
+Transcript excerpts:
+
+```text
+A bash: stdout="ephemeral-A\n", exit_code=0, timed_out=false
+A checkpoint: manifest_id=01M2SH3FR0DJ45WER65YPAFB01
+A assistant: EPHEMERAL_A_OK
+B bash: stdout="ephemeral-B\n", exit_code=0, timed_out=false
+B checkpoint: manifest_id=01M2SH3GNJ8EWTBHQ612FBPNBH
+B assistant: EPHEMERAL_B_OK
+```
+
+EOF closed both clients without deleting either computer. Explicit
+`session close 01M2SH3FD2C6BB27726FAREC41 --remote lifetimes --json` returned
+in **0.0386 seconds**. SSH polling observed one remaining container and NBD
+attachment **7.327 seconds** after command start. This physical-release time is
+an upper bound sampled at roughly 0.5-second intervals plus SSH overhead;
+command acknowledgement only establishes the store deletion and fencing.
+
+The scheduler was started by `dev up` with
+`SWARMY_EPHEMERAL_RETENTION_SECONDS=90`. Chat B was left idle until the sweep
+marked it `completed` and `computer_deleted=true`. The node then had no containers
+or attached NBD devices. `session show --json` still read both complete logs,
+including their successful tools and checkpoints, after deletion.
+
+Before the deletion measurements, a collector pass removed unrelated staging
+orphans. Each deletion was followed by a three-second wait, a dry run, a real
+collection, and another dry run, all with `SWARMY_GC_GRACE_SECONDS=2`:
+
+```sh
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote lifetimes --dry-run --json
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote lifetimes --json
+SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote lifetimes --dry-run --json
+```
+
+| Deleted computer | Dry-run candidate bytes | Chunks deleted | Bytes freed | Candidate bytes afterward |
+| --- | ---: | ---: | ---: | ---: |
+| Explicit ephemeral close | 9,961,472 | 38 | 9,961,472 | 0 |
+| Ephemeral retention sweep | 10,485,760 | 40 | 10,485,760 | 0 |
+
+These are deleted chunk-object bytes, not reclaimed SeaweedFS filesystem blocks.
+The base image remains referenced. Disk metadata contributes to the differences
+from the 8 MiB payload size. The short grace is for this controlled, checkpointed
+workload; ordinary operation retains the six-hour default.
+
+### Named agent, shared calls, and host loss
+
+`agent create lifetime-agent --remote lifetimes --json` created
+`01M2SH9T6S087H224M2F0B2GEP`. The elapsed time from starting that command to
+receiving the first successful tool result was **0.367 seconds**. This single
+sample includes creation, opening chat, cold computer startup, and a bash call
+that wrote a marker and 8 MiB; it excludes provisioning and image construction.
+The primary daemon was stopped before placement, so the computer ran on the
+joining EC2 node `i-0c3f816d5e8346859`.
+
+Chats `01M2SH9T85DMHM3900B6ADE0PT` and `01M2SH9WAXPRPS0Y1FB6BBKW2Y` shared one
+container and volume. The first wrote `/root/shared`, started a managed Python
+HTTP server on port 18765, and checkpointed. The second read the file through
+both bash and HTTP, wrote `/root/from-b`, listed the still-running server, and
+checkpointed to `01M2SH9WR4Q17NQ9SW006GT60B`.
+
+```text
+A bash: named-A
+A process_start: process_id=01M2SH9TJR6TTG9M6C9G76VY2W
+B bash: named-A
+        SHARED_SERVER_OK
+B process_list: command="python3 -u -m http.server 18765 --bind 127.0.0.1 --directory /root"
+                process_id=01M2SH9TJR6TTG9M6C9G76VY2W, status=running
+B checkpoint: manifest_id=01M2SH9WR4Q17NQ9SW006GT60B
+```
+
+The driver initially treated an empty `runc list --format json` result as an
+array, but runc returned `null`. After correcting that driver assumption, both
+clients resumed their existing session IDs. The shared server was still running.
+With both clients open, A issued a 15-second bash call and B issued another
+file/HTTP read. The updated `agent show` reported this same observation in text
+and JSON:
+
+```text
+sandbox_state=busy
+call_holder=01M2SH9T85DMHM3900B6ADE0PT queued_calls=1
+node=01M2SGXFR9RDKGREJYFQHDV5B6 epoch=1
+observed_at=2026-09-18T05:56:03.223736591Z
+expires_at=2026-09-18T05:56:18.223736591Z
+```
+
+Both sessions were `WaitingTools`. A returned `HOLDER_START`, `named-B`, and
+`HOLDER_DONE`; B then returned `named-A` and `QUEUED_SHARED_OK`, both with exit
+code zero. This proves shared files and server lifetime across conversations
+and client exits, as well as visible serialization of simultaneous calls.
+
+At `2026-09-18T05:56:14.909007Z`, after restarting the primary daemon, the driver
+disabled automatic restart on the joining daemon, sent it SIGKILL, and called
+`aws ec2 terminate-instances` for its host. The driver waited 65 seconds before
+sending new tool turns from both chats. This deliberate wait covers the
+60-second volume-writer lease; it is not a measurement of rehydration latency.
+
+Both sessions moved to node `01M2SGHX6GXEC03F6YVPNRX28P` on the primary, at epoch
+2 with change reason `failure`. Both live clients received the same system
+message ID `01M2SHEJ3XRMVDE4VG1D5JZZ12` exactly once, and both durable logs
+retained it. Its text was:
+
+```text
+Your computer recovery began at 2026-09-18T05:57:22.678591704Z from the snapshot at 2026-09-18T05:54:49.732Z, which was 152 seconds before recovery. The estimated failure time is 2026-09-18T05:56:07.274411582Z, based on the lost computer's last successful placement claim or lease renewal; the actual failure time is unknown. Running processes and file changes after that snapshot were lost. The interrupted tool call failed; check external side effects before retrying.
+```
+
+The driver initially searched for the older word `rebuilt`; checking the current
+`recovery began` message confirmed successful delivery in both live transcripts
+and durable logs. The kill occurred between tool turns. All recovery and
+continuation calls themselves returned exit code zero:
+
+```text
+A recovery bash: CHECKPOINT_SURVIVED_SERVER_LOST
+B recovery bash: CHECKPOINT_SURVIVED_SERVER_LOST
+A continuation bash: named-A
+                     named-B
+                     BOTH_SESSIONS_CONTINUE
+B continuation bash: named-A
+                     named-B
+                     BOTH_SESSIONS_CONTINUE
+```
+
+The recovery commands required both marker files to match and required HTTP
+connection failure. The server's process memory did not survive. No failed
+in-flight external operation was retried in this experiment.
+
+### Named deletion and retained transcripts
+
+`agent delete lifetime-agent --yes --remote lifetimes --json` returned in
+**0.0432 seconds**. Container and NBD polling observed physical release within
+**4.468 seconds** of command start. `agent ls` and `vol ls` were empty, both
+session records reported `computer_deleted=true`, and `session show` could still
+read both full transcripts, including the shared server, recovery notice, and
+successful continuation turns.
+
+The same two-second collector grace and dry/real/dry sequence produced:
+
+| Deleted computer | Dry-run candidate bytes | Chunks deleted | Bytes freed | Candidate bytes afterward |
+| --- | ---: | ---: | ---: | ---: |
+| Named agent after recovery | 23,330,816 | 89 | 23,330,816 | 0 |
+
+The named disk had multiple retained checkpoints before deletion. The collector
+kept the registered base image and removed only unreachable chunk objects.
+All latency figures above are single monotonic-clock samples, not distributions
+or WAN latency claims. The chats used the JSON client on the real remote nodes;
+the separate root acceptance test exercised two interactive terminal chats.
+
+### Cloud teardown
+
+`dev down`, `remote disconnect lifetimes`, and `remote down lifetimes` stopped
+local control services, closed the tunnel, terminated the remaining primary,
+and deleted both imported keys and local remote state. The joining instance had
+already been terminated during the failure test. Independent provider queries
+at `2026-09-18T06:00:03Z` confirmed both instance states, absent EBS volumes, and
+absent keys. The audit used the resource IDs saved before teardown:
+
+```sh
+aws ec2 describe-instances --region us-east-1 \
+  --instance-ids i-0f9891ce3d8441c5e i-0c3f816d5e8346859 \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
+aws ec2 describe-volumes --region us-east-1 \
+  --filters Name=volume-id,Values=vol-0f0ef1d924cc5ab81,vol-0f0cf1088b6dee3f4
+aws ec2 describe-key-pairs --region us-east-1 \
+  --filters Name=key-name,Values=swarmy-01M2SG1PSZMKR0N9TYYX294J1E,swarmy-01M2SGPA8GG4FSH36FR2GC303W
+gcloud compute instances list --project swarmy-508717 --format=json
+```
+
+```json
+[{"Id":"i-0f9891ce3d8441c5e","State":"terminated"},
+ {"Id":"i-0c3f816d5e8346859","State":"terminated"}]
+{"Volumes":[]}
+{"KeyPairs":[]}
+[]
+```
+
+The full before/after provider responses are in the proof archive. No GCP VM,
+bucket, HMAC key, or external S3 object prefix was created. SeaweedFS data lived
+on the deleted primary EBS volume. The pre-existing launcher was not a teardown
+target. The client firewall rule was removed after the audit.
+
+### Validation
+
+With the local backing stack running and `.dev/env` sourced:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Formatting and Clippy passed. The workspace suite passed 324 tests with one
+existing ignored test, `dedicated_chatgpt_account_models`, which needs a separate
+credential and spends subscription quota. The first workspace attempt timed out
+at `swarmy-bus/tests/nats.rs:518` in
+`nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases`. That test
+passed in isolation, then the complete workspace retry passed without changes
+to the test or bus implementation.
+
+The extended `agent_show_reports_placement_and_committed_snapshot` integration
+test passed against FoundationDB. It checks text and JSON busy/idle observations,
+holder and queue fields, and the unknown fallback after sample expiry or
+placement release. Root test binaries were compiled as ubuntu with:
+
+```sh
+cargo test --workspace --locked --no-run --message-format=json
+```
+
+Only the resulting test executables ran under sudo, with the local dev-stack
+environment and `SWARMY_TEST_IMAGE=base-ubuntu:dev`. The named-chat terminal test
+passed separately before the remote run, and its cleanup left zero attached
+NBD devices. The cloud proof used a fake provider and a same-VPC launcher with
+private service traffic blocked; it does not measure real-provider or WAN latency.
+
+The complete root run passed **50 tests across 11 artifacts**, with no skipped
+cases: node (3), chaos bash (1), CLI image/session/vol (3/1/3), and volume
+device/image/NBD/priority/library/volume (3/5/2/1/21/7). Each artifact ran as
+`sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev BINARY --nocapture --test-threads=1`;
+the session artifact selected `root_named_chats_share_a_background_process_and_delete`.
+The archive includes the resolved executable commands, runner source, and logs.
+Coverage includes computer deletion, shared call occupancy, actual crash recovery,
+lease fencing, twelve seeded service/node kills, deterministic Ubuntu builds,
+OCI layer deletion, NBD checksums and crash images, and upload priority. Skopeo
+and umoci were installed before the OCI test. Final inspection found no attached
+NBD devices or remaining sandbox mounts.
