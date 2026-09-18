@@ -227,14 +227,23 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
             to: SessionState::Idle,
         });
     }
-    fixture.store.append_events(id, 1, &events).await.unwrap();
+    fixture
+        .store
+        .append_events(id, session.head_seq, &events)
+        .await
+        .unwrap();
     fixture
         .store
         .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
         .await
         .unwrap();
     if live {
-        for event in fixture.store.read_events(id, 1, 64).await.unwrap() {
+        for event in fixture
+            .store
+            .read_events(id, session.head_seq, 64)
+            .await
+            .unwrap()
+        {
             fixture
                 .bus
                 .publish_live(LiveFeed::SessionEvents(id), &event)

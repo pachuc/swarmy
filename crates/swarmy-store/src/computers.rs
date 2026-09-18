@@ -50,9 +50,9 @@ impl Store {
         Ok(())
     }
 
-    /// Close an ephemeral session and delete its computer. Safe to repeat.
+    /// Close a side or ephemeral session. Only ephemeral computers are deleted. Safe to repeat.
     /// # Errors
-    /// Rejects named sessions and returns storage or decoding failures.
+    /// Rejects main sessions and returns storage or decoding failures.
     pub async fn close_session(&self, id: SessionId, now: Timestamp) -> Result<()> {
         self.transaction(|trx| async move { self.close_session_in(&trx, id, now).await })
             .await
@@ -65,10 +65,18 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         let session = self.session(trx, id).await?;
-        if self.session_kind(trx, id).await? != SessionKind::Ephemeral {
-            return Err(StoreError::NamedSessionClose);
+        match self.session_kind(trx, id).await? {
+            SessionKind::Ephemeral => self.delete_computer_in(trx, session.agent_id).await?,
+            SessionKind::Named { agent_id } => {
+                if self
+                    .read_agent(trx, agent_id)
+                    .await?
+                    .is_some_and(|agent| agent.main_session == Some(id))
+                {
+                    return Err(StoreError::MainSessionClose);
+                }
+            }
         }
-        self.delete_computer_in(trx, session.agent_id).await?;
         self.transition(trx, session, SessionState::Completed, now)
             .await
     }

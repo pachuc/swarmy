@@ -5,7 +5,7 @@ use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState};
 use swarmy_llm::Delta;
 use swarmy_store::MAX_SCAN_LIMIT;
 
-use crate::conversation::{Conversation, Notification, TranscriptEvent, store};
+use crate::conversation::{Conversation, Notification, Opened, TranscriptEvent, store};
 
 pub use crate::session_command::Command;
 
@@ -14,17 +14,6 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Close { session_id } => {
             let id = SessionId::from_ulid(session_id);
-            let session = store
-                .fetch_session(id)
-                .await?
-                .context("session not found")?;
-            if let swarmy_core::SessionKind::Named { agent_id } = session.kind {
-                let name = store
-                    .get_agent(agent_id)
-                    .await?
-                    .map_or_else(|| agent_id.to_string(), |agent| agent.name);
-                bail!("cannot close a named agent's session; use swarmy agent delete {name}");
-            }
             store.close_session(id, jiff::Timestamp::now()).await?;
             crate::vol::output(
                 &serde_json::json!({"event": "session_closed", "session_id": id}),
@@ -65,15 +54,17 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     break;
                 }
                 for session in sessions {
-                    let name = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
-                        store
-                            .get_agent(session.agent_id)
-                            .await?
-                            .map(|agent| agent.name)
+                    let agent = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+                        store.get_agent(session.agent_id).await?
                     } else {
                         None
                     };
+                    let main = agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.main_session == Some(session.session_id));
+                    let name = agent.map(|agent| agent.name);
                     let mut value = serde_json::to_value(&session)?;
+                    value["main"] = main.into();
                     value["agent_name"] = serde_json::to_value(&name)?;
                     let kind = match session.kind {
                         swarmy_core::SessionKind::Ephemeral => "ephemeral",
@@ -82,7 +73,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     crate::vol::output(
                         &value,
                         &format!(
-                            "{} {:?} kind={kind} agent={} head={} computer_deleted={}",
+                            "{} {:?} kind={kind} agent={} head={} computer_deleted={} main={main}",
                             session.session_id,
                             session.state,
                             name.as_deref().unwrap_or("-"),
@@ -103,15 +94,21 @@ pub async fn run(
     prompt: String,
     image: Option<String>,
     agent: Option<String>,
+    new: bool,
     json: bool,
 ) -> Result<()> {
-    let mut conversation = Conversation::open(None, image.as_deref(), agent.as_deref()).await?;
-    announce(&conversation, json, "session_created")?;
+    let mut conversation =
+        Conversation::open(None, image.as_deref(), agent.as_deref(), new).await?;
+    announce(&conversation, json)?;
     conversation.send(prompt).await?;
     until_idle(&mut conversation, json).await
 }
 
-fn announce(conversation: &Conversation, json: bool, event: &str) -> Result<()> {
+fn announce(conversation: &Conversation, json: bool) -> Result<()> {
+    let event = match conversation.opened {
+        Opened::Created => "session_created",
+        Opened::Resumed => "session_opened",
+    };
     if json {
         println!(
             "{}",
@@ -129,18 +126,11 @@ pub async fn chat_json(
     id: Option<SessionId>,
     image: Option<String>,
     agent: Option<String>,
+    new: bool,
 ) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    let mut conversation = Conversation::open(id, image.as_deref(), agent.as_deref()).await?;
-    announce(
-        &conversation,
-        true,
-        if id.is_some() {
-            "session_opened"
-        } else {
-            "session_created"
-        },
-    )?;
+    let mut conversation = Conversation::open(id, image.as_deref(), agent.as_deref(), new).await?;
+    announce(&conversation, true)?;
     until_idle(&mut conversation, true).await?;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Some(prompt) = lines.next_line().await? {
