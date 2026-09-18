@@ -421,22 +421,49 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
         created_at: Timestamp,
     }
 
+    // Records written after the main-session pointer landed but before the
+    // per-agent settings did carry six fields.
+    #[derive(serde::Deserialize)]
+    struct MainSessionAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+        main_session: Option<SessionId>,
+    }
+
     match decode(bytes) {
         Ok(agent) => Ok(agent),
-        Err(error) => match decode::<LegacyAgent>(bytes) {
-            Ok(old) => Ok(AgentRecord {
-                agent_id: old.agent_id,
-                name: old.name,
-                image: old.image,
-                description: old.description,
-                created_at: old.created_at,
-                main_session: None,
-                system_prompt: None,
-                model: None,
-                reasoning_effort: None,
-            }),
-            Err(_) => Err(error.into()),
-        },
+        Err(error) => {
+            if let Ok(old) = decode::<MainSessionAgent>(bytes) {
+                return Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: old.main_session,
+                    system_prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                });
+            }
+            match decode::<LegacyAgent>(bytes) {
+                Ok(old) => Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: None,
+                    system_prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                }),
+                Err(_) => Err(error.into()),
+            }
+        }
     }
 }
 
@@ -444,6 +471,29 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
 mod tests {
     use super::*;
     use swarmy_core::{ManifestId, ReasoningEffort, encode};
+
+    #[test]
+    fn main_session_only_records_decode_with_default_settings() {
+        let session = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let bytes = encode(&(
+            AgentId::from_ulid(ulid::Ulid::generate()),
+            "six".to_owned(),
+            ImageRecord {
+                name: "base".into(),
+                tag: swarmy_core::ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            String::new(),
+            Timestamp::now(),
+            Some(session),
+        ))
+        .unwrap();
+        let record = decode_agent(&bytes).unwrap();
+        assert_eq!(record.name, "six");
+        assert_eq!(record.main_session, Some(session));
+        assert!(record.system_prompt.is_none() && record.model.is_none());
+        assert!(record.reasoning_effort.is_none());
+    }
 
     #[test]
     fn malformed_extended_agent_is_not_treated_as_a_legacy_record() {
