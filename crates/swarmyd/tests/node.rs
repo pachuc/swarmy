@@ -664,6 +664,41 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
     node.stop().await;
 }
 
+#[path = "node/yield_tools.rs"]
+mod yield_tools;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_bash_yield_spill_stdin_and_web_fetch() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        eprintln!("skipping bash yield acceptance: run the built executable with sudo");
+        return;
+    }
+    for variable in [
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_NATS_URL",
+    ] {
+        if std::env::var_os(variable).is_none() {
+            eprintln!("skipping bash yield acceptance: {variable} is unset");
+            return;
+        }
+    }
+    boot_network();
+    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let images = store(&settings).await;
+    let base = base_image(&settings, &images).await;
+    settings.store_directory = format!("swarmy-yield-test-{}", ulid::Ulid::generate());
+    let store = store(&settings).await;
+    store
+        .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
+        .await
+        .unwrap();
+    // Node's Drop guard destroys the container and detaches its disk on failure.
+    let (mut node, bus) = persistent::start(settings, &store, base, 30).await;
+    yield_tools::run(&node, &store, &bus).await;
+    node.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_file_tools_run_on_agent_disk() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {

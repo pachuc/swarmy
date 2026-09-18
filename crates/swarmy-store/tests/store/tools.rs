@@ -61,6 +61,8 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
             arguments: swarmy_core::SandboxArguments::Bash(BashArguments {
                 command: "echo test".into(),
                 timeout_ms: 1000,
+                yield_seconds: 10,
+                output_budget_bytes: 32768,
             }),
         })
         .collect();
