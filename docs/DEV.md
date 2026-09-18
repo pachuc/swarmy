@@ -877,3 +877,40 @@ swarmy remote down demo
 See the dated measurements in [volume benchmarks](volume-benchmarks.md) for
 latency results and the remaining round trips. Node services are a development
 mode on one backing-store node, without replicated storage or high availability.
+
+### Conversation summaries and memory
+
+Named agents keep a chain of main sessions. At the end of a turn the worker
+compares the latest provider input plus output token count with
+`summarize_at_tokens` (`SWARMY_SUMMARIZE_AT_TOKENS`). When omitted, the threshold
+is three quarters of `model_context_window_tokens`
+(`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS`, default 400000 for the default model).
+Set the window when selecting a model with a different context capacity.
+Side sessions and ephemeral sessions are not summarized automatically.
+
+The summary is a normal durable inference job with no tools. Its JSON contains
+goals, state of work, open questions, and facts worth keeping. A successful
+summary creates an idle main session with that opening context and a reference
+to the previous session. Creation, archival, links, and pointer replacement
+commit in one fenced transaction. Provider failure or invalid summary JSON
+keeps the existing session. `session list` and `agent show` identify archived
+sessions; `session show ID` still reads their full logs. Open chats display a
+notice and follow the chain, including after a missed live notification.
+
+The worker includes memory files in every named-agent inference, including
+turns in side sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to
+`/home/agent/memory`; `memory_max_bytes` (`SWARMY_MEMORY_MAX_BYTES`) defaults to
+32768. The node reads regular files directly in that directory in filename
+order, includes their names, and adds a note when the byte budget truncates
+content. Subdirectories, symbolic links, and special files are skipped. Use an
+absolute directory path without symbolic-link components. A computer that has
+not been placed contributes empty memory.
+
+A memory read uses one sandbox exec. The node caches the result by placement
+epoch, volume head manifest, directory, byte budget, and file metadata. The
+metadata check avoids an exec for unchanged files while detecting ordinary
+tool and background writes before a checkpoint advances the manifest. Memory
+has the same durability as other home-disk files: use `checkpoint` when facts
+must survive node failure. The default prompt explains how to save memory and
+that conversations may be summarized; `{memory_dir}` in a configured system
+prompt expands to the selected directory.

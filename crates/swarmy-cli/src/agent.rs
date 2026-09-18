@@ -152,7 +152,15 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         value["placement"] = serde_json::to_value(&placement)?;
         value["last_snapshot_at"] = serde_json::to_value(snapshot_at)?;
         value["last_snapshot_age_seconds"] = serde_json::to_value(age)?;
-        value["sessions"] = serde_json::to_value(&sessions)?;
+        let mut listed = Vec::new();
+        for session in &sessions {
+            let mut value = serde_json::to_value(session)?;
+            let next = store.next_session(session.session_id).await?;
+            value["archived"] = next.is_some().into();
+            value["next_session"] = serde_json::to_value(next)?;
+            listed.push(value);
+        }
+        value["sessions"] = listed.into();
         write!(
             text,
             "\ndescription={}\nplacement_epoch={}\nsandbox_state={state}\nlast_snapshot={} age_seconds={}",
@@ -166,11 +174,12 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         for session in sessions {
             write!(
                 text,
-                "\nsession={} state={:?} computer_deleted={} main={}",
+                "\nsession={} state={:?} computer_deleted={} main={} archived={}",
                 session.session_id,
                 session.state,
                 session.computer_deleted,
-                agent.main_session == Some(session.session_id)
+                agent.main_session == Some(session.session_id),
+                store.next_session(session.session_id).await?.is_some()
             )?;
         }
     }

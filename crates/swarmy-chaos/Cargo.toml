@@ -26,6 +26,7 @@ rand_chacha.workspace = true
 serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
+swarmy-llm.workspace = true
 swarmy-store.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

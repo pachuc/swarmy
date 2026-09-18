@@ -49,6 +49,10 @@ impl Transcript {
                     self.entries.push(Entry::User(message_text(&message)));
                 }
             }
+            TranscriptEvent::SessionChanged { previous, current } => {
+                self.notice_session = Some(current);
+                self.entries.push(Entry::System(format!("Conversation summarized. Session {previous} archived; continuing in {current}.")));
+            }
             TranscriptEvent::SystemMessage(message) => {
                 if self.messages.insert(message.id) {
                     self.entries.push(Entry::System(message_text(&message)));

@@ -148,7 +148,7 @@ async fn scenarios(f: &mut Fixture, nodes: &mut Nodes) -> Result<()> {
     }
     let start = Instant::now();
     wait_for_dead_writer(f, agent, volume).await?;
-    bash(f, second, "test $(cat /root/persistent) = durable && test $(cat /root/shared) = shared && test ! -e /root/uncommitted && ! curl --max-time 1 -fsS http://127.0.0.1:18765/ >/dev/null").await?;
+    bash(f, second, "test $(cat /home/agent/memory/facts.txt | tail -c 7) = violet && test $(cat /root/persistent) = durable && test $(cat /root/shared) = shared && test ! -e /root/uncommitted && ! curl --max-time 1 -fsS http://127.0.0.1:18765/ >/dev/null").await?;
     let current = f
         .store
         .get_by_agent(agent)
@@ -202,6 +202,27 @@ async fn continue_shared(
         "sessions did not continue on the same rebuilt computer"
     );
     notice(f, snapshot, PlacementChangeReason::Failure).await?;
+    let events = f
+        .store
+        .read_events(second, 0, swarmy_store::MAX_SCAN_LIMIT)
+        .await?;
+    let request = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        })
+        .context("inference missing")?;
+    let job = f
+        .store
+        .get_inference_input::<swarmy_llm::InferenceJob>(request)
+        .await?
+        .context("input missing")?;
+    ensure!(
+        job.request.system_prompt.contains("Tommy remembers violet"),
+        "memory missing after rebuild"
+    );
     Ok(())
 }
 
@@ -291,7 +312,7 @@ async fn shared(
         json!({"command":"exec python3 -u -m http.server 18765 --bind 127.0.0.1"}),
     )
     .await?;
-    bash(f, first, "echo durable > /root/persistent; curl --retry 5 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18765/ >/dev/null").await?;
+    bash(f, first, "mkdir -p /home/agent/memory; echo 'Tommy remembers violet' > /home/agent/memory/facts.txt; echo durable > /root/persistent; curl --retry 5 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18765/ >/dev/null").await?;
     bash(
         f,
         second,

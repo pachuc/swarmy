@@ -73,6 +73,9 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
             settings: GenerationSettings::default(),
             tools,
         },
+        summarize_at_tokens: 300_000,
+        memory_dir: "/home/agent/memory".into(),
+        memory_max_bytes: 32768,
         kill_point: None,
     }
 }

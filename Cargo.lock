@@ -3525,6 +3525,7 @@ dependencies = [
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-llm",
  "swarmy-sandbox",
  "swarmy-store",
  "swarmy-version",

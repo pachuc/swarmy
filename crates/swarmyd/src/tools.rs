@@ -212,7 +212,7 @@ fn request(arguments: &SandboxArguments, epoch: u64) -> ExecRequest {
     }
 }
 
-async fn exec(
+pub(crate) async fn exec(
     runtime: &RuncRuntime,
     sandbox: &Sandbox,
     request: ExecRequest,

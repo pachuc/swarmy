@@ -16,6 +16,9 @@ pub struct Config {
     pub placement_lease: Duration,
     pub recovery_interval: Duration,
     pub harness: Harness,
+    pub summarize_at_tokens: u64,
+    pub memory_dir: String,
+    pub memory_max_bytes: usize,
     pub kill_point: Option<String>,
 }
 
@@ -84,6 +87,13 @@ impl Config {
                 },
                 tools,
             },
+            summarize_at_tokens: settings.summarize_at_tokens.map_or(
+                settings.model_context_window_tokens.get()
+                    - settings.model_context_window_tokens.get() / 4,
+                std::num::NonZeroU64::get,
+            ),
+            memory_dir: settings.memory_dir,
+            memory_max_bytes: settings.memory_max_bytes.get(),
             kill_point,
         })
     }

@@ -225,6 +225,40 @@ impl Fixture {
             .await
     }
 
+    fn memory_nodes(&self) -> tokio::task::JoinSet<()> {
+        // The routing fixture represents nodes without filesystems. Serve their
+        // memory RPC as well, so resumed inference exercises the complete node contract.
+        let mut memory_nodes = tokio::task::JoinSet::new();
+        for node in self.nodes {
+            let bus = self.bus.clone();
+            memory_nodes.spawn(async move {
+                bus.serve_memory(node, |_| async { Ok("routing fixture memory".into()) })
+                    .await
+                    .unwrap();
+            });
+        }
+        memory_nodes
+    }
+
+    async fn inference(&self, id: SessionId) -> swarmy_llm::InferenceJob {
+        let request = self
+            .store
+            .read_events(id, 0, 64)
+            .await
+            .unwrap()
+            .iter()
+            .find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        self.store
+            .get_inference_input(request)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     async fn cleanup(self) {
         cleanup(&self.cluster, &self.url, &self.prefix).await;
     }
@@ -508,6 +542,7 @@ async fn named_agent_node_loss_notifies_every_session_once() {
         .await
         .unwrap()
         .agent_id;
+    let _memory_nodes = f.memory_nodes();
     // Cross an index page boundary and include idle sessions that never dispatch.
     let mut sessions = Vec::new();
     for _ in 0..=swarmy_store::MAX_SCAN_LIMIT {
@@ -581,6 +616,13 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     ));
     delivery.acknowledge().await.unwrap();
     assert_failure_notice(&f, first, &current, f.manifest).await;
+    assert!(
+        f.inference(first)
+            .await
+            .request
+            .system_prompt
+            .contains("routing fixture memory")
+    );
     // Both sessions continue through the same rebuilt epoch without another notice.
     for id in [first, second] {
         f.request(id).await;
@@ -631,16 +673,7 @@ async fn assert_failure_notice(
 
 async fn assert_recovery_prompt(f: &Fixture, id: SessionId, explanation: &str) {
     f.step(id).await;
-    let events = f.store.read_events(id, 0, 64).await.unwrap();
-    let request = events
-        .iter()
-        .find_map(|event| match event {
-            Event::InferenceRequested { request_id, .. } => Some(*request_id),
-            _ => None,
-        })
-        .unwrap();
-    let job: swarmy_llm::InferenceJob =
-        f.store.get_inference_input(request).await.unwrap().unwrap();
+    let job = f.inference(id).await;
     assert!(
         job.request
             .messages

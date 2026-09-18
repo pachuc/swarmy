@@ -35,6 +35,7 @@ struct Fixture {
     store: Store,
     bus: Bus,
     prefix: String,
+    summarize_at_tokens: u64,
     files: TempDir,
     children: Vec<Child>,
     snapshots: Mutex<HashSet<String>>,
@@ -76,6 +77,7 @@ impl Fixture {
             store,
             bus,
             prefix,
+            summarize_at_tokens: 300_000,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
@@ -126,6 +128,10 @@ impl Fixture {
         let mut command = Command::new(executable);
         command
             .env("SWARMY_PROVIDER", "fake")
+            .env(
+                "SWARMY_SUMMARIZE_AT_TOKENS",
+                self.summarize_at_tokens.to_string(),
+            )
             .env("SWARMY_STORE_DIRECTORY", &self.prefix)
             .env("SWARMY_BUS_PREFIX", &self.prefix)
             .env("SWARMY_WORKER_PARTITIONS", "7")
@@ -551,4 +557,63 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
         })
     })
     .await;
+}
+
+#[tokio::test]
+async fn main_summary_atomically_archives_and_links_a_fresh_session() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 100;
+        let summary = serde_json::json!({
+            "goals": "Fix the tests", "state_of_work": "Parser fixed",
+            "open_questions": "Which release?", "facts_to_keep": "Repository is /home/agent/project"
+        }).to_string();
+        let response = |text: String, input_tokens| Response {
+            parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
+            usage: TokenUsage { input_tokens, ..Default::default() },
+        };
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("tommy", image, "", Timestamp::now()).await.unwrap();
+        let id = loop {
+            let id = SessionId::from_ulid(Ulid::generate());
+            if runnable_partition(id) == 7 { break id; }
+        };
+        f.store.create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now()).await.unwrap();
+        f.store.set_main_session(agent.agent_id, id).await.unwrap();
+        f.user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let new = timeout(WAIT, async {
+            loop {
+                if let Some(next) = f.store.next_session(id).await.unwrap() { break next; }
+                sleep(Duration::from_millis(25)).await;
+            }
+        }).await.unwrap();
+        assert_ne!(id, new);
+        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
+        assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Completed);
+        assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
+        let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+        assert_eq!(fresh.state, SessionState::Idle);
+        assert_eq!(fresh.agent_id, agent.agent_id);
+        let opening = f.store.read_events(new, 0, 64).await.unwrap();
+        let Event::MessageAppended { message, .. } = &opening[0] else { panic!("opening missing") };
+        assert_eq!(message.role, MessageRole::System);
+        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
+        assert_eq!(serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(&summary).unwrap());
+        assert!(text.contains(&id.to_string()));
+        let old = f.store.read_events(id, 0, 64).await.unwrap();
+        assert_requests(id, &old, 2);
+        assert_eq!(f.calls(), 2);
+        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
+        // A duplicate, unfenced rollover cannot create a third session or move the pointer.
+        let stale = swarmy_core::Lease { owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()), seq: 1, expires_at: Timestamp::now() };
+        assert!(f.store.summarize_main_session(id, 0, &stale, message).await.is_err());
+        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
+        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
+    })).await;
 }

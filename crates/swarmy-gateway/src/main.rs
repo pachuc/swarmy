@@ -305,6 +305,14 @@ impl Gateway {
         job: &InferenceJob,
         completion: &InferenceCompletion,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
+        // Main sessions need a worker turn-end step to decide whether to summarize.
+        if let Some(session) = self.store.fetch_session(job.session_id).await?
+            && matches!(session.kind, swarmy_core::SessionKind::Named { .. })
+            && let Some(agent) = self.store.get_agent(session.agent_id).await?
+            && agent.main_session == Some(job.session_id)
+        {
+            return Ok(None);
+        }
         // A concurrent log append is not in the immutable request. Let the
         // worker replay it instead of advancing a snapshot over unseen events.
         if completion.expected_head != job.step {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Write, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
@@ -216,6 +216,26 @@ impl Worker {
         Ok(snapshot)
     }
 
+    async fn load_history(
+        &self,
+        session: &SessionRecord,
+        events: &mut Vec<Event>,
+    ) -> Result<Snapshot> {
+        let (snapshot, after) = if let Some(reference) = &session.snapshot_ref {
+            (self.snapshot(&reference.object_key).await?, reference.seq)
+        } else {
+            (Snapshot::default(), 0)
+        };
+        let cursor = events.last().map_or(after, Event::seq);
+        if cursor < session.head_seq {
+            events.extend(
+                self.tail(session.session_id, cursor, session.head_seq)
+                    .await?,
+            );
+        }
+        Ok(snapshot)
+    }
+
     async fn step(
         &self,
         mut session: SessionRecord,
@@ -224,18 +244,15 @@ impl Worker {
         mut events: Vec<Event>,
     ) -> Result<()> {
         let id = session.session_id;
-        let (snapshot, after) = if let Some(reference) = &session.snapshot_ref {
-            (self.snapshot(&reference.object_key).await?, reference.seq)
-        } else {
-            (Snapshot::default(), 0)
-        };
-        let cursor = events.last().map_or(after, Event::seq);
-        if cursor < session.head_seq {
-            events.extend(self.tail(id, cursor, session.head_seq).await?);
-        }
+        let snapshot = self.load_history(&session, &mut events).await?;
         // Replaying the tail also fans out events written by the gateway or a caller,
         // and retries a publication interrupted by the previous worker's death.
         self.publish_tail(id, &events).await?;
+        if self.summary_completed(&session, &events).await? {
+            return self
+                .finish(&mut session, lease, &snapshot, &mut events, turn)
+                .await;
+        }
         loop {
             let message_id = fold_id(
                 id,
@@ -355,8 +372,21 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &ActiveLease,
         preceding: &[Event],
-        request: swarmy_llm::Request,
+        mut request: swarmy_llm::Request,
     ) -> Result<()> {
+        if request.system_prompt != swarmy_harness::SUMMARY_PROMPT {
+            request.system_prompt = request
+                .system_prompt
+                .replace("{memory_dir}", &self.config.memory_dir);
+            if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+                let memory = self.memory(session.agent_id).await?;
+                write!(
+                    request.system_prompt,
+                    "\n\nAgent memory ({}):\n{memory}",
+                    self.config.memory_dir
+                )?;
+            }
+        }
         let id = session.session_id;
         let step = session
             .head_seq
@@ -712,6 +742,9 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
+        if self.summarize(session, lease, snapshot, events).await? {
+            return Ok(());
+        }
         let head = session
             .head_seq
             .checked_add(1)
@@ -754,6 +787,160 @@ impl Worker {
                 .await;
         }
         self.publish_events(session.session_id, &[event]).await
+    }
+
+    async fn summary_completed(&self, session: &SessionRecord, events: &[Event]) -> Result<bool> {
+        if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+            return Ok(false);
+        }
+        let Some(Event::InferenceCompleted { request_id, .. }) =
+            events.iter().rev().find(|event| {
+                matches!(
+                    event,
+                    Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
+                )
+            })
+        else {
+            return Ok(false);
+        };
+        Ok(self
+            .store
+            .get_inference_input::<InferenceJob>(*request_id)
+            .await?
+            .is_some_and(|job| job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT))
+    }
+
+    async fn summarize(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        snapshot: &Snapshot,
+        events: &[Event],
+    ) -> Result<bool> {
+        if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+            return Ok(false);
+        }
+        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
+            return Ok(false);
+        };
+        if agent.main_session != Some(session.session_id) {
+            return Ok(false);
+        }
+        let Some((request_id, message)) = events.iter().rev().find_map(|event| match event {
+            Event::InferenceCompleted {
+                request_id,
+                message,
+                ..
+            } => Some((*request_id, Some(message))),
+            Event::InferenceFailed { request_id, .. } => Some((*request_id, None)),
+            _ => None,
+        }) else {
+            return Ok(false);
+        };
+        let Some(job) = self
+            .store
+            .get_inference_input::<InferenceJob>(request_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
+            return self.archive_summary(session, lease, message).await;
+        }
+
+        let Some(Ok(response)) = self
+            .store
+            .get_inference_result::<Result<swarmy_llm::Response, String>>(request_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let tokens = response
+            .usage
+            .input_tokens
+            .saturating_add(response.usage.output_tokens);
+        if tokens < self.config.summarize_at_tokens {
+            return Ok(false);
+        }
+        let request = swarmy_llm::Request {
+            system_prompt: swarmy_harness::SUMMARY_PROMPT.into(),
+            messages: snapshot.replay(events).messages().to_vec(),
+            tools: Vec::new(),
+            settings: job.request.settings,
+        };
+        self.build_inference(session, lease, &[], request).await?;
+        Ok(true)
+    }
+
+    async fn archive_summary(
+        &self,
+        session: &SessionRecord,
+        lease: &ActiveLease,
+        message: Option<&swarmy_core::Message>,
+    ) -> Result<bool> {
+        let Some(message) = message else {
+            return Ok(false);
+        };
+        let text: String = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                swarmy_core::Part::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let Ok(summary) = serde_json::from_str::<swarmy_core::ConversationSummary>(&text) else {
+            tracing::warn!(session_id = %session.session_id, "invalid summary; retaining current session");
+            return Ok(false);
+        };
+        let opening = swarmy_core::Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::System,
+            parts: vec![swarmy_core::Part::Text {
+                text: format!(
+                    "Conversation summarized. Previous session: {}. Its full transcript remains readable.\n{}",
+                    session.session_id,
+                    serde_json::to_string(&summary)?
+                ),
+            }],
+        };
+        let mut token = lease.lock().await;
+        let (_, archived) = self
+            .store
+            .summarize_main_session(
+                session.session_id,
+                session.head_seq,
+                token.as_ref().context("lease released")?,
+                &opening,
+            )
+            .await?;
+        *token = None;
+        self.publish_events(session.session_id, &[archived]).await?;
+        Ok(true)
+    }
+
+    async fn memory(&self, agent: swarmy_core::AgentId) -> Result<String> {
+        let Some(placement) = self
+            .store
+            .get_by_agent(agent)
+            .await?
+            .filter(|placement| placement.expires_at > Timestamp::now())
+        else {
+            return Ok(String::new());
+        };
+        let reply = self
+            .bus
+            .request_memory(
+                placement.node_id,
+                &swarmy_core::MemoryRequest {
+                    agent_id: agent,
+                    epoch: placement.epoch,
+                    directory: self.config.memory_dir.clone(),
+                    max_bytes: self.config.memory_max_bytes,
+                },
+            )
+            .await?;
+        reply.map_err(anyhow::Error::msg)
     }
 
     async fn load_job(&self, id: RequestId) -> Result<InferenceJob> {

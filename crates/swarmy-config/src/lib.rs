@@ -111,6 +111,11 @@ pub struct Settings {
     pub bus_max_deliver: i64,
     pub gateway_concurrency: usize,
     pub system_prompt: String,
+    /// Override the default three quarters of `model_context_window_tokens`.
+    pub summarize_at_tokens: Option<std::num::NonZeroU64>,
+    pub model_context_window_tokens: std::num::NonZeroU64,
+    pub memory_dir: String,
+    pub memory_max_bytes: std::num::NonZeroUsize,
     pub worker_kill_point: Option<String>,
     pub fake: Fake,
 }
@@ -175,7 +180,11 @@ impl Default for Settings {
             bus_ack_wait_ms: 30000,
             bus_max_deliver: 5,
             gateway_concurrency: 4,
-            system_prompt: "You are a helpful assistant. Use tools when needed.".into(),
+            system_prompt: "You are a helpful assistant. Use tools when needed. Your memory directory is {memory_dir} on your home disk. Write facts you want to keep there with the write or edit tools (or bash). Your conversation may be summarized into a fresh session. For named agents, memory files are read into every turn.".into(),
+            summarize_at_tokens: None,
+            model_context_window_tokens: std::num::NonZeroU64::new(400_000).unwrap(),
+            memory_dir: "/home/agent/memory".into(),
+            memory_max_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
             worker_kill_point: None,
             fake: Fake::default(),
         }
@@ -510,6 +519,7 @@ impl Settings {
                 .parse()
                 .map_err(|_| Error::Environment("SWARMY_GATEWAY_CONCURRENCY".into()))?;
         }
+        self.apply_context_environment(environment)?;
         if let Some(value) = environment.get("SWARMY_SYSTEM_PROMPT") {
             self.system_prompt.clone_from(value);
         }
@@ -521,6 +531,37 @@ impl Settings {
         }
         if let Some(value) = environment.get("SWARMY_FAKE_CALL_LOG") {
             self.fake.call_log.clone_from(value);
+        }
+        Ok(())
+    }
+
+    fn apply_context_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_SUMMARIZE_AT_TOKENS") {
+            self.summarize_at_tokens = if value.is_empty() {
+                None
+            } else {
+                Some(
+                    value
+                        .parse()
+                        .map_err(|_| Error::Environment("SWARMY_SUMMARIZE_AT_TOKENS".into()))?,
+                )
+            };
+        }
+        if let Some(value) = environment.get("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS") {
+            self.model_context_window_tokens = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_MEMORY_MAX_BYTES") {
+            self.memory_max_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_MEMORY_MAX_BYTES".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_MEMORY_DIR") {
+            self.memory_dir.clone_from(value);
         }
         Ok(())
     }
@@ -698,6 +739,20 @@ impl Settings {
 
     fn session_environment(&self, environment: &mut BTreeMap<String, String>) {
         environment.extend([
+            (
+                "SWARMY_SUMMARIZE_AT_TOKENS".into(),
+                self.summarize_at_tokens
+                    .map_or_else(String::new, |n| n.to_string()),
+            ),
+            (
+                "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into(),
+                self.model_context_window_tokens.to_string(),
+            ),
+            ("SWARMY_MEMORY_DIR".into(), self.memory_dir.clone()),
+            (
+                "SWARMY_MEMORY_MAX_BYTES".into(),
+                self.memory_max_bytes.to_string(),
+            ),
             ("SWARMY_PROVIDER".into(), self.provider.clone()),
             ("SWARMY_MODEL".into(), self.model.clone()),
             (
