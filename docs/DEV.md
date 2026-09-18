@@ -114,16 +114,21 @@ From the checkout:
 scripts/install-dev-tools.sh
 ```
 
-The script verifies FoundationDB release SHA-256 files, installs the backing
-executables into `~/.local/bin` and `libfdb_c.so` into `~/.local/lib`, and prints
-a one-line command that installs the CLI and services. Run it in Bash:
+The script verifies FoundationDB release SHA-256 files and installs the backing
+executables into `~/.local/bin` and `libfdb_c.so` into `~/.local/lib`
+(`make dev-tools` runs it). Then install the CLI, its companion, and the three
+services with one command:
 
-```bash
-for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo install --locked --path "crates/swarmy-$crate"; done
+```sh
+make install
 ```
 
-Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another location,
-then run its printed command. The build embeds that library directory in the
+The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
+`/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
+match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
+`make check` runs the three CI commands, and `make uninstall` removes the
+binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
+location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
 runtime search path and uses it at link time. The shared build script also adds
 existing `/usr/lib`, `/usr/local/lib`, and `/usr/lib/x86_64-linux-gnu` directories.
 It emits the same rpath option on macOS, where the library is `libfdb_c.dylib`;
@@ -143,14 +148,12 @@ Versions match `.daytona/Dockerfile` and the backing stack:
 | SeaweedFS | 4.47 | `weed` |
 
 For machines with these dependencies installed system-wide, including CI's
-Ubuntu runner, the checkout installation needs no variable:
+Ubuntu runner, the same `make install` needs no variable because the library
+is found in a system directory.
 
-```bash
-cargo install --locked --path crates/swarmy-cli
-for crate in scheduler worker gateway; do cargo install --locked --path "crates/swarmy-$crate"; done
-```
-
-Cargo puts all executables in `~/.cargo/bin` by default. Use `swarmy` after
+Cargo puts all executables in `~/.cargo/bin` by default. Reinstall all of them
+together after pulling: `swarmy dev up` refuses to start a scheduler, worker, or
+gateway whose version differs from the CLI. Use `swarmy` after
 rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
 because `swarmy dev` uses `scripts/dev-stack.sh` from it.
 

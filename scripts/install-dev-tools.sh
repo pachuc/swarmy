@@ -40,7 +40,11 @@ install -m 0755 libfdb_c.x86_64.so "$prefix/lib/libfdb_c.so"
 install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" "$prefix/bin/nats-server"
 install -m 0755 weed "$prefix/bin/weed"
 printf '\nInstalled backing tools to %s/bin and the client library to %s/lib.\n' "$prefix" "$prefix"
-printf 'Run this from the checkout in Bash to install swarmy and its services:\n\n'
-printf 'for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR=%q cargo install --locked --path %q/crates/swarmy-"$crate"; done\n' "$prefix/lib" "$repo_dir"
+printf 'Run this from the checkout to install swarmy and its services:\n\n'
+if [ "$prefix" = "$HOME/.local" ]; then
+    printf '    make install\n'
+else
+    printf '    make install SWARMY_FDB_LIB_DIR=%q\n' "$prefix/lib"
+fi
 printf '\nswarmy finds these tools automatically; no PATH or LD_LIBRARY_PATH exports are needed.\n'
 printf 'Keep this checkout for swarmy dev up, which uses scripts/dev-stack.sh.\n'

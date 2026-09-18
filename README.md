@@ -31,15 +31,20 @@ scripts/install-dev-tools.sh
 ```
 
 This installs FoundationDB 7.3.79, NATS 2.14.6, and SeaweedFS 4.47 under
-`~/.local`. Run the one-line Cargo command it prints (in Bash):
+`~/.local` (`make dev-tools` does the same). Then install every swarmy binary
+with one command:
 
-```bash
-for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo install --locked --path "crates/swarmy-$crate"; done
+```sh
+make install
 ```
 
-For a different location, run `scripts/install-dev-tools.sh --prefix /absolute/path`
-and use its printed command. The library directory is embedded in every binary's
-runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`
+It finds the FoundationDB client library in `~/.local/lib` or a system
+directory, builds the CLI, its `swarmy-session` companion, and the three
+services, and installs them into `~/.cargo/bin`. `make install-node` adds
+`swarmyd` for a machine with root. `make check` runs the CI commands and
+`make uninstall` removes the binaries. For a library in another location, run
+`make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
+embedded in every binary's runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`
 to the search path of its backing-stack subprocesses, so no library or executable
 path exports are needed. Keep the library at that location, or reinstall swarmy
 with the new `SWARMY_FDB_LIB_DIR`.
@@ -47,15 +52,13 @@ with the new `SWARMY_FDB_LIB_DIR`.
 ### Install from a checkout with system backing tools
 
 If the pinned backing tools and FoundationDB client library are already installed
-system-wide (as in CI), install directly without any build-time variable:
-
-```bash
-cargo install --locked --path crates/swarmy-cli
-for crate in scheduler worker gateway; do cargo install --locked --path "crates/swarmy-$crate"; done
-```
+system-wide (as in CI), the same `make install` finds the library in
+`/usr/local/lib` or `/usr/lib` and needs no variable.
 
 Cargo installs `swarmy`, its `swarmy-session` companion, and the three services
-into `~/.cargo/bin` by default. Keep them together. With rustup's normal shell
+into `~/.cargo/bin` by default. Keep them together: `swarmy dev up` refuses to
+start a service whose version differs from the CLI, and `make install` is the
+way to bring them back in step. With rustup's normal shell
 setup, start the development system from this checkout:
 
 ```sh
