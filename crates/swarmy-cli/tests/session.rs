@@ -1,3 +1,6 @@
+#[path = "session/agent_settings.rs"]
+mod agent_settings;
+
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 

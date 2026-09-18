@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, w
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, AgentRecord, ImageRecord, ImageTag, SessionId, SessionKind, SessionRecord,
-    SessionState, decode,
+    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, SessionId, SessionKind,
+    SessionRecord, SessionState, decode,
 };
 
 impl Store {
@@ -28,6 +28,21 @@ impl Store {
         description: &str,
         now: Timestamp,
     ) -> Result<AgentRecord> {
+        self.create_agent_with_settings(name, image, description, &AgentSettings::default(), now)
+            .await
+    }
+
+    /// Create a named agent with inference overrides, pinning its image atomically.
+    /// # Errors
+    /// Rejects duplicate names or ids, invalid names, unknown images, and storage failures.
+    pub async fn create_agent_with_settings(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        settings: &AgentSettings,
+        now: Timestamp,
+    ) -> Result<AgentRecord> {
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);
         }
@@ -49,6 +64,9 @@ impl Store {
                     description: description.into(),
                     created_at: now,
                     main_session: None,
+                    system_prompt: settings.system_prompt.clone(),
+                    model: settings.model.clone(),
+                    reasoning_effort: settings.reasoning_effort,
                 };
                 write(&trx, &self.agent_key(id), &record)?;
                 write(&trx, &self.agent_name_key(name), &id)?;
@@ -100,6 +118,30 @@ impl Store {
                 .into_iter()
                 .map(|(_, value)| decode_agent(&value))
                 .collect()
+        })
+        .await
+    }
+
+    /// Atomically change supplied inference settings, preserving omitted fields.
+    /// # Errors
+    /// Rejects unknown agents, oversized records, and storage failures.
+    pub async fn set_agent(&self, id: AgentId, settings: &AgentSettings) -> Result<AgentRecord> {
+        self.transaction(|trx| async move {
+            let mut agent = self
+                .read_agent(&trx, id)
+                .await?
+                .ok_or(StoreError::AgentMissing)?;
+            if let Some(prompt) = &settings.system_prompt {
+                agent.system_prompt = Some(prompt.clone());
+            }
+            if let Some(model) = &settings.model {
+                agent.model = Some(model.clone());
+            }
+            if let Some(effort) = settings.reasoning_effort {
+                agent.reasoning_effort = Some(effort);
+            }
+            write(&trx, &self.agent_key(id), &agent)?;
+            Ok(agent)
         })
         .await
     }
@@ -366,30 +408,116 @@ impl Store {
     }
 }
 
-// Postcard does not apply serde defaults to missing trailing fields. Decode the
-// previous exact record shape so existing agents acquire no main session on upgrade.
-#[derive(serde::Deserialize)]
-struct LegacyAgent {
-    agent_id: AgentId,
-    name: String,
-    image: ImageRecord,
-    description: String,
-    created_at: Timestamp,
+/// Postcard structs have no field count, so Serde defaults alone cannot read an
+/// old record. Only accept the legacy schema when it consumes the entire value,
+/// so existing agents acquire no main session or inference overrides on upgrade.
+pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
+    #[derive(serde::Deserialize)]
+    struct LegacyAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+    }
+
+    // Records written after the main-session pointer landed but before the
+    // per-agent settings did carry six fields.
+    #[derive(serde::Deserialize)]
+    struct MainSessionAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+        main_session: Option<SessionId>,
+    }
+
+    match decode(bytes) {
+        Ok(agent) => Ok(agent),
+        Err(error) => {
+            if let Ok(old) = decode::<MainSessionAgent>(bytes) {
+                return Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: old.main_session,
+                    system_prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                });
+            }
+            match decode::<LegacyAgent>(bytes) {
+                Ok(old) => Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: None,
+                    system_prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                }),
+                Err(_) => Err(error.into()),
+            }
+        }
+    }
 }
 
-pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
-    match decode(bytes) {
-        Ok(record) => Ok(record),
-        Err(error) => {
-            let old: LegacyAgent = decode(bytes).map_err(|_| error)?;
-            Ok(AgentRecord {
-                agent_id: old.agent_id,
-                name: old.name,
-                image: old.image,
-                description: old.description,
-                created_at: old.created_at,
-                main_session: None,
-            })
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use swarmy_core::{ManifestId, ReasoningEffort, encode};
+
+    #[test]
+    fn main_session_only_records_decode_with_default_settings() {
+        let session = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let bytes = encode(&(
+            AgentId::from_ulid(ulid::Ulid::generate()),
+            "six".to_owned(),
+            ImageRecord {
+                name: "base".into(),
+                tag: swarmy_core::ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            String::new(),
+            Timestamp::now(),
+            Some(session),
+        ))
+        .unwrap();
+        let record = decode_agent(&bytes).unwrap();
+        assert_eq!(record.name, "six");
+        assert_eq!(record.main_session, Some(session));
+        assert!(record.system_prompt.is_none() && record.model.is_none());
+        assert!(record.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn malformed_extended_agent_is_not_treated_as_a_legacy_record() {
+        let record = AgentRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            name: "test".into(),
+            image: ImageRecord {
+                name: "base".into(),
+                tag: ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            description: String::new(),
+            created_at: Timestamp::UNIX_EPOCH,
+            main_session: Some(SessionId::from_ulid(ulid::Ulid::generate())),
+            system_prompt: Some("prompt".into()),
+            model: Some("model".into()),
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+        let mut bytes = encode(&record).unwrap();
+        assert_eq!(decode_agent(&bytes).unwrap(), record);
+        bytes.pop();
+        assert!(decode_agent(&bytes).is_err());
+        let mut bytes = encode(&record).unwrap();
+        bytes.push(0);
+        assert!(decode_agent(&bytes).is_err());
     }
 }
