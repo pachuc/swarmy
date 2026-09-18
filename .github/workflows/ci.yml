@@ -1,6 +1,7 @@
 name: CI
 on:
   push:
+    branches: [master]
   pull_request:
 
 jobs:
@@ -10,6 +11,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show
+      # Restore compiled dependencies keyed on the lockfile and toolchain so a
+      # run only compiles what changed; a cold run still works, just slower.
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install development services
         env:
           FDB_VERSION: 7.3.79
