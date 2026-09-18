@@ -40,7 +40,7 @@ mod tool;
 pub use tool::{
     BashArguments, BashResult, EmptyArguments, PlaceReply, PlaceRequest, PlacedToolClaim,
     ProcessArguments, ProcessStartArguments, SandboxArgumentError, SandboxArguments, SandboxRecord,
-    ToolClaim, ToolJob,
+    ToolClaim, ToolJob, WebFetchArguments, WriteStdinArguments,
 };
 
 mod placement;

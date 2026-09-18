@@ -7,14 +7,27 @@ pub struct BashArguments {
     pub command: String,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    #[serde(default = "default_yield")]
+    pub yield_seconds: u64,
+    #[serde(default = "default_output_budget")]
+    pub output_budget_bytes: usize,
 }
 const fn default_timeout() -> u64 {
     120_000
 }
+const fn default_yield() -> u64 {
+    10
+}
+const fn default_output_budget() -> usize {
+    32 * 1024
+}
 impl BashArguments {
     #[must_use]
     pub fn valid(&self) -> bool {
-        !self.command.is_empty() && (1..=3_600_000).contains(&self.timeout_ms)
+        !self.command.is_empty()
+            && (1..=3_600_000).contains(&self.timeout_ms)
+            && self.yield_seconds <= 3600
+            && (1024..=32 * 1024).contains(&self.output_budget_bytes)
     }
 }
 
@@ -32,6 +45,19 @@ pub struct ProcessArguments {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WriteStdinArguments {
+    pub process_id: crate::ProcessId,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebFetchArguments {
+    pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmptyArguments {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,13 +69,17 @@ pub enum SandboxArguments {
     ProcessLog(ProcessArguments),
     ProcessStop(ProcessArguments),
     Checkpoint(EmptyArguments),
+    WriteStdin(WriteStdinArguments),
+    WebFetch(WebFetchArguments),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxArgumentError {
     #[error("{0}")]
     Decode(#[from] serde_json::Error),
-    #[error("command must be nonempty and timeout_ms must be between 1 and 3600000")]
+    #[error(
+        "invalid sandbox arguments: command/URL must be nonempty, timeout_ms must be 1..=3600000, yield_seconds 0..=3600, and output_budget_bytes 1024..=32768"
+    )]
     Invalid,
 }
 
@@ -72,6 +102,7 @@ impl SandboxArguments {
         match self {
             Self::Bash(arguments) => arguments.valid(),
             Self::ProcessStart(arguments) => !arguments.command.is_empty(),
+            Self::WebFetch(arguments) => !arguments.url.is_empty(),
             _ => true,
         }
     }
@@ -85,6 +116,8 @@ impl SandboxArguments {
             Self::ProcessLog(_) => "process_log",
             Self::ProcessStop(_) => "process_stop",
             Self::Checkpoint(_) => "checkpoint",
+            Self::WriteStdin(_) => "write_stdin",
+            Self::WebFetch(_) => "web_fetch",
         }
     }
 
@@ -92,6 +125,8 @@ impl SandboxArguments {
     pub fn parameters(&self) -> serde_json::Value {
         match self {
             Self::Bash(value) => serde_json::json!(value),
+            Self::WriteStdin(value) => serde_json::json!(value),
+            Self::WebFetch(value) => serde_json::json!(value),
             Self::ProcessStart(value) => serde_json::json!(value),
             Self::ProcessLog(value) | Self::ProcessStop(value) => serde_json::json!(value),
             Self::ProcessList(value) | Self::Checkpoint(value) => serde_json::json!(value),

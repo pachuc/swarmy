@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use std::{sync::Arc, time::Duration};
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::{
-    BashResult, LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, Sandbox, SandboxArguments,
-    ToolJob, ToolResult, VolumeId,
+    LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, Sandbox, SandboxArguments, ToolJob,
+    ToolResult, VolumeId,
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime, SandboxRuntime};
 use swarmy_store::{Store, StoreError};
@@ -129,33 +129,36 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             )
         }
         arguments => {
-            let request = request(arguments, claim.placement.epoch);
+            let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
             let (exit, stdout, stderr) = exec(runtime, &sandbox, request).await?;
             if exit.timed_out {
                 ToolResult::Error {
                     error: format!(
-                        "{} timed out; its process group was stopped. stdout: {stdout} stderr: {stderr}",
+                        "{} helper timed out; managed processes may still be running. stdout: {stdout} stderr: {stderr}",
                         arguments.name()
                     ),
                 }
-            } else if matches!(arguments, SandboxArguments::Bash(_)) {
-                let manifest_id = store
-                    .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
-                    .await?
-                    .context("agent volume missing")?
-                    .head_manifest;
-                BashResult {
-                    stdout,
-                    stderr,
-                    exit_code: exit.exit_code,
-                    timed_out: false,
-                    manifest_id,
-                }
-                .tool_result()
             } else if exit.exit_code != 0 {
                 ToolResult::Error { error: stderr }
             } else {
-                completed(arguments.name(), &serde_json::from_str(&stdout)?)
+                let mut value: serde_json::Value = serde_json::from_str(&stdout)?;
+                if matches!(arguments, SandboxArguments::Bash(_)) {
+                    value["manifest_id"] = serde_json::json!(
+                        store
+                            .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
+                            .await?
+                            .context("agent volume missing")?
+                            .head_manifest
+                    );
+                    let metadata = serde_json::from_value(value.clone())?;
+                    ToolResult::Completed {
+                        title: "bash".into(),
+                        output: value.to_string(),
+                        metadata,
+                    }
+                } else {
+                    completed(arguments.name(), &value)
+                }
             }
         }
     };
@@ -181,22 +184,37 @@ fn completed(name: &str, value: &serde_json::Value) -> ToolResult {
     }
 }
 
-fn request(arguments: &SandboxArguments, epoch: u64) -> ExecRequest {
-    if let SandboxArguments::Bash(arguments) = arguments {
+fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecRequest {
+    if let SandboxArguments::WebFetch(arguments) = arguments {
         return ExecRequest {
-            args: vec!["/bin/bash".into(), "-c".into(), arguments.command.clone()],
-            timeout_ms: arguments.timeout_ms,
+            args: vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                include_str!("web_fetch.py").into(),
+                arguments.url.clone(),
+            ],
+            timeout_ms: 35_000,
         };
     }
+    let new_id = || swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
     let (id, command) = match arguments {
-        SandboxArguments::ProcessStart(arguments) => (
-            swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string(),
-            arguments.command.clone(),
-        ),
+        SandboxArguments::Bash(arguments) => (new_id(), arguments.command.clone()),
+        SandboxArguments::ProcessStart(arguments) => (new_id(), arguments.command.clone()),
         SandboxArguments::ProcessLog(arguments) | SandboxArguments::ProcessStop(arguments) => {
             (arguments.process_id.to_string(), String::new())
         }
+        SandboxArguments::WriteStdin(arguments) => {
+            (arguments.process_id.to_string(), arguments.text.clone())
+        }
         _ => (String::new(), String::new()),
+    };
+    let mut options = arguments.parameters();
+    options["call_id"] = serde_json::json!(call_id);
+    let wait_ms = match arguments {
+        SandboxArguments::Bash(arguments) => {
+            (arguments.yield_seconds * 1000).min(arguments.timeout_ms)
+        }
+        _ => 0,
     };
     ExecRequest {
         args: vec![
@@ -207,8 +225,11 @@ fn request(arguments: &SandboxArguments, epoch: u64) -> ExecRequest {
             epoch.to_string(),
             id,
             command,
+            options.to_string(),
         ],
-        timeout_ms: 10_000,
+        // The helper enforces the command's wait limit. This guard is only for
+        // a stalled helper; detached managed commands remain in their own group.
+        timeout_ms: wait_ms + 10_000,
     }
 }
 
@@ -242,7 +263,7 @@ pub async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -
         &Sandbox {
             agent_id: placement.agent_id,
         },
-        request(&arguments, placement.epoch),
+        request(&arguments, placement.epoch, ""),
     )
     .await?;
     anyhow::ensure!(

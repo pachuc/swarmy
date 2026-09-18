@@ -547,6 +547,8 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         ("process_log", json!({"process_id":id})),
         ("process_stop", json!({"process_id":id})),
         ("checkpoint", json!({})),
+        ("write_stdin", json!({"process_id":id, "text":"hello\n"})),
+        ("web_fetch", json!({"url":"http://localhost/"})),
     ] {
         let call = ToolCallRecord {
             call_id: ToolCallId(name.into()),
@@ -581,7 +583,7 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         }
         assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
     }
-    assert_eq!(registry.definitions().len(), 6);
+    assert_eq!(registry.definitions().len(), 8);
     assert!(
         swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
             .is_err()

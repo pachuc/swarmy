@@ -20,6 +20,8 @@ async fn dispatch(
         swarmy_core::SandboxArguments::Bash(BashArguments {
             command: command.into(),
             timeout_ms: 120_000,
+            yield_seconds: 10,
+            output_budget_bytes: 32768,
         }),
     )
     .await
@@ -616,7 +618,7 @@ async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
     result.clone()
 }
 
-async fn invoke(
+pub(super) async fn invoke(
     node: &Node,
     store: &Store,
     bus: &Bus,
@@ -694,9 +696,21 @@ async fn managed_tools(node: &Node, store: &Store, bus: &Bus) {
         .unwrap(),
     )
     .await;
-    assert!(
-        matches!(tool_result(store, &job).await, ToolResult::Error { error } if error.contains("timed out"))
-    );
+    let ToolResult::Completed { output, .. } = tool_result(store, &job).await else {
+        panic!("timeout must background the command");
+    };
+    let background: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(background["timed_out"], true);
+    assert_eq!(background["backgrounded"], true);
+    invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_stop",
+        json!({"process_id":background["process_id"]}),
+    )
+    .await;
     let fetched = invoke(
         node,
         store,
@@ -734,7 +748,13 @@ async fn check_log_and_checkpoint(
         json!({"process_id":id}),
     )
     .await;
-    assert_eq!(tail["output"].as_str().unwrap().len(), 65536);
+    assert!(tail["output"].as_str().unwrap().len() <= 32768);
+    assert!(
+        tail["output"]
+            .as_str()
+            .unwrap()
+            .contains("bytes elided; full output at")
+    );
     assert_eq!(tail["truncated"], true);
     let snapshot = invoke(node, store, bus, agent, "checkpoint", json!({})).await;
     let volume = VolumeId::from_ulid(agent.as_ulid());
@@ -782,7 +802,7 @@ async fn stop_and_rebuild(
     .await;
     assert_ne!(fetched["exit_code"], 0);
     eprintln!(
-        "managed tools passed: background HTTP, later bash, list, logs, idle protection, isolated timeout, checkpoint head, and stop"
+        "managed tools passed: background HTTP, later bash, list, logs, idle protection, timeout backgrounding, checkpoint head, and stop"
     );
     evicted(store, agent).await;
     let job = dispatch_arguments(
