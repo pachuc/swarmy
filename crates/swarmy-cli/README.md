@@ -23,31 +23,38 @@ swarmy agent create builder --image base-ubuntu:dev
 swarmy agent ls
 swarmy agent show tommy
 swarmy chat --agent tommy
+swarmy chat --agent tommy --new        # separate conversation, shared computer
 swarmy run --agent tommy "Check the build"
 swarmy agent delete tommy             # prompts for confirmation
 swarmy agent delete builder --yes     # suitable for scripts
 ```
 
 Names contain 1-64 ASCII letters, digits, hyphens, or underscores. Creation uses
-`default_image` unless `--image NAME:TAG` is supplied, and pins that image for the
-agent. `--agent` accepts a name or agent id and opens a fresh session; it cannot
-be combined with `--image` or a chat session id. A literal name takes precedence
-if it also looks like an id. Named sessions need no default image configured.
-Their tools, files, and background processes share the agent's computer.
-`session close` refuses named sessions and points to `agent delete`. Agent
-deletion removes the identity and computer while retaining all transcripts;
-it fences further tools and the node discards its local computer on renewal.
-Quitting either chat leaves the named agent available.
+`default_image` unless `--image NAME:TAG` is supplied, and pins that image for
+the agent. `--agent` accepts a name or agent id and resumes its main session,
+creating it on first use. Add `--new` to `chat` or `run` for a separate side
+conversation without changing the main session. `--new` requires `--agent`.
+`--agent` cannot be combined with `--image` or a chat session id. A literal name
+takes precedence if it also looks like an id. Named sessions need no default
+image configured. Their tools, files, and background processes share the agent's
+computer. `session close` refuses the main session and points to `agent delete`.
+Side sessions can be closed without deleting the shared computer; closed
+sessions cannot become main. Agent deletion removes the identity and computer
+while retaining all transcripts; it fences further tools and the node discards
+its local computer on renewal. Quitting either chat leaves the named agent
+available.
 
 `agent ls` lists name, id, image, placement node, session count, and creation
-time. `agent show` adds description, placement epoch, each session's state, and
-last disk snapshot time and age in seconds, using the committed head manifest's
-ULID timestamp as recovery notices do. Before a volume exists, snapshot fields
-are null. The command reads the node's sampled call status: `busy` means a call holds
-the computer (including startup) or calls are queued; `idle` means a resident
-computer has no holder or queued calls. Missing, expired, or replaced-placement
-observations report `unknown`. Samples expire after three node heartbeat
-intervals. This is call occupancy, not a health probe or execution authority.
+time. `agent show` identifies `main_session` and marks each session with
+`main=true` or `main=false` in text output. It adds description, placement
+epoch, each session's state, and last disk snapshot time and age in seconds,
+using the committed head manifest's ULID timestamp as recovery notices do.
+Before a volume exists, snapshot fields are null. The command reads the node's
+sampled call status: `busy` means a call holds the computer (including startup)
+or calls are queued; `idle` means a resident computer has no holder or queued
+calls. Missing, expired, or replaced-placement observations report `unknown`.
+Samples expire after three node heartbeat intervals. This is call occupancy, not
+a health probe or execution authority.
 
 Every agent and session command supports global `--json` and `--remote NAME`.
 JSON create returns an agent record; ls emits one record per line with
@@ -84,8 +91,9 @@ newline-delimited JSON, following the auth command's event stream convention:
 
 - `session show`: one serialized `swarmy_core::Event` per line.
 - `session ls`: one serialized `swarmy_core::SessionRecord` per line, with `agent_name`
-  (null for ephemeral sessions or a deleted named agent).
-- `run`: a `session_created` record containing `session_id` and `agent_name`, `model_delta` records
+  (null for ephemeral sessions or a deleted named agent) and a `main` boolean.
+- `run`: a `session_created` record (or `session_opened` when resuming) containing
+  `session_id` and `agent_name`, `model_delta` records
   containing `delta`, and `session_event` records containing `value`. Durable
   events appear in sequence order. If Idle is detected through the session
   record without a state event, a final `session_idle` record contains the id.
@@ -126,8 +134,8 @@ message and press Enter to send. Left/Right move the cursor and Backspace delete
 before it. Input stays locked until the session returns to Idle. PageUp/PageDown
 scroll the transcript; End follows the newest text again. Esc or Ctrl-C exits,
 including during a reply. Mouse input and editing history are not supported.
-`chat --agent NAME` skips the recent-session picker; use separate terminals to
-open several sessions on the same agent. System notices in named conversations
+`chat --agent NAME` skips the recent-session picker; add `--new` in separate
+terminals to open side sessions on the same agent. System notices in named conversations
 include their originating session id in the transcript, including after resume.
 
 Without `--json`, `chat` requires an interactive terminal. `chat --json` instead

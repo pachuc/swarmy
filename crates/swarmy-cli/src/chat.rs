@@ -33,6 +33,7 @@ pub async fn run(
     id: Option<SessionId>,
     image: Option<String>,
     agent: Option<String>,
+    new: bool,
 ) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
@@ -67,7 +68,7 @@ pub async fn run(
         id.is_none() || image.is_none(),
         "--image applies only to a new session"
     );
-    let conversation = Conversation::open(id, image.as_deref(), agent.as_deref()).await?;
+    let conversation = Conversation::open(id, image.as_deref(), agent.as_deref(), new).await?;
     interact(&mut terminal, &mut keys, conversation, &provider).await
 }
 

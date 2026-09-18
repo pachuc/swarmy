@@ -1,4 +1,4 @@
-use crate::{AgentId, ImageRecord, ReasoningEffort};
+use crate::{AgentId, ImageRecord, ReasoningEffort, SessionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,9 @@ pub struct AgentRecord {
     pub image: ImageRecord,
     pub description: String,
     pub created_at: Timestamp,
+    /// Current continuous conversation; side sessions never change this pointer.
+    #[serde(default)]
+    pub main_session: Option<SessionId>,
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]

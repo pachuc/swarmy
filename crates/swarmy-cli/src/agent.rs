@@ -175,14 +175,17 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
     value["node_id"] = serde_json::to_value(node)?;
     value["session_count"] = sessions.len().into();
     let mut text = format!(
-        "{} {} image={}:{} node={} sessions={} created={}",
+        "{} {} image={}:{} node={} sessions={} created={} main_session={}",
         agent.name,
         agent.agent_id,
         agent.image.name,
         agent.image.tag.0,
         node.map_or_else(|| "-".into(), |id| id.to_string()),
         sessions.len(),
-        agent.created_at
+        agent.created_at,
+        agent
+            .main_session
+            .map_or_else(|| "-".into(), |id| id.to_string())
     );
     if detail {
         text.push_str(&settings_text(agent));
@@ -220,8 +223,11 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         for session in sessions {
             write!(
                 text,
-                "\nsession={} state={:?} computer_deleted={}",
-                session.session_id, session.state, session.computer_deleted
+                "\nsession={} state={:?} computer_deleted={} main={}",
+                session.session_id,
+                session.state,
+                session.computer_deleted,
+                agent.main_session == Some(session.session_id)
             )?;
         }
     }
