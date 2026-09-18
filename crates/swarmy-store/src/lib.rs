@@ -18,6 +18,7 @@ mod leases;
 mod nodes;
 mod placed_tools;
 mod placements;
+mod plans;
 mod session_images;
 mod tool_routing;
 mod tools;
@@ -73,8 +74,10 @@ pub enum StoreError {
     SessionImageRequired,
     #[error("This session's computer has been deleted. Create a new session to run tools.")]
     ComputerDeleted,
-    #[error("only ephemeral sessions can be closed")]
-    NamedSessionClose,
+    #[error("cannot close an agent main session; use swarmy agent delete to delete the agent")]
+    MainSessionClose,
+    #[error("main session must be an open session belonging to the agent")]
+    InvalidMainSession,
     #[error("node does not exist")]
     NodeMissing,
     #[error("node has no computer capacity available")]
@@ -155,6 +158,8 @@ struct StoredSession {
     kind: swarmy_core::SessionKind,
     #[serde(skip)]
     computer_deleted: bool,
+    #[serde(skip)]
+    plan: Vec<swarmy_core::PlanStep>,
 }
 
 #[derive(Clone)]
@@ -320,9 +325,16 @@ impl Store {
         trx: &Transaction,
         mut session: StoredSession,
     ) -> Result<StoredSession> {
-        (session.kind, session.computer_deleted) = futures::try_join!(
+        (session.kind, session.computer_deleted, session.plan) = futures::try_join!(
             self.session_kind(trx, session.session_id),
             self.computer_deleted(trx, session.agent_id),
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_plan_key(session.session_id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
         )?;
         Ok(session)
     }
@@ -339,6 +351,7 @@ impl Store {
         Ok(SessionRecord {
             kind: session.kind,
             computer_deleted: session.computer_deleted,
+            plan: session.plan,
             session_id: session.session_id,
             agent_id: session.agent_id,
             state: session.state,

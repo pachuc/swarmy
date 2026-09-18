@@ -44,7 +44,26 @@ async fn agent_commands_and_session_lifetimes() {
             )
             .await
             .unwrap();
+        fixture
+            .store
+            .set_main_session(agent.agent_id, first.session_id)
+            .await
+            .unwrap();
         inspect_agents(&fixture, &agent, first.session_id, second.session_id).await;
+        success(
+            fixture
+                .output(&["session", "close", &second.session_id.to_string()])
+                .await,
+        );
+        assert!(
+            !fixture
+                .store
+                .fetch_session(second.session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .computer_deleted
+        );
         close_and_delete(&fixture, &agent, first.session_id, ephemeral.session_id).await;
     })
     .await;
@@ -133,6 +152,9 @@ async fn inspect_agents(
     let text = success(fixture.output(&["agent", "show", "tommy"]).await);
     for expected in [
         "Build things",
+        &format!("main_session={first}"),
+        &format!("session={first} state=Idle computer_deleted=false main=true"),
+        &format!("session={second} state=Idle computer_deleted=false main=false"),
         "placement_epoch=-",
         "sandbox_state=unknown",
         "last_snapshot=-",
@@ -149,6 +171,7 @@ async fn inspect_agents(
             .await,
     ))
     .unwrap();
+    assert_eq!(shown["main_session"], first.to_string());
     assert_eq!(shown["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(shown["sessions"][0]["state"], "idle");
     assert!(shown["last_snapshot_at"].is_null());
@@ -167,6 +190,9 @@ async fn inspect_agents(
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows[0]["agent_name"], "tommy");
+    assert_eq!(rows[0]["main"], true);
+    assert_eq!(rows[1]["main"], false);
+    assert_eq!(rows[2]["main"], false);
     assert_eq!(
         rows[0]["kind"]["named"]["agent_id"],
         agent.agent_id.to_string()
@@ -278,7 +304,7 @@ async fn named_run_resolves_names_and_ids_without_a_default_image() {
             .list_sessions_by_agent(agent.agent_id, None, 64)
             .await
             .unwrap();
-        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions.len(), 1);
         assert!(sessions.iter().all(|s| s.kind
             == SessionKind::Named {
                 agent_id: agent.agent_id
@@ -307,7 +333,7 @@ async fn named_run_resolves_names_and_ids_without_a_default_image() {
         );
         assert_eq!(
             fixture.store.list_sessions(None, 64).await.unwrap().len(),
-            2
+            1
         );
     })
     .await;
@@ -356,6 +382,16 @@ async fn json_chat_reads_prompts_and_retains_named_sessions_on_eof() {
             .await
             .unwrap();
         assert_eq!(records.len(), 1);
+        assert_eq!(
+            fixture
+                .store
+                .get_agent(agent.agent_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .main_session,
+            Some(records[0].session_id)
+        );
         assert!(!records[0].computer_deleted);
         assert_eq!(records[0].state, SessionState::Idle);
     })
@@ -379,6 +415,15 @@ fn agent_options_validate_before_connecting_to_services() {
             ],
             vec!["chat", "--agent", "tommy", "--image", "fixture:test"],
             vec!["chat", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--agent", "tommy"],
+            vec!["chat", "--new"],
+            vec!["run", "hello", "--new"],
+            vec![
+                "chat",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "--agent",
+                "tommy",
+                "--new",
+            ],
             vec!["agent", "create", "invalid/name"],
             vec!["agent", "create", ""],
         ] {
@@ -597,7 +642,7 @@ async fn new_commands_use_the_selected_remote_profile() {
         service.abort();
         assert_eq!(
             fixture.store.list_sessions(None, 64).await.unwrap().len(),
-            3
+            2
         );
         assert!(
             fixture
@@ -772,6 +817,92 @@ async fn github_tokens_are_private_rotatable_and_clearable() {
                     .is_none()
             );
         }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn named_chat_resumes_main_and_new_preserves_the_pointer() {
+    run(|fixture| async move {
+        let agent = fixture
+            .store
+            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .await
+            .unwrap();
+        let mut main = None;
+        for (new, expected) in [
+            (true, "session_created"),
+            (false, "session_created"),
+            (false, "session_opened"),
+            (true, "session_created"),
+        ] {
+            let mut args = vec!["chat", "--agent", "tommy", "--json"];
+            if new {
+                args.push("--new");
+            }
+            let text = success(fixture.output(&args).await);
+            let row: serde_json::Value =
+                serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(row["event"], expected);
+            let id = SessionId::from_ulid(row["session_id"].as_str().unwrap().parse().unwrap());
+            if new {
+                assert_ne!(main, Some(id));
+            } else if let Some(main) = main {
+                assert_eq!(id, main);
+            } else {
+                main = Some(id);
+            }
+            assert_eq!(
+                fixture
+                    .store
+                    .get_agent(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                main
+            );
+        }
+        let service = serve(&fixture, true).await;
+        for new in [false, true] {
+            let mut args = vec!["run", "hello", "--agent", "tommy", "--json"];
+            if new {
+                args.push("--new");
+            }
+            let text = success(fixture.output(&args).await);
+            let row: serde_json::Value =
+                serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(
+                row["event"],
+                if new {
+                    "session_created"
+                } else {
+                    "session_opened"
+                }
+            );
+            assert_eq!(row["session_id"] == main.unwrap().to_string(), !new);
+        }
+        service.abort();
+        assert_eq!(
+            fixture
+                .store
+                .get_agent(agent.agent_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .main_session,
+            main
+        );
+        let text = success(fixture.output(&["session", "ls"]).await);
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.contains("main=true"))
+                .count(),
+            1
+        );
+        assert!(text.lines().any(
+            |line| line.starts_with(&main.unwrap().to_string()) && line.ends_with("main=true")
+        ));
     })
     .await;
 }

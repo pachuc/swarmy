@@ -53,4 +53,12 @@ mod turn;
 pub use turn::{TurnEvent, TurnStage};
 
 mod agent;
-pub use agent::AgentRecord;
+pub use agent::{AgentRecord, AgentSettings};
+
+mod files;
+pub use files::{EditArguments, LsArguments, ReadArguments, SearchArguments, WriteArguments};
+mod plan;
+pub use plan::{PlanStatus, PlanStep, UpdatePlanArguments};
+
+mod reasoning;
+pub use reasoning::{InvalidReasoningEffort, ReasoningEffort};

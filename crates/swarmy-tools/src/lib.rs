@@ -20,6 +20,9 @@ macro_rules! sandbox_tool {
     };
 }
 
+mod files;
+pub use files::{Edit, Glob, Grep, Ls, Read, UpdatePlan, Write};
+
 sandbox_tool!(
     Bash,
     "bash",
@@ -68,6 +71,13 @@ fn process_parameters() -> Value {
 }
 
 pub fn register(tools: &mut ToolRegistry) {
+    tools.register(Box::new(Read));
+    tools.register(Box::new(Write));
+    tools.register(Box::new(Edit));
+    tools.register(Box::new(Glob));
+    tools.register(Box::new(Grep));
+    tools.register(Box::new(Ls));
+    tools.register(Box::new(UpdatePlan));
     tools.register(Box::new(Bash));
     tools.register(Box::new(ProcessStart));
     tools.register(Box::new(ProcessList));

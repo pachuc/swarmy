@@ -43,13 +43,21 @@ pub enum SandboxArguments {
     ProcessLog(ProcessArguments),
     ProcessStop(ProcessArguments),
     Checkpoint(EmptyArguments),
+    Read(crate::ReadArguments),
+    Write(crate::WriteArguments),
+    Edit(crate::EditArguments),
+    Glob(crate::SearchArguments),
+    Grep(crate::SearchArguments),
+    Ls(crate::LsArguments),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxArgumentError {
     #[error("{0}")]
     Decode(#[from] serde_json::Error),
-    #[error("command must be nonempty and timeout_ms must be between 1 and 3600000")]
+    #[error(
+        "invalid tool arguments: paths, patterns, commands, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be between 1 and 3600000"
+    )]
     Invalid,
 }
 
@@ -72,6 +80,11 @@ impl SandboxArguments {
         match self {
             Self::Bash(arguments) => arguments.valid(),
             Self::ProcessStart(arguments) => !arguments.command.is_empty(),
+            Self::Read(a) => !a.path.is_empty() && a.offset > 0 && a.limit > 0,
+            Self::Write(a) => !a.path.is_empty(),
+            Self::Edit(a) => !a.path.is_empty() && !a.old_string.is_empty(),
+            Self::Glob(a) | Self::Grep(a) => !a.path.is_empty() && !a.pattern.is_empty(),
+            Self::Ls(a) => !a.path.is_empty(),
             _ => true,
         }
     }
@@ -85,12 +98,36 @@ impl SandboxArguments {
             Self::ProcessLog(_) => "process_log",
             Self::ProcessStop(_) => "process_stop",
             Self::Checkpoint(_) => "checkpoint",
+            Self::Read(_) => "read",
+            Self::Write(_) => "write",
+            Self::Edit(_) => "edit",
+            Self::Glob(_) => "glob",
+            Self::Grep(_) => "grep",
+            Self::Ls(_) => "ls",
         }
+    }
+
+    #[must_use]
+    pub const fn is_file_tool(&self) -> bool {
+        matches!(
+            self,
+            Self::Read(_)
+                | Self::Write(_)
+                | Self::Edit(_)
+                | Self::Glob(_)
+                | Self::Grep(_)
+                | Self::Ls(_)
+        )
     }
 
     #[must_use]
     pub fn parameters(&self) -> serde_json::Value {
         match self {
+            Self::Read(value) => serde_json::json!(value),
+            Self::Write(value) => serde_json::json!(value),
+            Self::Edit(value) => serde_json::json!(value),
+            Self::Glob(value) | Self::Grep(value) => serde_json::json!(value),
+            Self::Ls(value) => serde_json::json!(value),
             Self::Bash(value) => serde_json::json!(value),
             Self::ProcessStart(value) => serde_json::json!(value),
             Self::ProcessLog(value) | Self::ProcessStop(value) => serde_json::json!(value),

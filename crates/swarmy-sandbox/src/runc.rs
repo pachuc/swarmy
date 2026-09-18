@@ -15,7 +15,7 @@ use std::{
 use swarmy_core::AgentId;
 use swarmy_volume::server::{self, ServerConfig};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
@@ -441,13 +441,20 @@ impl SandboxRuntime for RuncRuntime {
                 "echo $$ > /run/swarmy/$1.pid; test ! -e /run/swarmy/$1.cancel || exit 137; shift; exec \"$@\"",
                 "swarmy", &token])
             .args(request.args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let mut stdin = child.stdin.take().ok_or(Error::State)?;
         let stdout = child.stdout.take().ok_or(Error::State)?;
         let stderr = child.stderr.take().ok_or(Error::State)?;
         let run = async {
-            let ((), (), status) = tokio::try_join!(
+            let ((), (), (), status) = tokio::try_join!(
+                async {
+                    stdin.write_all(&request.stdin).await?;
+                    drop(stdin);
+                    Ok::<_, Error>(())
+                },
                 pump(stdout, output.clone(), true),
                 pump(stderr, output, false),
                 async { child.wait().await.map_err(Error::from) }

@@ -76,9 +76,12 @@ enum Command {
         prompt: String,
         #[arg(long)]
         image: Option<String>,
-        /// Open a new session on a named agent (name or agent id)
+        /// Resume the main session on a named agent (name or agent id)
         #[arg(long, conflicts_with = "image")]
         agent: Option<String>,
+        /// Create a side conversation on the named agent
+        #[arg(long, requires = "agent")]
+        new: bool,
     },
     /// Open a terminal conversation, or resume a session
     Chat {
@@ -86,9 +89,12 @@ enum Command {
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
         image: Option<String>,
-        /// Open a new session on a named agent (name or agent id)
+        /// Resume the main session on a named agent (name or agent id)
         #[arg(long, conflicts_with_all = ["image", "session_id"])]
         agent: Option<String>,
+        /// Create a side conversation on the named agent
+        #[arg(long, requires = "agent")]
+        new: bool,
     },
     /// Inspect stored sessions
     Session {

@@ -8,11 +8,31 @@ async fn named_chat_header_and_notices_identify_the_session() {
             .create_agent("tommy", "fixture:test", "", Timestamp::now())
             .await
             .unwrap();
-        let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"));
+        let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         assert!(first.ready().await.contains("tommy |"));
         let first_id = session_id(&fixture).await;
-        let mut second =
-            Terminal::with_agent(&fixture, None, None, "", Some(&agent.agent_id.to_string()));
+        first.type_text("\x1b");
+        first.exit(true).await;
+        let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
+        assert!(first.ready().await.contains(&first_id.to_string()));
+        assert_eq!(
+            fixture
+                .store
+                .list_sessions_by_agent(agent.agent_id, None, 64)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut second = Terminal::with_agent(
+            &fixture,
+            None,
+            None,
+            "",
+            Some(&agent.agent_id.to_string()),
+            true,
+        );
         assert!(second.ready().await.contains("tommy |"));
         fixture
             .store
@@ -77,10 +97,10 @@ async fn root_named_chats_share_a_background_process_and_delete() {
         let created = fixture.output(&["agent", "create", "tommy", "--json"]).await;
         assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
         let agent: swarmy_core::AgentRecord = serde_json::from_slice(&created.stdout).unwrap();
-        let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"));
+        let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         first.ready().await;
         let first_id = session_id(&fixture).await;
-        let mut second = Terminal::with_agent(&fixture, None, None, "", Some(&agent.agent_id.to_string()));
+        let mut second = Terminal::with_agent(&fixture, None, None, "", Some(&agent.agent_id.to_string()), true);
         second.ready().await;
         let sessions = fixture.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap();
         assert_eq!(sessions.len(), 2);

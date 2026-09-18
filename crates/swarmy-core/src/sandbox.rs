@@ -34,6 +34,8 @@ pub struct RuntimeCaps {
 pub struct ExecRequest {
     pub args: Vec<String>,
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub stdin: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
