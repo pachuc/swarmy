@@ -18,6 +18,17 @@ pub enum SessionState {
     Completed,
 }
 
+/// A named session shares the named agent's computer across conversations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Ephemeral,
+    Named {
+        agent_id: AgentId,
+    },
+}
+
 /// Whether a state change is allowed, independently of leases, timers, or I/O.
 ///
 /// Wakeups and completed external work make a session runnable. Only a leased
@@ -54,6 +65,10 @@ pub struct SnapshotRef {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
+    #[serde(default)]
+    pub kind: SessionKind,
+    #[serde(default)]
+    pub computer_deleted: bool,
     pub session_id: SessionId,
     pub agent_id: AgentId,
     pub state: SessionState,
@@ -122,7 +137,14 @@ mod tests {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
+            kind: SessionKind::Ephemeral,
+            computer_deleted: false,
         };
+        assert_round_trip(&session);
+        session.kind = SessionKind::Named {
+            agent_id: session.agent_id,
+        };
+        session.computer_deleted = true;
         assert_round_trip(&session);
         session.head_seq = u64::MAX;
         session.snapshot_ref = Some(SnapshotRef {

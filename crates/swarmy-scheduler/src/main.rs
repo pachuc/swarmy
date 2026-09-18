@@ -1,4 +1,5 @@
 mod config;
+mod ephemeral;
 mod gc;
 mod scheduler;
 
@@ -48,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         result = scheduler.run() => result?,
         () = gc::run(&store, objects, settings.gc) => {},
+        () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => {},
         result = tokio::signal::ctrl_c() => result?,
     }
     Ok(())

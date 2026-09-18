@@ -39,6 +39,8 @@ impl Store {
             {
                 return Ok(None);
             }
+            let session = self.session(&trx, job.session_id).await?;
+            self.check_computer(&trx, session.agent_id).await?;
             if let Some(placement) =
                 read::<PlacementRecord>(&trx, &self.tool_key("tool_placement", job.request_id))
                     .await?
@@ -119,7 +121,10 @@ impl Store {
         explanation: String,
     ) -> Result<()> {
         let mut session = self.session(trx, job.session_id).await?;
-        if session.state != SessionState::WaitingTools {
+        if !matches!(
+            session.state,
+            SessionState::WaitingTools | SessionState::Completed
+        ) {
             return Err(StoreError::InvalidState);
         }
         session.head_seq = session
@@ -144,12 +149,39 @@ impl Store {
         write(trx, &self.tool_key("tool_done", job.request_id), &true)?;
         let pending = self.pending_space(job.session_id);
         trx.clear(&pending.pack(&(job.request_id.as_bytes().as_slice(),)));
-        if scan(trx, pending.range(), 1).await?.is_empty() {
+        if session.state != SessionState::Completed
+            && scan(trx, pending.range(), 1).await?.is_empty()
+        {
             self.transition(trx, session, SessionState::Runnable, Timestamp::now())
                 .await
         } else {
             write(trx, &self.session_key(job.session_id), &session)
         }
+    }
+
+    /// Finish a pending call with the deletion refusal, without placing another computer.
+    /// Returns false when the computer still exists.
+    /// # Errors
+    /// Returns storage, job validation, or decoding failures.
+    pub async fn fail_deleted_computer_tool(&self, job: &ToolJob) -> Result<bool> {
+        self.transaction(|trx| async move {
+            let session = self.session(&trx, job.session_id).await?;
+            if !self.computer_deleted(&trx, session.agent_id).await? {
+                return Ok(false);
+            }
+            if let Some(value) = trx
+                .get(&self.tool_key("tool_job", job.request_id), false)
+                .await?
+            {
+                if self.hydrate::<ToolJob>(&value).await? != *job {
+                    return Err(StoreError::InvalidState);
+                }
+                self.fail_lost_tool(&trx, job, StoreError::ComputerDeleted.to_string())
+                    .await?;
+            }
+            Ok(true)
+        })
+        .await
     }
 
     pub(crate) async fn deliver_computer_notice(

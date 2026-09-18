@@ -125,6 +125,7 @@ impl Store {
                     },
                     scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
                 )?;
+                let session = self.session_metadata(&trx, session).await?;
                 Ok((lease, session, snapshot, turn, values))
             })
             .await?;
@@ -259,6 +260,9 @@ impl Store {
             SessionState::Leased => self.clear_lease(trx, session.session_id).await?,
             SessionState::Runnable => self.remove_runnable(trx, session.session_id).await?,
             _ => {}
+        }
+        if state == SessionState::Idle {
+            write(trx, &self.session_idle_key(session.session_id), &now)?;
         }
         session.state = state;
         if state == SessionState::Runnable {

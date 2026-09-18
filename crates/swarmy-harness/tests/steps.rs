@@ -26,6 +26,8 @@ fn session() -> SessionRecord {
         state: SessionState::Leased,
         head_seq: 7,
         snapshot_ref: None,
+        kind: swarmy_core::SessionKind::Ephemeral,
+        computer_deleted: false,
     }
 }
 

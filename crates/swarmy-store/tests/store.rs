@@ -31,6 +31,8 @@ fn session() -> SessionRecord {
         state: SessionState::Runnable,
         head_seq: 0,
         snapshot_ref: None,
+        kind: swarmy_core::SessionKind::Ephemeral,
+        computer_deleted: false,
     }
 }
 fn event(text: &str) -> Event {
@@ -1794,3 +1796,6 @@ async fn legacy_sessions_without_images_remain_readable() {
     );
     test.cleanup().await;
 }
+
+#[path = "store/agents.rs"]
+mod agents;

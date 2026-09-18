@@ -155,6 +155,8 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 state: SessionState::Runnable,
                 head_seq: 0,
                 snapshot_ref: None,
+                kind: swarmy_core::SessionKind::Ephemeral,
+                computer_deleted: false,
             },
             Timestamp::now(),
             image_fixture::image(&store).await,
@@ -244,3 +246,87 @@ async fn cleanup(cluster: &str, url: &str, prefix: &str) {
 }
 
 mod routing;
+
+#[tokio::test]
+async fn deleted_computer_refuses_remote_tools_with_durable_message() {
+    let (Ok(cluster), Ok(url)) = (
+        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
+        std::env::var("SWARMY_NATS_URL"),
+    ) else {
+        eprintln!("skipping slow-tool test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset");
+        return;
+    };
+    NETWORK.get_or_init(swarmy_store::boot);
+    let prefix = format!("worker_slow_{}", Ulid::generate());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let config = config(cluster.clone(), url.clone(), &prefix, calls.clone());
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
+        .await
+        .unwrap();
+    let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+    let queue = WorkQueue::Runnable(7);
+    bus.setup(std::slice::from_ref(&queue)).await.unwrap();
+    let mut messages = bus.consume::<Nudge>(&queue).await.unwrap();
+    let id = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_session(
+            &SessionRecord {
+                session_id: id,
+                agent_id: AgentId::from_ulid(Ulid::generate()),
+                state: SessionState::Runnable,
+                head_seq: 0,
+                snapshot_ref: None,
+                kind: swarmy_core::SessionKind::Ephemeral,
+                computer_deleted: false,
+            },
+            Timestamp::now(),
+            image_fixture::image(&store).await,
+        )
+        .await
+        .unwrap();
+    store
+        .append_events(id, 0, &partial_batch(id))
+        .await
+        .unwrap();
+    bus.publish_work(&queue, &Nudge { session_id: id })
+        .await
+        .unwrap();
+    let delivery = timeout(Duration::from_secs(10), messages.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let worker = Worker::new(store.clone(), bus, blobs, config);
+    let agent = store.fetch_session(id).await.unwrap().unwrap().agent_id;
+    store.delete_computer(agent).await.unwrap();
+    worker.handle(&delivery).await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "deleted computer ran a tool"
+    );
+    let events = store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallRequested { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallCompleted { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::WaitingInference
+    );
+    assert!(events.iter().any(|event| matches!(event,
+        Event::ToolCallCompleted { result: swarmy_core::ToolResult::Error { error }, .. }
+        if error == "This session's computer has been deleted. Create a new session to run tools.")));
+    cleanup(&cluster, &url, &prefix).await;
+}

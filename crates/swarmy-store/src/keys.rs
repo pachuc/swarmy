@@ -157,3 +157,32 @@ pub(crate) fn session_id(bytes: Vec<u8>) -> Result<SessionId> {
     let bytes: [u8; 16] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
     Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
 }
+
+impl Store {
+    pub(crate) fn agent_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
+        self.root
+            .pack(&("agent", id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn agent_name_key(&self, name: &str) -> Vec<u8> {
+        self.root.pack(&("agent_by_name", name))
+    }
+    pub(crate) fn computer_deleted_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
+        self.root
+            .pack(&("computer_deleted", id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn session_kind_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session_kind", id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn session_idle_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session_idle", id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn session_agent_key(&self, agent: swarmy_core::AgentId, id: SessionId) -> Vec<u8> {
+        self.root.pack(&(
+            "session_by_agent",
+            agent.as_ulid().to_bytes().as_slice(),
+            id.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+}

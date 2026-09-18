@@ -7,7 +7,9 @@
 //! Session headers retain only the snapshot sequence so lease transactions never
 //! fetch blobs. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
+mod agents;
 pub mod blob;
+mod computers;
 mod inference;
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
@@ -56,6 +58,20 @@ pub enum StoreError {
     Encoding(#[from] EncodingError),
     #[error(transparent)]
     Blob(#[from] BlobError),
+    #[error("agent does not exist")]
+    AgentMissing,
+    #[error("agent id or name already exists")]
+    AgentExists,
+    #[error("agent name must be nonempty and contain no control characters")]
+    InvalidAgentName,
+    #[error("--image cannot be used with a named agent; its pinned image is used")]
+    NamedAgentImage,
+    #[error("an ephemeral session requires an image")]
+    SessionImageRequired,
+    #[error("This session's computer has been deleted. Create a new session to run tools.")]
+    ComputerDeleted,
+    #[error("only ephemeral sessions can be closed")]
+    NamedSessionClose,
     #[error("node does not exist")]
     NodeMissing,
     #[error("node has no computer capacity available")]
@@ -131,6 +147,11 @@ struct StoredSession {
     state: SessionState,
     head_seq: u64,
     snapshot_seq: Option<u64>,
+    // Side rows are read with the header but never change its legacy encoding.
+    #[serde(skip)]
+    kind: swarmy_core::SessionKind,
+    #[serde(skip)]
+    computer_deleted: bool,
 }
 
 #[derive(Clone)]
@@ -258,68 +279,8 @@ impl Store {
         wake_at: jiff::Timestamp,
         image: &str,
     ) -> Result<()> {
-        if session.head_seq != 0
-            || session.snapshot_ref.is_some()
-            || !matches!(session.state, SessionState::Idle | SessionState::Runnable)
-        {
-            return Err(StoreError::InvalidState);
-        }
-        let (name, tag) = image
-            .split_once(':')
-            .filter(|(name, tag)| !name.is_empty() && !tag.is_empty() && !tag.contains(':'))
-            .ok_or(StoreError::InvalidImage)?;
-        let tag = &swarmy_core::ImageTag(tag.into());
-        let result = self
-            .transaction(|trx| async move {
-                let key = self.session_key(session.session_id);
-                if trx.get(&key, false).await?.is_some() {
-                    return Err(StoreError::SessionExists);
-                }
-                let manifest_id =
-                    read(&trx, &self.image_key(name, tag))
-                        .await?
-                        .ok_or_else(|| StoreError::ImageMissing {
-                            image: image.into(),
-                            registered: String::new(),
-                        })?;
-                write(
-                    &trx,
-                    &self.session_image_key(session.session_id),
-                    &swarmy_core::ImageRecord {
-                        name: name.into(),
-                        tag: tag.clone(),
-                        manifest_id,
-                    },
-                )?;
-                write(
-                    &trx,
-                    &key,
-                    &StoredSession {
-                        session_id: session.session_id,
-                        agent_id: session.agent_id,
-                        state: session.state,
-                        head_seq: 0,
-                        snapshot_seq: None,
-                    },
-                )?;
-                if session.state == SessionState::Runnable {
-                    self.index_runnable(
-                        &trx,
-                        &swarmy_core::RunnableEntry {
-                            session_id: session.session_id,
-                            priority: 0,
-                            wake_at,
-                        },
-                    )
-                    .await?;
-                }
-                Ok(())
-            })
-            .await;
-        if matches!(result, Err(StoreError::ImageMissing { .. })) {
-            return Err(self.unregistered_image(image).await?);
-        }
-        result
+        self.create_session_record(session, wake_at, Some(image))
+            .await
     }
 
     /// # Errors
@@ -341,6 +302,7 @@ impl Store {
                 } else {
                     None
                 };
+                let session = self.session_metadata(&trx, session).await?;
                 Ok(Some((session, snapshot)))
             })
             .await?;
@@ -348,6 +310,18 @@ impl Store {
             return Ok(None);
         };
         Ok(Some(self.hydrate_session(session, snapshot).await?))
+    }
+
+    async fn session_metadata(
+        &self,
+        trx: &Transaction,
+        mut session: StoredSession,
+    ) -> Result<StoredSession> {
+        (session.kind, session.computer_deleted) = futures::try_join!(
+            self.session_kind(trx, session.session_id),
+            self.computer_deleted(trx, session.agent_id),
+        )?;
+        Ok(session)
     }
 
     async fn hydrate_session(
@@ -360,6 +334,8 @@ impl Store {
             None => None,
         };
         Ok(SessionRecord {
+            kind: session.kind,
+            computer_deleted: session.computer_deleted,
             session_id: session.session_id,
             agent_id: session.agent_id,
             state: session.state,
@@ -399,6 +375,7 @@ impl Store {
                     } else {
                         None
                     };
+                    let session = self.session_metadata(&trx, session).await?;
                     sessions.push((session, snapshot));
                 }
                 Ok(sessions)
@@ -697,4 +674,28 @@ async fn scan(
         .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
         .try_collect()
         .await?)
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_session_header_is_still_readable_and_writes_the_same_bytes() {
+        // A tuple encodes the original five postcard fields without adding metadata.
+        let id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 2));
+        let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from_parts(1, 3));
+        let original = encode(&(id, agent, SessionState::Idle, 42_u64, Some(20_u64))).unwrap();
+        let mut header: StoredSession = decode(&original).unwrap();
+        assert_eq!(header.session_id, id);
+        assert_eq!(header.agent_id, agent);
+        assert_eq!(header.state, SessionState::Idle);
+        assert_eq!(header.head_seq, 42);
+        assert_eq!(header.snapshot_seq, Some(20));
+        assert_eq!(header.kind, swarmy_core::SessionKind::Ephemeral);
+        assert!(!header.computer_deleted);
+        header.kind = swarmy_core::SessionKind::Named { agent_id: agent };
+        header.computer_deleted = true;
+        assert_eq!(encode(&header).unwrap(), original);
+    }
 }

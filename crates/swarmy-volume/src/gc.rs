@@ -168,6 +168,18 @@ async fn sweep(
             after = Some((image.name, image.tag));
         }
     }
+    let mut after = None;
+    loop {
+        let page = store.list_agents(after, MAX_SCAN_LIMIT).await?;
+        if page.is_empty() {
+            break;
+        }
+        for agent in page {
+            mark(store, objects, references, agent.image.manifest_id).await?;
+            run.manifests += 1;
+            after = Some(agent.agent_id);
+        }
+    }
     // Each list is streamed, and at most sixteen prefixes have a page in memory.
     let mut listed = stream::iter(0_u16..256)
         .map(|prefix| {

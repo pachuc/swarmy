@@ -92,6 +92,7 @@ pub async fn execute(
     placement: &PlacementRecord,
     job: ToolJob,
 ) -> Result<()> {
+    store.ensure_session_computer(job.session_id).await?;
     if store.tool_completed(job.request_id).await? {
         return Ok(());
     }

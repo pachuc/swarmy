@@ -157,6 +157,8 @@ impl Fixture {
                     state: SessionState::Runnable,
                     head_seq: 0,
                     snapshot_ref: None,
+                    kind: swarmy_core::SessionKind::Ephemeral,
+                    computer_deleted: false,
                 },
                 now,
                 settings.session_image(None).unwrap(),

@@ -28,4 +28,5 @@ object_store.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+foundationdb.workspace = true
 tempfile.workspace = true

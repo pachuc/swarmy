@@ -53,6 +53,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start(&self, partitions: &str, prefix: &str) -> usize {
+        self.start_with_retention(partitions, prefix, 86400).await
+    }
+
+    async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
         let child = Command::new(env!("CARGO_BIN_EXE_swarmy-scheduler"))
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
             .env("SWARMY_NATS_URL", &self.url)
@@ -67,6 +71,7 @@ impl Fixture {
                 "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
                 RESEND.as_millis().to_string(),
             )
+            .env("SWARMY_EPHEMERAL_RETENTION_SECONDS", retention.to_string())
             .env("RUST_LOG", "warn")
             .env("TOKIO_WORKER_THREADS", "2")
             .stdin(Stdio::null())
@@ -151,6 +156,8 @@ impl Fixture {
                     state,
                     head_seq: 0,
                     snapshot_ref: None,
+                    kind: swarmy_core::SessionKind::Ephemeral,
+                    computer_deleted: false,
                 },
                 wake_at,
                 image_fixture::image(&self.store).await,
@@ -543,6 +550,62 @@ async fn scan_recovers_an_atomic_user_append_whose_nudge_was_lost() {
             session
         );
         assert_eq!(f.state(session).await, SessionState::Runnable);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn timer_closes_only_idle_ephemeral_sessions() {
+    run(|f| async move {
+        let old = Timestamp::now()
+            .checked_sub(Duration::from_secs(10))
+            .unwrap();
+        let idle = f.create(7, SessionState::Idle, old).await;
+        let active = f.create(7, SessionState::Runnable, old).await;
+        let agent = f
+            .store
+            .create_agent("named", image_fixture::image(&f.store).await, "", old)
+            .await
+            .unwrap();
+        let named = f
+            .store
+            .create_session_for_agent(id(), Some(agent.agent_id), None, old)
+            .await
+            .unwrap();
+        f.start_with_retention("7", &f.prefix, 1).await;
+        timeout(WAIT, async {
+            while f.state(idle).await != SessionState::Completed {
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("ephemeral timer did not close old idle session");
+        assert_eq!(f.state(active).await, SessionState::Runnable);
+        assert_eq!(f.state(named.session_id).await, SessionState::Idle);
+        assert!(
+            f.store
+                .fetch_session(idle)
+                .await
+                .unwrap()
+                .unwrap()
+                .computer_deleted
+        );
+        assert!(
+            !f.store
+                .fetch_session(active)
+                .await
+                .unwrap()
+                .unwrap()
+                .computer_deleted
+        );
+        assert!(
+            !f.store
+                .fetch_session(named.session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .computer_deleted
+        );
     })
     .await;
 }

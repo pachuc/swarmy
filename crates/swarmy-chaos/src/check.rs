@@ -203,6 +203,8 @@ mod tests {
             state: SessionState::Idle,
             head_seq: 2,
             snapshot_ref: None,
+            kind: swarmy_core::SessionKind::Ephemeral,
+            computer_deleted: false,
         };
         let mut events = vec![
             Event::InferenceRequested {
