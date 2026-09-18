@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use swarmy_core::{AgentId, BlockDevice, NodeId, PlacementRecord, SandboxSpec, ToolJob};
+use swarmy_core::{
+    AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, SandboxSpec, SessionId, ToolJob,
+};
 use swarmy_sandbox::{RuncRuntime, SandboxRuntime};
 use swarmy_store::Store;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
@@ -8,10 +10,54 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 struct Call {
     job: ToolJob,
     reply: oneshot::Sender<Result<()>>,
+    activity: ActivityGuard,
 }
 struct Entry {
     calls: mpsc::Sender<Call>,
     task: tokio::task::JoinHandle<()>,
+    activity: Arc<std::sync::Mutex<Activity>>,
+}
+
+#[derive(Default)]
+struct Activity {
+    placement: Option<PlacementRecord>,
+    holder: Option<SessionId>,
+    queued: u64,
+}
+
+// The guard follows the call through admission, boot and execution. Cancellation
+// and dropped queues must release occupancy even when no reply can be sent.
+struct ActivityGuard {
+    state: Arc<std::sync::Mutex<Activity>>,
+    active: bool,
+}
+
+impl ActivityGuard {
+    fn queued(state: Arc<std::sync::Mutex<Activity>>) -> Self {
+        state.lock().expect("activity lock poisoned").queued += 1;
+        Self {
+            state,
+            active: false,
+        }
+    }
+
+    fn start(&mut self, session: SessionId) {
+        let mut state = self.state.lock().expect("activity lock poisoned");
+        state.queued -= 1;
+        state.holder = Some(session);
+        self.active = true;
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().expect("activity lock poisoned");
+        if self.active {
+            state.holder = None;
+        } else {
+            state.queued -= 1;
+        }
+    }
 }
 
 /// Each actor serializes calls for one agent while its renewal runs independently.
@@ -62,29 +108,37 @@ impl Hosting {
             return Ok(());
         };
         let (reply, response) = oneshot::channel();
-        let calls = {
+        let (calls, activity) = {
             let mut entries = self.entries.lock().await;
             if *self.shutdown.borrow() {
                 bail!("node is shutting down");
             }
             entries.retain(|_, entry| !entry.task.is_finished());
-            entries
-                .entry(agent)
-                .or_insert_with(|| {
-                    let (calls, receive) = mpsc::channel(16);
-                    let hosting = self.clone();
-                    let task = tokio::spawn(async move {
-                        if let Err(error) = hosting.host(agent, receive).await {
-                            tracing::warn!(%agent, %error, "agent hosting stopped");
-                        }
-                    });
-                    Entry { calls, task }
-                })
-                .calls
-                .clone()
+            let entry = entries.entry(agent).or_insert_with(|| {
+                let (calls, receive) = mpsc::channel(16);
+                let hosting = self.clone();
+                let task = tokio::spawn(async move {
+                    if let Err(error) = hosting.host(agent, receive).await {
+                        tracing::warn!(%agent, %error, "agent hosting stopped");
+                    }
+                });
+                Entry {
+                    calls,
+                    task,
+                    activity: Arc::default(),
+                }
+            });
+            (
+                entry.calls.clone(),
+                ActivityGuard::queued(entry.activity.clone()),
+            )
         };
         calls
-            .send(Call { job, reply })
+            .send(Call {
+                job,
+                reply,
+                activity,
+            })
             .await
             .context("agent stopped serving; placement lease lost")?;
         response
@@ -139,9 +193,10 @@ impl Hosting {
     }
 
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
-        let Some(first) = calls.recv().await else {
+        let Some(mut first) = calls.recv().await else {
             return Ok(());
         };
+        first.activity.start(first.job.session_id);
         let placement = match self.placement(agent, &first.job).await {
             Ok(placement) => placement,
             Err(error) => {
@@ -149,6 +204,12 @@ impl Hosting {
                 return Ok(());
             }
         };
+        first
+            .activity
+            .state
+            .lock()
+            .expect("activity lock poisoned")
+            .placement = Some(placement.clone());
         let mut shutdown = self.shutdown.subscribe();
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
@@ -169,7 +230,8 @@ impl Hosting {
                 }
                 tokio::select! {
                     call = calls.recv() => {
-                        let Some(call) = call else { break; };
+                        let Some(mut call) = call else { break; };
+                        call.activity.start(call.job.session_id);
                         self.execute(&placement, call).await?;
                     }
                     () = tokio::time::sleep(self.idle) => {
@@ -273,6 +335,45 @@ impl Hosting {
                 Err(_) => return anyhow::anyhow!("placement lease expired during renewal"),
             }
         }
+    }
+
+    /// Heartbeat observations expire independently of placement authority.
+    pub async fn report_status(&self, lifetime: Duration) -> Result<()> {
+        let observed_at = jiff::Timestamp::now();
+        let expires_at = observed_at.checked_add(lifetime)?;
+        let observations: Vec<_> = self
+            .entries
+            .lock()
+            .await
+            .values()
+            .filter(|entry| !entry.task.is_finished())
+            .filter_map(|entry| {
+                let activity = entry.activity.lock().expect("activity lock poisoned");
+                activity
+                    .placement
+                    .as_ref()
+                    .map(|placement| AgentCallStatus {
+                        agent_id: placement.agent_id,
+                        node_id: self.node,
+                        epoch: placement.epoch,
+                        holder_session_id: activity.holder,
+                        queued_calls: activity.queued,
+                        observed_at,
+                        expires_at,
+                    })
+            })
+            .collect();
+        for status in observations {
+            match self.store.put_agent_call_status(&status).await {
+                Ok(())
+                | Err(
+                    swarmy_store::StoreError::LeaseMismatch
+                    | swarmy_store::StoreError::ComputerDeleted,
+                ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     pub async fn shutdown(&self) {

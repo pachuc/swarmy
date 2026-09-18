@@ -10,6 +10,75 @@ use swarmy_core::{
 use crate::{Result, Store, StoreError, read, scan, write};
 
 impl Store {
+    /// Publish sampled call occupancy only for the current live placement.
+    /// # Errors
+    /// Rejects stale placement epochs and storage or encoding failures.
+    pub async fn put_agent_call_status(&self, status: &swarmy_core::AgentCallStatus) -> Result<()> {
+        self.transaction(|trx| async move {
+            let placement: PlacementRecord = read(
+                &trx,
+                &self
+                    .root
+                    .pack(&("placement", status.agent_id.as_ulid().to_bytes().as_slice())),
+            )
+            .await?
+            .ok_or(StoreError::LeaseMismatch)?;
+            if placement.node_id != status.node_id || placement.epoch != status.epoch {
+                return Err(StoreError::LeaseMismatch);
+            }
+            self.check_live_placement(&trx, &placement).await?;
+            let key = self.root.pack(&(
+                "agent_call_status",
+                status.agent_id.as_ulid().to_bytes().as_slice(),
+            ));
+            if read::<swarmy_core::AgentCallStatus>(&trx, &key)
+                .await?
+                .is_some_and(|old| {
+                    old.epoch == status.epoch && old.observed_at > status.observed_at
+                })
+            {
+                return Ok(());
+            }
+            write(&trx, &key, status)
+        })
+        .await
+    }
+
+    /// Return recent call occupancy, or none after expiry, release, deletion or takeover.
+    /// A missing observation means unknown occupancy, not an idle computer.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn agent_call_status(
+        &self,
+        agent: swarmy_core::AgentId,
+    ) -> Result<Option<swarmy_core::AgentCallStatus>> {
+        self.transaction(|trx| async move {
+            let key = self
+                .root
+                .pack(&("agent_call_status", agent.as_ulid().to_bytes().as_slice()));
+            let Some(status) = read::<swarmy_core::AgentCallStatus>(&trx, &key).await? else {
+                return Ok(None);
+            };
+            let placement: Option<PlacementRecord> = read(
+                &trx,
+                &self
+                    .root
+                    .pack(&("placement", agent.as_ulid().to_bytes().as_slice())),
+            )
+            .await?;
+            let now = Timestamp::now();
+            Ok(placement
+                .filter(|placement| {
+                    placement.node_id == status.node_id
+                        && placement.epoch == status.epoch
+                        && placement.expires_at > now
+                        && status.expires_at > now
+                })
+                .map(|_| status))
+        })
+        .await
+    }
+
     /// Read the durable dispatch fence before a node starts or rebuilds a computer.
     /// # Errors
     /// Returns storage or decoding failures.
@@ -246,10 +315,45 @@ impl Store {
             return Err(StoreError::Corrupt);
         };
         let explanation = text.clone();
+        // The index read conflicts with concurrent session creation, so every
+        // session present at delivery receives the same epoch atomically. Include
+        // the caller for legacy sessions created before the index existed.
+        let (mut begin, end) = self
+            .root
+            .subspace(&(
+                "session_by_agent",
+                placement.agent_id.as_ulid().to_bytes().as_slice(),
+            ))
+            .range();
+        self.append_computer_notice(trx, id, placement.epoch, &message)
+            .await?;
+        loop {
+            let page = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
+            if page.is_empty() {
+                break;
+            }
+            for (key, value) in page {
+                let session = swarmy_core::decode::<SessionId>(&value)?;
+                self.append_computer_notice(trx, session, placement.epoch, &message)
+                    .await?;
+                begin = key;
+                begin.push(0);
+            }
+        }
+        Ok(Some(explanation))
+    }
+
+    async fn append_computer_notice(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        epoch: u64,
+        message: &Message,
+    ) -> Result<()> {
         let delivered = self.root.pack(&(
             "computer_notice_delivered",
             id.as_ulid().to_bytes().as_slice(),
-            placement.epoch,
+            epoch,
         ));
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
@@ -260,13 +364,13 @@ impl Store {
             let event = self
                 .prepare(&Event::MessageAppended {
                     seq: session.head_seq,
-                    message,
+                    message: message.clone(),
                 })
                 .await?;
             trx.set(&self.event_space(id).pack(&(session.head_seq,)), &event);
             write(trx, &self.session_key(id), &session)?;
             write(trx, &delivered, &true)?;
         }
-        Ok(Some(explanation))
+        Ok(())
     }
 }

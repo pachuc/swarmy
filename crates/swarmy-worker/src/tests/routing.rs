@@ -497,6 +497,104 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     f.cleanup().await;
 }
 
+#[tokio::test]
+async fn named_agent_node_loss_notifies_every_session_once() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.agent = f
+        .store
+        .create_agent("shared", "routing:test", "", Timestamp::now())
+        .await
+        .unwrap()
+        .agent_id;
+    // Cross an index page boundary and include idle sessions that never dispatch.
+    let mut sessions = Vec::new();
+    for _ in 0..=swarmy_store::MAX_SCAN_LIMIT {
+        let id = SessionId::from_ulid(Ulid::generate());
+        f.store
+            .create_session_for_agent(id, Some(f.agent), None, Timestamp::now())
+            .await
+            .unwrap();
+        sessions.push(id);
+    }
+    let first = sessions[0];
+    let second = sessions[1];
+    let old = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            Timestamp::now()
+                .checked_add(Duration::from_secs(2))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    f.request(first).await;
+    f.step(first).await;
+    let delivery = f.delivery(old.node_id).await;
+    let claim = f.claim(delivery.value.clone(), old.clone()).await;
+    f.store.agent_volume(first, &old).await.unwrap();
+    sleep(Duration::from_millis(2100)).await;
+    let current = f
+        .store
+        .take_over(
+            &old,
+            f.nodes[1],
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Competing recovery transactions must not duplicate any session's notice.
+    let (a, b) = tokio::join!(
+        f.store.route_tool_job(&claim.job, &current),
+        f.store.route_tool_job(&claim.job, &current),
+    );
+    assert!(!a.unwrap());
+    assert!(!b.unwrap());
+    let first_events = f.store.read_events(first, 0, 64).await.unwrap();
+    let notice = first_events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageAppended { message, .. } if is_notice(event) => Some(message.clone()),
+            _ => None,
+        })
+        .unwrap();
+    for id in &sessions {
+        let events = f.store.read_events(*id, 0, 64).await.unwrap();
+        assert_eq!(events.iter().filter(|event| is_notice(event)).count(), 1);
+        assert!(events.iter().any(|event| matches!(event,
+            Event::MessageAppended { message, .. } if *message == notice)));
+        if *id != first {
+            assert_eq!(
+                f.store.fetch_session(*id).await.unwrap().unwrap().state,
+                SessionState::Idle
+            );
+        }
+    }
+    assert!(matches!(
+        f.complete(&claim).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    delivery.acknowledge().await.unwrap();
+    assert_failure_notice(&f, first, &current, f.manifest).await;
+    // Both sessions continue through the same rebuilt epoch without another notice.
+    for id in [first, second] {
+        f.request(id).await;
+        f.step(id).await;
+        let delivery = f.delivery(current.node_id).await;
+        let claim = f.claim(delivery.value.clone(), current.clone()).await;
+        f.complete(&claim).await.unwrap();
+        delivery.acknowledge().await.unwrap();
+        let events = f.store.read_events(id, 0, 64).await.unwrap();
+        assert_eq!(events.iter().filter(|event| is_notice(event)).count(), 1);
+    }
+    f.cleanup().await;
+}
+
 async fn assert_failure_notice(
     f: &Fixture,
     id: SessionId,
@@ -710,5 +808,56 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
     );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn agent_call_status_expires_and_rejects_replaced_epochs() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let now = Timestamp::now();
+    let placement = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            now.checked_add(Duration::from_secs(30)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut status = swarmy_core::AgentCallStatus {
+        agent_id: f.agent,
+        node_id: placement.node_id,
+        epoch: placement.epoch,
+        holder_session_id: Some(SessionId::from_ulid(Ulid::generate())),
+        queued_calls: 2,
+        observed_at: now,
+        expires_at: now,
+    };
+    f.store.put_agent_call_status(&status).await.unwrap();
+    assert!(f.store.agent_call_status(f.agent).await.unwrap().is_none());
+    status.observed_at = Timestamp::now();
+    status.expires_at = status
+        .observed_at
+        .checked_add(Duration::from_secs(30))
+        .unwrap();
+    f.store.put_agent_call_status(&status).await.unwrap();
+    assert_eq!(
+        f.store.agent_call_status(f.agent).await.unwrap(),
+        Some(status.clone())
+    );
+    f.store.release(&placement).await.unwrap();
+    let replacement = f
+        .store
+        .place(f.agent, f.nodes[1], status.expires_at)
+        .await
+        .unwrap();
+    assert!(replacement.epoch > status.epoch);
+    assert!(f.store.agent_call_status(f.agent).await.unwrap().is_none());
+    assert!(matches!(
+        f.store.put_agent_call_status(&status).await,
+        Err(StoreError::LeaseMismatch)
+    ));
     f.cleanup().await;
 }

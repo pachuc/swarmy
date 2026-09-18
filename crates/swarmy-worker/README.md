@@ -116,8 +116,9 @@ Recovery appends a system message before the failed result in one transaction.
 The snapshot time comes from the agent volume's head-manifest ULID timestamp,
 and the loss window ends at placement `last_changed_at`. Each observed notice
 is retained by agent and epoch, with a delivery marker for each affected session.
-There is no main-session identity in the current session schema, so notices go
-to the sessions making calls. Repeated recovery and later snapshots cannot
+The same transaction appends the notice to every indexed session of the agent,
+including idle sessions, without changing their states. Ephemeral agents still
+have one session. Repeated recovery and later snapshots cannot
 change an already recorded explanation. The harness includes these messages in
 prompts, and the shared chat feed renders them as system messages. Evictions
 use distinct wording about the final checkpoint.

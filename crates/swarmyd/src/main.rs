@@ -98,6 +98,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                 _ = heartbeat.tick() => {
                     record.last_heartbeat = jiff::Timestamp::now();
                     store.put_node(&record).await?;
+                    hosting.report_status(Duration::from_millis(settings.node_heartbeat_interval_ms).saturating_mul(3)).await?;
                 }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
                 result = tokio::signal::ctrl_c() => { result?; break; }

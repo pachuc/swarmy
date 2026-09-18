@@ -167,3 +167,26 @@ eviction preserve process memory.
 The root suite checks a managed HTTP server from a later bash call, listing and
 logs, a bounded log tail, stop, idle protection, timeout isolation, explicit
 checkpoint against the store head, and old process ids after a rebuild.
+
+## Shared computer status
+
+The hosting actor admits tool calls through a bounded FIFO channel per agent.
+Calls waiting for channel capacity retain FIFO admission order. A running call
+finishes or reaches its tool timeout before the next call starts; later calls
+cannot overtake an already queued session. Each call collects its own stdout
+and stderr before committing its result.
+
+Each node heartbeat publishes `swarmy_core::AgentCallStatus` in the separate
+store row `("agent_call_status", agent_id)`. CLI consumers can read it through
+`Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`,
+`epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
+The holder includes sandbox startup and call execution. The queue count excludes
+the holder and includes calls waiting for channel capacity. An idle resident
+computer has a null holder and zero queued calls.
+
+Status is sampled at the configured node heartbeat interval and expires after
+three intervals. The store rejects writes from a replaced or expired placement
+and hides observations after sample expiry, placement expiry, release, deletion,
+or takeover. A missing observation means occupancy is unknown. It must not be
+displayed as an idle computer. These fields report activity and grant no sandbox
+authority. Existing node and placement binary records keep their encoding.
