@@ -5,10 +5,14 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
-use swarmy_core::{AgentId, AgentRecord, SessionRecord, VolumeId};
+use swarmy_core::{AgentId, AgentRecord, AgentSettings, SessionRecord, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
 
-use crate::{agent_command::Command, conversation::store, vol::output};
+use crate::{
+    agent_command::{Command, InferenceArgs},
+    conversation::store,
+    vol::output,
+};
 
 pub async fn resolve(store: &Store, name: &str) -> Result<AgentRecord> {
     // Prefer a literal name, including names that happen to parse as a ULID.
@@ -46,21 +50,47 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             image,
             description,
+            inference,
         } => {
+            let overrides = inference_settings(inference)?;
             let settings = swarmy_config::Settings::load()?.settings;
             let agent = store
-                .create_agent(
+                .create_agent_with_settings(
                     &name,
                     settings.session_image(image.as_deref())?,
                     &description,
+                    &overrides,
                     Timestamp::now(),
                 )
                 .await?;
             output(
                 &serde_json::to_value(&agent)?,
                 &format!(
-                    "Created agent {} {} image={}:{}",
-                    agent.name, agent.agent_id, agent.image.name, agent.image.tag.0
+                    "Created agent {} {} image={}:{}{}",
+                    agent.name,
+                    agent.agent_id,
+                    agent.image.name,
+                    agent.image.tag.0,
+                    settings_text(&agent)
+                ),
+                json,
+            )?;
+        }
+        Command::Set { name, inference } => {
+            let settings = inference_settings(inference)?;
+            ensure!(
+                settings != AgentSettings::default(),
+                "agent set requires --system-prompt, --system-prompt-file, --model, or --effort"
+            );
+            let agent = resolve(&store, &name).await?;
+            let agent = store.set_agent(agent.agent_id, &settings).await?;
+            output(
+                &serde_json::to_value(&agent)?,
+                &format!(
+                    "Updated agent {} {}{}",
+                    agent.name,
+                    agent.agent_id,
+                    settings_text(&agent)
                 ),
                 json,
             )?;
@@ -93,6 +123,32 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn inference_settings(args: InferenceArgs) -> Result<AgentSettings> {
+    let system_prompt = match args.system_prompt_file {
+        Some(path) => Some(
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("read system prompt {}", path.display()))?,
+        ),
+        None => args.system_prompt,
+    };
+    Ok(AgentSettings {
+        system_prompt,
+        model: args.model,
+        reasoning_effort: args.effort,
+    })
+}
+
+fn settings_text(agent: &AgentRecord) -> String {
+    format!(
+        "\nsystem_prompt={}\nmodel={}\nreasoning_effort={}",
+        agent.system_prompt.as_deref().unwrap_or("(stack default)"),
+        agent.model.as_deref().unwrap_or("(stack default)"),
+        agent
+            .reasoning_effort
+            .map_or("(stack default)", swarmy_core::ReasoningEffort::as_str),
+    )
 }
 
 fn confirm(name: &str) -> Result<()> {
@@ -129,6 +185,7 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         agent.created_at
     );
     if detail {
+        text.push_str(&settings_text(agent));
         let volume = store
             .get_volume(VolumeId::from_ulid(agent.agent_id.as_ulid()))
             .await?;

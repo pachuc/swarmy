@@ -80,6 +80,24 @@ emits the run event protocol, waiting for idle between prompts; EOF closes the
 client. The other agent and session commands also support `--json`, and all of
 these commands accept `--remote NAME` before or after the subcommand.
 
+Each named agent can override the stack's system prompt, model, and reasoning
+effort. For example:
+
+```sh
+swarmy agent create reviewer --image base-ubuntu:dev --system-prompt-file reviewer.txt --model gpt-5 --effort high
+swarmy agent set reviewer --model gpt-5-mini --effort medium
+swarmy agent show reviewer --json
+```
+
+Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
+for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
+`agent set NAME` changes only supplied fields. Changes apply to the next inference
+in every existing or future session of that agent; an already submitted request
+keeps its settings. Unset fields use the current stack defaults, as do ephemeral
+sessions. `agent show` labels unset fields as `(stack default)` in text and emits
+`null` in JSON. Effort accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`;
+`none` is an explicit override, distinct from an unset field.
+
 `agent show` reports placement node and epoch, every session's state, and last
 disk snapshot time and age from the committed manifest's ULID timestamp. Before
 the computer has a volume, snapshot fields are empty (null in JSON). The node

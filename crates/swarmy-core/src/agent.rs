@@ -1,4 +1,4 @@
-use crate::{AgentId, ImageRecord};
+use crate::{AgentId, ImageRecord, ReasoningEffort};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -10,4 +10,19 @@ pub struct AgentRecord {
     pub image: ImageRecord,
     pub description: String,
     pub created_at: Timestamp,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Optional inference overrides. Omitted fields inherit the stack defaults on create
+/// and retain their current values on update.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentSettings {
+    pub system_prompt: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
 }

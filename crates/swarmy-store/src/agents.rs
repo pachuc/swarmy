@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, w
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, AgentRecord, ImageRecord, ImageTag, SessionId, SessionKind, SessionRecord,
-    SessionState, decode,
+    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, SessionId, SessionKind,
+    SessionRecord, SessionState, decode,
 };
 
 impl Store {
@@ -28,6 +28,21 @@ impl Store {
         description: &str,
         now: Timestamp,
     ) -> Result<AgentRecord> {
+        self.create_agent_with_settings(name, image, description, &AgentSettings::default(), now)
+            .await
+    }
+
+    /// Create a named agent with inference overrides, pinning its image atomically.
+    /// # Errors
+    /// Rejects duplicate names or ids, invalid names, unknown images, and storage failures.
+    pub async fn create_agent_with_settings(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        settings: &AgentSettings,
+        now: Timestamp,
+    ) -> Result<AgentRecord> {
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);
         }
@@ -48,6 +63,9 @@ impl Store {
                     image: self.resolve_image(&trx, image).await?,
                     description: description.into(),
                     created_at: now,
+                    system_prompt: settings.system_prompt.clone(),
+                    model: settings.model.clone(),
+                    reasoning_effort: settings.reasoning_effort,
                 };
                 write(&trx, &self.agent_key(id), &record)?;
                 write(&trx, &self.agent_name_key(name), &id)?;
@@ -63,7 +81,7 @@ impl Store {
     /// # Errors
     /// Returns database or decoding failures.
     pub async fn get_agent(&self, id: AgentId) -> Result<Option<AgentRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.agent_key(id)).await })
+        self.transaction(|trx| async move { self.read_agent(&trx, id).await })
             .await
     }
 
@@ -72,7 +90,7 @@ impl Store {
     pub async fn get_agent_by_name(&self, name: &str) -> Result<Option<AgentRecord>> {
         self.transaction(|trx| async move {
             match read(&trx, &self.agent_name_key(name)).await? {
-                Some(id) => read(&trx, &self.agent_key(id)).await,
+                Some(id) => self.read_agent(&trx, id).await,
                 None => Ok(None),
             }
         })
@@ -97,10 +115,41 @@ impl Store {
             scan(&trx, (begin, end), limit)
                 .await?
                 .into_iter()
-                .map(|(_, value)| decode(&value).map_err(Into::into))
+                .map(|(_, value)| decode_agent(&value))
                 .collect()
         })
         .await
+    }
+
+    /// Atomically change supplied inference settings, preserving omitted fields.
+    /// # Errors
+    /// Rejects unknown agents, oversized records, and storage failures.
+    pub async fn set_agent(&self, id: AgentId, settings: &AgentSettings) -> Result<AgentRecord> {
+        self.transaction(|trx| async move {
+            let mut agent = self
+                .read_agent(&trx, id)
+                .await?
+                .ok_or(StoreError::AgentMissing)?;
+            if let Some(prompt) = &settings.system_prompt {
+                agent.system_prompt = Some(prompt.clone());
+            }
+            if let Some(model) = &settings.model {
+                agent.model = Some(model.clone());
+            }
+            if let Some(effort) = settings.reasoning_effort {
+                agent.reasoning_effort = Some(effort);
+            }
+            write(&trx, &self.agent_key(id), &agent)?;
+            Ok(agent)
+        })
+        .await
+    }
+
+    async fn read_agent(&self, trx: &Transaction, id: AgentId) -> Result<Option<AgentRecord>> {
+        trx.get(&self.agent_key(id), false)
+            .await?
+            .map(|value| decode_agent(&value))
+            .transpose()
     }
 
     /// Delete the identity and its computer atomically, retaining its sessions.
@@ -109,7 +158,7 @@ impl Store {
     /// Returns database or decoding failures.
     pub async fn delete_agent(&self, id: AgentId) -> Result<()> {
         self.transaction(|trx| async move {
-            if let Some(agent) = read::<AgentRecord>(&trx, &self.agent_key(id)).await? {
+            if let Some(agent) = self.read_agent(&trx, id).await? {
                 self.delete_computer_in(&trx, id).await?;
                 trx.clear(&self.agent_name_key(&agent.name));
                 trx.clear(&self.agent_key(id));
@@ -187,7 +236,7 @@ impl Store {
                         if agent_id != session.agent_id {
                             return Err(StoreError::InvalidState);
                         }
-                        read::<AgentRecord>(&trx, &self.agent_key(agent_id))
+                        self.read_agent(&trx, agent_id)
                             .await?
                             .ok_or(StoreError::AgentMissing)?
                             .image
@@ -282,5 +331,66 @@ impl Store {
             sessions.push(self.fetch_session(id).await?.ok_or(StoreError::Corrupt)?);
         }
         Ok(sessions)
+    }
+}
+
+/// Postcard structs have no field count, so Serde defaults alone cannot read an
+/// old record. Only accept the legacy schema when it consumes the entire value.
+pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
+    #[derive(serde::Deserialize)]
+    struct LegacyAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+    }
+
+    match decode(bytes) {
+        Ok(agent) => Ok(agent),
+        Err(error) => match decode::<LegacyAgent>(bytes) {
+            Ok(old) => Ok(AgentRecord {
+                agent_id: old.agent_id,
+                name: old.name,
+                image: old.image,
+                description: old.description,
+                created_at: old.created_at,
+                system_prompt: None,
+                model: None,
+                reasoning_effort: None,
+            }),
+            Err(_) => Err(error.into()),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use swarmy_core::{ManifestId, ReasoningEffort, encode};
+
+    #[test]
+    fn malformed_extended_agent_is_not_treated_as_a_legacy_record() {
+        let record = AgentRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            name: "test".into(),
+            image: ImageRecord {
+                name: "base".into(),
+                tag: ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            description: String::new(),
+            created_at: Timestamp::UNIX_EPOCH,
+            system_prompt: Some("prompt".into()),
+            model: Some("model".into()),
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+        let mut bytes = encode(&record).unwrap();
+        assert_eq!(decode_agent(&bytes).unwrap(), record);
+        bytes.pop();
+        assert!(decode_agent(&bytes).is_err());
+        let mut bytes = encode(&record).unwrap();
+        bytes.push(0);
+        assert!(decode_agent(&bytes).is_err());
     }
 }
