@@ -29,13 +29,17 @@ impl Drop for RestoreTerminal {
     }
 }
 
-pub async fn run(id: Option<SessionId>, image: Option<String>) -> Result<()> {
+pub async fn run(
+    id: Option<SessionId>,
+    image: Option<String>,
+    agent: Option<String>,
+) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "chat requires an interactive terminal"
     );
     let provider = swarmy_config::Settings::load()?.settings.provider;
-    let sessions = if id.is_none() {
+    let sessions = if id.is_none() && agent.is_none() {
         recent_sessions().await?
     } else {
         Vec::new()
@@ -48,6 +52,8 @@ pub async fn run(id: Option<SessionId>, image: Option<String>) -> Result<()> {
     let mut keys = EventStream::new();
     let id = if let Some(id) = id {
         Some(id)
+    } else if agent.is_some() {
+        None
     } else {
         let Some(selection) = picker(&mut terminal, &mut keys, &sessions).await? else {
             return Ok(());
@@ -61,7 +67,7 @@ pub async fn run(id: Option<SessionId>, image: Option<String>) -> Result<()> {
         id.is_none() || image.is_none(),
         "--image applies only to a new session"
     );
-    let conversation = Conversation::open(id, image.as_deref()).await?;
+    let conversation = Conversation::open(id, image.as_deref(), agent.as_deref()).await?;
     interact(&mut terminal, &mut keys, conversation, &provider).await
 }
 
@@ -122,7 +128,7 @@ async fn interact(
     mut conversation: Conversation,
     provider: &str,
 ) -> Result<()> {
-    let mut transcript = Transcript::default();
+    let mut transcript = Transcript::new(conversation.agent_name.as_ref().map(|_| conversation.id));
     let mut input = Input::default();
     let mut scroll = Scroll::default();
     let mut rendered = false;
@@ -134,7 +140,11 @@ async fn interact(
             let offset = scroll.position(paragraph.line_count(body.width), body.height);
             frame.render_widget(paragraph.scroll((offset, 0)), body);
             frame.render_widget(
-                Paragraph::new(transcript.status(conversation.id, provider)),
+                Paragraph::new(transcript.status(
+                    conversation.id,
+                    provider,
+                    conversation.agent_name.as_deref(),
+                )),
                 status,
             );
             let (line, cursor) = input.view(prompt.width);

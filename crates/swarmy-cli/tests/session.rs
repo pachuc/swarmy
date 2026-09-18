@@ -1,6 +1,9 @@
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
+#[path = "session/agents.rs"]
+mod agents;
+
 #[path = "session/chat.rs"]
 mod chat;
 

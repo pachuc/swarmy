@@ -9,8 +9,8 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, LiveMessages, SubjectToken};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionRecord,
-    SessionState, ToolCallId, ToolCallRecord, ToolResult,
+    Event, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionState, ToolCallId,
+    ToolCallRecord, ToolResult,
 };
 use swarmy_llm::Delta;
 use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
@@ -71,6 +71,7 @@ impl ClientTurn {
 
 pub struct Conversation {
     pub id: SessionId,
+    pub agent_name: Option<String>,
     turn: Option<ClientTurn>,
     store: Store,
     bus: Bus,
@@ -89,39 +90,51 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    pub async fn open(id: Option<SessionId>, image: Option<&str>) -> Result<Self> {
+    pub async fn open(
+        id: Option<SessionId>,
+        image: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<Self> {
+        ensure!(
+            agent.is_none() || (image.is_none() && id.is_none()),
+            "--agent cannot be combined with --image or a session id"
+        );
         let settings = swarmy_config::Settings::load()?.settings;
-        let image = if id.is_none() {
+        let image = if id.is_none() && agent.is_none() {
             Some(settings.session_image(image)?)
         } else {
             None
         };
         let bus = bus().await?;
         let store = store().await?;
-        let id = if let Some(id) = id {
+        let session = if let Some(id) = id {
             store
                 .fetch_session(id)
                 .await?
-                .context("session not found")?;
-            id
+                .context("session not found")?
         } else {
-            let id = SessionId::from_ulid(Ulid::generate());
+            let agent = if let Some(name) = agent {
+                Some(crate::agent::resolve(&store, name).await?.agent_id)
+            } else {
+                None
+            };
             store
-                .create_session(
-                    &SessionRecord {
-                        session_id: id,
-                        agent_id: AgentId::from_ulid(Ulid::generate()),
-                        state: SessionState::Idle,
-                        head_seq: 0,
-                        snapshot_ref: None,
-                        kind: swarmy_core::SessionKind::Ephemeral,
-                        computer_deleted: false,
-                    },
+                .create_session_for_agent(
+                    SessionId::from_ulid(Ulid::generate()),
+                    agent,
+                    image,
                     Timestamp::now(),
-                    image.context("new session image missing")?,
                 )
-                .await?;
-            id
+                .await?
+        };
+        let id = session.session_id;
+        let agent_name = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+            Some(store.get_agent(session.agent_id).await?.map_or_else(
+                || format!("deleted agent {}", session.agent_id),
+                |agent| agent.name,
+            ))
+        } else {
+            None
         };
         // Subscribe before reading history or waking, so neither path has a gap.
         let (events, deltas) = tokio::time::timeout(WAKE_TIMEOUT, async {
@@ -133,6 +146,7 @@ impl Conversation {
         .context("cannot reach scheduler: live subscription timed out")??;
         let mut conversation = Self {
             id,
+            agent_name,
             turn: None,
             store,
             bus,
