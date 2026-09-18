@@ -7,14 +7,27 @@ pub struct BashArguments {
     pub command: String,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    #[serde(default = "default_yield")]
+    pub yield_seconds: u64,
+    #[serde(default = "default_output_budget")]
+    pub output_budget_bytes: usize,
 }
 const fn default_timeout() -> u64 {
     120_000
 }
+const fn default_yield() -> u64 {
+    10
+}
+const fn default_output_budget() -> usize {
+    32 * 1024
+}
 impl BashArguments {
     #[must_use]
     pub fn valid(&self) -> bool {
-        !self.command.is_empty() && (1..=3_600_000).contains(&self.timeout_ms)
+        !self.command.is_empty()
+            && (1..=3_600_000).contains(&self.timeout_ms)
+            && self.yield_seconds <= 3600
+            && (1024..=32 * 1024).contains(&self.output_budget_bytes)
     }
 }
 
@@ -32,6 +45,19 @@ pub struct ProcessArguments {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WriteStdinArguments {
+    pub process_id: crate::ProcessId,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebFetchArguments {
+    pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmptyArguments {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +69,8 @@ pub enum SandboxArguments {
     ProcessLog(ProcessArguments),
     ProcessStop(ProcessArguments),
     Checkpoint(EmptyArguments),
+    WriteStdin(WriteStdinArguments),
+    WebFetch(WebFetchArguments),
     Read(crate::ReadArguments),
     Write(crate::WriteArguments),
     Edit(crate::EditArguments),
@@ -56,7 +84,7 @@ pub enum SandboxArgumentError {
     #[error("{0}")]
     Decode(#[from] serde_json::Error),
     #[error(
-        "invalid tool arguments: paths, patterns, commands, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be between 1 and 3600000"
+        "invalid tool arguments: paths, patterns, commands, URLs, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be 1..=3600000, yield_seconds 0..=3600, and output_budget_bytes 1024..=32768"
     )]
     Invalid,
 }
@@ -80,6 +108,7 @@ impl SandboxArguments {
         match self {
             Self::Bash(arguments) => arguments.valid(),
             Self::ProcessStart(arguments) => !arguments.command.is_empty(),
+            Self::WebFetch(arguments) => !arguments.url.is_empty(),
             Self::Read(a) => !a.path.is_empty() && a.offset > 0 && a.limit > 0,
             Self::Write(a) => !a.path.is_empty(),
             Self::Edit(a) => !a.path.is_empty() && !a.old_string.is_empty(),
@@ -98,6 +127,8 @@ impl SandboxArguments {
             Self::ProcessLog(_) => "process_log",
             Self::ProcessStop(_) => "process_stop",
             Self::Checkpoint(_) => "checkpoint",
+            Self::WriteStdin(_) => "write_stdin",
+            Self::WebFetch(_) => "web_fetch",
             Self::Read(_) => "read",
             Self::Write(_) => "write",
             Self::Edit(_) => "edit",
@@ -129,6 +160,8 @@ impl SandboxArguments {
             Self::Glob(value) | Self::Grep(value) => serde_json::json!(value),
             Self::Ls(value) => serde_json::json!(value),
             Self::Bash(value) => serde_json::json!(value),
+            Self::WriteStdin(value) => serde_json::json!(value),
+            Self::WebFetch(value) => serde_json::json!(value),
             Self::ProcessStart(value) => serde_json::json!(value),
             Self::ProcessLog(value) | Self::ProcessStop(value) => serde_json::json!(value),
             Self::ProcessList(value) | Self::Checkpoint(value) => serde_json::json!(value),

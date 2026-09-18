@@ -548,6 +548,8 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         ("process_log", json!({"process_id":id})),
         ("process_stop", json!({"process_id":id})),
         ("checkpoint", json!({})),
+        ("write_stdin", json!({"process_id":id, "text":"hello\n"})),
+        ("web_fetch", json!({"url":"http://localhost/"})),
         ("read", json!({"path":"text"})),
         ("write", json!({"path":"text", "content":"hello"})),
         (
@@ -591,7 +593,7 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
         }
         assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
     }
-    assert_eq!(registry.definitions().len(), 13);
+    assert_eq!(registry.definitions().len(), 15);
     assert!(
         swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
             .is_err()
