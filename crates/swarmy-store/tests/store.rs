@@ -33,6 +33,7 @@ fn session() -> SessionRecord {
         snapshot_ref: None,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
+        plan: Vec::new(),
     }
 }
 fn event(text: &str) -> Event {
@@ -1799,3 +1800,107 @@ async fn legacy_sessions_without_images_remain_readable() {
 
 #[path = "store/agents.rs"]
 mod agents;
+
+#[tokio::test]
+async fn session_plan_replacement_is_atomic_fenced_and_validated() {
+    use serde_json::json;
+    use swarmy_core::{ToolCallId, ToolCallRecord, ToolResult};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let now = Timestamp::now();
+    let lease = test
+        .store
+        .claim_lease(
+            id,
+            owner(),
+            now.checked_add(std::time::Duration::from_secs(60)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let call = |arguments| ToolCallRecord {
+        call_id: ToolCallId("plan".into()),
+        tool: "update_plan".into(),
+        arguments,
+        result: None,
+    };
+    let first = call(json!({"plan":[{"step":"First", "status":"in_progress"}]}));
+    let result = test
+        .store
+        .complete_plan_tool(id, 0, &lease, RequestId::for_step(id, 1), &first)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        Event::ToolCallCompleted {
+            result: ToolResult::Completed { .. },
+            ..
+        }
+    ));
+    let saved = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(saved.plan[0].step, "First");
+    assert_eq!(saved.head_seq, 1);
+    let invalid = call(
+        json!({"plan":[{"step":"One", "status":"in_progress"},{"step":"Two", "status":"in_progress"}]}),
+    );
+    let result = test
+        .store
+        .complete_plan_tool(id, 1, &lease, RequestId::for_step(id, 2), &invalid)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        Event::ToolCallCompleted {
+            result: ToolResult::Error { .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        test.store.fetch_session(id).await.unwrap().unwrap().plan,
+        saved.plan
+    );
+    let second = call(json!({"plan":[{"step":"Second", "status":"pending"}]}));
+    test.store
+        .complete_plan_tool(id, 2, &lease, RequestId::for_step(id, 3), &second)
+        .await
+        .unwrap();
+    let saved = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(saved.plan.len(), 1);
+    assert_eq!(saved.plan[0].step, "Second");
+    assert!(matches!(
+        test.store
+            .complete_plan_tool(id, 2, &lease, RequestId::for_step(id, 3), &first)
+            .await,
+        Err(StoreError::StaleSequence { .. })
+    ));
+    let mut stale = lease.clone();
+    stale.owner = owner();
+    assert!(matches!(
+        test.store
+            .complete_plan_tool(id, 3, &stale, RequestId::for_step(id, 4), &first)
+            .await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    let empty = call(json!({"plan":[]}));
+    let result = test
+        .store
+        .complete_plan_tool(id, 3, &lease, RequestId::for_step(id, 4), &empty)
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, Event::ToolCallCompleted { result: ToolResult::Completed { output, .. }, .. } if output == "[]")
+    );
+    assert!(
+        test.store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan
+            .is_empty()
+    );
+    let events = test.store.read_events(id, 0, 10).await.unwrap();
+    assert_eq!(events.len(), 4);
+    test.cleanup().await;
+}

@@ -9,7 +9,7 @@ use swarmy_core::{
     AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
     SandboxSpec, VolumeId,
 };
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -223,6 +223,7 @@ fn exec(sandbox: &Sandbox, command: &str, timeout_ms: u64) -> Request {
         request: ExecRequest {
             args: vec!["/bin/bash".into(), "-c".into(), command.into()],
             timeout_ms,
+            stdin: Vec::new(),
         },
     }
 }
@@ -254,7 +255,8 @@ async fn store(settings: &swarmy_config::Settings) -> Store {
     Store::open(
         Some(&settings.fdb_cluster_file),
         Some(&directory),
-        Arc::new(MemoryBlobStore::default()),
+        // The node reads large tool payloads in a separate process.
+        Arc::new(ObjectBlobStore::new(settings.object_store().unwrap())),
     )
     .await
     .unwrap()
@@ -659,5 +661,37 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
     // Node's Drop guard also destroys containers and detaches devices on assertion failure.
     let (mut node, bus) = persistent::start(settings, &store, base, 3).await;
     persistent::shared_calls(&node, &store, &bus).await;
+    node.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_file_tools_run_on_agent_disk() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        eprintln!("skipping file tools acceptance: run the built executable with sudo");
+        return;
+    }
+    for variable in [
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_NATS_URL",
+    ] {
+        if std::env::var_os(variable).is_none() {
+            eprintln!("skipping file tools acceptance: {variable} is unset");
+            return;
+        }
+    }
+    boot_network();
+    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let images = store(&settings).await;
+    let base = base_image(&settings, &images).await;
+    settings.store_directory = format!("swarmy-file-tools-test-{}", ulid::Ulid::generate());
+    let store = store(&settings).await;
+    store
+        .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
+        .await
+        .unwrap();
+    // Node's Drop guard destroys containers and detaches devices on failure.
+    let (mut node, bus) = persistent::start(settings, &store, base, 3).await;
+    persistent::file_tools(&node, &store, &bus).await;
     node.stop().await;
 }

@@ -614,6 +614,7 @@ async fn computer_session(
         agent_id: agent,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
+        plan: Vec::new(),
         state: swarmy_core::SessionState::Idle,
         head_seq: 0,
         snapshot_ref: None,
