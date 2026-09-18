@@ -1,4 +1,5 @@
 //! Sandbox execution backed by durable virtual disks.
+mod credentials;
 mod runc;
 use async_trait::async_trait;
 pub use runc::RuncRuntime;

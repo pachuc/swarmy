@@ -50,6 +50,9 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
+    InvalidGithubToken,
+
     #[error(transparent)]
     FoundationDb(#[from] foundationdb::FdbError),
     #[error(transparent)]

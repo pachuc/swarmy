@@ -16,6 +16,9 @@ use tokio::{
     net::UnixStream,
 };
 
+#[path = "node/github.rs"]
+mod github;
+
 #[path = "node/persistent.rs"]
 mod persistent;
 
@@ -261,7 +264,7 @@ async fn store(settings: &swarmy_config::Settings) -> Store {
 }
 
 async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> ManifestId {
-    let tag = ImageTag("test".into());
+    let tag = ImageTag(std::env::var("SWARMY_TEST_IMAGE_TAG").unwrap_or_else(|_| "test".into()));
     if let Some(manifest) = store.get_image("base-ubuntu", &tag).await.unwrap() {
         return manifest;
     }
@@ -281,7 +284,7 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
             "build",
             "images/base-ubuntu",
             "--tag",
-            "test",
+            &tag.0,
         ])
         .output()
         .unwrap();

@@ -77,6 +77,7 @@ async fn root_base_ubuntu_acceptance() {
     let recipe = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-ubuntu");
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path().join("base.ext4");
+    let started = std::time::Instant::now();
     let first = image_json(&[
         "build",
         recipe.to_str().unwrap(),
@@ -85,7 +86,7 @@ async fn root_base_ubuntu_acceptance() {
         "--output",
         raw.to_str().unwrap(),
     ]);
-    eprintln!("first Ubuntu build: {first}");
+    eprintln!("first Ubuntu build ({:?}): {first}", started.elapsed());
     assert_eq!(first["size"], 8_u64 * 1024 * 1024 * 1024);
     assert_eq!(first["chunks_total"], 32768);
     assert!(first["chunks_stored"].as_u64().unwrap() > 0);
@@ -118,11 +119,27 @@ async fn root_base_ubuntu_acceptance() {
         manifest
     );
     check_chroot(directory.path(), &raw);
-    let second = image_json(&["build", recipe.to_str().unwrap(), "--tag", &tag]);
-    eprintln!("second Ubuntu build: {second}");
-    assert!(
-        second["chunks_uploaded"].as_u64().unwrap() <= 16,
-        "too many changed chunks: {second}"
+    let started = std::time::Instant::now();
+    let second_raw = directory.path().join("second.ext4");
+    let second = image_json(&[
+        "build",
+        recipe.to_str().unwrap(),
+        "--tag",
+        &tag,
+        "--output",
+        second_raw.to_str().unwrap(),
+    ]);
+    eprintln!("second Ubuntu build ({:?}): {second}", started.elapsed());
+    if first["header"]["root_hash"] != second["header"]["root_hash"] {
+        eprintln!(
+            "nonidentical images retained for diagnosis at {}",
+            directory.keep().display()
+        );
+        panic!("repeated image builds have different root hashes");
+    }
+    assert_eq!(
+        second["chunks_uploaded"], 0,
+        "identical image uploaded new chunks"
     );
     assert_eq!(
         image_json(&["show", &reference])["manifest_id"],
@@ -181,7 +198,7 @@ fn check_chroot(directory: &std::path::Path, raw: &std::path::Path) {
             .args([
                 "/bin/bash",
                 "-ec",
-                "git --version; python3 --version; test -x /usr/bin/gcc; test -x /usr/bin/curl",
+                "git --version; gh --version; rg --version; fd --version; jq --version; node --version; npm --version; python3 --version; pip --version; cc --version; curl --version; pkg-config --version; test -d /home/agent/work",
             ])
             .output()
             .unwrap();

@@ -28,6 +28,23 @@ impl Store {
         description: &str,
         now: Timestamp,
     ) -> Result<AgentRecord> {
+        self.create_agent_with_github_token(name, image, description, None, now)
+            .await
+    }
+
+    /// Create an agent and its private GitHub token in one transaction.
+    /// The token is a side field so legacy records and public views never contain it.
+    /// # Errors
+    /// Rejects invalid credentials and the same conditions as `create_agent`.
+    pub async fn create_agent_with_github_token(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        github_token: Option<&str>,
+        now: Timestamp,
+    ) -> Result<AgentRecord> {
+        validate_github_token(github_token)?;
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);
         }
@@ -50,6 +67,9 @@ impl Store {
                     created_at: now,
                 };
                 write(&trx, &self.agent_key(id), &record)?;
+                if let Some(token) = github_token {
+                    write(&trx, &self.agent_github_token_key(id), &token)?;
+                }
                 write(&trx, &self.agent_name_key(name), &id)?;
                 Ok(record)
             })
@@ -75,6 +95,39 @@ impl Store {
                 Some(id) => read(&trx, &self.agent_key(id)).await,
                 None => Ok(None),
             }
+        })
+        .await
+    }
+
+    /// Read the private credential field on each use; never include it in agent views.
+    /// # Errors
+    /// Returns database or decoding failures.
+    pub async fn agent_github_token(&self, id: AgentId) -> Result<Option<String>> {
+        self.transaction(|trx| async move {
+            if trx.get(&self.agent_key(id), false).await?.is_none() {
+                return Ok(None);
+            }
+            read(&trx, &self.agent_github_token_key(id)).await
+        })
+        .await
+    }
+
+    /// Rotate or clear an agent's private GitHub token.
+    /// # Errors
+    /// Rejects unknown agents, invalid tokens, and database failures.
+    pub async fn set_agent_github_token(&self, id: AgentId, token: Option<&str>) -> Result<()> {
+        validate_github_token(token)?;
+        self.transaction(|trx| async move {
+            if trx.get(&self.agent_key(id), false).await?.is_none() {
+                return Err(StoreError::AgentMissing);
+            }
+            let key = self.agent_github_token_key(id);
+            if let Some(token) = token {
+                write(&trx, &key, &token)?;
+            } else {
+                trx.clear(&key);
+            }
+            Ok(())
         })
         .await
     }
@@ -113,6 +166,7 @@ impl Store {
                 self.delete_computer_in(&trx, id).await?;
                 trx.clear(&self.agent_name_key(&agent.name));
                 trx.clear(&self.agent_key(id));
+                trx.clear(&self.agent_github_token_key(id));
             }
             Ok(())
         })
@@ -283,4 +337,13 @@ impl Store {
         }
         Ok(sessions)
     }
+}
+
+fn validate_github_token(token: Option<&str>) -> Result<()> {
+    if token.is_some_and(|token| {
+        token.is_empty() || token.len() > 4096 || !token.bytes().all(|byte| byte.is_ascii_graphic())
+    }) {
+        return Err(StoreError::InvalidGithubToken);
+    }
+    Ok(())
 }

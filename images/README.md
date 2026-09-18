@@ -42,10 +42,15 @@ mirror = "http://archive.ubuntu.com/ubuntu"
 packages = ["bash", "coreutils", "git", "curl", "ca-certificates", "python3", "build-essential"]
 ```
 
-Debootstrap installs the minimal base system and the listed packages. The
+Debootstrap installs the minimal base system, then apt installs the listed
+packages without recommendations so virtual dependencies resolve correctly. Optional
+`components = ["main", "universe"]` selects additional archive components. An optional `script = "setup.sh"` in the source table runs through
+`/bin/sh -es` inside the installed system before cleanup. See
+[the developer image](base-ubuntu/README.md) for its tools and credential setup. The
 builder removes apt caches and package lists, clears logs, and resets the
 machine identity. It also removes the ldconfig auxiliary cache, whose host
-inode numbers become invalid when files are copied into ext4. The package names are fixed; versions follow the configured
+inode numbers become invalid when files are copied into ext4, and removes Python
+bytecode caches whose headers contain installation times. The package names are fixed; versions follow the configured
 archive. For reproducibility across archive updates, use a frozen mirror.
 The included recipe builds Ubuntu 24.04 on the host's architecture.
 

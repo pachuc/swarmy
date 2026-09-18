@@ -49,6 +49,9 @@ pub enum Source {
         suite: String,
         packages: Vec<String>,
         mirror: String,
+        components: Option<Vec<String>>,
+        /// Optional setup script run inside the installed system.
+        script: Option<PathBuf>,
     },
     Directory {
         path: PathBuf,
@@ -191,26 +194,16 @@ fn populate(source: &Source, directory: &Path, root: &Path, scratch: &Path) -> R
             suite,
             packages,
             mirror,
+            components,
+            script,
         } => {
-            validate_label(suite)?;
-            if packages.is_empty()
-                || packages.iter().any(|package| {
-                    package.is_empty()
-                        || package.starts_with('-')
-                        || package.contains(',')
-                        || package.contains(char::is_whitespace)
-                })
-            {
-                return Err(ImageError::Invalid(
-                    "invalid debootstrap package set".into(),
-                ));
+            bootstrap_packages(suite, packages, mirror, components.as_deref(), root)?;
+            if let Some(script) = script {
+                run(privileged("chroot")
+                    .arg(root)
+                    .args(["/bin/sh", "-es"])
+                    .stdin(File::open(directory.join(script))?))?;
             }
-            run(privileged("debootstrap")
-                .args(["--variant=minbase", "--include"])
-                .arg(packages.join(","))
-                .arg(suite)
-                .arg(root)
-                .arg(mirror))?;
             // ldconfig's auxiliary cache contains host inode numbers, which
             // become invalid when files are copied into ext4.
             run(privileged("chroot").arg(root).args([
@@ -219,6 +212,7 @@ fn populate(source: &Source, directory: &Path, root: &Path, scratch: &Path) -> R
                 "apt-get clean
 rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 rm -f /var/cache/ldconfig/aux-cache
+find /usr -type d -name __pycache__ -prune -exec rm -rf {} +
 find /var/log -type f -exec truncate -s 0 {} +
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 : > /etc/machine-id",
@@ -246,6 +240,61 @@ rm -f /etc/machine-id /var/lib/dbus/machine-id
             copy_root(&bundle.join("rootfs"), root)?;
         }
     }
+    Ok(())
+}
+
+fn bootstrap_packages(
+    suite: &str,
+    packages: &[String],
+    mirror: &str,
+    components: Option<&[String]>,
+    root: &Path,
+) -> Result<()> {
+    validate_label(suite)?;
+    if packages.is_empty()
+        || packages.iter().any(|package| {
+            package.is_empty()
+                || package.starts_with('-')
+                || package.contains(',')
+                || package.contains(char::is_whitespace)
+        })
+    {
+        return Err(ImageError::Invalid(
+            "invalid debootstrap package set".into(),
+        ));
+    }
+    let mut command = privileged("debootstrap");
+    command.arg("--variant=minbase");
+    if let Some(components) = components {
+        if components.is_empty() {
+            return Err(ImageError::Invalid("empty debootstrap components".into()));
+        }
+        for component in components {
+            validate_label(component)?;
+        }
+        command.arg(format!("--components={}", components.join(",")));
+    }
+    run(command.arg(suite).arg(root).arg(mirror))?;
+    // Apt resolves virtual and versioned dependencies (notably npm's)
+    // that debootstrap's limited --include resolver cannot configure.
+    run(privileged("chroot").arg(root).args([
+        "/usr/bin/env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "update",
+    ]))?;
+    run(privileged("chroot")
+        .arg(root)
+        .args([
+            "/usr/bin/env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "apt-get",
+            "install",
+            "--yes",
+            "--no-install-recommends",
+            "--",
+        ])
+        .args(packages))?;
     Ok(())
 }
 

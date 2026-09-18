@@ -10,6 +10,21 @@ pub enum Command {
         image: Option<String>,
         #[arg(long, default_value = "")]
         description: String,
+        /// GitHub token, stored only in `FoundationDB`
+        #[arg(long)]
+        github_token: Option<String>,
+    },
+    /// Rotate or clear a named agent's GitHub token
+    Set {
+        name: String,
+        #[arg(
+            long,
+            required_unless_present = "clear_github_token",
+            conflicts_with = "clear_github_token"
+        )]
+        github_token: Option<String>,
+        #[arg(long)]
+        clear_github_token: bool,
     },
     /// List named agents
     #[command(alias = "list")]

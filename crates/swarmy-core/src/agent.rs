@@ -2,7 +2,9 @@ use crate::{AgentId, ImageRecord};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// Named identity and immutable image selection for its computer.
+/// Public identity and immutable image selection for its computer.
+/// The private `github_token` field lives in a `FoundationDB` side row and is
+/// accessed separately so serialization and diagnostics cannot disclose it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub agent_id: AgentId,

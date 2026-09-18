@@ -46,13 +46,15 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             image,
             description,
+            github_token,
         } => {
             let settings = swarmy_config::Settings::load()?.settings;
             let agent = store
-                .create_agent(
+                .create_agent_with_github_token(
                     &name,
                     settings.session_image(image.as_deref())?,
                     &description,
+                    github_token.as_deref(),
                     Timestamp::now(),
                 )
                 .await?;
@@ -62,6 +64,21 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                     "Created agent {} {} image={}:{}",
                     agent.name, agent.agent_id, agent.image.name, agent.image.tag.0
                 ),
+                json,
+            )?;
+        }
+        Command::Set {
+            name,
+            github_token,
+            clear_github_token: _,
+        } => {
+            let agent = resolve(&store, &name).await?;
+            store
+                .set_agent_github_token(agent.agent_id, github_token.as_deref())
+                .await?;
+            output(
+                &serde_json::json!({"event": "agent_updated", "agent_id": agent.agent_id}),
+                &format!("Updated agent {} {}", agent.name, agent.agent_id),
                 json,
             )?;
         }

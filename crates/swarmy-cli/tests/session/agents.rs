@@ -672,3 +672,106 @@ async fn assert_unknown_call_status(fixture: &Fixture) {
         "no current node call observation"
     );
 }
+
+#[tokio::test]
+async fn github_tokens_are_private_rotatable_and_clearable() {
+    run(|fixture| async move {
+        let token = "test_github_private_initial";
+        for json in [false, true] {
+            let name = if json { "private-json" } else { "private" };
+            let mut args = vec!["agent", "create", name, "--github-token", token];
+            if json {
+                args.push("--json");
+            }
+            assert!(!success(fixture.output(&args).await).contains(token));
+            let agent = fixture
+                .store
+                .get_agent_by_name(name)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .store
+                    .agent_github_token(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(token)
+            );
+            for command in ["show", "ls"] {
+                let mut args = vec!["agent", command];
+                if command == "show" {
+                    args.push(name);
+                }
+                if json {
+                    args.push("--json");
+                }
+                let text = success(fixture.output(&args).await);
+                assert!(!text.contains(token));
+                assert!(!text.contains("github_token"));
+            }
+            let rotated = "test_github_private_rotated";
+            assert!(
+                !success(
+                    fixture
+                        .output(&["agent", "set", name, "--github-token", rotated, "--json"])
+                        .await
+                )
+                .contains(rotated)
+            );
+            assert_eq!(
+                fixture
+                    .store
+                    .agent_github_token(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(rotated)
+            );
+            success(
+                fixture
+                    .output(&["agent", "set", name, "--clear-github-token"])
+                    .await,
+            );
+            assert!(
+                fixture
+                    .store
+                    .agent_github_token(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            // Invalid values must not reach diagnostics or partially create records.
+            let invalid = "private\ninvalid";
+            let output = fixture
+                .output(&["agent", "set", name, "--github-token", invalid])
+                .await;
+            assert!(!output.status.success());
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(invalid));
+            assert!(
+                fixture
+                    .store
+                    .agent_github_token(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            success(
+                fixture
+                    .output(&["agent", "set", name, "--github-token", rotated])
+                    .await,
+            );
+            success(fixture.output(&["agent", "delete", name, "--yes"]).await);
+            assert!(
+                fixture
+                    .store
+                    .agent_github_token(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    })
+    .await;
+}
