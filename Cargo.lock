@@ -3679,6 +3679,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-core",
+ "swarmy-store",
  "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",

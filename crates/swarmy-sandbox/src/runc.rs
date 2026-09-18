@@ -31,6 +31,7 @@ struct Running {
     journal: Journal,
     server: Option<ServerTask>,
     cancellations: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
+    credentials: Option<crate::credentials::Credentials>,
 }
 
 struct ServerTask(JoinHandle<server::Result<()>>);
@@ -186,6 +187,16 @@ impl RuncRuntime {
         for set in ["bounding", "effective", "permitted"] {
             config["process"]["capabilities"][set] = caps.clone();
         }
+        config["process"]["env"] = serde_json::json!([
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME=/home/agent",
+            "GH_CONFIG_DIR=/run/swarmy-gh",
+            "TERM=xterm"
+        ]);
+        config["process"]["rlimits"]
+            .as_array_mut()
+            .ok_or(Error::State)?
+            .push(serde_json::json!({"type": "RLIMIT_CORE", "hard": 0, "soft": 0}));
         config["hostname"] = "swarmy".into();
         // This slice uses the host network for outbound package downloads.
         config["linux"]["namespaces"]
@@ -194,6 +205,7 @@ impl RuncRuntime {
             .retain(|ns| ns["type"] != "network");
         let mounts = config["mounts"].as_array_mut().ok_or(Error::State)?;
         mounts.push(serde_json::json!({"destination": "/run/swarmy", "type": "bind", "source": bundle.join("guest"), "options": ["bind", "nosuid", "nodev", "noexec"]}));
+        mounts.push(serde_json::json!({"destination": "/run/swarmy-gh", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=16m"]}));
         mounts.push(serde_json::json!({"destination": "/etc/resolv.conf", "type": "bind", "source": "/etc/resolv.conf", "options": ["bind", "ro", "nosuid", "nodev", "noexec"]}));
         std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
         // Init outlives runc create, so it must not inherit pipes that the
@@ -412,6 +424,7 @@ impl SandboxRuntime for RuncRuntime {
                 journal,
                 server: Some(server),
                 cancellations: Arc::default(),
+                credentials: None,
             })),
         );
         let setup = async {
@@ -422,6 +435,18 @@ impl SandboxRuntime for RuncRuntime {
                     .arg(bundle.join("rootfs")),
             )
             .await?;
+            checked(Command::new("chroot").arg(bundle.join("rootfs")).args([
+                "/bin/sh",
+                "-ec",
+                include_str!("../../../images/base-ubuntu/setup.sh"),
+            ]))
+            .await?;
+            let credentials = crate::credentials::Credentials::start(
+                &bundle.join("guest/github.sock"),
+                self.config.store.clone(),
+                id,
+            )?;
+            self.running(id).await?.lock().await.credentials = Some(credentials);
             self.start(id).await
         }
         .await;

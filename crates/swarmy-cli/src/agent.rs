@@ -51,15 +51,17 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             image,
             description,
             inference,
+            github_token,
         } => {
             let overrides = inference_settings(inference)?;
             let settings = swarmy_config::Settings::load()?.settings;
             let agent = store
-                .create_agent_with_settings(
+                .create_agent_with(
                     &name,
                     settings.session_image(image.as_deref())?,
                     &description,
                     &overrides,
+                    github_token.as_deref(),
                     Timestamp::now(),
                 )
                 .await?;
@@ -76,14 +78,28 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 json,
             )?;
         }
-        Command::Set { name, inference } => {
+        Command::Set {
+            name,
+            inference,
+            github_token,
+            clear_github_token,
+        } => {
             let settings = inference_settings(inference)?;
+            let token_change = github_token.is_some() || clear_github_token;
             ensure!(
-                settings != AgentSettings::default(),
-                "agent set requires --system-prompt, --system-prompt-file, --model, or --effort"
+                settings != AgentSettings::default() || token_change,
+                "agent set requires --system-prompt, --system-prompt-file, --model, --effort, \
+                 --github-token, or --clear-github-token"
             );
-            let agent = resolve(&store, &name).await?;
-            let agent = store.set_agent(agent.agent_id, &settings).await?;
+            let mut agent = resolve(&store, &name).await?;
+            if settings != AgentSettings::default() {
+                agent = store.set_agent(agent.agent_id, &settings).await?;
+            }
+            if token_change {
+                store
+                    .set_agent_github_token(agent.agent_id, github_token.as_deref())
+                    .await?;
+            }
             output(
                 &serde_json::to_value(&agent)?,
                 &format!(
