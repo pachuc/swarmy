@@ -180,7 +180,7 @@ impl Default for Settings {
             bus_ack_wait_ms: 30000,
             bus_max_deliver: 5,
             gateway_concurrency: 4,
-            system_prompt: "You are a helpful assistant. Use tools when needed. Your memory directory is {memory_dir} on your home disk. Write facts you want to keep there with the write or edit tools (or bash). Your conversation may be summarized into a fresh session. For named agents, memory files are read into every turn.".into(),
+            system_prompt: include_str!("system_prompt.txt").into(),
             summarize_at_tokens: None,
             model_context_window_tokens: std::num::NonZeroU64::new(400_000).unwrap(),
             memory_dir: "/home/agent/memory".into(),

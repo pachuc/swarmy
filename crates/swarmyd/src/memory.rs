@@ -15,13 +15,21 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<Result<(), swarmy_bus::Error>> {
     let memory = Memory::new(store, runtime, node);
     tokio::spawn(async move {
-        bus.serve_memory(node, |request| async {
-            memory
-                .read(request)
-                .await
-                .map_err(|error| error.to_string())
-        })
-        .await
+        tokio::try_join!(
+            bus.serve_memory(node, |request| async {
+                memory
+                    .read(request)
+                    .await
+                    .map_err(|error| error.to_string())
+            }),
+            bus.serve_instructions(node, |request| async {
+                memory
+                    .instructions(request)
+                    .await
+                    .map_err(|error| error.to_string())
+            }),
+        )
+        .map(|_| ())
     })
 }
 
@@ -57,8 +65,43 @@ impl Memory {
         Ok(())
     }
 
+    async fn instructions(&self, request: MemoryRequest) -> Result<String> {
+        self.check(&request).await?;
+        if !self.runtime.is_resident(request.agent_id).await {
+            return Ok(String::new());
+        }
+        // Read afresh: a clone or edit must be visible on the very next inference.
+        let (exit, text, error) = crate::tools::exec(
+            &self.runtime,
+            &Sandbox {
+                agent_id: request.agent_id,
+            },
+            ExecRequest {
+                args: vec![
+                    "/usr/bin/python3".into(),
+                    "-c".into(),
+                    include_str!("instructions.py").into(),
+                    request.directory.clone(),
+                    request.max_bytes.to_string(),
+                ],
+                timeout_ms: 10_000,
+                stdin: Vec::new(),
+            },
+        )
+        .await?;
+        ensure!(
+            exit.exit_code == 0 && !exit.timed_out,
+            "instruction read failed: {error}"
+        );
+        self.check(&request).await?;
+        Ok(text)
+    }
+
     async fn read(&self, request: MemoryRequest) -> Result<String> {
         self.check(&request).await?;
+        if !self.runtime.is_resident(request.agent_id).await {
+            return Ok(String::new());
+        }
         let volume = self
             .store
             .get_volume(VolumeId::from_ulid(request.agent_id.as_ulid()))
@@ -137,6 +180,48 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn repository_instructions_refresh_and_bound_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = |cap: usize| {
+            let output = std::process::Command::new("python3")
+                .args(["-c", include_str!("instructions.py")])
+                .arg(dir.path())
+                .arg(cap.to_string())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert!(read(4096).is_empty());
+        std::fs::write(dir.path().join("AGENTS.md"), "Root rules").unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "Repository rules").unwrap();
+        let unrelated = dir.path().join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        std::fs::write(unrelated.join("AGENTS.md"), "Not a repository").unwrap();
+        let text = read(4096);
+        assert!(text.contains("Root rules") && text.contains("Repository rules"));
+        assert!(!text.contains("Not a repository"));
+        std::fs::write(repo.join("AGENTS.md"), "Updated rules").unwrap();
+        assert!(read(4096).contains("Updated rules"));
+        let text = read(20);
+        assert!(
+            text.split_once("\n[Repository instructions truncated")
+                .unwrap()
+                .0
+                .len()
+                <= 20
+        );
+        std::fs::remove_file(repo.join("AGENTS.md")).unwrap();
+        std::os::unix::fs::symlink("../AGENTS.md", repo.join("AGENTS.md")).unwrap();
+        std::os::unix::fs::symlink(&repo, dir.path().join("linked-repo")).unwrap();
+        let text = read(4096);
+        assert_eq!(text.matches("Root rules").count(), 1);
+        assert!(!text.contains("linked-repo") && !text.contains("repo/AGENTS.md"));
     }
 
     #[test]

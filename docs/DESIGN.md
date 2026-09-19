@@ -322,6 +322,78 @@ launcher control plane makes more than three sequential database round trips.
 The benchmark intentionally preserves those behaviors so their cost remains
 visible.
 
+### 5.2 Coding prompt and tools
+
+The default `system_prompt` template lives in
+`crates/swarmy-config/src/system_prompt.txt`. Its software-work conventions are
+adapted from [OpenCode's system prompts](https://github.com/sst/opencode/tree/dev/packages/opencode/src/session/prompt/),
+with original wording for Swarmy's disk and process contracts. Explore with
+`glob`, `grep`, and `read` before editing; prefer `edit` for existing files and
+`write` for new files. Reproduce failures, run tests after changes, keep changes
+small, and explain the result and validation. For work with three or more steps,
+use `update_plan`, with exactly one step in progress until all are complete.
+Never print or commit secrets.
+
+The sandbox starts in `/home/agent/work`. Before each ordinary inference, the
+worker asks the current node for `AGENTS.md` there and in immediate child
+repositories (directories with a `.git` directory or worktree file). Each
+excerpt names its path and applies only to that repository. The node reads
+regular files without following symlinks, caps the combined excerpt at 32 KiB,
+and marks truncation so the agent can read the rest. It reads afresh to see
+clones and edits on the next inference. Nested repository instructions must
+also be read before editing their files. Placement authority is checked before
+and after reading. If the computer is not placed or not resident yet, no excerpt
+is available until a tool opens it. A context read never creates a computer.
+
+The harness assembles the template, conversation, and tool definitions. The
+worker resolves any per-agent prompt override, substitutes `{memory_dir}`, and
+appends memory for named agents and repository instructions for both named and
+ephemeral sessions. Summary requests retain the separate summarization prompt.
+Overrides replace the default instructions, while disk context still composes
+with them. Already persisted inference requests retain their original prompt
+on retry. The ChatGPT adapter sends durable system notices, including rebuild
+notices and timer delivery, as developer-role input messages while preserving
+tool-call and result correlation.
+
+The tool set is `bash`, `process_start`, `process_list`, `process_log`,
+`process_stop`, `write_stdin`, `web_fetch`, `read`, `write`, `edit`, `glob`,
+`grep`, `ls`, `update_plan`, `checkpoint`, `set_timer`, `list_timers`, and
+`cancel_timer`, plus the remote `get_time` tool. The worker dispatches all calls
+returned in one response concurrently; dependencies require separate responses.
+Sandbox calls still queue on the agent's computer as described in section 3.1.
+`bash` can yield a managed process id; `process_log` observes output and
+`write_stdin` sends input. Truncated output names a spill file holding the full
+output. Files persist between turns and recover to the latest published
+snapshot after failure. Processes never survive a rebuild. The prompt instructs
+the agent to checkpoint durable work and reconcile uncertain external effects
+before retrying pushes or creating pull requests. Memory, summaries, and timers
+retain the conventions in section 3.2.
+
+For the real coding proof, the operator stores the GitHub token in
+`~/.config/swarmy-proof/github-token` and passes it only to
+`swarmy agent create NAME --github-token "$(cat ~/.config/swarmy-proof/github-token)"`.
+The CLI stores it in FoundationDB, outside agent records and transcripts. The
+node serves that agent's token at `/run/swarmy/github.sock` inside its sandbox.
+The installed Git credential helper and `gh` wrapper obtain it from this socket;
+they do not write a token file to the agent's persistent disk. Do not read the
+socket or credential files into model context. The ChatGPT subscription credential
+is separate, at `~/.config/swarmy-proof/chatgpt-auth.json`; set `credential_file`
+to that path in `.swarmy/config.toml`, with `provider = "chatgpt"`,
+`model = "gpt-6-astra"`, and `reasoning_effort = "medium"` for the proof only.
+Tests use `provider = "fake"` and require neither credential.
+
+The `swarmy-chaos --coding --image NAME:TAG --sessions 1 --schedulers 1
+--workers 1 --gateways 1 --kills 0` acceptance uses a scripted fake provider,
+a loopback Git daemon, and a local bare remote. It clones a fixture with a
+failing shell test, checkpoints, kills `swarmyd` once during a command, then
+checks recovery, repository instructions in inference, the repaired test, and
+exactly one pushed commit containing the README line. Its Drop guards stop
+processes and clean up mounts and devices even on failure. The unprivileged
+`reduced_fake_coding_push` test drives the same fake script and actual Git
+commands, but omits node death and checkpoint rollback. It does not simulate a
+GitHub pull request; that evidence comes from the dated real-provider run in
+[volume benchmarks](volume-benchmarks.md).
+
 ## 6. Storage layout
 
 ### 6.1 FoundationDB

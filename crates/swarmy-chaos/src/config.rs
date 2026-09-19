@@ -61,6 +61,9 @@ pub struct AgentChecks {
     /// Prove named-agent memory, tools, and timers survive summarization and a full restart.
     #[arg(long, requires = "image", conflicts_with = "persistent")]
     pub continuity: bool,
+    /// Clone, repair a failing test, and push through one node kill using a local remote.
+    #[arg(long, requires = "image", conflicts_with_all = ["persistent", "continuity"])]
+    pub coding: bool,
 }
 
 impl Config {
@@ -94,10 +97,10 @@ impl Config {
                 "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
             );
         }
-        if self.agent_checks.continuity {
+        if self.agent_checks.continuity || self.agent_checks.coding {
             ensure!(
                 self.gateways == 1 && self.kills == 0,
-                "--continuity requires --gateways 1 --kills 0"
+                "--continuity and --coding require --gateways 1 --kills 0"
             );
         }
         if self.agent_checks.persistent {

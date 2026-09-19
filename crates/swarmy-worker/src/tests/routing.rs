@@ -95,6 +95,27 @@ impl Fixture {
         })
     }
 
+    async fn named_agent(&mut self) {
+        self.agent = self
+            .store
+            .create_agent("shared", "routing:test", "", Timestamp::now())
+            .await
+            .unwrap()
+            .agent_id;
+        self.store
+            .set_agent(
+                self.agent,
+                &swarmy_core::AgentSettings {
+                    system_prompt: Some(
+                        "Agent coding instructions; memory is {memory_dir}.".into(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     async fn session(&self) -> SessionId {
         let id = SessionId::from_ulid(Ulid::generate());
         self.store
@@ -165,6 +186,7 @@ impl Fixture {
     }
 
     async fn step(&self, id: SessionId) {
+        let _context_nodes = self.memory_nodes();
         let queue = WorkQueue::Runnable(swarmy_store::runnable_partition(id));
         let mut messages = self.bus.consume::<Nudge>(&queue).await.unwrap();
         self.bus
@@ -235,6 +257,14 @@ impl Fixture {
         // memory RPC as well, so resumed inference exercises the complete node contract.
         let mut memory_nodes = tokio::task::JoinSet::new();
         for node in self.nodes {
+            let bus = self.bus.clone();
+            memory_nodes.spawn(async move {
+                bus.serve_instructions(node, |_| async {
+                    Ok("routing repository instructions".into())
+                })
+                .await
+                .unwrap();
+            });
             let bus = self.bus.clone();
             memory_nodes.spawn(async move {
                 bus.serve_memory(node, |_| async { Ok("routing fixture memory".into()) })
@@ -541,13 +571,7 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     let Some(mut f) = Fixture::new().await else {
         return;
     };
-    f.agent = f
-        .store
-        .create_agent("shared", "routing:test", "", Timestamp::now())
-        .await
-        .unwrap()
-        .agent_id;
-    let _memory_nodes = f.memory_nodes();
+    f.named_agent().await;
     // Cross an index page boundary and include idle sessions that never dispatch.
     let mut sessions = Vec::new();
     for _ in 0..=swarmy_store::MAX_SCAN_LIMIT {
@@ -621,13 +645,10 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     ));
     delivery.acknowledge().await.unwrap();
     assert_failure_notice(&f, first, &current, f.manifest).await;
-    assert!(
-        f.inference(first)
-            .await
-            .request
-            .system_prompt
-            .contains("routing fixture memory")
-    );
+    let prompt = f.inference(first).await.request.system_prompt;
+    assert!(prompt.starts_with("Agent coding instructions; memory is /home/agent/memory."));
+    assert!(prompt.contains("routing fixture memory"));
+    assert!(prompt.contains("routing repository instructions"));
     // Both sessions continue through the same rebuilt epoch without another notice.
     for id in [first, second] {
         f.request(id).await;
@@ -688,6 +709,11 @@ async fn assert_recovery_prompt(f: &Fixture, id: SessionId, explanation: &str) {
                     == vec![Part::Text {
                         text: explanation.to_owned()
                     }])
+    );
+    assert!(
+        job.request
+            .system_prompt
+            .contains("routing repository instructions")
     );
     assert!(job.request.messages.iter().any(|m| m.role == MessageRole::Tool && m.parts.iter().any(|p| matches!(p, Part::ToolResult { result: ToolResult::Error { error }, .. } if error == explanation))));
 }

@@ -24,7 +24,9 @@ pub fn request_json(request: &Request) -> Result<Value, Error> {
             input.push(match part {
                 Part::Text { text } => {
                     let (role, kind) = match message.role {
-                        MessageRole::System => ("system", "input_text"),
+                        // Harness notices use the backend's developer role. A system
+                        // role in input is rejected after a computer rebuild.
+                        MessageRole::System => ("developer", "input_text"),
                         MessageRole::User => ("user", "input_text"),
                         MessageRole::Assistant => ("assistant", "output_text"),
                         MessageRole::Tool => return Err(Error::Protocol("tool text requires a tool result call id".into())),
