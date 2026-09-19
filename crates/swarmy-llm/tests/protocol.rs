@@ -90,6 +90,39 @@ fn shared_request_matches_responses_fixture() {
     assert_eq!(request_json(&request).unwrap(), expected);
 }
 
+#[test]
+fn rebuild_notice_preserves_call_result_order_with_developer_role() {
+    let mut request = request();
+    request.messages = vec![
+        message(MessageRole::Assistant, vec![call()]),
+        message(
+            MessageRole::System,
+            vec![text("Computer rebuilt; processes were lost.")],
+        ),
+        message(
+            MessageRole::Tool,
+            vec![Part::ToolResult {
+                call_id: ToolCallId("call_1".into()),
+                result: ToolResult::Error {
+                    error: "Interrupted by node loss".into(),
+                },
+            }],
+        ),
+    ];
+    let value = request_json(&request).unwrap();
+    assert_eq!(value["input"][0]["type"], "function_call");
+    assert_eq!(
+        value["input"][1],
+        json!({"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"Computer rebuilt; processes were lost."}]})
+    );
+    assert_eq!(value["input"][2]["type"], "function_call_output");
+    assert_eq!(value["input"][2]["call_id"], "call_1");
+    assert_eq!(
+        value["input"][2]["output"],
+        r#"{"error":"Interrupted by node loss"}"#
+    );
+}
+
 fn parse(fixture: &str, chunk_size: usize) -> Vec<Delta> {
     let mut parser = SseParser::default();
     let mut deltas = vec![];

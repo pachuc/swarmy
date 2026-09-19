@@ -2947,3 +2947,129 @@ executed separately with root. Timer tests cover delay and absolute-time
 validation, set/list/cancel, due-time fencing, a failed append followed by retry,
 concurrent delivery, a lost nudge, reopening the store after restart, main-session
 replacement, a missing main conversation, agent isolation, and deletion.
+
+## 2026-09-19 Coding prompt and GitHub pull request through a node kill
+
+The real ChatGPT run completed in one user turn, without a follow-up message.
+It cloned `pachuc/swarmy`, created `agent/readme-proof-2026-09-19` from
+`origin/master`, and opened [evidence PR 78](https://github.com/pachuc/swarmy/pull/78)
+after one SIGKILL of `swarmyd` during a tool call. GitHub inspection confirmed
+that the PR targets `master`, has one commit, and changes only `README.md` with
+one added line:
+
+```text
+2026-09-19: This line was written by a swarmy agent.
+```
+
+The evidence commit is `fea40960bbbcee4e10378fb3ec270b67440828b8`. The PR was
+left open and unmerged for the orchestrator to close and delete its branch.
+The implementation checkout started at
+`f940058c2c7cee448de75ee3cbc829e51720db24`; the run used its modified debug
+binaries on the four-core Ubuntu 24.04 launcher, with the local FoundationDB,
+NATS, and SeaweedFS stack. Builds and the credential snapshot scan overlapped
+this run, so these times are acceptance measurements, not latency benchmarks.
+
+The image was built with
+`sudo -E target/debug/swarmy --json image build images/base-ubuntu --tag proof`.
+It is an 8 GiB image with manifest `01M2VFXXNFFF1JSB587PXS0JKX` and 3,299 stored
+chunks. The named agent was `readme-proof-20260919-v2`, session
+`01M2VGB7AJKYKAEASGZW10DZ2A`. Its configuration used `provider = "chatgpt"`,
+`model = "gpt-6-astra"`, and `reasoning_effort = "medium"`. The subscription
+credential file and agent GitHub token were supplied through the paths and
+creation command documented in DESIGN. Neither credential entered an agent tool
+argument, transcript, or repository file. All automated tests used fake
+providers or local protocol servers.
+
+### Measurements and transcript
+
+| Measurement | Through the first PR link | Through final response |
+| --- | ---: | ---: |
+| User turns | 1 | 1 |
+| Completed inference calls | 12 | 16 |
+| Input tokens reported by the provider | 218,766 | 321,266 |
+| Cached input tokens, included above | 30,592 | 55,808 |
+| Output tokens | 1,435 | 1,750 |
+| Reasoning output tokens reported by the provider | 0 | 0 |
+| Total tokens | 220,201 | 323,016 |
+| Wall time | 145.57 s | 164.97 s |
+| Node kills | 1 | 1 |
+| Failed inference requests | 0 | 0 |
+
+The first user-message event was observed at `00:16:33.638467 UTC`; the tool
+result containing the PR link arrived at `00:18:59.208062 UTC`. These client
+observation timestamps define the 145.57-second interval. The final-response
+measurement includes client startup and completion through `00:19:18.527273
+UTC`. Token counts come from the stored provider results linked by the
+session's `InferenceRequested` events. The PR-link cutoff is tool completion
+sequence 69; later calls verified the PR, checkpointed, and completed the plan.
+
+The [visible transcript](proofs/coding-2026-09-19.jsonl) contains user and
+assistant messages, tool calls and outputs, and the durable rebuild notice.
+It omits duplicate streaming fragments, repeated folded tool results, and
+provider reasoning metadata. Secret-pattern redaction found no credential
+values. The [usage receipts and timestamps](proofs/coding-2026-09-19-usage.json)
+record every inference's model, effort, token usage, and whether repository
+instructions were present. Thirteen of the sixteen prompts included the
+repository's `AGENTS.md`; the initial unplaced requests and the first request
+before reopening the rebuilt computer had no available disk excerpt.
+
+The transcript records this sequence:
+
+1. The agent created a three-step plan, cloned the repository, created the
+   branch, and used independent `glob`, `read`, and `grep` calls to explore it.
+2. It checkpointed at `00:17:02.385 UTC`, then issued
+   `touch /home/agent/work/kill-ready; sleep 120` with a 120-second yield.
+   The operator observed the marker and sent SIGKILL to `swarmyd` at
+   `00:17:06.557103 UTC`, then immediately restarted the node.
+3. Recovery began at `00:17:58.557416 UTC`, after the old authority expired.
+   Exactly one system notice described process loss and the restored snapshot;
+   exactly one error completed the interrupted call. The agent inspected Git
+   status, the branch, remote refs, and existing PRs before continuing.
+4. It used `edit` to add the README line, checked the diff, attempted the three
+   repository Cargo commands, committed, pushed, and ran `gh pr create`.
+   Cargo was absent in the developer image, so those three checks could not run
+   inside the agent sandbox. The evidence PR states that limitation. The
+   implementation checkout's Cargo checks were run separately on the launcher.
+5. It verified PR 78 and the one-line diff, checkpointed again, marked all plan
+   steps complete, and returned the PR link.
+
+An earlier attempt exposed a provider-normalization bug: the durable rebuild
+notice was sent as a `system` input item, and the next ChatGPT request returned
+HTTP 400. That attempt opened no PR. It had six completed inferences, one
+failed inference request, 78,681 reported tokens, and 89.22 seconds to idle.
+The adapter now sends these notices as `developer` input items, preserving
+tool-call/result order and ids. A local protocol regression covers this shape.
+The successful run above used a fresh named agent after that fix, and recovered
+without operator prompting or another provider failure.
+
+### Fake-provider and regression validation
+
+The root chaos test `root_coding_recovery` passed in 64.44 seconds; its measured
+coding work took 63.45 seconds. It used the same services, image, and real disk
+recovery with a scripted fake provider and a loopback Git daemon serving a
+local bare repository. The fixture's shell test initially exited 1. After a
+checkpoint and one node kill during a sleeping command, the script observed
+rollback of the marker, edited the README and faulty answer, ran the test with
+exit 0, and pushed exactly one commit. Assertions checked the remote's actual
+README and repaired file, unchanged `master`, one interruption, one rebuild
+notice, successful completion, and `AGENTS.md` in persisted inference input.
+Two independent reads were dispatched in one provider response. There was no
+GitHub token or external PR in this scenario.
+
+The unprivileged `reduced_fake_coding_push` test uses the same fake responses
+and real Git commands against a local bare remote. It verifies the failing
+then passing test and pushed contents; it omits node death, mounts, and
+checkpoint rollback. The root entry point prints a skip message without root
+or the required stack/image environment. Fixture and process Drop guards clean
+up containers, mounts, devices, and the Git daemon on failure.
+
+The existing root file-tool acceptance passed in 2.20 seconds. The existing
+root GitHub-credential acceptance passed in 331.02 seconds, including Git and
+`gh` authorization, token rotation and clearing, and scans proving neither
+fake token appeared in files or snapshot chunks. Both used prebuilt test
+executables run with `sudo -E`; nothing was compiled as root.
+
+After exporting receipts and the transcript, the operator stopped the proof
+services and deleted both local proof agents, removing their stored GitHub
+credentials. Their session logs remain readable. The GitHub evidence PR and
+branch were left for the orchestrator's cleanup.

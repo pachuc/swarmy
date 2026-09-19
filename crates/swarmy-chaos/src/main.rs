@@ -1,4 +1,5 @@
 mod check;
+mod coding;
 mod config;
 mod continuity;
 mod disk;
@@ -226,6 +227,13 @@ impl Fixture {
             .collect::<Vec<(OsString, OsString)>>();
         shared.append(&mut environment);
         environment = shared;
+        if config.agent_checks.coding {
+            environment.extend([
+                ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
+                ("SWARMY_SCHEDULER_PARTITIONS".into(), "0-255".into()),
+                ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
+            ]);
+        }
         if config.agent_checks.continuity {
             environment.extend([
                 ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
@@ -446,7 +454,10 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
     let result = tokio::select! {
         result = async {
             timeout(Duration::from_secs(60), fixture.start(config, binaries)).await.context("session setup timed out")??;
-            if config.agent_checks.continuity {
+            if config.agent_checks.coding {
+                coding::exercise(&mut fixture).await?;
+                Ok(0)
+            } else if config.agent_checks.continuity {
                 continuity::exercise(&mut fixture).await?;
                 Ok(0)
             } else if config.agent_checks.persistent {

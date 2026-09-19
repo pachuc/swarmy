@@ -1,0 +1,240 @@
+{
+  "requests": [
+    {
+      "effort": "medium",
+      "has_repository_instructions": false,
+      "model": "gpt-6-astra",
+      "request_id": "d861207a04dc7d4beca60fcbc6a211d02d394d898133aff23fbb02e9308f4d68",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 3090,
+        "output_tokens": 83,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 3173
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": false,
+      "model": "gpt-6-astra",
+      "request_id": "cf89076c9abd42e36503dc181b54fa0b8cc57253922daf689591ae800d7a3a05",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 3255,
+        "output_tokens": 66,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 3321
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "2f944375805e28b769bfe914f58c8773edc5abd0e4d1a6e6cabf416cde64a954",
+      "usage": {
+        "cached_input_tokens": 2048,
+        "input_tokens": 4160,
+        "output_tokens": 153,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 4313
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "21ecf761d00a1f865b10d0af0e1fb5f87b1765b5dcc7d0e6dfd772061311c536",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 21635,
+        "output_tokens": 26,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 21661
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "2757a42649dee03f622ef7686024587fbab6a3639d9ff092ee84bd76d8b43bc5",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 22644,
+        "output_tokens": 69,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 22713
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "6733faac0f1b28ff9afb43fb2b13498918b8921c5770a5ea6d18e0f0c8f0cb82",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 22746,
+        "output_tokens": 35,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 22781
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": false,
+      "model": "gpt-6-astra",
+      "request_id": "7bd2bdbff49c05c8282f0a6c8f47dfd165a9aea6551749a257afa876653b4b26",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 22397,
+        "output_tokens": 108,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 22505
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "b3d79eef16c5c3b270a4d2a35d439077c52fd31e2fa0155c05abd881be1b77be",
+      "usage": {
+        "cached_input_tokens": 3968,
+        "input_tokens": 23312,
+        "output_tokens": 86,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 23398
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "b104930ea9fea064f34e0454688de075c094cfe816177327aa280e86a233130d",
+      "usage": {
+        "cached_input_tokens": 2048,
+        "input_tokens": 23477,
+        "output_tokens": 94,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 23571
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "1208e41d50db5cb95440d0e9563e34d92ecc4b6cdb88747b3e8059a54b1af4bd",
+      "usage": {
+        "cached_input_tokens": 22528,
+        "input_tokens": 23678,
+        "output_tokens": 87,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 23765
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "df6e805fb6c96eda96e08ff1d03890fab2530655459c80069a3865981f5c2ab3",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 24067,
+        "output_tokens": 159,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 24226
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "6966d5fd3e067a2c47e81eb52dd37ed43e5298178abe80d935e3503a7069287d",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 24305,
+        "output_tokens": 469,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 24774
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "e2975ddd207eab24501c9feea8ce6402a495243e1f65426c1991ef8f8d391735",
+      "usage": {
+        "cached_input_tokens": 2048,
+        "input_tokens": 25091,
+        "output_tokens": 75,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 25166
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "a10845ba257eb75af2a9d07bee050fd02e5e5b64e61ace5d1b9395a61914e166",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 25716,
+        "output_tokens": 14,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 25730
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "2e3c8c40471d70870e26c2e42184896f51014aa661a24c266a91a4a3a797adde",
+      "usage": {
+        "cached_input_tokens": 23168,
+        "input_tokens": 25765,
+        "output_tokens": 85,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 25850
+      }
+    },
+    {
+      "effort": "medium",
+      "has_repository_instructions": true,
+      "model": "gpt-6-astra",
+      "request_id": "96d5bacec747308d73d10b144822800e3e6af54217c7ff1457f9db70b5bfe083",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 25928,
+        "output_tokens": 141,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 26069
+      }
+    }
+  ],
+  "session_id": "01M2VGB7AJKYKAEASGZW10DZ2A",
+  "totals": {
+    "cached_input_tokens": 55808,
+    "input_tokens": 321266,
+    "output_tokens": 1750,
+    "reasoning_output_tokens": 0,
+    "total_tokens": 323016
+  },
+  "timing": {
+    "first_message_unix": 1789776993.638467,
+    "pr_link_unix": 1789777139.2080617,
+    "pr_url": "https://github.com/pachuc/swarmy/pull/78",
+    "wall_seconds": 145.56959462165833
+  },
+  "kill": {
+    "killed_at": "2026-09-19T00:17:06.557103+00:00",
+    "node_pid": 56104
+  },
+  "through_pr_link": {
+    "inference_calls": 12,
+    "usage": {
+      "cached_input_tokens": 30592,
+      "input_tokens": 218766,
+      "output_tokens": 1435,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 220201
+    }
+  }
+}

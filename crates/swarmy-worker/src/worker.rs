@@ -398,11 +398,18 @@ impl Worker {
                 .system_prompt
                 .replace("{memory_dir}", &self.config.memory_dir);
             if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
-                let memory = self.memory(session.agent_id).await?;
+                let memory = self.prompt_context(session.agent_id, false).await?;
                 write!(
                     request.system_prompt,
                     "\n\nAgent memory ({}):\n{memory}",
                     self.config.memory_dir
+                )?;
+            }
+            let instructions = self.prompt_context(session.agent_id, true).await?;
+            if !instructions.is_empty() {
+                write!(
+                    request.system_prompt,
+                    "\n\nRepository instructions (apply within each listed repository):\n{instructions}"
                 )?;
             }
         }
@@ -996,7 +1003,11 @@ impl Worker {
         Ok(true)
     }
 
-    async fn memory(&self, agent: swarmy_core::AgentId) -> Result<String> {
+    async fn prompt_context(
+        &self,
+        agent: swarmy_core::AgentId,
+        instructions: bool,
+    ) -> Result<String> {
         let Some(placement) = self
             .store
             .get_by_agent(agent)
@@ -1005,18 +1016,27 @@ impl Worker {
         else {
             return Ok(String::new());
         };
-        let reply = self
-            .bus
-            .request_memory(
-                placement.node_id,
-                &swarmy_core::MemoryRequest {
-                    agent_id: agent,
-                    epoch: placement.epoch,
-                    directory: self.config.memory_dir.clone(),
-                    max_bytes: self.config.memory_max_bytes,
-                },
-            )
-            .await?;
+        let request = swarmy_core::MemoryRequest {
+            agent_id: agent,
+            epoch: placement.epoch,
+            directory: if instructions {
+                "/home/agent/work".into()
+            } else {
+                self.config.memory_dir.clone()
+            },
+            max_bytes: if instructions {
+                32_768
+            } else {
+                self.config.memory_max_bytes
+            },
+        };
+        let reply = if instructions {
+            self.bus
+                .request_instructions(placement.node_id, &request)
+                .await?
+        } else {
+            self.bus.request_memory(placement.node_id, &request).await?
+        };
         reply.map_err(anyhow::Error::msg)
     }
 

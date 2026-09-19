@@ -147,6 +147,12 @@ impl RuncRuntime {
         Ok(hash.finish())
     }
 
+    /// Whether this node currently has the agent's computer open.
+    /// Prompt context reads must not create a computer or block its next tool.
+    pub async fn is_resident(&self, agent: AgentId) -> bool {
+        self.sandboxes.lock().await.contains_key(&agent)
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new("runc");
         command.arg("--root").arg(self.root.join("runc"));
@@ -197,6 +203,7 @@ impl RuncRuntime {
             .as_array_mut()
             .ok_or(Error::State)?
             .push(serde_json::json!({"type": "RLIMIT_CORE", "hard": 0, "soft": 0}));
+        config["process"]["cwd"] = "/home/agent/work".into();
         config["hostname"] = "swarmy".into();
         // This slice uses the host network for outbound package downloads.
         config["linux"]["namespaces"]
