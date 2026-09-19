@@ -78,3 +78,4 @@ stack connectivity. It exits 1 if any check fails; `swarmy doctor --json` return
 one JSON object with `ok` and `checks` fields.
 
 See [docs/DEV.md](docs/DEV.md) for configuration, credentials, and development.
+2026-09-19: This line was written by a swarmy agent.
