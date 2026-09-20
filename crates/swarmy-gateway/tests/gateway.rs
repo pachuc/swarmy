@@ -112,19 +112,24 @@ impl Fixture {
     }
 
     fn start(&mut self, concurrency: usize) {
-        self.start_with(concurrency, "fake", &[]);
+        self.start_with(concurrency, "fake", &std::collections::BTreeMap::new(), &[]);
     }
 
     fn start_with(
         &mut self,
         concurrency: usize,
         providers: &str,
-        models: &[swarmy_llm::catalog::CustomModel],
+        custom_providers: &std::collections::BTreeMap<String, swarmy_config::CustomProvider>,
+        models: &[swarmy_config::CustomModel],
     ) {
         self.children.push(
             Command::new(env!("CARGO_BIN_EXE_swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
+                .env(
+                    "SWARMY_CUSTOM_PROVIDERS",
+                    serde_json::to_string(custom_providers).unwrap(),
+                )
                 .env("SWARMY_MODELS", serde_json::to_string(models).unwrap())
                 .env("SWARMY_STORE_DIRECTORY", &self.prefix)
                 .env("SWARMY_BUS_PREFIX", &self.prefix)
@@ -649,13 +654,19 @@ async fn terminal_response_leaves_intervening_events_for_worker_replay() {
 async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
     run(|mut f| async move {
         f.script(50, false, "routed");
-        let mut model = swarmy_llm::catalog::Catalog::get().provider("chatgpt").unwrap().models.values().next().unwrap().clone();
-        model.id = "scripted-model".into();
-        model.api = Some(swarmy_llm::catalog::Api::Fake);
-        model.cost.output = 2.0;
-        model.reasoning = Some(swarmy_llm::catalog::ReasoningOptions::Effort(vec![swarmy_core::ReasoningEffort::Low]));
-        let models: Vec<_> = ["fake", "scripted"].map(|provider| swarmy_llm::catalog::CustomModel { provider: provider.into(), model: model.clone() }).into();
-        f.start_with(1, "fake,scripted", &models);
+        let model = swarmy_config::CustomModel {
+            id: "scripted-model".into(),
+            api: Some(swarmy_llm::catalog::Api::Fake),
+            cost: Some(swarmy_llm::catalog::Cost { output: 2.0, ..Default::default() }),
+            reasoning: Some(vec![swarmy_core::ReasoningEffort::Low]),
+            ..Default::default()
+        };
+        let models: Vec<_> = ["fake", "scripted"].map(|provider| swarmy_config::CustomModel { provider: provider.into(), ..model.clone() }).into();
+        let custom_providers = std::collections::BTreeMap::from([(
+            "scripted".to_owned(),
+            swarmy_config::CustomProvider { api: Some(swarmy_llm::catalog::Api::Fake), base_url: Some("fake://scripted".into()) },
+        )]);
+        f.start_with(1, "fake,scripted", &custom_providers, &models);
         let result = AssertUnwindSafe(async {
             let queue = WorkQueue::Inference(SubjectToken::new("scripted").unwrap());
             f.bus.setup(std::slice::from_ref(&queue)).await.unwrap();

@@ -75,7 +75,7 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
         },
         summarize_at_tokens: Some(300_000),
         model_context_window_tokens: None,
-        catalog: swarmy_llm::catalog::Catalog::merged(&[]),
+        catalog: swarmy_llm::catalog::Catalog::get().clone(),
         memory_dir: "/home/agent/memory".into(),
         memory_max_bytes: 32768,
         kill_point: None,
@@ -357,20 +357,17 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
         "context_fixture",
         Arc::default(),
     );
-    let mut model = swarmy_llm::catalog::Catalog::get()
-        .provider("chatgpt")
-        .unwrap()
-        .models
-        .values()
-        .next()
-        .unwrap()
-        .clone();
-    model.id = "small-context".into();
-    model.limit.context = 1000;
-    config.catalog = swarmy_llm::catalog::Catalog::merged(&[swarmy_llm::catalog::CustomModel {
-        provider: "fake".into(),
-        model,
-    }]);
+    config.catalog = swarmy_config::Settings {
+        models: vec![swarmy_config::CustomModel {
+            provider: "fake".into(),
+            id: "small-context".into(),
+            context_window: Some(1000),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .catalog()
+    .unwrap();
     config.summarize_at_tokens = None;
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),

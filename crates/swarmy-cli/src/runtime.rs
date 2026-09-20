@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
                     conversation::store().await?,
                     &settings,
                 )
-                .await;
+                .await?;
                 println!(
                     "{}",
                     serde_json::json!({"served": providers.served, "skipped": providers.skipped})

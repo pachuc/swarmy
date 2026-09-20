@@ -119,10 +119,9 @@ impl Conversation {
             "inference flags apply only to a new ephemeral session"
         );
         let settings = swarmy_config::Settings::load()?.settings;
-        if id.is_none() && agent.is_none() {
-            crate::selection::validate(&selection, &crate::selection::defaults(&settings)?)?;
-        }
         let image = if id.is_none() && agent.is_none() {
+            let defaults = crate::selection::defaults(&settings)?;
+            crate::selection::validate(&settings, &selection, &defaults)?;
             Some(settings.session_image(image)?)
         } else {
             None

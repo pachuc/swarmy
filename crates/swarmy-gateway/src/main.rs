@@ -59,7 +59,7 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
-    let providers = Providers::discover(store.clone(), &config.settings).await;
+    let providers = Providers::discover(store.clone(), &config.settings).await?;
     for (provider, reason) in &providers.skipped {
         info!(%provider, %reason, "provider skipped");
         // Keep another gateway's live advertisement; only record the reason otherwise.

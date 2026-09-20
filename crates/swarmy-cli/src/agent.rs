@@ -56,6 +56,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let (overrides, _) = inference_settings(inference, false)?;
             let settings = swarmy_config::Settings::load()?.settings;
             crate::selection::validate(
+                &settings,
                 &swarmy_core::InferenceSelection {
                     provider: overrides.provider.clone(),
                     model: overrides.model.clone(),
@@ -328,9 +329,11 @@ async fn update(
     if settings != AgentSettings::default() || !resets.is_empty() {
         let mut updated = agent.clone();
         settings.apply_to(&mut updated, &resets);
+        let stack = swarmy_config::Settings::load()?.settings;
         crate::selection::validate(
+            &stack,
             &updated.inference(),
-            &crate::selection::defaults(&swarmy_config::Settings::load()?.settings)?,
+            &crate::selection::defaults(&stack)?,
         )?;
         agent = store
             .set_agent_with_resets(agent.agent_id, &settings, &resets)
