@@ -1,179 +1,114 @@
-//! Prefer the cluster record; only absent records fall back to the legacy file.
-use std::{sync::OnceLock, time::Duration};
-
-use futures::future::BoxFuture;
+//! Cluster persistence for the provider-neutral credential resolver.
+use async_trait::async_trait;
+use std::time::Duration;
 use swarmy_config::Keyring;
-use swarmy_core::CredentialScope;
+use swarmy_core::{CredentialRecord, CredentialScope};
 use swarmy_llm::{
     Error,
-    auth::{CredentialLock, CredentialStore, Credentials, FileCredentialStore, OAuthClient},
+    auth::{AuthStore, Login},
 };
 use swarmy_store::{Store, StoreError};
 
 pub struct ClusterCredentials {
     store: Store,
-    keyring: Option<Keyring>,
-    file: FileCredentialStore,
-    account: OnceLock<String>,
+    credentials: Option<swarmy_store::credentials::CredentialStore>,
 }
 
 impl ClusterCredentials {
-    /// Open cluster credentials with the legacy file as an absent-record fallback.
+    /// Open the cluster credential store. Without a keyring, stored records are
+    /// refused and only environment credentials remain available.
     /// # Errors
-    /// Returns unavailable keys or invalid stored credentials.
-    pub async fn new(store: Store, path: &str) -> crate::Result<Self> {
-        let keyring = match Keyring::load() {
-            Ok(key) => Some(key),
+    /// Returns an unreadable keyring, a wrong key, or an unavailable database.
+    pub async fn new(store: Store) -> crate::Result<Self> {
+        let credentials = match Keyring::load() {
+            Ok(keyring) => Some(store.credentials(keyring)),
             Err(swarmy_config::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                if store
-                    .has_credential(CredentialScope::Cluster, "chatgpt")
-                    .await?
-                {
-                    return Err(crate::Error::Configuration(
-                        "cluster ChatGPT credential exists but keyring is missing; copy the cluster keyring or set SWARMY_KEYRING",
-                    ));
-                }
                 tracing::warn!(
-                    "keyring missing; using file-based ChatGPT credentials until a cluster keyring is installed"
+                    "keyring missing; stored credentials are unavailable until a cluster keyring is installed"
                 );
                 None
             }
             Err(e) => return Err(e.into()),
         };
-        let result = Self {
-            store,
-            keyring,
-            file: FileCredentialStore::new(path),
-            account: OnceLock::new(),
-        };
-        // Fail at startup for a wrong key instead of silently using stale file tokens.
-        if result
-            .store
-            .has_credential(CredentialScope::Cluster, "chatgpt")
-            .await?
-        {
-            result.load().await?;
+        if let Some(credentials) = &credentials {
+            // Diagnose wrong keys before accepting requests for any stored provider.
+            credentials
+                .list_credentials(CredentialScope::Cluster)
+                .await?;
         }
-        Ok(result)
+        Ok(Self { store, credentials })
     }
 
-    async fn stored(&self) -> Result<Option<swarmy_core::CredentialRecord>, Error> {
-        if let Some(key) = &self.keyring {
-            self.store
-                .credentials(key.clone())
-                .get_credential(CredentialScope::Cluster, "chatgpt")
-                .await
-                .map_err(|error| store_error(&error))
-        } else if self
-            .store
-            .has_credential(CredentialScope::Cluster, "chatgpt")
-            .await
-            .map_err(|error| store_error(&error))?
-        {
-            Err(Error::Credentials(
-                "cluster credential requires a keyring; restart after installing it",
-            ))
-        } else {
-            Ok(None)
+    #[cfg(test)]
+    fn with_credentials(
+        store: &Store,
+        credentials: swarmy_store::credentials::CredentialStore,
+    ) -> Self {
+        Self {
+            store: store.clone(),
+            credentials: Some(credentials),
         }
-    }
-
-    fn check(&self, credentials: Credentials) -> Result<Credentials, Error> {
-        if self.account.get_or_init(|| credentials.account_id().into()) != credentials.account_id()
-        {
-            return Err(Error::AccountChanged);
-        }
-        Ok(credentials)
     }
 }
 
 fn store_error(error: &StoreError) -> Error {
     tracing::warn!(%error, "cluster credential operation failed");
-    Error::Credentials(
-        "cluster credential unavailable; check keyring or run swarmy auth check chatgpt",
-    )
+    Error::Credentials("cluster credential unavailable; check keyring and database")
 }
 
-impl CredentialStore for ClusterCredentials {
-    fn load(&self) -> BoxFuture<'_, Result<Credentials, Error>> {
-        Box::pin(async {
-            let credentials = match self.stored().await? {
-                Some(record) => Credentials::from_record(&record)?,
-                None => self.file.load().await?,
-            };
-            self.check(credentials)
-        })
-    }
-
-    fn save(&self, credentials: Credentials) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            if self.stored().await?.is_some() {
-                return Err(Error::Credentials(
-                    "cluster credentials require a fenced refresh",
-                ));
-            }
-            self.file.save(self.check(credentials)?).await
-        })
-    }
-
-    fn lock_refresh<'a>(
-        &'a self,
-        account_id: &'a str,
-    ) -> BoxFuture<'a, Result<Box<dyn CredentialLock>, Error>> {
-        Box::pin(async move {
-            if self.stored().await?.is_some() {
-                return Err(Error::Credentials(
-                    "cluster credentials require a fenced refresh",
-                ));
-            }
-            self.file.lock_refresh(account_id).await
-        })
-    }
-
-    fn refresh<'a>(
-        &'a self,
-        client: &'a OAuthClient,
-        observed: &'a Credentials,
-    ) -> BoxFuture<'a, Result<Credentials, Error>> {
-        Box::pin(async move {
-            let Some(record) = self.stored().await? else {
-                return client.refresh(&self.file, observed).await;
-            };
-            let current = self.check(Credentials::from_record(&record)?)?;
-            if current.account_id() != observed.account_id() {
-                return Err(Error::AccountChanged);
-            }
-            if current != *observed {
-                return Ok(current);
-            }
-            let key = self
-                .keyring
-                .clone()
-                .ok_or(Error::Credentials("missing cluster keyring"))?;
-            let updated = self
+#[async_trait]
+impl AuthStore for ClusterCredentials {
+    async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
+        let Some(credentials) = &self.credentials else {
+            return if self
                 .store
-                .credentials(key)
-                .refresh_with_lease(
-                    CredentialScope::Cluster,
-                    "chatgpt",
-                    Duration::from_secs(45),
-                    |record| async move {
-                        let current = Credentials::from_record(&record)
-                            .map_err(|_| StoreError::CredentialRefresh)?;
-                        if current != *observed {
-                            return Ok(record);
-                        }
-                        client
-                            .refresh_credentials(current)
-                            .await
-                            .and_then(|c| c.to_record())
-                            .map_err(|_| StoreError::CredentialRefresh)
-                    },
-                )
+                .has_credential(CredentialScope::Cluster, provider)
                 .await
-                .map_err(|error| store_error(&error))?;
-            self.check(Credentials::from_record(&updated)?)
-        })
+                .map_err(|error| store_error(&error))?
+            {
+                Err(Error::Credentials(
+                    "stored credential requires a readable cluster keyring",
+                ))
+            } else {
+                Ok(None)
+            };
+        };
+        credentials
+            .get_credential(CredentialScope::Cluster, provider)
+            .await
+            .map_err(|error| store_error(&error))
+    }
+
+    async fn refresh(
+        &self,
+        provider: &str,
+        observed: &CredentialRecord,
+        login: &dyn Login,
+    ) -> Result<CredentialRecord, Error> {
+        self.credentials
+            .as_ref()
+            .ok_or(Error::Credentials("missing cluster keyring"))?
+            .refresh_with_lease(
+                CredentialScope::Cluster,
+                provider,
+                Duration::from_secs(45),
+                |current| async move {
+                    if current != *observed {
+                        return Ok(current);
+                    }
+                    let kind = login
+                        .refresh(&current.kind)
+                        .await
+                        .map_err(|_| StoreError::CredentialRefresh)?
+                        .ok_or(StoreError::CredentialRefresh)?;
+                    Ok(CredentialRecord {
+                        kind,
+                        updated_at: jiff::Timestamp::now(),
+                    })
+                },
+            )
+            .await
+            .map_err(|_| Error::NeedsLogin(provider.into()))
     }
 }
 
@@ -181,78 +116,249 @@ impl CredentialStore for ClusterCredentials {
 mod tests {
     use super::*;
     use foundationdb::{Database, tuple::Subspace};
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
+    use swarmy_core::{CredentialKind, CredentialStatus};
+    use swarmy_llm::{
+        ClientAuth,
+        auth::{Credentials, OAuthClient, Resolver},
+    };
     use swarmy_store::blob::MemoryBlobStore;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
 
-    #[tokio::test]
-    async fn cluster_wins_and_refresh_is_shared_between_gateways() {
+    fn test_store() -> Option<Store> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping gateway credential integration: SWARMY_FDB_CLUSTER_FILE unset");
-            return;
+            eprintln!("skipping gateway auth integration: SWARMY_FDB_CLUSTER_FILE unset");
+            return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);
-        let store = Store::with_subspace(
+        Some(Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),
-            Subspace::all().subspace(&("gateway-auth-tests", ulid::Ulid::generate().to_string())),
+            Subspace::all().subspace(&("gateway-login-tests", ulid::Ulid::generate().to_string())),
             Arc::new(MemoryBlobStore::default()),
-        );
-        let files = tempfile::tempdir().unwrap();
-        let auth_path = files.path().join("auth.json");
-        let fixture = include_str!("../../swarmy-llm/tests/fixtures/auth.json");
-        std::fs::write(&auth_path, fixture).unwrap();
-        let make = || ClusterCredentials {
-            store: store.clone(),
-            keyring: Some(Keyring::from_bytes([3; 32])),
-            file: FileCredentialStore::new(&auth_path),
-            account: OnceLock::new(),
+        ))
+    }
+
+    fn imported() -> CredentialRecord {
+        let mut record = Credentials::from_json(
+            serde_json::from_str(include_str!("../../swarmy-llm/tests/fixtures/auth.json"))
+                .unwrap(),
+        )
+        .unwrap()
+        .to_record()
+        .unwrap();
+        let CredentialKind::OAuth { expires_at, .. } = &mut record.kind else {
+            unreachable!()
         };
-        let first = make();
-        let second = make();
-        let file_credentials = first.load().await.unwrap();
+        *expires_at = jiff::Timestamp::now()
+            .checked_add(Duration::from_secs(120))
+            .unwrap();
+        record
+    }
+
+    #[tokio::test]
+    async fn racing_resolvers_refresh_once_and_provider_reloads_imported_store() {
+        use futures::TryStreamExt;
+        use swarmy_llm::{GenerationSettings, Provider, Request};
+        let Some(store) = test_store() else {
+            return;
+        };
         let credentials = store.credentials(Keyring::from_bytes([3; 32]));
         credentials
-            .put_credential(
-                CredentialScope::Cluster,
-                "chatgpt",
-                &file_credentials.to_record().unwrap(),
-            )
+            .put_credential(CredentialScope::Cluster, "chatgpt", &imported())
             .await
             .unwrap();
         let server = MockServer::start().await;
         Mock::given(method("POST")).and(path("/oauth/token")).respond_with(
-            ResponseTemplate::new(200).set_delay(Duration::from_millis(150)).set_body_json(serde_json::json!({"access_token": "new-access", "refresh_token": "new-refresh"}))
+            ResponseTemplate::new(200).set_delay(Duration::from_millis(150)).set_body_json(serde_json::json!({"access_token":"new-access", "refresh_token":"new-refresh"}))
         ).expect(1).mount(&server).await;
-        let client = OAuthClient::with_issuer(&server.uri()).unwrap();
-        let (a, b) = tokio::join!(
-            first.refresh(&client, &file_credentials),
-            second.refresh(&client, &file_credentials)
-        );
-        assert_eq!(a.unwrap().access_token(), "new-access");
-        assert_eq!(b.unwrap().access_token(), "new-access");
-        assert_eq!(second.load().await.unwrap().access_token(), "new-access");
-        assert_eq!(std::fs::read_to_string(&auth_path).unwrap(), fixture);
-        let wrong = ClusterCredentials {
-            keyring: Some(Keyring::from_bytes([4; 32])),
-            ..make()
+        let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
+        let make = || {
+            Resolver::with_chatgpt(
+                Arc::new(ClusterCredentials::with_credentials(
+                    &store,
+                    credentials.clone(),
+                )),
+                oauth.clone(),
+            )
         };
-        assert!(
-            wrong.load().await.is_err(),
-            "wrong key must not fall back to file"
-        );
-        let missing = ClusterCredentials {
-            keyring: None,
-            ..make()
+        let first = make();
+        let second = make();
+        let (a, b) = tokio::join!(first.resolve("chatgpt"), second.resolve("chatgpt"));
+        for auth in [a.unwrap(), b.unwrap()] {
+            let ClientAuth::ChatGpt(store) = auth.auth else {
+                panic!("expected ChatGPT");
+            };
+            assert_eq!(store.load().await.unwrap().access_token(), "new-access");
+        }
+        let ClientAuth::ChatGpt(provider_store) = first.resolve("chatgpt").await.unwrap().auth
+        else {
+            unreachable!()
         };
-        assert!(missing.load().await.is_err());
+        let provider = swarmy_llm::chatgpt::ChatGptProvider::with_endpoints(
+            provider_store,
+            &server.uri(),
+            oauth,
+        )
+        .unwrap();
+        for access in ["new-access", "externally-replaced"] {
+            Mock::given(path("/responses"))
+                .and(wiremock::matchers::header(
+                    "authorization",
+                    format!("Bearer {access}"),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(
+                    include_str!("../../swarmy-llm/tests/fixtures/text.sse"),
+                    "text/event-stream",
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let request = || Request {
+            system_prompt: String::new(),
+            messages: vec![],
+            tools: vec![],
+            settings: GenerationSettings::default(),
+        };
+        provider
+            .request(request())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut updated = credentials
+            .get_credential(CredentialScope::Cluster, "chatgpt")
+            .await
+            .unwrap()
+            .unwrap();
+        let CredentialKind::OAuth { access, .. } = &mut updated.kind else {
+            unreachable!()
+        };
+        *access = "externally-replaced".into();
+        credentials
+            .put_credential(CredentialScope::Cluster, "chatgpt", &updated)
+            .await
+            .unwrap();
+        provider
+            .request(request())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
         credentials
             .delete_credential(CredentialScope::Cluster, "chatgpt")
             .await
             .unwrap();
-        assert!(first.load().await.unwrap() == file_credentials);
+        assert!(
+            provider
+                .request(request())
+                .try_collect::<Vec<_>>()
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_marks_record_and_does_not_retry() {
+        let Some(store) = test_store() else {
+            return;
+        };
+        let credentials = store.credentials(Keyring::from_bytes([5; 32]));
+        credentials
+            .put_credential(CredentialScope::Cluster, "chatgpt", &imported())
+            .await
+            .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let resolver = Resolver::with_chatgpt(
+            Arc::new(ClusterCredentials::with_credentials(
+                &store,
+                credentials.clone(),
+            )),
+            OAuthClient::with_issuer(&server.uri()).unwrap(),
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                resolver.resolve("chatgpt").await,
+                Err(Error::NeedsLogin(_))
+            ));
+        }
+        let record = credentials
+            .get_credential(CredentialScope::Cluster, "chatgpt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.status(jiff::Timestamp::now()),
+            CredentialStatus::NeedsLogin
+        );
+        assert!(
+            matches!(record.kind, CredentialKind::OAuth { access, .. } if access == "access-fixture")
+        );
+    }
+    #[tokio::test]
+    async fn openrouter_login_key_is_persisted_and_wrong_key_never_falls_back() {
+        use swarmy_llm::auth::{LoginUi, OpenRouterLogin};
+        struct Ui;
+        #[async_trait]
+        impl LoginUi for Ui {
+            async fn notify_url(&self, _: &str) -> Result<(), Error> {
+                Ok(())
+            }
+            async fn notify_device_code(&self, _: &str, _: &str) -> Result<(), Error> {
+                unreachable!()
+            }
+            async fn prompt_secret(&self, _: &str) -> Result<String, Error> {
+                Ok("approved".into())
+            }
+            async fn prompt_choice(&self, _: &str, _: &[&str]) -> Result<usize, Error> {
+                Ok(1)
+            }
+        }
+        let Some(store) = test_store() else {
+            return;
+        };
+        let credentials = store.credentials(Keyring::from_bytes([6; 32]));
+        let server = MockServer::start().await;
+        Mock::given(path("/api/v1/auth/keys"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"key":"minted-key"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let login = OpenRouterLogin::with_base(&server.uri()).unwrap();
+        let kind = login.login(&Ui).await.unwrap();
+        credentials
+            .put_credential(
+                CredentialScope::Cluster,
+                login.provider(),
+                &CredentialRecord {
+                    kind,
+                    updated_at: jiff::Timestamp::now(),
+                },
+            )
+            .await
+            .unwrap();
+        let resolver = Resolver::new(Arc::new(ClusterCredentials::with_credentials(
+            &store,
+            credentials,
+        )))
+        .unwrap();
+        assert!(
+            matches!(resolver.resolve("openrouter").await.unwrap().auth, ClientAuth::ApiKey(key) if key == "minted-key")
+        );
+        let wrong = Resolver::new(Arc::new(ClusterCredentials::with_credentials(
+            &store,
+            store.credentials(Keyring::from_bytes([7; 32])),
+        )))
+        .unwrap();
+        assert!(wrong.resolve("openrouter").await.is_err());
     }
 }

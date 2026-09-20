@@ -42,33 +42,28 @@ fn request() -> Request {
 }
 
 #[tokio::test]
-async fn import_preserves_all_json_and_does_not_modify_source() {
+async fn import_preserves_all_json_and_file_is_read_only() {
     let directory = tempfile::tempdir().unwrap();
-    let source = directory.path().join("codex-fixture.json");
-    let destination = directory.path().join("swarmy/auth.json");
+    let source = directory.path().join("auth.json");
     let bytes = include_bytes!("fixtures/auth.json");
     tokio::fs::write(&source, bytes).await.unwrap();
-    let store = FileCredentialStore::new(&destination);
-    store.import(&source).await.unwrap();
-    assert_eq!(store.load().await.unwrap().to_json(), &fixture());
+    let store = FileCredentialStore::new(&source);
+    let loaded = store.load().await.unwrap();
+    assert_eq!(loaded.to_json(), &fixture());
     assert_eq!(
-        serde_json::from_slice::<Value>(&tokio::fs::read(&destination).await.unwrap()).unwrap(),
-        fixture()
+        Credentials::from_record(&loaded.to_record().unwrap())
+            .unwrap()
+            .to_json(),
+        &fixture()
+    );
+    assert!(
+        OAuthClient::new()
+            .unwrap()
+            .refresh(&store, &loaded)
+            .await
+            .is_err()
     );
     assert_eq!(tokio::fs::read(source).await.unwrap(), bytes);
-    assert!(store.import(&destination).await.is_err());
-    assert_private(&destination);
-}
-
-fn assert_private(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
 }
 
 #[test]
@@ -86,26 +81,16 @@ fn reject_api_keys_and_inconsistent_account_claims() {
 }
 
 #[tokio::test]
-async fn account_cannot_change_on_disk_or_in_a_live_store() {
+async fn account_cannot_change_on_disk() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("auth.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture()).unwrap()).unwrap();
     let store = FileCredentialStore::new(&path);
-    store.save(credentials()).await.unwrap();
+    store.load().await.unwrap();
     let mut different = fixture();
     different["tokens"]["id_token"] = json!(jwt("other-account"));
     different["tokens"]["account_id"] = json!("other-account");
-    let different = Credentials::from_json(different).unwrap();
-    assert!(
-        FileCredentialStore::new(&path)
-            .save(different.clone())
-            .await
-            .is_err()
-    );
-    assert!(store.save(different.clone()).await.is_err());
-    assert_eq!(store.load().await.unwrap().to_json(), &fixture());
-    tokio::fs::write(path, serde_json::to_vec(different.to_json()).unwrap())
-        .await
-        .unwrap();
+    std::fs::write(path, serde_json::to_vec(&different).unwrap()).unwrap();
     assert!(store.load().await.is_err());
 }
 
@@ -114,56 +99,6 @@ async fn refresh_mock(server: &MockServer) {
         .and(body_json(json!({"grant_type": "refresh_token", "client_id": CLIENT_ID, "refresh_token": "refresh-fixture"})))
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(40)).set_body_json(json!({"access_token": "access-new", "refresh_token": "refresh-new", "id_token": jwt("account-test")})))
         .expect(1).mount(server).await;
-}
-
-#[tokio::test]
-async fn concurrent_refresh_is_one_request_and_atomic_private_replacement() {
-    let server = MockServer::start().await;
-    refresh_mock(&server).await;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("auth.json");
-    let store = FileCredentialStore::new(&path);
-    store.save(credentials()).await.unwrap();
-    // A separate store and client exercise the account-wide lock registry.
-    let other_store = FileCredentialStore::new(&path);
-    let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
-    let other_oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
-    let observed = store.load().await.unwrap();
-    let original_file = std::fs::File::open(&path).unwrap();
-    let reads = async {
-        for _ in 0..30 {
-            let value = FileCredentialStore::new(&path).load().await.unwrap();
-            assert!(["access-fixture", "access-new"].contains(&value.access_token()));
-            assert_private(&path);
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    };
-    let (first, second, ()) = tokio::join!(
-        oauth.refresh(&store, &observed),
-        other_oauth.refresh(&other_store, &observed),
-        reads
-    );
-    let first = first.unwrap();
-    assert_eq!(first.to_json(), second.unwrap().to_json());
-    assert_eq!(first.access_token(), "access-new");
-    let saved = store.load().await.unwrap();
-    assert_eq!(saved.to_json()["tokens"]["refresh_token"], "refresh-new");
-    assert_ne!(saved.to_json()["last_refresh"], fixture()["last_refresh"]);
-    assert_eq!(
-        saved.to_json()["future_root_field"],
-        fixture()["future_root_field"]
-    );
-    assert_eq!(
-        saved.to_json()["tokens"]["future_token_field"],
-        fixture()["tokens"]["future_token_field"]
-    );
-    // An already-open reader still sees the complete old inode after rename.
-    assert_eq!(
-        serde_json::from_reader::<_, Value>(original_file).unwrap(),
-        fixture()
-    );
-    assert_private(&path);
-    server.verify().await;
 }
 
 #[tokio::test]
@@ -179,8 +114,7 @@ async fn failed_refresh_or_account_change_does_not_replace_credentials() {
             .expect(1)
             .mount(&server)
             .await;
-        let directory = tempfile::tempdir().unwrap();
-        let store = FileCredentialStore::new(directory.path().join("auth.json"));
+        let store = MemoryCredentials::default();
         store.save(credentials()).await.unwrap();
         let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
         assert!(oauth.refresh(&store, &credentials()).await.is_err());
@@ -190,6 +124,24 @@ async fn failed_refresh_or_account_change_does_not_replace_credentials() {
 
 #[tokio::test]
 async fn device_code_exchange_persists_codex_layout() {
+    struct Ui;
+    #[async_trait::async_trait]
+    impl swarmy_llm::auth::LoginUi for Ui {
+        async fn notify_device_code(&self, url: &str, code: &str) -> Result<(), swarmy_llm::Error> {
+            assert_eq!(code, "ABCD-1234");
+            assert!(url.ends_with("/codex/device"));
+            Ok(())
+        }
+        async fn notify_url(&self, _: &str) -> Result<(), swarmy_llm::Error> {
+            unreachable!()
+        }
+        async fn prompt_secret(&self, _: &str) -> Result<String, swarmy_llm::Error> {
+            unreachable!()
+        }
+        async fn prompt_choice(&self, _: &str, _: &[&str]) -> Result<usize, swarmy_llm::Error> {
+            unreachable!()
+        }
+    }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/accounts/deviceauth/usercode"))
@@ -209,16 +161,16 @@ async fn device_code_exchange_persists_codex_layout() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id_token":jwt("account-test"), "access_token":"login-access", "refresh_token":"login-refresh"})))
         .expect(1).mount(&server).await;
     let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
-    let code = oauth.device_code().await.unwrap();
-    assert_eq!(code.user_code, "ABCD-1234");
-    assert_eq!(
-        code.verification_url,
-        format!("{}/codex/device", server.uri())
-    );
-    let directory = tempfile::tempdir().unwrap();
-    let store = FileCredentialStore::new(directory.path().join("auth.json"));
-    oauth.complete_login(code, &store).await.unwrap();
-    let saved = store.load().await.unwrap();
+    let kind = swarmy_llm::auth::Login::login(&oauth, &Ui).await.unwrap();
+    let swarmy_core::CredentialKind::OAuth { extra, .. } = &kind else {
+        panic!("expected OAuth");
+    };
+    assert_eq!(extra["account_id"], "account-test");
+    let saved = Credentials::from_record(&swarmy_core::CredentialRecord {
+        kind,
+        updated_at: jiff::Timestamp::now(),
+    })
+    .unwrap();
     assert_eq!(saved.account_id(), "account-test");
     assert_eq!(saved.access_token(), "login-access");
     assert_eq!(saved.to_json()["auth_mode"], "chatgpt");
@@ -240,8 +192,7 @@ async fn device_code_exchange_persists_codex_layout() {
 #[tokio::test]
 async fn provider_reloads_store_and_retries_unauthorized_once() {
     let server = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
+    let store = Arc::new(MemoryCredentials::default());
     let mut initial = fixture();
     initial["last_refresh"] = json!(jiff::Timestamp::now().to_string());
     store
@@ -295,53 +246,10 @@ async fn provider_reloads_store_and_retries_unauthorized_once() {
     server.verify().await;
 }
 
-// Executed as a separate process by the test below to bypass the async lock registry.
-#[tokio::test]
-async fn refresh_process_helper() {
-    let Some(path) = std::env::var_os("SWARMY_TEST_REFRESH_FILE") else {
-        return;
-    };
-    let issuer = std::env::var("SWARMY_TEST_REFRESH_ISSUER").unwrap();
-    let store = FileCredentialStore::new(path);
-    let oauth = OAuthClient::with_issuer(&issuer).unwrap();
-    let refreshed = oauth.refresh(&store, &credentials()).await.unwrap();
-    assert_eq!(refreshed.access_token(), "access-new");
-}
-
-#[tokio::test]
-async fn separate_processes_share_the_refresh_file_lock() {
-    let server = MockServer::start().await;
-    refresh_mock(&server).await;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("auth.json");
-    FileCredentialStore::new(&path)
-        .save(credentials())
-        .await
-        .unwrap();
-    let process = || {
-        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", "refresh_process_helper"])
-            .env("SWARMY_TEST_REFRESH_FILE", &path)
-            .env("SWARMY_TEST_REFRESH_ISSUER", server.uri());
-        command
-    };
-    let (first, second) = tokio::join!(process().output(), process().output());
-    for output in [first.unwrap(), second.unwrap()] {
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    server.verify().await;
-}
-
 #[tokio::test]
 async fn provider_accepts_streams_without_a_content_type_header() {
     let server = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
+    let store = Arc::new(MemoryCredentials::default());
     let mut initial = fixture();
     initial["last_refresh"] = json!(jiff::Timestamp::now().to_string());
     store
@@ -373,8 +281,7 @@ async fn provider_accepts_streams_without_a_content_type_header() {
 #[tokio::test]
 async fn provider_rejects_an_explicit_non_stream_content_type() {
     let server = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
+    let store = Arc::new(MemoryCredentials::default());
     let mut initial = fixture();
     initial["last_refresh"] = json!(jiff::Timestamp::now().to_string());
     store
@@ -417,4 +324,60 @@ fn chatgpt_record_round_trip_preserves_metadata() {
     };
     assert_eq!(access, credentials.access_token());
     assert!(!refresh.is_empty());
+}
+
+// Protocol fixtures use memory; production refresh ownership is tested against FDB.
+#[derive(Default)]
+struct MemoryCredentials(tokio::sync::Mutex<Option<Credentials>>);
+impl MemoryCredentials {
+    async fn save(&self, credentials: Credentials) -> Result<(), swarmy_llm::Error> {
+        *self.0.lock().await = Some(credentials);
+        Ok(())
+    }
+}
+impl CredentialStore for MemoryCredentials {
+    fn load(&self) -> futures::future::BoxFuture<'_, Result<Credentials, swarmy_llm::Error>> {
+        Box::pin(async { Ok(self.0.lock().await.clone().unwrap()) })
+    }
+    fn refresh<'a>(
+        &'a self,
+        client: &'a OAuthClient,
+        observed: &'a Credentials,
+    ) -> futures::future::BoxFuture<'a, Result<Credentials, swarmy_llm::Error>> {
+        Box::pin(async move {
+            let mut stored = self.0.lock().await;
+            let current = stored.clone().unwrap();
+            if current != *observed {
+                return Ok(current);
+            }
+            let updated = client.refresh_credentials(current).await?;
+            *stored = Some(updated.clone());
+            Ok(updated)
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_store_records_need_only_account_metadata() {
+    let now = jiff::Timestamp::now();
+    let record = swarmy_core::CredentialRecord {
+        kind: swarmy_core::CredentialKind::OAuth {
+            access: "access-fixture".into(),
+            refresh: "refresh-fixture".into(),
+            expires_at: now,
+            extra: [("account_id".into(), "account-test".into())].into(),
+        },
+        updated_at: now,
+    };
+    let credentials = Credentials::from_record(&record).unwrap();
+    assert_eq!(credentials.account_id(), "account-test");
+    let server = MockServer::start().await;
+    refresh_mock(&server).await;
+    let refreshed = OAuthClient::with_issuer(&server.uri())
+        .unwrap()
+        .refresh_credentials(credentials)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.access_token(), "access-new");
+    assert_eq!(refreshed.account_id(), "account-test");
 }

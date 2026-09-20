@@ -52,11 +52,21 @@ impl GoogleBearerSource {
     /// # Errors
     /// Returns an error for absent or malformed credentials and unreadable files.
     pub fn resolve(extra: &BTreeMap<String, String>) -> Result<Self, Error> {
-        let environment = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").map(PathBuf::from);
-        let default = std::env::var_os("HOME").map(|home| {
+        Self::resolve_with(extra, |name| std::env::var(name).ok())
+    }
+
+    /// [`Self::resolve`] over a caller-supplied environment lookup.
+    /// # Errors
+    /// Returns an error for absent or malformed credentials and unreadable files.
+    pub fn resolve_with(
+        extra: &BTreeMap<String, String>,
+        environment: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, Error> {
+        let explicit = environment("GOOGLE_APPLICATION_CREDENTIALS").map(PathBuf::from);
+        let default = environment("HOME").map(|home| {
             PathBuf::from(home).join(".config/gcloud/application_default_credentials.json")
         });
-        Self::resolve_paths(extra, environment, default)
+        Self::resolve_paths(extra, explicit, default)
     }
 
     fn resolve_paths(
@@ -181,22 +191,32 @@ impl BearerSource for GoogleBearerSource {
 /// # Errors
 /// Returns an error if the project or Google credentials cannot be resolved.
 pub fn vertex_auth(extra: &BTreeMap<String, String>) -> Result<ClientAuth, Error> {
+    vertex_auth_with(extra, |name| std::env::var(name).ok())
+}
+
+/// [`vertex_auth`] over a caller-supplied environment lookup.
+/// # Errors
+/// Returns an error if the project or Google credentials cannot be resolved.
+pub fn vertex_auth_with(
+    extra: &BTreeMap<String, String>,
+    environment: impl Fn(&str) -> Option<String>,
+) -> Result<ClientAuth, Error> {
     let project = extra
         .get("project")
         .cloned()
-        .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT").ok())
+        .or_else(|| environment("GOOGLE_CLOUD_PROJECT"))
         .filter(|s| !s.is_empty())
         .ok_or(Error::Credentials("Google Cloud project is required"))?;
     let location = extra
         .get("location")
         .cloned()
-        .or_else(|| std::env::var("GOOGLE_CLOUD_LOCATION").ok())
+        .or_else(|| environment("GOOGLE_CLOUD_LOCATION"))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "us-central1".into());
     Ok(ClientAuth::Vertex {
         project,
         location,
-        source: Arc::new(GoogleBearerSource::resolve(extra)?),
+        source: Arc::new(GoogleBearerSource::resolve_with(extra, environment)?),
     })
 }
 
