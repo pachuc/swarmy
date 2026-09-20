@@ -206,6 +206,20 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
     );
     if detail {
         text.push_str(&settings_text(agent));
+        let totals = store.agent_usage(agent.agent_id).await?;
+        value["usage"] = serde_json::to_value(&totals)?;
+        value["cost_dollars"] = totals.dollars().into();
+        write!(
+            text,
+            "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+            totals.usage.input_tokens,
+            totals.usage.cached_input_tokens,
+            totals.usage.cache_write_input_tokens,
+            totals.usage.output_tokens,
+            totals.usage.reasoning_output_tokens,
+            totals.usage.total_tokens,
+            totals.dollars()
+        )?;
         let volume = store
             .get_volume(VolumeId::from_ulid(agent.agent_id.as_ulid()))
             .await?;

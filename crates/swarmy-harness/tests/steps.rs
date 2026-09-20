@@ -71,6 +71,13 @@ fn user_event() -> Event {
 
 fn inference_event(calls: &[ToolCallRecord]) -> Event {
     Event::InferenceCompleted {
+        provider: String::new(),
+        model: String::new(),
+        effort_used: None,
+        usage: swarmy_core::TokenUsage::default(),
+        cost_micros: 0,
+        effort_requested: None,
+        effort_clamped: false,
         seq: 3,
         request_id: RequestId::for_step(session().session_id, 2),
         message: Message {
@@ -430,6 +437,13 @@ async fn fake_provider_and_worker_tool_complete_a_turn() {
             }
         }
         events.push(Event::InferenceCompleted {
+            provider: String::new(),
+            model: String::new(),
+            effort_used: None,
+            usage: swarmy_core::TokenUsage::default(),
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
             seq: seq + 1,
             request_id,
             message: Message {

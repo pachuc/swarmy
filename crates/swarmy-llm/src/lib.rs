@@ -41,6 +41,8 @@ pub enum ClientAuth {
     },
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
+    Ambient,
+    Scripted(Arc<dyn Provider>),
 }
 
 /// Construct a client for the catalog's selected wire protocol.
@@ -71,7 +73,10 @@ pub fn client_for(
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
-        Api::Fake => Err(Error::Unsupported(Api::Fake)),
+        Api::Fake => match auth {
+            ClientAuth::Scripted(client) => Ok(client),
+            _ => Err(Error::Unsupported(Api::Fake)),
+        },
     }
 }
 
@@ -114,19 +119,7 @@ pub struct GenerationSettings {
 
 pub use swarmy_core::ReasoningEffort;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenUsage {
-    /// Total input, including cache reads and writes.
-    pub input_tokens: u64,
-    /// Input read from the prompt cache.
-    pub cached_input_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_output_tokens: u64,
-    pub total_tokens: u64,
-    /// Input written to the prompt cache, when reported separately.
-    #[serde(default)]
-    pub cache_write_input_tokens: u64,
-}
+pub use swarmy_core::TokenUsage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -184,6 +177,8 @@ pub trait Provider: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown catalog model: {provider}/{model}")]
+    UnknownModel { provider: String, model: String },
     #[error("unsupported provider API: {0:?}")]
     Unsupported(Api),
     #[error("credential I/O failed: {0}")]

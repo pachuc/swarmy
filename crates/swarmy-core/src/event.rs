@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+mod wire;
 
 use crate::{
     Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord, ToolResult,
@@ -10,8 +10,7 @@ use crate::{
 /// This is an externally tagged Serde enum. Version 1 stores its tag as a postcard
 /// discriminant, so new variants must be appended and existing variants must not
 /// be reordered. New readers retain the ability to decode existing events.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     MessageAppended {
         seq: u64,
@@ -27,6 +26,13 @@ pub enum Event {
         seq: u64,
         request_id: RequestId,
         message: Message,
+        provider: String,
+        model: String,
+        effort_used: Option<crate::ReasoningEffort>,
+        usage: crate::TokenUsage,
+        cost_micros: u64,
+        effort_requested: Option<crate::ReasoningEffort>,
+        effort_clamped: bool,
     },
     ToolCallRequested {
         seq: u64,
@@ -109,6 +115,13 @@ mod tests {
                 step: 1,
             },
             Event::InferenceCompleted {
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: crate::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
                 seq: 3,
                 request_id,
                 message: message(),
@@ -164,7 +177,10 @@ mod tests {
             assert_eq!(json[tag]["seq"], event.seq());
             // Freeze existing discriminants so adding a variant cannot silently
             // change the interpretation of old stored events.
-            assert_eq!(usize::from(encode(&event).unwrap()[1]), index);
+            assert_eq!(
+                usize::from(encode(&event).unwrap()[1]),
+                if index == 2 { 8 } else { index }
+            );
         }
     }
 

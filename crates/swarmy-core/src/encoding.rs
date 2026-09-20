@@ -144,3 +144,56 @@ pub(crate) mod tests {
         assert_eq!(decode::<u64>(&[1, 42]).unwrap(), 42);
     }
 }
+
+/// A newly appended field on a standalone legacy postcard record. The presence
+/// byte distinguishes a missing field from a truncated value. Do not use this
+/// for records embedded before other fields; those need a versioned wire schema.
+pub mod trailing {
+    use serde::{
+        Deserialize, Deserializer, Serialize, Serializer,
+        de::{SeqAccess, Visitor},
+    };
+    use std::{fmt, marker::PhantomData};
+
+    /// # Errors
+    /// Returns serializer errors.
+    pub fn serialize<T: Serialize, S: Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            value.serialize(serializer)
+        } else {
+            (1_u8, value).serialize(serializer)
+        }
+    }
+
+    /// # Errors
+    /// Returns invalid presence markers and truncated or malformed field values.
+    pub fn deserialize<'de, T: Deserialize<'de> + Default, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T, D::Error> {
+        struct Trailing<T>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de> + Default> Visitor<'de> for Trailing<T> {
+            type Value = T;
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an optional trailing postcard field")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<T, A::Error> {
+                // Postcard accepts every byte as u8; an error here means no byte
+                // remains. Errors after the presence byte must still propagate.
+                match seq.next_element::<u8>() {
+                    Ok(Some(1)) => seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::custom("missing trailing value")),
+                    Ok(Some(_)) => Err(serde::de::Error::custom("invalid trailing field marker")),
+                    Ok(None) | Err(_) => Ok(T::default()),
+                }
+            }
+        }
+        if deserializer.is_human_readable() {
+            return T::deserialize(deserializer);
+        }
+        deserializer.deserialize_tuple(2, Trailing(PhantomData))
+    }
+}

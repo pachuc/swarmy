@@ -28,6 +28,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 .await?
                 .context("session not found")?;
             show_selection(&store, &session, json).await?;
+            show_usage(&store.session_usage(id).await?, json);
             let mut after = 0;
             while after < session.head_seq {
                 let events = store.read_events(id, after, MAX_SCAN_LIMIT).await?;
@@ -99,6 +100,26 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn show_usage(totals: &swarmy_core::UsageTotals, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"session_usage": totals, "cost_dollars": totals.dollars()})
+        );
+    } else {
+        println!(
+            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+            totals.usage.input_tokens,
+            totals.usage.cached_input_tokens,
+            totals.usage.cache_write_input_tokens,
+            totals.usage.output_tokens,
+            totals.usage.reasoning_output_tokens,
+            totals.usage.total_tokens,
+            totals.dollars()
+        );
+    }
 }
 
 pub async fn run(

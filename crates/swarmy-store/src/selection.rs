@@ -5,9 +5,14 @@ use serde::{Deserialize, Serialize};
 use swarmy_core::SessionId;
 
 /// Gateway tasks refresh this record every 30 seconds with a future expiry.
+/// A skipped provider is recorded with an already expired advertisement so the
+/// reason stays visible without granting routing authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GatewayProvider {
     pub expires_at: Timestamp,
+    /// Discovery outcome of the last writing gateway; empty for legacy records.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub reason: String,
 }
 
 impl Store {
@@ -30,6 +35,16 @@ impl Store {
                 &self.root.pack(&("gateway_provider", provider)),
                 record,
             )
+        })
+        .await
+    }
+
+    /// Read the last advertisement for a provider, expired or not.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn gateway_provider(&self, provider: &str) -> Result<Option<GatewayProvider>> {
+        self.transaction(|trx| async move {
+            read(&trx, &self.root.pack(&("gateway_provider", provider))).await
         })
         .await
     }

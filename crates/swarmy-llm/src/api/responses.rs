@@ -232,7 +232,10 @@ impl ResponsesProvider {
                     .bearer_auth(credentials.access_token())
                     .header("chatgpt-account-id", credentials.account_id())
             }
-            ClientAuth::None | ClientAuth::Vertex { .. } => {
+            ClientAuth::None
+            | ClientAuth::Vertex { .. }
+            | ClientAuth::Ambient
+            | ClientAuth::Scripted(_) => {
                 return Err(Error::Credentials(
                     "Responses requires an API key, bearer token, headers, or a ChatGPT store",
                 ));

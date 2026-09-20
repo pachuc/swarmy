@@ -733,6 +733,7 @@ async fn gateway_advertisements_expire() {
             "openai",
             &swarmy_store::GatewayProvider {
                 expires_at: Timestamp::UNIX_EPOCH,
+                reason: "expired".into(),
             },
         )
         .await
@@ -745,11 +746,21 @@ async fn gateway_advertisements_expire() {
                 expires_at: Timestamp::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .unwrap(),
+                reason: "credentials resolved".into(),
             },
         )
         .await
         .unwrap();
     assert!(store.gateway_serves("openai").await.unwrap());
+    assert_eq!(
+        store
+            .gateway_provider("openai")
+            .await
+            .unwrap()
+            .unwrap()
+            .reason,
+        "credentials resolved"
+    );
     assert!(!store.gateway_serves("anthropic").await.unwrap());
     test.cleanup().await;
 }
