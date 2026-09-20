@@ -1,0 +1,52 @@
+{
+  "model": "claude-opus-4-8",
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "Be helpful.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "clock",
+      "description": "Read time",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        }
+      },
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+  },
+  "max_tokens": 1000,
+  "output_config": {
+    "effort": "low"
+  }
+}

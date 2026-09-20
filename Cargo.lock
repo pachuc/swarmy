@@ -3658,6 +3658,7 @@ dependencies = [
  "blake3",
  "fs2",
  "futures",
+ "httpdate",
  "jiff",
  "reqwest",
  "serde",

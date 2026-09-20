@@ -1,0 +1,49 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "Be helpful.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "clock",
+      "description": "Read time",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        }
+      },
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 2048
+  },
+  "max_tokens": 3048
+}
