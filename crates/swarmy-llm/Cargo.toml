@@ -15,6 +15,7 @@ blake3.workspace = true
 fs2.workspace = true
 futures.workspace = true
 httpdate.workspace = true
+jsonwebtoken.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -23,7 +24,8 @@ swarmy-core.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+ulid.workspace = true
 
 [dev-dependencies]
-ulid.workspace = true
+rsa.workspace = true
 wiremock.workspace = true

@@ -58,8 +58,9 @@ pub fn client_for(
             _ => Err(Error::Credentials("ChatGPT requires a credential store")),
         },
         Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
-        Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
-        Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
+        Api::GoogleGenerativeAi | Api::GoogleVertex => {
+            api::gemini::client_for(provider, model, auth)
+        }
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
         Api::Fake => Err(Error::Unsupported(Api::Fake)),
     }
@@ -223,7 +224,10 @@ mod job_tests {
             .filter(|provider| provider.api != Api::OpenAiCodexResponses)
         {
             let model = provider.models.values().next().unwrap_or(model);
-            if model.api.unwrap_or(provider.api) == Api::AnthropicMessages {
+            if matches!(
+                model.api.unwrap_or(provider.api),
+                Api::AnthropicMessages | Api::GoogleGenerativeAi | Api::GoogleVertex
+            ) {
                 assert!(matches!(
                     client_for(provider, model, ClientAuth::None),
                     Err(Error::Credentials(_))
