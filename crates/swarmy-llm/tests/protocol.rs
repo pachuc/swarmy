@@ -138,6 +138,7 @@ fn completed(parts: Vec<Part>, stop_reason: StopReason) -> Delta {
         parts,
         stop_reason,
         usage: TokenUsage {
+            cache_write_input_tokens: 0,
             input_tokens: 10,
             cached_input_tokens: 4,
             output_tokens: 3,

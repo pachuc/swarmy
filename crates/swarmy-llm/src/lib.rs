@@ -24,6 +24,8 @@ pub enum ClientAuth {
     Bearer(String),
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
+    Ambient,
+    Scripted(Arc<dyn Provider>),
 }
 
 /// Construct a client for the catalog's selected wire protocol.
@@ -49,7 +51,10 @@ pub fn client_for(
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
-        Api::Fake => Err(Error::Unsupported(Api::Fake)),
+        Api::Fake => match auth {
+            ClientAuth::Scripted(client) => Ok(client),
+            _ => Err(Error::Unsupported(Api::Fake)),
+        },
     }
 }
 
@@ -61,6 +66,28 @@ pub struct InferenceJob {
     pub step: u64,
     pub request_id: RequestId,
     pub request: Request,
+    #[serde(
+        default = "default_provider",
+        serialize_with = "swarmy_core::trailing::serialize",
+        deserialize_with = "deserialize_provider"
+    )]
+    pub provider: String,
+}
+
+fn deserialize_provider<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let provider: String = swarmy_core::trailing::deserialize(deserializer)?;
+    Ok(if provider.is_empty() {
+        default_provider()
+    } else {
+        provider
+    })
+}
+
+fn default_provider() -> String {
+    // An empty legacy selection is resolved from the gateway's loaded settings.
+    std::env::var("SWARMY_PROVIDER").unwrap_or_default()
 }
 
 /// Provider-neutral input built from durable core messages.
@@ -90,14 +117,7 @@ pub struct GenerationSettings {
 
 pub use swarmy_core::ReasoningEffort;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub input_tokens: u64,
-    pub cached_input_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_output_tokens: u64,
-    pub total_tokens: u64,
-}
+pub use swarmy_core::TokenUsage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,6 +170,8 @@ pub trait Provider: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown catalog model: {provider}/{model}")]
+    UnknownModel { provider: String, model: String },
     #[error("unsupported provider API: {0:?}")]
     Unsupported(Api),
     #[error("credential I/O failed: {0}")]
@@ -218,6 +240,7 @@ mod job_tests {
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
+            provider: "fake".into(),
             session_id,
             step: 7,
             request_id: RequestId::for_step(session_id, 7),
@@ -234,5 +257,43 @@ mod job_tests {
         };
         let encoded = swarmy_core::encode(&job).unwrap();
         assert_eq!(swarmy_core::decode::<InferenceJob>(&encoded).unwrap(), job);
+    }
+}
+
+#[cfg(test)]
+mod legacy_job_tests {
+    use super::*;
+
+    #[test]
+    fn old_binary_and_json_jobs_inherit_the_global_provider() {
+        #[derive(Serialize)]
+        struct LegacyJob {
+            session_id: SessionId,
+            step: u64,
+            request_id: RequestId,
+            request: Request,
+        }
+        let session_id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 1));
+        let legacy = LegacyJob {
+            session_id,
+            step: 1,
+            request_id: RequestId::for_step(session_id, 1),
+            request: Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+            },
+        };
+        let job: InferenceJob =
+            swarmy_core::decode(&swarmy_core::encode(&legacy).unwrap()).unwrap();
+        assert_eq!(job.provider, default_provider());
+        assert_eq!(
+            serde_json::from_value::<InferenceJob>(serde_json::to_value(legacy).unwrap()).unwrap(),
+            job
+        );
+        let mut bytes = swarmy_core::encode(&job).unwrap();
+        bytes.pop();
+        assert!(swarmy_core::decode::<InferenceJob>(&bytes).is_err());
     }
 }

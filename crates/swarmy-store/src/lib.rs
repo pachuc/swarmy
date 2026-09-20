@@ -723,3 +723,7 @@ mod compatibility_tests {
         assert_eq!(encode(&header).unwrap(), original);
     }
 }
+
+mod gateway;
+mod usage;
+pub use gateway::GatewayProviderRecord;

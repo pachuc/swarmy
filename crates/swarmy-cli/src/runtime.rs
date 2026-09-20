@@ -57,6 +57,8 @@ enum Command {
     /// Bounded database probe used by doctor without linking its front end to `libfdb_c`.
     #[command(hide = true)]
     DoctorFdb,
+    #[command(hide = true)]
+    DoctorProviders,
     Remote {
         #[command(subcommand)]
         command: remote_command::Command,
@@ -120,6 +122,19 @@ fn main() -> anyhow::Result<()> {
         match cli.command {
             Command::Auth { command, auth_file } => auth::run(command, auth_file, cli.json).await,
             Command::Bench { command } => bench::run(command, cli.json).await,
+            Command::DoctorProviders => {
+                let settings = swarmy_config::Settings::load()?.settings;
+                let providers = swarmy_gateway::providers::Providers::discover(
+                    conversation::store().await?,
+                    &settings,
+                )
+                .await;
+                println!(
+                    "{}",
+                    serde_json::json!({"served": providers.served, "skipped": providers.skipped})
+                );
+                Ok(())
+            }
             Command::DoctorFdb => {
                 conversation::store().await?.list_sessions(None, 1).await?;
                 Ok(())

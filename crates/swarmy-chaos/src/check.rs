@@ -177,6 +177,13 @@ mod tests {
             );
         }
         let completed = Event::InferenceCompleted {
+            provider: String::new(),
+            model: String::new(),
+            effort_used: None,
+            usage: swarmy_core::TokenUsage::default(),
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
             seq: 2,
             request_id: RequestId::for_step(id, 1),
             message: Message {
@@ -214,6 +221,13 @@ mod tests {
                 request_id: RequestId::for_step(id, 1),
             },
             Event::InferenceCompleted {
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: swarmy_core::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
                 seq: 2,
                 request_id: RequestId::for_step(id, 1),
                 message: Message {

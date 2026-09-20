@@ -427,6 +427,13 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
     swarmy_store::InferenceCompletion {
         expected_head: 1,
         event: Event::InferenceCompleted {
+            provider: String::new(),
+            model: String::new(),
+            effort_used: None,
+            usage: swarmy_core::TokenUsage::default(),
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
             seq: 0,
             request_id: claim.request_id,
             message,

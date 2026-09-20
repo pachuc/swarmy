@@ -293,6 +293,7 @@ fn item_parts(item: &Value) -> Result<Vec<Part>, Error> {
 
 fn usage(value: &Value) -> TokenUsage {
     TokenUsage {
+        cache_write_input_tokens: 0,
         input_tokens: value["input_tokens"].as_u64().unwrap_or(0),
         cached_input_tokens: value["input_tokens_details"]["cached_tokens"]
             .as_u64()

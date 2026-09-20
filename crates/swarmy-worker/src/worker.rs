@@ -420,6 +420,7 @@ impl Worker {
             .and_then(|head| head.checked_add(1))
             .context("sequence overflow")?;
         let job = InferenceJob {
+            provider: self.config.provider.clone(),
             session_id: id,
             step,
             request_id: RequestId::for_step(id, step),
@@ -943,7 +944,18 @@ impl Worker {
             .usage
             .input_tokens
             .saturating_add(response.usage.output_tokens);
-        if tokens < self.config.summarize_at_tokens {
+        // SessionRecord::inference and AgentRecord::provider land with selection.
+        // The durable job already preserves the resolved agent model and global provider.
+        let provider = if job.provider.is_empty() {
+            &self.config.provider
+        } else {
+            &job.provider
+        };
+        if self
+            .config
+            .summarization_threshold(provider, &job.request.settings.model)
+            .is_none_or(|threshold| tokens < threshold)
+        {
             return Ok(false);
         }
         let request = swarmy_llm::Request {
