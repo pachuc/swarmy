@@ -361,9 +361,15 @@ async fn idle_event_enables_input_without_polling_and_history_still_paginates() 
             .output(&["session", "show", &session.session_id.to_string(), "--json"])
             .await;
         assert!(shown.status.success());
-        let events: Vec<Event> = String::from_utf8(shown.stdout)
-            .unwrap()
-            .lines()
+        let shown = String::from_utf8(shown.stdout).unwrap();
+        let mut lines = shown.lines();
+        let selection: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(selection["event"], "session_selection");
+        assert!(selection["resolved"]["provider"].is_string());
+        let usage: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(usage["cost_dollars"], "0.0000");
+        assert!(usage["session_usage"]["usage"]["input_tokens"].is_u64());
+        let events: Vec<Event> = lines
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(events.len(), 133);

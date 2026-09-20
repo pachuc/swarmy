@@ -16,7 +16,9 @@ pub struct Config {
     pub placement_lease: Duration,
     pub recovery_interval: Duration,
     pub harness: Harness,
-    pub summarize_at_tokens: u64,
+    pub summarize_at_tokens: Option<u64>,
+    pub model_context_window_tokens: Option<u64>,
+    pub catalog: swarmy_llm::catalog::Catalog,
     pub memory_dir: String,
     pub memory_max_bytes: usize,
     pub kill_point: Option<String>,
@@ -25,9 +27,10 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
+        let catalog = settings.catalog();
         let provider = settings.provider;
         ensure!(
-            matches!(provider.as_str(), "fake" | "chatgpt"),
+            catalog.provider(&provider).is_some(),
             "unsupported SWARMY_PROVIDER"
         );
         let directory: Vec<_> = settings
@@ -82,14 +85,27 @@ impl Config {
                 },
                 tools,
             },
-            summarize_at_tokens: settings.summarize_at_tokens.map_or(
-                settings.model_context_window_tokens.get()
-                    - settings.model_context_window_tokens.get() / 4,
-                std::num::NonZeroU64::get,
-            ),
+            summarize_at_tokens: settings.summarize_at_tokens.map(std::num::NonZeroU64::get),
+            model_context_window_tokens: settings
+                .model_context_window_tokens
+                .map(std::num::NonZeroU64::get),
+            catalog,
             memory_dir: settings.memory_dir,
             memory_max_bytes: settings.memory_max_bytes.get(),
             kill_point,
+        })
+    }
+}
+
+impl Config {
+    pub fn summarization_threshold(&self, provider: &str, model: &str) -> Option<u64> {
+        self.summarize_at_tokens.or_else(|| {
+            let context = self.model_context_window_tokens.or_else(|| {
+                self.catalog
+                    .model(provider, model)
+                    .map(|model| model.limit.context)
+            })?;
+            Some(context - context / 4)
         })
     }
 }

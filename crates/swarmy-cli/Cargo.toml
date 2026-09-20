@@ -21,6 +21,7 @@ path = "src/runtime.rs"
 # Doctor alone loads the FoundationDB library through a small, documented FFI boundary.
 [dependencies]
 async-trait.workspace = true
+swarmy-gateway.workspace = true
 swarmy-version.workspace = true
 async-nats.workspace = true
 aws-config.workspace = true

@@ -53,8 +53,16 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             inference,
             github_token,
         } => {
-            let overrides = inference_settings(inference)?;
+            let (overrides, _) = inference_settings(inference, false)?;
             let settings = swarmy_config::Settings::load()?.settings;
+            crate::selection::validate(
+                &swarmy_core::InferenceSelection {
+                    provider: overrides.provider.clone(),
+                    model: overrides.model.clone(),
+                    effort: overrides.reasoning_effort,
+                },
+                &crate::selection::defaults(&settings)?,
+            )?;
             let agent = store
                 .create_agent_with(
                     &name,
@@ -84,32 +92,15 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             github_token,
             clear_github_token,
         } => {
-            let settings = inference_settings(inference)?;
-            let token_change = github_token.is_some() || clear_github_token;
-            ensure!(
-                settings != AgentSettings::default() || token_change,
-                "agent set requires --system-prompt, --system-prompt-file, --model, --effort, \
-                 --github-token, or --clear-github-token"
-            );
-            let mut agent = resolve(&store, &name).await?;
-            if settings != AgentSettings::default() {
-                agent = store.set_agent(agent.agent_id, &settings).await?;
-            }
-            if token_change {
-                store
-                    .set_agent_github_token(agent.agent_id, github_token.as_deref())
-                    .await?;
-            }
-            output(
-                &serde_json::to_value(&agent)?,
-                &format!(
-                    "Updated agent {} {}{}",
-                    agent.name,
-                    agent.agent_id,
-                    settings_text(&agent)
-                ),
+            update(
+                &store,
+                &name,
+                inference,
+                github_token.as_deref(),
+                clear_github_token,
                 json,
-            )?;
+            )
+            .await?;
         }
         Command::Ls => {
             let mut after = None;
@@ -141,7 +132,12 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn inference_settings(args: InferenceArgs) -> Result<AgentSettings> {
+fn inference_settings(
+    args: InferenceArgs,
+    update: bool,
+) -> Result<(AgentSettings, Vec<swarmy_core::InferenceField>)> {
+    let (selection, resets) =
+        crate::selection::agent_selection(args.provider, args.model, args.effort, update)?;
     let system_prompt = match args.system_prompt_file {
         Some(path) => Some(
             std::fs::read_to_string(&path)
@@ -149,16 +145,21 @@ fn inference_settings(args: InferenceArgs) -> Result<AgentSettings> {
         ),
         None => args.system_prompt,
     };
-    Ok(AgentSettings {
-        system_prompt,
-        model: args.model,
-        reasoning_effort: args.effort,
-    })
+    Ok((
+        AgentSettings {
+            system_prompt,
+            provider: selection.provider,
+            model: selection.model,
+            reasoning_effort: selection.effort,
+        },
+        resets,
+    ))
 }
 
 fn settings_text(agent: &AgentRecord) -> String {
     format!(
-        "\nsystem_prompt={}\nmodel={}\nreasoning_effort={}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}",
+        agent.provider.as_deref().unwrap_or("(stack default)"),
         agent.system_prompt.as_deref().unwrap_or("(stack default)"),
         agent.model.as_deref().unwrap_or("(stack default)"),
         agent
@@ -205,6 +206,20 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
     );
     if detail {
         text.push_str(&settings_text(agent));
+        let totals = store.agent_usage(agent.agent_id).await?;
+        value["usage"] = serde_json::to_value(&totals)?;
+        value["cost_dollars"] = totals.dollars().into();
+        write!(
+            text,
+            "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+            totals.usage.input_tokens,
+            totals.usage.cached_input_tokens,
+            totals.usage.cache_write_input_tokens,
+            totals.usage.output_tokens,
+            totals.usage.reasoning_output_tokens,
+            totals.usage.total_tokens,
+            totals.dollars()
+        )?;
         let volume = store
             .get_volume(VolumeId::from_ulid(agent.agent_id.as_ulid()))
             .await?;
@@ -292,4 +307,49 @@ fn call_status(
         )?;
     }
     Ok(state)
+}
+
+async fn update(
+    store: &Store,
+    name: &str,
+    inference: InferenceArgs,
+    github_token: Option<&str>,
+    clear_github_token: bool,
+    json: bool,
+) -> Result<()> {
+    let (settings, resets) = inference_settings(inference, true)?;
+    let token_change = github_token.is_some() || clear_github_token;
+    ensure!(
+        settings != AgentSettings::default() || !resets.is_empty() || token_change,
+        "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
+                 --github-token, or --clear-github-token"
+    );
+    let mut agent = resolve(store, name).await?;
+    if settings != AgentSettings::default() || !resets.is_empty() {
+        let mut updated = agent.clone();
+        settings.apply_to(&mut updated, &resets);
+        crate::selection::validate(
+            &updated.inference(),
+            &crate::selection::defaults(&swarmy_config::Settings::load()?.settings)?,
+        )?;
+        agent = store
+            .set_agent_with_resets(agent.agent_id, &settings, &resets)
+            .await?;
+    }
+    if token_change {
+        store
+            .set_agent_github_token(agent.agent_id, github_token)
+            .await?;
+    }
+    output(
+        &serde_json::to_value(&agent)?,
+        &format!(
+            "Updated agent {} {}{}",
+            agent.name,
+            agent.agent_id,
+            settings_text(&agent)
+        ),
+        json,
+    )?;
+    Ok(())
 }

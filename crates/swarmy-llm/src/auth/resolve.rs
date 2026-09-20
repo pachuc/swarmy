@@ -1,3 +1,4 @@
+//! Resolve stored credentials before host environment and ambient cloud chains.
 use super::{CredentialStore, Credentials, Login, OAuthClient, login_for};
 use crate::{ClientAuth, Error};
 use async_trait::async_trait;
@@ -25,6 +26,12 @@ pub trait AuthStore: Send + Sync {
     ) -> Result<CredentialRecord, Error>;
 }
 
+/// The version is opaque and must never be logged. It changes with credential content.
+pub struct ResolvedAuth {
+    pub auth: ClientAuth,
+    pub version: [u8; 32],
+}
+
 #[derive(Clone)]
 pub struct Resolver {
     store: Arc<dyn AuthStore>,
@@ -47,7 +54,7 @@ impl Resolver {
     /// Store first, then provider environment, then host SDK credentials.
     /// # Errors
     /// A stored credential failure is terminal; it never selects an environment key.
-    pub async fn resolve(&self, provider: &str) -> Result<ClientAuth, Error> {
+    pub async fn resolve(&self, provider: &str) -> Result<ResolvedAuth, Error> {
         self.resolve_using(provider, |name| std::env::var(name).ok())
             .await
     }
@@ -56,20 +63,26 @@ impl Resolver {
         &self,
         provider: &str,
         environment_value: impl Fn(&str) -> Option<String>,
-    ) -> Result<ClientAuth, Error> {
+    ) -> Result<ResolvedAuth, Error> {
         let record = self.record(provider).await?;
         if provider == "chatgpt" {
             let record = record.ok_or_else(|| Error::NeedsLogin(provider.into()))?;
             let credentials = Credentials::from_record(&record)?;
             let account = OnceLock::new();
             let _ = account.set(credentials.account_id().into());
-            return Ok(ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
-                resolver: self.clone(),
-                account,
-            })));
+            return Ok(ResolvedAuth {
+                auth: ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
+                    resolver: self.clone(),
+                    account,
+                })),
+                version: version(&record)?,
+            });
         }
         if let Some(record) = record {
-            return auth_from_kind(record.kind);
+            return Ok(ResolvedAuth {
+                version: version(&record)?,
+                auth: auth_from_kind(record.kind)?,
+            });
         }
         environment(provider, environment_value)
     }
@@ -105,8 +118,14 @@ impl Resolver {
 /// Resolve using an explicitly supplied cluster context, without process globals.
 /// # Errors
 /// Returns credential, refresh, and persistence errors.
-pub async fn resolve(provider: &str, resolver: &Resolver) -> Result<ClientAuth, Error> {
+pub async fn resolve(provider: &str, resolver: &Resolver) -> Result<ResolvedAuth, Error> {
     resolver.resolve(provider).await
+}
+
+/// Stored credentials version with their serialized content, so rotation
+/// retires cached clients without exposing the secret itself.
+fn version(record: &CredentialRecord) -> Result<[u8; 32], Error> {
+    Ok(*blake3::hash(&serde_json::to_vec(record)?).as_bytes())
 }
 
 fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
@@ -134,9 +153,16 @@ fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
     }
 }
 
-fn environment(provider: &str, get: impl Fn(&str) -> Option<String>) -> Result<ClientAuth, Error> {
+fn environment(
+    provider: &str,
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<ResolvedAuth, Error> {
+    let ambient = |auth| Ok(ResolvedAuth {
+        auth,
+        version: [0; 32],
+    });
     if provider == "fake" {
-        return Ok(ClientAuth::None);
+        return ambient(ClientAuth::None);
     }
     // Catalog env_keys also lists endpoint and SDK settings. Only these are keys.
     let key_names: &[&str] = match provider {
@@ -163,25 +189,27 @@ fn environment(provider: &str, get: impl Fn(&str) -> Option<String>) -> Result<C
         .filter(|name| info.env_keys.iter().any(|env| env == **name))
         .find_map(|name| get(name).filter(|value| !value.trim().is_empty()));
     if let Some(key) = key {
-        if provider == "azure" {
+        let version = *blake3::hash(key.as_bytes()).as_bytes();
+        let auth = if provider == "azure" {
             let resource = get("AZURE_RESOURCE_NAME")
                 .filter(|s| !s.trim().is_empty())
                 .ok_or(Error::Credentials("Azure requires AZURE_RESOURCE_NAME"))?;
-            return Ok(ClientAuth::ApiKeyWithExtra {
+            ClientAuth::ApiKeyWithExtra {
                 key,
                 extra: BTreeMap::from([("resource_name".into(), resource)]),
-            });
-        }
-        if provider == "amazon-bedrock" {
-            return Ok(ClientAuth::Bearer(key));
-        }
-        return Ok(ClientAuth::ApiKey(key));
+            }
+        } else if provider == "amazon-bedrock" {
+            ClientAuth::Bearer(key)
+        } else {
+            ClientAuth::ApiKey(key)
+        };
+        return Ok(ResolvedAuth { auth, version });
     }
     if matches!(
         provider,
         "amazon-bedrock" | "google-vertex" | "google-vertex-anthropic"
     ) {
-        return Ok(ClientAuth::Ambient);
+        return ambient(ClientAuth::Ambient);
     }
     Err(Error::NeedsLogin(provider.into()))
 }
@@ -245,17 +273,32 @@ mod tests {
     use super::*;
     #[test]
     fn environment_keys_metadata_and_ambient() {
-        assert!(
-            matches!(environment("openai", |_| Some("env-key".into())).unwrap(), ClientAuth::ApiKey(key) if key == "env-key")
+        let resolved = environment("openai", |_| Some("env-key".into())).unwrap();
+        assert!(matches!(resolved.auth, ClientAuth::ApiKey(key) if key == "env-key"));
+        assert_ne!(resolved.version, [0; 32]);
+        assert_ne!(
+            resolved.version,
+            environment("openai", |_| Some("rotated".into()))
+                .unwrap()
+                .version
         );
         for provider in ["amazon-bedrock", "google-vertex", "google-vertex-anthropic"] {
-            assert!(matches!(
-                environment(provider, |_| None).unwrap(),
-                ClientAuth::Ambient
-            ));
+            let resolved = environment(provider, |key| {
+                (key != "AWS_BEARER_TOKEN_BEDROCK").then(|| "configuration".into())
+            })
+            .unwrap();
+            assert!(matches!(resolved.auth, ClientAuth::Ambient));
+            assert_eq!(resolved.version, [0; 32]);
         }
+        assert!(matches!(
+            environment("amazon-bedrock", |key| (key == "AWS_BEARER_TOKEN_BEDROCK")
+                .then(|| "token".into()))
+            .unwrap()
+            .auth,
+            ClientAuth::Bearer(_)
+        ));
         assert!(
-            matches!(environment("azure", |name| Some(name.into())).unwrap(), ClientAuth::ApiKeyWithExtra { key, extra } if key == "AZURE_API_KEY" && extra["resource_name"] == "AZURE_RESOURCE_NAME")
+            matches!(environment("azure", |name| Some(name.into())).unwrap().auth, ClientAuth::ApiKeyWithExtra { key, extra } if key == "AZURE_API_KEY" && extra["resource_name"] == "AZURE_RESOURCE_NAME")
         );
         assert!(
             environment("azure", |name| (name == "AZURE_API_KEY")
@@ -281,25 +324,40 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn store_precedence_absence_and_failed_refresh() {
-        let record = CredentialRecord {
+    fn api_key(key: &str) -> CredentialRecord {
+        CredentialRecord {
             kind: CredentialKind::ApiKey {
-                key: "stored".into(),
+                key: key.into(),
                 extra: BTreeMap::new(),
             },
             updated_at: jiff::Timestamp::now(),
-        };
-        let resolver = Resolver::new(Arc::new(Store {
-            record: Some(record),
-        }))
-        .unwrap();
+        }
+    }
+
+    fn resolver(record: Option<CredentialRecord>) -> Resolver {
+        Resolver::new(Arc::new(Store { record })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn store_precedence_absence_and_failed_refresh() {
+        let stored = resolver(Some(api_key("stored")))
+            .resolve_using("openai", |_| Some("environment".into()))
+            .await
+            .unwrap();
+        assert!(matches!(stored.auth, ClientAuth::ApiKey(key) if key == "stored"));
+        let rotated = resolver(Some(api_key("rotated")))
+            .resolve_using("openai", |_| None)
+            .await
+            .unwrap();
+        assert_ne!(stored.version, rotated.version);
         assert!(
-            matches!(resolver.resolve_using("openai", |_| Some("environment".into())).await.unwrap(), ClientAuth::ApiKey(key) if key == "stored")
+            resolver(Some(api_key("")))
+                .resolve_using("openai", |_| Some("environment".into()))
+                .await
+                .is_err()
         );
-        let resolver = Resolver::new(Arc::new(Store { record: None })).unwrap();
         assert!(
-            matches!(resolver.resolve_using("openai", |_| Some("environment".into())).await.unwrap(), ClientAuth::ApiKey(key) if key == "environment")
+            matches!(resolver(None).resolve_using("openai", |_| Some("environment".into())).await.unwrap().auth, ClientAuth::ApiKey(key) if key == "environment")
         );
         let record = CredentialRecord {
             kind: CredentialKind::OAuth {
@@ -310,12 +368,8 @@ mod tests {
             },
             updated_at: jiff::Timestamp::now(),
         };
-        let resolver = Resolver::new(Arc::new(Store {
-            record: Some(record),
-        }))
-        .unwrap();
         assert!(matches!(
-            resolver
+            resolver(Some(record))
                 .resolve_using("azure", |_| panic!(
                     "stored refresh failure must not inspect environment"
                 ))

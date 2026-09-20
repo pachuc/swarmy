@@ -22,7 +22,7 @@ impl Store {
     }
 
     /// Include worker-generated conversation events in the inference handoff.
-    /// This avoids a separate commit when folding completed tool results.
+    /// Tool results and system notices commit with the request so retries cannot repeat them.
     /// # Errors
     /// Rejects stale heads, expired or replaced leases, and invalid request identity.
     pub async fn submit_inference_after<T: Serialize>(
@@ -55,7 +55,7 @@ impl Store {
         let mut preceding = Vec::with_capacity(before.len());
         for (event, seq) in before.iter().zip(expected_head + 1..) {
             if !matches!(event, Event::MessageAppended { message, .. }
-                if message.role == swarmy_core::MessageRole::Tool)
+                if matches!(message.role, swarmy_core::MessageRole::Tool | swarmy_core::MessageRole::System))
             {
                 return Err(StoreError::InvalidState);
             }

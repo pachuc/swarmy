@@ -40,6 +40,7 @@ async fn dispatch_arguments(
         state: SessionState::Idle,
         head_seq: 0,
         snapshot_ref: None,
+        inference: swarmy_core::InferenceSelection::default(),
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
         plan: Vec::new(),

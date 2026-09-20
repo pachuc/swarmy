@@ -10,32 +10,73 @@ use swarmy_llm::{
 use swarmy_store::{Store, StoreError};
 
 pub struct ClusterCredentials {
-    store: swarmy_store::credentials::CredentialStore,
+    store: Store,
+    credentials: Option<swarmy_store::credentials::CredentialStore>,
 }
 
 impl ClusterCredentials {
-    pub async fn new(store: Store) -> anyhow::Result<Self> {
-        let keyring = Keyring::load().map_err(|_| {
-            anyhow::anyhow!(
-                "gateway requires the cluster keyring; copy it to this host or set SWARMY_KEYRING"
-            )
-        })?;
-        let store = store.credentials(keyring);
-        // Diagnose wrong keys before accepting requests for any stored provider.
-        store.list_credentials(CredentialScope::Cluster).await?;
-        Ok(Self { store })
+    /// Open the cluster credential store. Without a keyring, stored records are
+    /// refused and only environment credentials remain available.
+    /// # Errors
+    /// Returns an unreadable keyring, a wrong key, or an unavailable database.
+    pub async fn new(store: Store) -> crate::Result<Self> {
+        let credentials = match Keyring::load() {
+            Ok(keyring) => Some(store.credentials(keyring)),
+            Err(swarmy_config::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    "keyring missing; stored credentials are unavailable until a cluster keyring is installed"
+                );
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(credentials) = &credentials {
+            // Diagnose wrong keys before accepting requests for any stored provider.
+            credentials
+                .list_credentials(CredentialScope::Cluster)
+                .await?;
+        }
+        Ok(Self { store, credentials })
     }
+
+    #[cfg(test)]
+    fn with_credentials(
+        store: &Store,
+        credentials: swarmy_store::credentials::CredentialStore,
+    ) -> Self {
+        Self {
+            store: store.clone(),
+            credentials: Some(credentials),
+        }
+    }
+}
+
+fn store_error(error: &StoreError) -> Error {
+    tracing::warn!(%error, "cluster credential operation failed");
+    Error::Credentials("cluster credential unavailable; check keyring and database")
 }
 
 #[async_trait]
 impl AuthStore for ClusterCredentials {
     async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
-        self.store
+        let Some(credentials) = &self.credentials else {
+            return if self
+                .store
+                .has_credential(CredentialScope::Cluster, provider)
+                .await
+                .map_err(|error| store_error(&error))?
+            {
+                Err(Error::Credentials(
+                    "stored credential requires a readable cluster keyring",
+                ))
+            } else {
+                Ok(None)
+            };
+        };
+        credentials
             .get_credential(CredentialScope::Cluster, provider)
             .await
-            .map_err(|_| {
-                Error::Credentials("cluster credential unavailable; check keyring and database")
-            })
+            .map_err(|error| store_error(&error))
     }
 
     async fn refresh(
@@ -44,7 +85,9 @@ impl AuthStore for ClusterCredentials {
         observed: &CredentialRecord,
         login: &dyn Login,
     ) -> Result<CredentialRecord, Error> {
-        self.store
+        self.credentials
+            .as_ref()
+            .ok_or(Error::Credentials("missing cluster keyring"))?
             .refresh_with_lease(
                 CredentialScope::Cluster,
                 provider,
@@ -135,9 +178,10 @@ mod tests {
         let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
         let make = || {
             Resolver::with_chatgpt(
-                Arc::new(ClusterCredentials {
-                    store: credentials.clone(),
-                }),
+                Arc::new(ClusterCredentials::with_credentials(
+                    &store,
+                    credentials.clone(),
+                )),
                 oauth.clone(),
             )
         };
@@ -145,12 +189,13 @@ mod tests {
         let second = make();
         let (a, b) = tokio::join!(first.resolve("chatgpt"), second.resolve("chatgpt"));
         for auth in [a.unwrap(), b.unwrap()] {
-            let ClientAuth::ChatGpt(store) = auth else {
+            let ClientAuth::ChatGpt(store) = auth.auth else {
                 panic!("expected ChatGPT");
             };
             assert_eq!(store.load().await.unwrap().access_token(), "new-access");
         }
-        let ClientAuth::ChatGpt(provider_store) = first.resolve("chatgpt").await.unwrap() else {
+        let ClientAuth::ChatGpt(provider_store) = first.resolve("chatgpt").await.unwrap().auth
+        else {
             unreachable!()
         };
         let provider = swarmy_llm::chatgpt::ChatGptProvider::with_endpoints(
@@ -232,9 +277,10 @@ mod tests {
             .mount(&server)
             .await;
         let resolver = Resolver::with_chatgpt(
-            Arc::new(ClusterCredentials {
-                store: credentials.clone(),
-            }),
+            Arc::new(ClusterCredentials::with_credentials(
+                &store,
+                credentials.clone(),
+            )),
             OAuthClient::with_issuer(&server.uri()).unwrap(),
         );
         for _ in 0..2 {
@@ -300,13 +346,18 @@ mod tests {
             )
             .await
             .unwrap();
-        let resolver = Resolver::new(Arc::new(ClusterCredentials { store: credentials })).unwrap();
+        let resolver = Resolver::new(Arc::new(ClusterCredentials::with_credentials(
+            &store,
+            credentials,
+        )))
+        .unwrap();
         assert!(
-            matches!(resolver.resolve("openrouter").await.unwrap(), ClientAuth::ApiKey(key) if key == "minted-key")
+            matches!(resolver.resolve("openrouter").await.unwrap().auth, ClientAuth::ApiKey(key) if key == "minted-key")
         );
-        let wrong = Resolver::new(Arc::new(ClusterCredentials {
-            store: store.credentials(Keyring::from_bytes([7; 32])),
-        }))
+        let wrong = Resolver::new(Arc::new(ClusterCredentials::with_credentials(
+            &store,
+            store.credentials(Keyring::from_bytes([7; 32])),
+        )))
         .unwrap();
         assert!(wrong.resolve("openrouter").await.is_err());
     }

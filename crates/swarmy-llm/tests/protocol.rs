@@ -143,6 +143,7 @@ fn completed(parts: Vec<Part>, stop_reason: StopReason) -> Delta {
             output_tokens: 3,
             reasoning_output_tokens: 2,
             total_tokens: 13,
+            cache_write_input_tokens: 0,
         },
     })
 }

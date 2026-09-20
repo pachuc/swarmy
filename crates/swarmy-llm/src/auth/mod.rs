@@ -7,7 +7,7 @@ mod resolve;
 pub use azure::AzureLogin;
 pub use legacy::*;
 pub use openrouter::OpenRouterLogin;
-pub use resolve::{AuthStore, Resolver, resolve};
+pub use resolve::{AuthStore, ResolvedAuth, Resolver, resolve};
 
 use crate::Error;
 use async_trait::async_trait;

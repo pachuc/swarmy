@@ -112,9 +112,20 @@ impl Fixture {
     }
 
     fn start(&mut self, concurrency: usize) {
+        self.start_with(concurrency, "fake", &[]);
+    }
+
+    fn start_with(
+        &mut self,
+        concurrency: usize,
+        providers: &str,
+        models: &[swarmy_llm::catalog::CustomModel],
+    ) {
         self.children.push(
             Command::new(env!("CARGO_BIN_EXE_swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
+                .env("SWARMY_PROVIDERS", providers)
+                .env("SWARMY_MODELS", serde_json::to_string(models).unwrap())
                 .env("SWARMY_STORE_DIRECTORY", &self.prefix)
                 .env("SWARMY_BUS_PREFIX", &self.prefix)
                 .env("SWARMY_BUS_ACK_WAIT_MS", ACK_WAIT.as_millis().to_string())
@@ -143,6 +154,11 @@ impl Fixture {
     }
 
     async fn job(&self) -> InferenceJob {
+        self.job_for_agent(AgentId::from_ulid(Ulid::generate()))
+            .await
+    }
+
+    async fn job_for_agent(&self, agent_id: AgentId) -> InferenceJob {
         let session_id = SessionId::from_ulid(Ulid::generate());
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
@@ -153,10 +169,11 @@ impl Fixture {
             .create_session(
                 &SessionRecord {
                     session_id,
-                    agent_id: AgentId::from_ulid(Ulid::generate()),
+                    agent_id,
                     state: SessionState::Runnable,
                     head_seq: 0,
                     snapshot_ref: None,
+                    inference: swarmy_core::InferenceSelection::default(),
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -217,6 +234,7 @@ impl Fixture {
             .await
             .unwrap();
         InferenceJob {
+            provider: "fake".into(),
             session_id,
             step: lease.seq,
             request_id,
@@ -393,6 +411,15 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
             f.publish(&job).await;
             f.drained().await;
             assert_eq!(f.calls(), 1);
+            let totals = f.store.session_usage(job.session_id).await.unwrap();
+            assert_eq!(totals.usage.output_tokens, 42);
+            let session = f
+                .store
+                .fetch_session(job.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(f.store.agent_usage(session.agent_id).await.unwrap(), totals);
             assert_eq!(
                 f.store
                     .get_inference_result::<Result<Response, String>>(job.request_id)
@@ -616,4 +643,74 @@ async fn terminal_response_leaves_intervening_events_for_worker_replay() {
         result.unwrap();
     })
     .await;
+}
+
+#[tokio::test]
+async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
+    run(|mut f| async move {
+        f.script(50, false, "routed");
+        let mut model = swarmy_llm::catalog::Catalog::get().provider("chatgpt").unwrap().models.values().next().unwrap().clone();
+        model.id = "scripted-model".into();
+        model.api = Some(swarmy_llm::catalog::Api::Fake);
+        model.cost.output = 2.0;
+        model.reasoning = Some(swarmy_llm::catalog::ReasoningOptions::Effort(vec![swarmy_core::ReasoningEffort::Low]));
+        let models: Vec<_> = ["fake", "scripted"].map(|provider| swarmy_llm::catalog::CustomModel { provider: provider.into(), model: model.clone() }).into();
+        f.start_with(1, "fake,scripted", &models);
+        let result = AssertUnwindSafe(async {
+            let queue = WorkQueue::Inference(SubjectToken::new("scripted").unwrap());
+            f.bus.setup(std::slice::from_ref(&queue)).await.unwrap();
+            let agent_id = AgentId::from_ulid(Ulid::generate());
+            let mut first = f.job_for_agent(agent_id).await;
+            first.provider = "fake".into();
+            first.request.settings.model = model.id.clone();
+            first.request.settings.reasoning_effort = Some(swarmy_core::ReasoningEffort::Max);
+            let mut second = f.job_for_agent(agent_id).await;
+            second.provider = "scripted".into();
+            second.request.settings = first.request.settings.clone();
+            f.publish(&first).await;
+            f.bus.publish_work(&queue, &second).await.unwrap();
+            for job in [&first, &second] {
+                let event = f.terminal(job).await;
+                assert!(matches!(event, Event::InferenceCompleted { provider, model: used_model, effort_used: Some(swarmy_core::ReasoningEffort::Low), effort_requested: Some(swarmy_core::ReasoningEffort::Max), effort_clamped: true, cost_micros: 84, usage, .. } if provider == job.provider && used_model == model.id && usage.output_tokens == 42));
+                let total = f.store.session_usage(job.session_id).await.unwrap();
+                assert_eq!(total.cost_micros, 84);
+            }
+            f.drained().await;
+            assert_eq!(f.calls(), 2);
+            let agent_usage = f.store.agent_usage(agent_id).await.unwrap();
+            assert_eq!(agent_usage.cost_micros, 168);
+            assert_eq!(agent_usage.usage.output_tokens, 84);
+            f.publish(&first).await;
+            f.drained().await;
+            assert_eq!(f.store.agent_usage(agent_id).await.unwrap(), agent_usage);
+            assert!(f.store.gateway_serves("scripted").await.unwrap());
+            assert_eq!(f.store.gateway_provider("scripted").await.unwrap().unwrap().reason, "credentials resolved");
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
+}
+
+#[tokio::test]
+async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
+    run(|mut f| async move {
+        f.script(0, false, "unused");
+        f.start(1);
+        let mut job = f.job().await;
+        job.provider = "fake".into();
+        job.request.settings.model = "unknown-model".into();
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { error, .. } if error.contains("unknown catalog model: fake/unknown-model")));
+            f.drained().await;
+            let context = async_nats::jetstream::new(async_nats::connect(std::env::var("SWARMY_NATS_URL").unwrap()).await.unwrap());
+            let stream = context.get_stream(format!("{}_INFER_REQ", f.prefix)).await.unwrap();
+            let consumer: async_nats::jetstream::consumer::PullConsumer = stream.get_consumer("infer_fake").await.unwrap();
+            assert_eq!(consumer.cached_info().delivered.consumer_sequence, 1);
+            assert_eq!(f.calls(), 0);
+            assert_eq!(f.store.session_usage(job.session_id).await.unwrap(), swarmy_core::UsageTotals::default());
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
 }
