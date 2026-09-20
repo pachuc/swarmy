@@ -21,6 +21,7 @@ needless_collect = "deny"
 large_stack_frames = "deny"
 
 [workspace.dependencies]
+swarmy-gateway = { path = "crates/swarmy-gateway" }
 swarmy-version = { path = "crates/swarmy-version" }
 aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "credentials-process", "sso"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
@@ -40,6 +41,7 @@ chacha20poly1305 = "0.10"
 base64 = "0.22"
 fs2 = "0.4"
 futures = "0.3"
+httpdate = "1"
 rand = "0.9"
 rand_chacha = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

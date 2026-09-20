@@ -32,16 +32,17 @@ pub struct BedrockProvider {
 }
 
 impl BedrockProvider {
-    /// Use `ClientAuth::Bedrock` to pass the credential record's `extra` map.
-    /// `None` uses the AWS default chain; `Bearer` supplies an explicit token.
+    /// `Ambient` uses the AWS default credential chain. `Bearer` supplies an
+    /// explicit token, and `ApiKeyWithExtra` carries a bearer token as the key
+    /// alongside the credential record's `extra` map, such as `region`.
     ///
     /// # Errors
     /// Returns an error for an incompatible credential kind.
     pub fn new(model: ModelInfo, auth: ClientAuth) -> Result<Self, Error> {
-        let extra = match auth {
-            ClientAuth::None => BTreeMap::new(),
-            ClientAuth::Bedrock { extra } => extra,
-            ClientAuth::Bearer(token) => BTreeMap::from([("bearer_token".into(), token)]),
+        let (token, extra) = match auth {
+            ClientAuth::Ambient => (None, BTreeMap::new()),
+            ClientAuth::Bearer(token) => (Some(token), BTreeMap::new()),
+            ClientAuth::ApiKeyWithExtra { key, extra } => (Some(key), extra),
             _ => {
                 return Err(Error::Credentials(
                     "Bedrock requires AWS credentials or a bearer token",
@@ -53,9 +54,8 @@ impl BedrockProvider {
             extra.get("region").map(String::as_str),
             std::env::var("AWS_REGION").ok().as_deref(),
         );
-        let bearer_token = extra
-            .get("bearer_token")
-            .cloned()
+        let bearer_token = token
+            .or_else(|| extra.get("bearer_token").cloned())
             .or_else(|| std::env::var("AWS_BEARER_TOKEN_BEDROCK").ok());
         Ok(Self {
             model,
@@ -1350,7 +1350,11 @@ mod tests {
         );
         assert_eq!(resolve_region("model", None, None), "us-east-1");
         let provider = Catalog::get().provider("amazon-bedrock").unwrap();
-        assert!(crate::client_for(provider, &model("model"), ClientAuth::None).is_ok());
+        assert!(crate::client_for(provider, &model("model"), ClientAuth::Ambient).is_ok());
+        assert!(matches!(
+            crate::client_for(provider, &model("model"), ClientAuth::None),
+            Err(Error::Credentials(_))
+        ));
     }
 
     #[tokio::test]
@@ -1467,11 +1471,9 @@ mod tests {
         let model = model("us.anthropic.claude-opus-4-8");
         let mut provider = BedrockProvider::new(
             model.clone(),
-            ClientAuth::Bedrock {
-                extra: BTreeMap::from([
-                    ("bearer_token".into(), "fixture-token".into()),
-                    ("region".into(), "us-west-2".into()),
-                ]),
+            ClientAuth::ApiKeyWithExtra {
+                key: "fixture-token".into(),
+                extra: BTreeMap::from([("region".into(), "us-west-2".into())]),
             },
         )
         .unwrap();

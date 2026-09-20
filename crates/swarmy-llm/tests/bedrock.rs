@@ -32,7 +32,7 @@ async fn live_bedrock_turn() {
             ..Default::default()
         },
     };
-    let client = client_for(provider, &model, ClientAuth::None).unwrap();
+    let client = client_for(provider, &model, ClientAuth::Ambient).unwrap();
     let deltas = client
         .request(request)
         .try_collect::<Vec<_>>()

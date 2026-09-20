@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Result, bail};
+use crate::{Error, Result};
 use futures::StreamExt;
 use serde::Deserialize;
 use swarmy_bus::{Config as BusConfig, SubjectToken};
@@ -15,32 +15,26 @@ pub struct Config {
     pub directory: Vec<String>,
     pub nats: String,
     pub bus: BusConfig,
-    pub class: SubjectToken,
+    pub settings: swarmy_config::Settings,
     pub concurrency: usize,
     pub resend_interval: Duration,
-    pub provider: ConfiguredProvider,
-}
-
-pub enum ConfiguredProvider {
-    Fake(Arc<dyn Provider>),
-    ChatGpt(String),
 }
 
 impl Config {
+    /// Load and validate gateway settings.
+    /// # Errors
+    /// Returns invalid settings or transport configuration.
     pub fn from_env() -> Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
-        let class = settings.provider.clone();
-        let provider = match class.as_str() {
-            "fake" => ConfiguredProvider::Fake(Arc::new(FileFake::from_settings(&settings)?)),
-            "chatgpt" => ConfiguredProvider::ChatGpt(settings.credential_file.clone()),
-            _ => bail!("unsupported SWARMY_PROVIDER: {class}"),
-        };
         let concurrency = settings.gateway_concurrency;
         let ack_wait = Duration::from_millis(settings.bus_ack_wait_ms);
         if concurrency == 0 || ack_wait < Duration::from_millis(30) {
-            bail!("concurrency must be positive and ack wait at least 30 ms");
+            return Err(Error::Configuration(
+                "concurrency must be positive and ack wait at least 30 ms",
+            ));
         }
         Ok(Self {
+            settings: settings.clone(),
             cluster: settings.fdb_cluster_file,
             directory: settings
                 .store_directory
@@ -57,10 +51,8 @@ impl Config {
                 ack_wait,
                 max_deliver: settings.bus_max_deliver,
             },
-            class: SubjectToken::new(class)?,
             resend_interval: Duration::from_millis(settings.scheduler_resend_interval_ms),
             concurrency,
-            provider,
         })
     }
 }
@@ -91,18 +83,18 @@ struct RequestScript {
 
 impl RequestScript {
     fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
+        ensure(
             self.steps > 0,
-            "request-based script needs at least one step"
-        );
-        anyhow::ensure!(
+            "request-based script needs at least one step",
+        )?;
+        ensure(
             self.tool_steps.iter().all(|step| *step < self.steps - 1),
-            "tool steps must precede the final step"
-        );
+            "tool steps must precede the final step",
+        )?;
         Ok(())
     }
 
-    fn response(&self, request: &Request) -> Result<Response, swarmy_llm::Error> {
+    fn response(&self, request: &Request) -> std::result::Result<Response, swarmy_llm::Error> {
         // Count the assistant messages since the last user message, so every
         // user turn in a multi-turn conversation starts the script again.
         let step = request
@@ -146,7 +138,7 @@ impl RequestScript {
     }
 }
 
-struct FileFake {
+pub struct FileFake {
     provider: Arc<FakeProvider>,
     log: PathBuf,
     fail: bool,
@@ -156,23 +148,26 @@ struct FileFake {
 }
 
 impl FileFake {
-    fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
+    /// Load a deterministic fake script.
+    /// # Errors
+    /// Returns an unreadable or invalid script.
+    pub fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
         let script: Script = serde_json::from_slice(&std::fs::read(&settings.fake.script)?)?;
         if let Some(mode) = &script.request_based {
             mode.validate()?;
-            anyhow::ensure!(
+            ensure(
                 script.responses.is_empty(),
-                "choose responses or request_based, not both"
-            );
+                "choose responses or request_based, not both",
+            )?;
         }
         for mode in script.request_by_prompt.values() {
             mode.validate()?;
         }
-        anyhow::ensure!(
+        ensure(
             script.request_by_prompt.is_empty()
                 || (script.responses.is_empty() && script.request_based.is_none()),
-            "choose request_by_prompt, responses, or request_based"
-        );
+            "choose request_by_prompt, responses, or request_based",
+        )?;
         let mut provider = FakeProvider::default();
         provider.responses = script.responses;
         // Delay each emitted delta in the wrapper so tests can kill a partial stream.
@@ -237,6 +232,14 @@ impl Provider for FileFake {
                 yield delta?;
             }
         })
+    }
+}
+
+fn ensure(condition: bool, reason: &'static str) -> Result<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(Error::Configuration(reason))
     }
 }
 

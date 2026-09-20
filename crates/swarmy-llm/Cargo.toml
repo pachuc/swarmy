@@ -17,6 +17,7 @@ base64.workspace = true
 blake3.workspace = true
 fs2.workspace = true
 futures.workspace = true
+httpdate.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -296,6 +296,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         system_prompt: Some("  Review carefully.\n".into()),
         model: Some("agent-model".into()),
         reasoning_effort: Some(ReasoningEffort::High),
+        provider: None,
     };
     let mut expected = store
         .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
@@ -717,5 +718,73 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         (set, close),
         (Ok(()), Err(StoreError::MainSessionClose)) | (Err(StoreError::InvalidMainSession), Ok(()))
     ));
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn gateway_advertisements_expire() {
+    let Some(test) = TestStore::new(Arc::new(MemoryBlobStore::default())) else {
+        return;
+    };
+    let store = &test.store;
+    assert!(!store.gateway_serves("openai").await.unwrap());
+    store
+        .put_gateway_provider(
+            "openai",
+            &swarmy_store::GatewayProvider {
+                expires_at: Timestamp::UNIX_EPOCH,
+                reason: "expired".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!store.gateway_serves("openai").await.unwrap());
+    store
+        .put_gateway_provider(
+            "openai",
+            &swarmy_store::GatewayProvider {
+                expires_at: Timestamp::now()
+                    .checked_add(std::time::Duration::from_secs(60))
+                    .unwrap(),
+                reason: "credentials resolved".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(store.gateway_serves("openai").await.unwrap());
+    assert_eq!(
+        store
+            .gateway_provider("openai")
+            .await
+            .unwrap()
+            .unwrap()
+            .reason,
+        "credentials resolved"
+    );
+    assert!(!store.gateway_serves("anthropic").await.unwrap());
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn legacy_session_without_selection_row_inherits_defaults() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let key = test
+        .root
+        .pack(&("session_inference", id.as_ulid().to_bytes().as_slice()));
+    test.db
+        .run(|trx, _| {
+            let key = &key;
+            async move {
+                trx.clear(key);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let record = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(record.inference, swarmy_core::InferenceSelection::default());
     test.cleanup().await;
 }

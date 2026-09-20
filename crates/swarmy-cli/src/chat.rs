@@ -34,12 +34,13 @@ pub async fn run(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
+    selection: swarmy_core::InferenceSelection,
 ) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "chat requires an interactive terminal"
     );
-    let provider = swarmy_config::Settings::load()?.settings.provider;
+    let has_selection = selection != swarmy_core::InferenceSelection::default();
     let sessions = if id.is_none() && agent.is_none() {
         recent_sessions().await?
     } else {
@@ -53,7 +54,7 @@ pub async fn run(
     let mut keys = EventStream::new();
     let id = if let Some(id) = id {
         Some(id)
-    } else if agent.is_some() {
+    } else if agent.is_some() || has_selection {
         None
     } else {
         let Some(selection) = picker(&mut terminal, &mut keys, &sessions).await? else {
@@ -68,8 +69,9 @@ pub async fn run(
         id.is_none() || image.is_none(),
         "--image applies only to a new session"
     );
-    let conversation = Conversation::open(id, image.as_deref(), agent.as_deref(), new).await?;
-    interact(&mut terminal, &mut keys, conversation, &provider).await
+    let conversation =
+        Conversation::open(id, image.as_deref(), agent.as_deref(), new, selection).await?;
+    interact(&mut terminal, &mut keys, conversation).await
 }
 
 fn quit(key: KeyEvent) -> bool {
@@ -127,7 +129,6 @@ async fn interact(
     terminal: &mut DefaultTerminal,
     keys: &mut EventStream,
     mut conversation: Conversation,
-    provider: &str,
 ) -> Result<()> {
     let mut transcript = Transcript::new(conversation.agent_name.as_ref().map(|_| conversation.id));
     let mut input = Input::default();
@@ -143,7 +144,12 @@ async fn interact(
             frame.render_widget(
                 Paragraph::new(transcript.status(
                     conversation.id,
-                    provider,
+                    &format!(
+                        "{}/{} {}",
+                        conversation.selection.provider,
+                        conversation.selection.model,
+                        conversation.selection.effort
+                    ),
                     conversation.agent_name.as_deref(),
                 )),
                 status,
