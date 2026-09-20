@@ -127,3 +127,11 @@ snapshot is exactly what makes interruption cheap.
   viewer; revert before committing there.
 - The Codex fleet's three lanes share one ChatGPT usage limit; when it trips,
   all three stop at once and their instances are retained for resume.
+
+## Providers
+
+- Key pools with per-key quota accounting, session affinity, and failover.
+- Admission control across provider, model, and key request/token limits.
+- Image inputs; catalog modality metadata exists but clients do not send images.
+- A wider catalog allowlist beyond the enabled providers, with protocol and auth
+  verification before each expansion.

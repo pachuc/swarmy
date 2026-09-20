@@ -1,331 +1,184 @@
-# Provider catalog
+# Inference providers
 
-`swarmy-llm::catalog::Catalog::get()` exposes a generated, embedded snapshot of
-provider and model metadata. Rust builds and lookups need no network access.
-`providers()`, `provider(id)`, and `model(provider, id)` perform exact lookups;
-`find(pattern)` matches a case-insensitive substring of `provider/model` and
-returns provider/model pairs in stable order.
+swarmy chooses providers and models per session or named agent. The checked-in
+catalog supplies model limits, reasoning options, compatibility flags, and
+prices. Rust protocol clients send requests; credentials live in the encrypted
+cluster store or resolve from the gateway host. Builds never fetch model data.
 
-The table describes the intended provider support. This catalog task wires only
-the existing ChatGPT client into `client_for`. Other protocol arms, including
-the fake placeholder, return `Error::Unsupported`; the existing scripted fake
-provider remains available through its current constructor. Catalog membership
-does not mean a protocol client or login command has been implemented.
+## Supported providers
 
-| Provider id | Wire protocol | Auth | Environment variables and notes |
+| Provider id | Protocol | Credential kinds | Environment and endpoint settings |
 |---|---|---|---|
-| `anthropic` | Anthropic Messages | API key | `ANTHROPIC_API_KEY`. Subscription OAuth is prohibited by Anthropic's terms for third-party harnesses and is not built. |
-| `openai` | OpenAI Responses | API key | `OPENAI_API_KEY`; platform API at api.openai.com. |
-| `chatgpt` | Responses on the Codex backend | Codex OAuth device login | Credential store; no API key environment variable. Existing flow, documented as tolerated by OpenAI, not licensed. |
-| `xai` | OpenAI Responses | API key | `XAI_API_KEY`; api.x.ai. |
-| `meta` | OpenAI Responses | API key | `META_MODEL_API_KEY`; Muse Spark at api.meta.ai. |
-| `openrouter` | Chat Completions; Anthropic Messages for `anthropic/*` | API key or PKCE login that mints a key | `OPENROUTER_API_KEY`. All live models advertising tools are included. |
-| `azure` | OpenAI Responses | API key or Azure CLI Entra token | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY`; configure the endpoint with `AZURE_RESOURCE_NAME` or `AZURE_OPENAI_BASE_URL`. Models name deployments. |
-| `amazon-bedrock` | Bedrock Converse stream | AWS credential chain or bearer token | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`; the future client uses the official AWS Rust SDK for SigV4. |
-| `google` | Gemini generateContent | API key | `GOOGLE_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GEMINI_API_KEY`. |
-| `google-vertex` | Gemini generateContent on Vertex | Application Default Credentials or service account key | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`; project/location aliases `GOOGLE_VERTEX_PROJECT`, `GOOGLE_VERTEX_LOCATION`. |
-| `google-vertex-anthropic` | Anthropic Messages on Vertex | Same as `google-vertex` | Same environment variables as `google-vertex`. |
-| `fake` | Scripted | None | No environment variables; scripts supply the models. |
+| `anthropic` | Anthropic Messages | API key | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI Responses | Platform API key | `OPENAI_API_KEY` |
+| `chatgpt` | Responses on the Codex backend | Existing Codex OAuth device login | Cluster store; no API key variable. Tolerated, not licensed. |
+| `xai` | OpenAI Responses | API key | `XAI_API_KEY` |
+| `meta` | OpenAI Responses | API key | `META_MODEL_API_KEY` |
+| `openrouter` | Chat Completions; Anthropic Messages for `anthropic/*` | API key or public PKCE login that mints a key | `OPENROUTER_API_KEY` |
+| `azure` | OpenAI Responses | API key or Azure CLI Entra token | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY`; `AZURE_RESOURCE_NAME`. Model ids name deployments. |
+| `amazon-bedrock` | Bedrock Converse stream | AWS SDK credential chain or bearer token | `AWS_BEARER_TOKEN_BEDROCK`; otherwise `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, profiles and instance/container roles. `AWS_REGION` selects the region. |
+| `google` | Gemini generateContent | API key | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` |
+| `google-vertex` | Gemini generateContent on Vertex | Application Default Credentials (ADC), service account key, or stored access token | `GOOGLE_APPLICATION_CREDENTIALS` or gcloud ADC; `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
+| `google-vertex-anthropic` | Anthropic Messages on Vertex | Same as `google-vertex` | Same as `google-vertex` |
+| `fake` | Scripted responses | None | `[fake]` script and call log settings |
 
-`env_keys` includes endpoint and cloud configuration variables as well as key
-variables. It is discovery metadata, not a rule to treat every value as a secret
-or an HTTP authorization header. Empty cloud base URLs require configuration.
-New clients identify themselves with `User-Agent: swarmy/<version>`.
+`env_keys` in the catalog also includes endpoint and cloud configuration. A
+project, region, or profile name is not itself a secret key. Clients identify
+swarmy as `swarmy/<version>`; they do not send another coding product's identity
+headers or system prompt prefixes. Images are catalog metadata only: image
+inputs are not sent yet.
 
-## Regeneration
+## Credentials and auth commands
 
-Run from the checkout with Python 3 (standard library only):
-
-```sh
-make models
-# Equivalent:
-python3 scripts/models/generate.py
-python3 scripts/models/generate.py --check
-python3 -m unittest discover -s scripts/models -v
-```
-
-The generator downloads [models.dev](https://models.dev/api.json) and
-[OpenRouter's live catalog](https://openrouter.ai/api/v1/models), keeps the
-provider allowlist and only models that support tool calling, and writes
-`crates/swarmy-llm/catalog/<provider>.json`. OpenRouter's live list replaces its
-models.dev entries. Azure retains its tool-capable models.dev entries and gains
-every OpenAI model, with OpenAI metadata taking precedence on matching ids and
-Azure compatibility flags applied. Its base URL stays empty for deployment
-configuration.
-
-ChatGPT's six models are hand-listed in the generator using Pi's Codex limits:
-`gpt-5.5`, `gpt-5.3-codex-spark`, `gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`, and `gpt-6-astra`. Their token costs are zero because subscription
-billing is not a per-token API charge. The fake catalog has no fixed models.
-
-Review and commit the JSON with generator changes. `manifest.json` records the
-UTC generation time and SHA-256 of the exact downloaded bytes for both sources.
-The timestamp is retained when those hashes are unchanged, so repeated runs on
-the same sources are byte-for-byte idempotent. `--check` downloads both sources,
-regenerates in a temporary directory, and exits nonzero for changed, missing, or
-extra JSON files without modifying the checkout. Upstream source changes also
-cause a check failure and require a reviewed refresh. Download or parse failures
-do not silently fall back to stale data.
-
-## Metadata and reasoning
-
-Provider files contain `ProviderInfo` and a map of `ModelInfo` by id. A model can
-override `api` and `base_url`, as OpenRouter's Anthropic entries do. Costs are US
-dollars per million tokens, including cache reads and writes and context pricing
-tiers. OpenRouter per-token prices are converted using decimal arithmetic.
-OpenRouter routing aliases with negative sentinel prices use zero placeholders
-and `compat.dynamic_pricing = true`; these require the resolved model price for
-actual billing and must not be treated as free. Missing cache prices default to
-zero; missing output limits remain null rather
-than claiming a known limit. Context tiers apply above `input_tokens_above`.
-
-The reasoning scale is `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
-Explicit effort lists restrict support to the listed levels. When a source
-provides several reasoning mechanisms, the generator prefers efforts, then a
-budget range, then a toggle. Budgets and toggles expose the ordinary scale from
-`none` through `high`; `xhigh` and `max` require explicit effort entries.
-OpenRouter's effort metadata permits `none` unless reasoning is mandatory.
-`clamp_effort` keeps a supported request, otherwise selects the next higher
-supported level, otherwise the next lower; it returns the level and whether it
-changed. Models without reasoning always clamp to `none`.
-
-`compat` is an open map with typed accessors. It records token-limit fields,
-developer-role and strict-tool support, thinking and cache-control formats,
-adaptive Anthropic thinking, temperature restrictions, and long cache retention.
-Unknown keys survive parsing. The quirk table is based on Pi's
-`packages/ai/scripts/generate-models.ts` and OpenCode's provider option tables;
-it contains metadata only, with no JavaScript runtime dependency.
-
-Custom model configuration and additional protocol clients belong to separate tasks.
-
-## Credentials
-
-Run `swarmy dev up` to create the local keyring and development stack. The
-credential commands use your configured FoundationDB directory (including
-`--remote NAME`) and the local cluster keyring. All auth commands accept
-`--json`; list and check emit one JSON object per provider, with no secrets.
+Start a local cluster with `swarmy dev up`. It creates a base64 32-byte keyring
+at `~/.swarmy/keyring` with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
+FoundationDB credential records with XChaCha20-Poly1305. Keep a separate backup:
+replacing the key cannot decrypt existing records. CLI and gateway hosts need
+the same key. `remote up --services node --copy-credential` and
+`remote add-node --copy-credential` explicitly copy it over SSH; ordinary node
+hosts need no provider credentials.
 
 ```sh
-swarmy auth set anthropic --api-key sk-example
-swarmy auth set openai --from-env
-swarmy auth set azure --file /private/api-key --extra resource_name=my-resource
-swarmy auth set google --from-env --extra project=my-project --extra region=us-central1
-swarmy auth ls --json
+swarmy auth set anthropic --from-env
+swarmy auth set openai --file /private/openai-key
+swarmy auth set azure --from-env --extra resource_name=my-resource
+swarmy auth set openrouter --api-key YOUR_KEY
+swarmy auth ls
 swarmy auth check
-swarmy auth check chatgpt --json
-swarmy auth rm anthropic
-```
-
-Choose exactly one of `--api-key`, `--from-env`, or `--file`. A key file is UTF-8
-text with surrounding whitespace removed. Repeat `--extra name=value` for
-resource names, deployments, projects, regions, bearer tokens, or other
-provider settings. Extra values are encrypted too. No shell commands are
-executed to resolve values. `--file` avoids putting a key in shell history or
-process arguments. `auth check` verifies decryption and local status; it does
-not make a provider request. Missing providers or expired/needs-login records
-exit nonzero. OAuth output includes signed seconds until expiry.
-
-| Provider | `--from-env` lookup order |
-| --- | --- |
-| anthropic | `ANTHROPIC_API_KEY` |
-| openai | `OPENAI_API_KEY` |
-| xai | `XAI_API_KEY` |
-| meta | `META_MODEL_API_KEY` |
-| openrouter | `OPENROUTER_API_KEY` |
-| azure | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY` |
-| amazon-bedrock | `AWS_BEARER_TOKEN_BEDROCK` |
-| google | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
-| google-vertex, google-vertex-anthropic | `GOOGLE_CLOUD_API_KEY` |
-
-### Interactive logins
-
-All three logins write directly to the encrypted cluster credential store.
-They require a running cluster and its keyring on the CLI host.
-
-```sh
+swarmy auth check chatgpt
+swarmy auth rm openai
 swarmy auth login chatgpt
 swarmy auth login openrouter
 az login
 swarmy auth login azure --resource my-resource
-swarmy auth login azure --resource my-resource --scope https://cognitiveservices.azure.com/.default
-swarmy auth set azure --api-key KEY --extra resource_name=my-resource
+swarmy auth import --file /private/chatgpt-auth.json
 ```
 
-ChatGPT prints a device URL and short code, polls for approval, and stores the
-access token, refresh token, expiry, and account id as OAuth credentials. The
-existing device flow is tolerated by OpenAI rather than licensed. No new product
-identity headers are sent: inference identifies itself as `swarmy/<version>`.
-The existing device flow retains its existing OAuth client id as the exception
-specified by the provider plan.
+Prefer `--file` or `--from-env` to keep keys out of shell history and process
+arguments. `--extra name=value` is repeatable; its values are encrypted too.
+`--from-env` follows the table's API key names, except Google key entry accepts
+`GEMINI_API_KEY` and `GOOGLE_API_KEY` only. Vertex key entry reads
+`GOOGLE_CLOUD_API_KEY`; this does not replace configuring ADC and project/location
+for inference. Stored Vertex extras accept `project`, `location`,
+`service_account_json`, or `access_token`. For Azure, stored credentials need
+`resource_name`; an environment API key needs `AZURE_RESOURCE_NAME`.
 
-OpenRouter prints an authorization URL and attempts to open the browser. Choose
-browser callback to receive the code on an ephemeral `127.0.0.1` port, or pasted
-code for headless use. The callback listener is opened before the URL is shown.
-The login generates a random 32-byte PKCE verifier and S256 challenge, exchanges
-the code and verifier, and stores the returned API key. This is OpenRouter's
-[documented public flow](https://openrouter.ai/docs/guides/overview/auth/oauth);
-it has no client id and needs no refresh token.
+`auth ls` and `auth check` expose metadata, never secrets. Check verifies local
+decryption and status, not provider acceptance. Status is `ready`, `expired`, or
+`needs_login`. Use a probe below to verify the actual credential and protocol.
 
-Azure runs `az account get-access-token --scope URL --output json` on the login
-host. The default scope is `https://cognitiveservices.azure.com/.default`. The
-OAuth record has an empty refresh token and retains `resource_name` and `scope`.
-Refresh runs the same command on the gateway host, which must have Azure CLI
-installed and signed in. Missing `az` or a failed token request reports
-`NeedsLogin`; rerun login or set an API key. The parser accepts Azure's local
-`expiresOn` timestamp and prefers the unambiguous `expires_on` epoch when the CLI
-supplies both, as described in the
-[Azure CLI authentication documentation](https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli).
+ChatGPT login prints a device URL and code. OpenRouter uses its public PKCE
+flow, with a browser callback on an ephemeral loopback port or a pasted code;
+the result is an API key. Azure shells out to
+`az account get-access-token --scope https://cognitiveservices.azure.com/.default --output json`.
+`--scope` can override that scope. Azure refresh requires an installed, signed-in
+Azure CLI on the host using the credential.
 
-Anthropic, GitHub Copilot, Kimi, and xAI subscription logins are not offered under
-the project's terms policy: their terms prohibit third-party clients or require
-an authorized integration that swarmy does not have. Use permitted API keys.
+All logins write the cluster store directly. `auth import` copies an existing
+ChatGPT file without changing it; without `--file`, it reads `credential_file`
+(normally `~/.swarmy/auth.json`, also overridden by `--auth-file` or
+`SWARMY_CHATGPT_AUTH`). Stop other refresh owners before importing. Gateways do
+not fall back to that file.
 
-### Credential resolution
+Resolution uses `swarmy_llm::auth::resolve` with an explicit `Resolver`:
 
-The gateway uses `swarmy_llm::auth::Resolver::resolve(provider)` (also exposed as
-`auth::resolve(provider, &resolver)`). The explicit resolver context holds the
-cluster store; it avoids process-wide database globals. Resolution order is:
+1. Read the cluster record. An unreadable or failed stored credential never
+   falls back to an environment key. Refresh near expiry uses a database lease;
+   other processes read the winner's rotated token. Failed refresh marks
+   `needs_login`.
+2. With no stored record, read the provider's API key environment variables.
+3. Bedrock uses the official AWS Rust SDK chain. Vertex builds shared Google
+   authentication from stored extras or host ADC and project/location settings.
+   Fake requests need no credentials.
 
-1. Read the provider's cluster record. Refresh OAuth credentials with less than
-   five minutes remaining through `refresh_with_lease`. Competing gateways use
-   the winner's record. A failed refresh marks the record `needs_login` and never
-   falls back to environment variables.
-2. When no record exists, inspect the provider's catalog key variables:
-   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `META_MODEL_API_KEY`,
-   `OPENROUTER_API_KEY`, `AZURE_API_KEY` (with `AZURE_RESOURCE_NAME`), and
-   `GEMINI_API_KEY`. Azure also accepts `AZURE_OPENAI_API_KEY`; Google also accepts
-   `GOOGLE_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY`. Bedrock accepts
-   `AWS_BEARER_TOKEN_BEDROCK`. Endpoint, profile, and project settings are not
-   mistaken for API keys.
-3. For `google-vertex` and `google-vertex-anthropic`, build the shared `Vertex`
-   auth from `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and Google
-   credentials (`GOOGLE_APPLICATION_CREDENTIALS`, the gcloud ADC file, or a
-   stored record's `service_account_json` or `access_token` extra). When none
-   resolve, and always for `amazon-bedrock`, return `Ambient` so the protocol
-   client can use the host SDK credential chain. Fake inference needs no
-   credential. Other missing credentials report `NeedsLogin`.
-
-Azure key and bearer credentials retain their resource metadata for protocol
-client construction. ChatGPT reads the current stored access token for every
-request and uses the database lease for refresh, including its single retry
-after an unauthorized response. `credential_file` has no gateway role.
-
-### ChatGPT migration
+## Choosing and inspecting models
 
 ```sh
-swarmy auth import
-# Or read a particular existing ChatGPT auth.json:
-swarmy auth import --file /private/auth.json
-```
-
-Import reads `credential_file` (normally `~/.swarmy/auth.json`), overridden by
-`--auth-file` / `SWARMY_CHATGPT_AUTH` or `auth import --file`. It validates the
-file, preserves provider metadata, and stores an OAuth record under `chatgpt`
-without modifying the source. Stop any other process refreshing that account
-before importing it. Login writes the store directly, so it needs no subsequent
-import. The gateway never falls back to the credential file.
-
-### Keyring and remote gateways
-
-The keyring is a base64 32-byte key with mode 600. Override its path with
-`SWARMY_KEYRING`. `swarmy dev up` creates it atomically only when absent, and
-`swarmy doctor` reports its presence and mode. Keep a separate backup: a new
-key cannot decrypt old records. Gateways fail clearly when stored credentials
-cannot be decrypted.
-
-```sh
-swarmy remote up demo --services node --copy-credential
-swarmy remote add-node demo --copy-credential
-```
-
-The same explicit flag copies both the legacy ChatGPT file and the keyring
-over SSH. The keyring lands at `/home/ubuntu/.swarmy/keyring` with mode 600.
-Without this flag, additional nodes run only `swarmyd` and receive neither
-secret. Ordinary checkout copying excludes the configured credential and
-keyring paths. Use the same cluster key on the CLI and every gateway.
-
-## Choosing a model
-
-New ephemeral sessions accept provider, model, and reasoning effort overrides:
-
-```sh
-swarmy run 'Review this repository' --model openai/gpt-5.5 --effort max
-swarmy chat --provider openai --model gpt-5.5 --effort high
-swarmy agent create tommy --provider openrouter --model anthropic/claude-sonnet-4-6
+swarmy models providers
+swarmy models ls --provider anthropic
+swarmy models ls --reasoning --json
+swarmy models search sonnet
+swarmy models show openrouter/anthropic/claude-sonnet-4.6
+swarmy run --provider openai --model gpt-5.5 --effort high 'Review this repository'
+swarmy chat --model openai/gpt-5.5
+swarmy agent create tommy --provider openrouter --model anthropic/claude-sonnet-4.6
 swarmy agent set tommy --effort medium
 swarmy agent set tommy --model default
 ```
 
-A bare model id uses the selected provider, or the stack provider when omitted.
-The `provider/model` shorthand splits at the first slash. An explicit provider
-must agree with that prefix, except when the full model id exists under that
-provider, as with OpenRouter's `anthropic/claude-sonnet-4.6`.
-OpenRouter accepts dashed version aliases such as `anthropic/claude-sonnet-4-6`
-and stores the matching canonical catalog id `anthropic/claude-sonnet-4.6`.
-Unknown selections show up to five catalog suggestions. Validation uses the
-configured catalog, so custom providers and models are accepted.
+Model browsing is offline and uses `Settings::catalog()`: snapshot plus local
+configuration. Lists and search sort by provider/model. Show splits at the first
+slash, so model ids can contain slashes. `--json` returns model objects with
+`key`, `provider`, `supported_efforts`, `effective_api`, `effective_base_url`, and
+all model metadata. Providers lists protocol, auth kinds, and environment names;
+its credential column remains `unknown`. Use doctor for credential presence.
 
-Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
-At request time the worker clamps effort to the model's supported scale and
-records the first clamp in the session log. Session overrides take precedence
-over agent overrides, which take precedence over stack defaults. Overrides remain
-in the session across later turns. Agent updates affect subsequent requests.
-`agent set --provider default`, `--model default`, and `--effort default` clear
-individual overrides. A cleared field inherits the stack setting independently;
-choose a compatible provider and model together when changing providers.
+A bare model id uses the selected or stack provider. `provider/model` shorthand
+must agree with an explicit provider unless the full id exists under that
+provider, such as OpenRouter's `anthropic/claude-sonnet-4.6`. OpenRouter dashed
+version aliases resolve to canonical catalog ids. Unknown models get suggestions.
 
-Inference flags apply only to a new ephemeral session. With `--agent`, configure
-the named agent instead. Resuming a session id uses its stored selection.
-`session show` marks inherited values, `session ls` includes `provider/model`,
-and the chat status header shows provider, model, and effort. `agent show` marks
-unset agent fields as stack defaults. With `--json`, `session show` emits a
-`session_selection` record containing stored overrides and resolved values before
-the event rows.
+Effort is `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Clamping
+keeps a supported request, otherwise chooses the next higher level, then the
+next lower. `xhigh` and `max` require explicit model support. Non-reasoning models
+use `none`. Session overrides precede agent overrides and stack defaults; the
+first clamp is recorded in the session log. Inference flags apply to new ephemeral
+sessions. For `--agent`, configure the agent; resumed sessions keep their selection.
+`default` clears an agent override. `session show` and `agent show` distinguish
+stored overrides from inherited defaults.
 
-Gateways advertise availability in an expiring `("gateway_provider", provider)`
-record, refreshed every 30 seconds. The store exposes `put_gateway_provider` with
-`GatewayProvider { expires_at }` and `gateway_serves`. The parallel gateway task
-owns startup and refresh calls. A missing advertisement produces
-`no gateway serves provider X; run swarmy auth set X or start a gateway with it`
-in the session log. The scripted `fake` provider needs no credential advertisement.
-
-## Browsing models
+## Probe, doctor, and smoke checks
 
 ```sh
-swarmy models ls --provider anthropic
-swarmy models ls --reasoning --json
-swarmy models show openrouter/anthropic/claude-sonnet-4.6
-swarmy models search sonnet
-swarmy models providers
+swarmy models probe chatgpt/gpt-5.5
+swarmy models probe chatgpt/gpt-5.5 --effort low --tools
+swarmy doctor
+scripts/providers/smoke.sh
 ```
 
-These commands use the embedded snapshot plus your configuration and need no
-network or credentials. Lists sort by provider id, then model id. `--reasoning`
-keeps models with at least one supported effort other than `none`. Search uses
-`Catalog::find`, a case-insensitive substring match against `provider/model`;
-no matches exit nonzero. Show splits at the first slash, so model ids can contain
-slashes, and prints all metadata, including compatibility flags.
+Probe resolves credentials and calls `client_for` inside the CLI companion
+process, without NATS, workers, or gateway routing. It streams text, reasoning,
+and tool deltas, then prints usage (including cache and reasoning tokens),
+catalog cost, effort used, and elapsed time. `--tools` requires exactly one
+`get_time` call, supplies the current UTC time, and requests the final answer.
+A provider or protocol failure exits nonzero with its error. `--json` emits
+newline-delimited delta records followed by a `probe_summary`. Without an
+explicit effort, probe starts at `none` and clamps it to the model.
 
-The terminal list uses several short lines per model, with context and output
-limits in tokens, input and output prices in dollars per million tokens, and
-supported efforts. Unknown output limits display as `unknown`. Provider output
-lists wire protocols, authentication kinds, and environment variable names.
-The credential column currently reports `unknown`; use `swarmy auth ls` to
-inspect stored credentials.
+An uninitialized checkout can probe host environment credentials without a
+cluster. A configured cluster must be reachable to preserve store precedence.
+Fake probes use the configured script and model, for example `model = 'scripted'`
+and `swarmy models probe fake/scripted`.
 
-Use the stable `--json` form for scripts. List and search return a JSON array
-of model objects; show returns one object. Each includes `key` (`provider/model`),
-`provider`, every `ModelInfo` field, `supported_efforts`, `effective_api`, and
-`effective_base_url`. The effective fields resolve model overrides against the
-provider defaults. Providers returns an array with `id`, `api`, `auth_kinds`,
-`env_keys`, and `credential`. JSON output never truncates identifiers.
+Doctor's provider section lists every configured catalog provider, credential
+source, local status, store availability, and gateway advertisement. It works
+without a gateway. Store status comes from decrypting records without refreshing
+them; environment and ambient credentials are `unverified`. An unavailable store
+or gateway report is `unknown`, not proof of absence. Advertisements come from
+expiring gateway provider records; `served` requires an unexpired record.
+Doctor does not contact cloud metadata services, so ambient instance roles may
+have no visible local credential hint. Its JSON adds a `providers` array beside
+`checks`; unused providers without credentials do not make doctor fail.
+
+The smoke script is an operator acceptance tool and refuses to run when `CI` is
+set. It first probes one fixed model per real provider, including tool round trips,
+then runs `swarmy run --provider X --model Y 'reply with the word ready'` for each
+configured provider. It continues after failures, prints a Markdown table with
+errors, and exits nonzero if any attempted check fails. Providers with no local
+credential and no stored record report `SKIP (no credential)`. Routed checks
+need the stack, a gateway, and a default image just like ordinary `swarmy run`.
+Restart the gateway after adding credentials so it discovers the new provider.
+
+Use `SWARMY_BIN=/path/to/swarmy` to choose a build and `SWARMY_SMOKE_TIMEOUT=180`
+to set each command's timeout in seconds. Deployment ids or account-specific
+models can override defaults with `SWARMY_SMOKE_MODEL_AZURE`, or the corresponding
+upper-case provider id with hyphens replaced by underscores. For ambient
+instance credentials without a local hint, set the comma-separated
+`SWARMY_SMOKE_PROVIDERS=amazon-bedrock,google-vertex` to force those attempts.
+The script captures command output, redacts recognizable secrets, and prints
+only results and failure diagnostics; it does not read credential files.
 
 ## Custom providers and models
-
-Add entries to `.swarmy/config.toml` (or the user configuration file discovered
-by swarmy). The `custom_providers` table declares or adjusts providers; the
-`providers` list, when set, selects which catalog providers a gateway serves.
-A private OpenAI-compatible endpoint needs no snapshot regeneration:
 
 ```toml
 [custom_providers.private]
@@ -348,36 +201,77 @@ id = "gpt-5.5"
 context_window = 128000
 ```
 
-Provider tables accept `api` and `base_url`. Both are required for a new provider;
-an existing provider retains omitted settings, models, auth kinds, and environment
-names. New providers use their id as their name, advertise API-key auth, and have
-no implicit environment variable names. Catalog definitions do not implement a
-wire client or credential flow; dispatch support still depends on the protocol
-tasks described above.
+Put these entries in `.swarmy/config.toml` or the discovered user configuration.
+Store private endpoint credentials with `swarmy auth set private --file PATH`.
+New provider tables require `api` and `base_url`; existing ones keep omitted
+fields. A top-level `providers = [...]` restricts gateway discovery.
 
-Each model requires `provider` and `id`. Optional fields are `name`, `api`,
-`base_url`, `context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`.
-New models default to their id as name, text input, tool calling enabled, no
-attachments or reasoning, 128000 context tokens, 16384 output tokens, and zero
-price placeholders. Supply actual limits and prices for your endpoint. New
-models inherit the provider's API and base URL unless overridden.
+Models require `provider` and `id`. Optional fields are `name`, `api`, `base_url`,
+`context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`. New
+models default to text input, tool calling, 128000 context tokens, 16384 output
+tokens, no reasoning, and zero placeholder prices. Supply actual values. Existing
+models keep omitted fields; repeated entries apply in file order. Compatibility
+keys merge individually. `reasoning` replaces the effort list (empty disables
+reasoning). `cost` replaces the full object, requiring `input` and `output`;
+omitted cache prices and tiers default to zero and empty.
 
-An existing `provider`/`id` entry retains omitted snapshot fields, including any
-model-specific API or base URL. Explicit fields override them. Multiple entries
-for the same model apply in file order. Compatibility keys merge individually;
-`cost` replaces the complete price object, requiring `input` and `output` and
-defaulting omitted cache prices and tiers to zero and empty. Costs support the
-same `tiers` schema described above. `reasoning` replaces the effort list; an
-empty list disables reasoning. The allowed efforts are `none`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, and `max`.
+API names are `AnthropicMessages`, `OpenAiResponses`, `OpenAiCodexResponses`,
+`OpenAiCompletions`, `GoogleGenerativeAi`, `GoogleVertex`, `BedrockConverse`, and
+`Fake`. Builds need no regeneration for custom models. Dev stack children
+receive the same definitions through `SWARMY_CUSTOM_PROVIDERS` and `SWARMY_MODELS`.
 
-API strings use these exact names: `AnthropicMessages`, `OpenAiResponses`,
-`OpenAiCodexResponses`, `OpenAiCompletions`, `GoogleGenerativeAi`, `GoogleVertex`,
-`BedrockConverse`, and `Fake`. An unknown API fails configuration loading and
-reports the allowed names. A model referring to an undeclared provider also
-fails loading.
+## Catalog metadata and regeneration
 
-`Settings::catalog()` returns the merged, owned catalog without changing the
-embedded snapshot. Selection validation, workers, and gateways call this method
-instead of `Catalog::get()`. `swarmy dev up` passes the same definitions to
-child processes as `SWARMY_CUSTOM_PROVIDERS` and `SWARMY_MODELS` JSON.
+```sh
+make models
+# Equivalent generator command:
+python3 scripts/models/generate.py
+python3 scripts/models/generate.py --check
+python3 -m unittest discover -s scripts/models -v
+```
+
+The Python standard-library generator fetches models.dev and OpenRouter's live
+list, retains tool-capable models from the provider allowlist, applies protocol
+quirks, and writes `crates/swarmy-llm/catalog/<provider>.json`. OpenRouter uses its
+live list; Azure also inherits OpenAI model metadata. ChatGPT models are explicitly
+listed with zero token cost because subscription billing is not per-token.
+Fake fixture models come from configuration.
+
+Commit reviewed JSON changes with the generator. The manifest records source
+SHA-256 hashes and a generation timestamp, retained when sources are unchanged.
+`--check` downloads and regenerates into a temporary directory, rejecting changed,
+missing, or extra files. Upstream changes require review; failures never silently
+use old downloads. Normal Rust builds read only the committed snapshot.
+
+Prices are US dollars per million tokens, including cache reads and writes.
+Context tiers apply above `input_tokens_above`; each tier has `input`, `output`,
+`cache_read`, and `cache_write`. Usage includes cached input within input tokens
+and reasoning within output tokens. Gateway and probe cost calculations account
+for those subsets. OpenRouter dynamic-price aliases carry zero placeholders and
+`compat.dynamic_pricing = true`; their estimates do not mean free inference.
+
+Models can override protocol and endpoint. Reasoning metadata prefers an effort
+list, then a budget range, then a toggle; budgets and toggles expose `none`
+through `high`. The compatibility map carries token fields, developer roles,
+strict tools, thinking/replay formats, and cache options. The implementation was
+informed by the OpenCode and Pi surveys dated 2026-09-19; no JavaScript clients
+or SDKs are vendored.
+
+## Recorded terms decisions
+
+These are the project's decisions from the terms audit dated **2026-09-19**,
+not a new grant of vendor permission:
+
+| Flow | Decision recorded on 2026-09-19 |
+|---|---|
+| Anthropic subscription OAuth and internal console login | Not built. The audit records explicit prohibition of third-party subscription harnesses and OpenCode's removal after a legal request. Use a Console API key. |
+| Existing ChatGPT Codex device flow | Kept as tolerated, not licensed. No written permission was established. The existing OAuth client id is the plan's exception; no new product identity impersonation is added. |
+| GitHub Copilot subscription login | Not built. Reusing VS Code identity is not an authorized integration; a partnership is outside this scope. |
+| Kimi Code OAuth | Not built. The audit directs third-party tools to API keys. |
+| xAI grok-cli OAuth | Not built. No public registration was established and backend rejection was observed in the audit. Use an API key. |
+| OpenCode console login | Not built. Its console flow was unclear and its free tier was restricted to OpenCode. |
+| OpenRouter PKCE | Built as the documented public flow that mints an API key. |
+| Azure CLI Entra tokens | Built through the installed Azure CLI; no embedded Azure client identity. |
+
+Key pools, admission, affinity, failover, image inputs, and expanding the
+models.dev provider allowlist remain future work; see the root `TODO.md`.

@@ -345,16 +345,21 @@ async fn transient_http_errors_retry_and_permanent_errors_do_not() {
     for (status, calls) in [(429, 3), (400, 1), (401, 1)] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(status))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_json(json!({"error":{"message":"provider explanation"}})),
+            )
             .expect(calls)
             .mount(&server)
             .await;
+        let error = retry_client(&server)
+            .request(request("gpt-5.5"))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("provider explanation"));
         assert!(
-            retry_client(&server)
-                .request(request("gpt-5.5"))
-                .try_collect::<Vec<_>>()
-                .await
-                .is_err()
+            matches!(error, Error::ProviderResponse { status: code, .. } if code.as_u16() == status)
         );
     }
 }

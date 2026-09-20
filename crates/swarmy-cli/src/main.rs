@@ -5,6 +5,8 @@ mod dev;
 mod doctor;
 mod image_command;
 mod models;
+mod models_probe_command;
+mod provider_report;
 mod remote;
 mod remote_command;
 mod selection_command;
@@ -144,6 +146,9 @@ fn main() -> anyhow::Result<()> {
     if matches!(
         cli.command,
         Command::Auth { .. }
+            | Command::Models {
+                command: models::Command::Probe(_)
+            }
             | Command::Remote {
                 command: remote_command::Command::Status
             }

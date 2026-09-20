@@ -21,6 +21,8 @@ pub enum Command {
     Search { pattern: String },
     /// List provider protocols, authentication kinds, and environment variables
     Providers,
+    /// Send a small request directly to a provider, bypassing gateway routing
+    Probe(crate::models_probe_command::Args),
 }
 
 #[derive(Serialize)]
@@ -59,6 +61,7 @@ struct ProviderRow<'a> {
 pub fn run(command: Command, json: bool) -> anyhow::Result<()> {
     let catalog = swarmy_config::Settings::load()?.settings.catalog()?;
     match command {
+        Command::Probe(_) => unreachable!("probes run in swarmy-session"),
         Command::Ls {
             provider,
             reasoning,
