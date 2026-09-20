@@ -125,7 +125,16 @@ impl Settings {
                         family: None,
                         api: Some(Api::Fake),
                         base_url: None,
-                        reasoning: None,
+                        // A scripted model accepts every effort so fixtures never see a clamp notice.
+                        reasoning: Some(ReasoningOptions::Effort(vec![
+                            ReasoningEffort::None,
+                            ReasoningEffort::Minimal,
+                            ReasoningEffort::Low,
+                            ReasoningEffort::Medium,
+                            ReasoningEffort::High,
+                            ReasoningEffort::Xhigh,
+                            ReasoningEffort::Max,
+                        ])),
                         tool_call: true,
                         attachment: false,
                         input_modalities: vec!["text".into()],
