@@ -1,0 +1,1555 @@
+{
+  "api": "GoogleVertex",
+  "auth_kinds": [
+    "adc",
+    "service_account"
+  ],
+  "base_url": "",
+  "env_keys": [
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_VERTEX_PROJECT",
+    "GOOGLE_VERTEX_LOCATION"
+  ],
+  "id": "google-vertex",
+  "models": {
+    "claude-fable-5-1@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.25,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5-1@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5.1",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-01",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-fable-5@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-09",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-haiku-4-5@20251001": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1,
+        "output": 5,
+        "tiers": []
+      },
+      "family": "claude-haiku",
+      "id": "claude-haiku-4-5@20251001",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Haiku 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-10-15",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-1@20250805": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+        "input": 15,
+        "output": 75,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-1@20250805",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 32000
+      },
+      "name": "Claude Opus 4.1",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-08-05",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "claude-opus-4-5@20251101": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-5@20251101",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Opus 4.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-01",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-6@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 12.5,
+            "input": 10,
+            "input_tokens_above": 200000,
+            "output": 37.5
+          }
+        ]
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-6@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-05",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-7@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 12.5,
+            "input": 10,
+            "input_tokens_above": 200000,
+            "output": 37.5
+          }
+        ]
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-7@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.7",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-04-16",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-8@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 12.5,
+            "input": 10,
+            "input_tokens_above": 200000,
+            "output": 37.5
+          }
+        ]
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-8@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.8",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-05-28",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4@20250514": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+        "input": 15,
+        "output": 75,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4@20250514",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 32000
+      },
+      "name": "Claude Opus 4",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-05-22",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "claude-opus-5@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-5@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-5@20250929": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-5@20250929",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-09-29",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-6@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": [
+          {
+            "cache_read": 0.6,
+            "cache_write": 7.5,
+            "input": 6,
+            "input_tokens_above": 200000,
+            "output": 22.5
+          }
+        ]
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-6@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Sonnet 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-17",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4@20250514": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4@20250514",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-05-22",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "claude-sonnet-5@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-5@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Sonnet 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-30",
+      "status": null,
+      "tool_call": true
+    },
+    "deepseek-ai/deepseek-v3.1-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.06,
+        "cache_write": 0,
+        "input": 0.6,
+        "output": 1.7,
+        "tiers": []
+      },
+      "family": "deepseek",
+      "id": "deepseek-ai/deepseek-v3.1-maas",
+      "input_modalities": [
+        "text",
+        "pdf"
+      ],
+      "limit": {
+        "context": 163840,
+        "output": 32768
+      },
+      "name": "DeepSeek V3.1",
+      "reasoning": "toggle",
+      "release_date": "2025-08-28",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "deepseek-ai/deepseek-v3.2-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.056,
+        "cache_write": 0,
+        "input": 0.56,
+        "output": 1.68,
+        "tiers": []
+      },
+      "family": "deepseek",
+      "id": "deepseek-ai/deepseek-v3.2-maas",
+      "input_modalities": [
+        "text",
+        "pdf"
+      ],
+      "limit": {
+        "context": 163840,
+        "output": 65536
+      },
+      "name": "DeepSeek V3.2",
+      "reasoning": "toggle",
+      "release_date": "2025-12-17",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gemini-2.5-flash": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.03,
+        "cache_write": 0,
+        "input": 0.3,
+        "output": 2.5,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-2.5-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 2.5 Flash",
+      "reasoning": {
+        "budget_tokens": {
+          "max": 24576,
+          "min": 0
+        }
+      },
+      "release_date": "2025-06-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-2.5-flash-lite": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.01,
+        "cache_write": 0,
+        "input": 0.1,
+        "output": 0.4,
+        "tiers": []
+      },
+      "family": "gemini-flash-lite",
+      "id": "gemini-2.5-flash-lite",
+      "input_modalities": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 2.5 Flash-Lite",
+      "reasoning": {
+        "budget_tokens": {
+          "max": 24576,
+          "min": 512
+        }
+      },
+      "release_date": "2025-06-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-2.5-pro": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.125,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": [
+          {
+            "cache_read": 0.25,
+            "cache_write": 0,
+            "input": 2.5,
+            "input_tokens_above": 200000,
+            "output": 15
+          }
+        ]
+      },
+      "family": "gemini-pro",
+      "id": "gemini-2.5-pro",
+      "input_modalities": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 2.5 Pro",
+      "reasoning": {
+        "budget_tokens": {
+          "max": 32768,
+          "min": 128
+        }
+      },
+      "release_date": "2025-06-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3-flash-preview": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.05,
+        "cache_write": 0,
+        "input": 0.5,
+        "output": 3,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-3-flash-preview",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3 Flash Preview",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-12-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.1-flash-lite": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 1.5,
+        "tiers": []
+      },
+      "family": "gemini-flash-lite",
+      "id": "gemini-3.1-flash-lite",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.1 Flash Lite",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-05-07",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.1-flash-lite-preview": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 1.5,
+        "tiers": []
+      },
+      "family": "gemini-flash-lite",
+      "id": "gemini-3.1-flash-lite-preview",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.1 Flash Lite Preview",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-03-03",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gemini-3.1-pro-preview": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 0,
+        "input": 2,
+        "output": 12,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 0,
+            "input": 4,
+            "input_tokens_above": 200000,
+            "output": 18
+          }
+        ]
+      },
+      "family": "gemini-pro",
+      "id": "gemini-3.1-pro-preview",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.1 Pro Preview",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-02-19",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 0,
+        "input": 2,
+        "output": 12,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 0,
+            "input": 4,
+            "input_tokens_above": 200000,
+            "output": 18
+          }
+        ]
+      },
+      "family": "gemini-pro",
+      "id": "gemini-3.1-pro-preview-customtools",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.1 Pro Preview Custom Tools",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-02-19",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.5-flash": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.15,
+        "cache_write": 0,
+        "input": 1.5,
+        "output": 9,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-3.5-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.5 Flash",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-05-19",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.5-flash-lite": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.03,
+        "cache_write": 0,
+        "input": 0.3,
+        "output": 2.5,
+        "tiers": []
+      },
+      "family": "gemini-flash-lite",
+      "id": "gemini-3.5-flash-lite",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.5 Flash Lite",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-07-21",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.6-flash": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.075,
+        "cache_write": 0,
+        "input": 0.75,
+        "output": 3.75,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-3.6-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.6 Flash",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-07-21",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.7-flash": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.075,
+        "cache_write": 0,
+        "input": 0.75,
+        "output": 3.75,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-3.7-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.7 Flash",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-08-13",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-3.8-flash": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.075,
+        "cache_write": 0,
+        "input": 0.75,
+        "output": 3.75,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-3.8-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini 3.8 Flash",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-09-02",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-flash-latest": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.15,
+        "cache_write": 0,
+        "input": 1.5,
+        "output": 9,
+        "tiers": []
+      },
+      "family": "gemini-flash",
+      "id": "gemini-flash-latest",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini Flash Latest",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-08-13",
+      "status": null,
+      "tool_call": true
+    },
+    "gemini-flash-lite-latest": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 1.5,
+        "tiers": []
+      },
+      "family": "gemini-flash-lite",
+      "id": "gemini-flash-lite-latest",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 65536
+      },
+      "name": "Gemini Flash-Lite Latest",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-07-21",
+      "status": null,
+      "tool_call": true
+    },
+    "meta/llama-3.3-70b-instruct-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.72,
+        "output": 0.72,
+        "tiers": []
+      },
+      "family": "llama",
+      "id": "meta/llama-3.3-70b-instruct-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 8192
+      },
+      "name": "Llama 3.3 70B Instruct",
+      "reasoning": null,
+      "release_date": "2025-04-29",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "meta/llama-4-maverick-17b-128e-instruct-maas": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.35,
+        "output": 1.15,
+        "tiers": []
+      },
+      "family": "llama",
+      "id": "meta/llama-4-maverick-17b-128e-instruct-maas",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 524288,
+        "output": 8192
+      },
+      "name": "Llama 4 Maverick 17B 128E Instruct",
+      "reasoning": null,
+      "release_date": "2025-04-29",
+      "status": null,
+      "tool_call": true
+    },
+    "moonshotai/kimi-k2-thinking-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.06,
+        "cache_write": 0,
+        "input": 0.6,
+        "output": 2.5,
+        "tiers": []
+      },
+      "family": "kimi-thinking",
+      "id": "moonshotai/kimi-k2-thinking-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 262144
+      },
+      "name": "Kimi K2 Thinking",
+      "reasoning": "toggle",
+      "release_date": "2025-11-13",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "openai/gpt-oss-120b-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.09,
+        "output": 0.36,
+        "tiers": []
+      },
+      "family": "gpt-oss",
+      "id": "openai/gpt-oss-120b-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 131072,
+        "output": 32768
+      },
+      "name": "GPT OSS 120B",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-08-05",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-oss-20b-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.007,
+        "cache_write": 0,
+        "input": 0.07,
+        "output": 0.25,
+        "tiers": []
+      },
+      "family": "gpt-oss",
+      "id": "openai/gpt-oss-20b-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 131072,
+        "output": 32768
+      },
+      "name": "GPT OSS 20B",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-08-05",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "qwen/qwen3-235b-a22b-instruct-2507-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.22,
+        "output": 0.88,
+        "tiers": []
+      },
+      "family": "qwen",
+      "id": "qwen/qwen3-235b-a22b-instruct-2507-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 16384
+      },
+      "name": "Qwen3 235B A22B Instruct",
+      "reasoning": "toggle",
+      "release_date": "2025-08-13",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "xai/grok-4.1-fast-non-reasoning": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.05,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "xai/grok-4.1-fast-non-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 30000
+      },
+      "name": "Grok 4.1 Fast",
+      "reasoning": null,
+      "release_date": "2025-11-19",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "xai/grok-4.1-fast-reasoning": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.05,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "xai/grok-4.1-fast-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 30000
+      },
+      "name": "Grok 4.1 Fast (Reasoning)",
+      "reasoning": "toggle",
+      "release_date": "2025-11-19",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "xai/grok-4.20-non-reasoning": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 2.5,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 0,
+            "input": 2.5,
+            "input_tokens_above": 200000,
+            "output": 5
+          }
+        ]
+      },
+      "family": "grok",
+      "id": "xai/grok-4.20-non-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 2000000,
+        "output": 30000
+      },
+      "name": "Grok 4.20 (Non-Reasoning)",
+      "reasoning": null,
+      "release_date": "2026-03-09",
+      "status": null,
+      "tool_call": true
+    },
+    "xai/grok-4.20-reasoning": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 2.5,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 0,
+            "input": 2.5,
+            "input_tokens_above": 200000,
+            "output": 5
+          }
+        ]
+      },
+      "family": "grok",
+      "id": "xai/grok-4.20-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 2000000,
+        "output": 30000
+      },
+      "name": "Grok 4.20 (Reasoning)",
+      "reasoning": "toggle",
+      "release_date": "2026-03-09",
+      "status": null,
+      "tool_call": true
+    },
+    "xai/grok-4.3": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 2.5,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 0,
+            "input": 2.5,
+            "input_tokens_above": 200000,
+            "output": 5
+          }
+        ]
+      },
+      "family": "grok",
+      "id": "xai/grok-4.3",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 30000
+      },
+      "name": "Grok 4.3",
+      "reasoning": "toggle",
+      "release_date": "2026-04-17",
+      "status": "beta",
+      "tool_call": true
+    },
+    "xai/grok-4.6": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 2,
+        "output": 6,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 0,
+            "input": 4,
+            "input_tokens_above": 200000,
+            "output": 12
+          }
+        ]
+      },
+      "family": "grok",
+      "id": "xai/grok-4.6",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 524288,
+        "output": 500000
+      },
+      "name": "Grok 4.6",
+      "reasoning": "toggle",
+      "release_date": "2026-08-12",
+      "status": "beta",
+      "tool_call": true
+    },
+    "zai-org/glm-4.7-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.06,
+        "cache_write": 0,
+        "input": 0.6,
+        "output": 2.2,
+        "tiers": []
+      },
+      "family": "glm",
+      "id": "zai-org/glm-4.7-maas",
+      "input_modalities": [
+        "text",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 128000
+      },
+      "name": "GLM-4.7",
+      "reasoning": "toggle",
+      "release_date": "2026-01-06",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "zai-org/glm-5-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 0,
+        "input": 1,
+        "output": 3.2,
+        "tiers": []
+      },
+      "family": "glm",
+      "id": "zai-org/glm-5-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 202752,
+        "output": 131072
+      },
+      "name": "GLM-5",
+      "reasoning": "toggle",
+      "release_date": "2026-02-11",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "zai-org/glm-5.2-maas": {
+      "attachment": false,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.14,
+        "cache_write": 0,
+        "input": 1.4,
+        "output": 4.4,
+        "tiers": []
+      },
+      "family": "glm",
+      "id": "zai-org/glm-5.2-maas",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 64000
+      },
+      "name": "GLM-5.2",
+      "reasoning": "toggle",
+      "release_date": "2026-06-13",
+      "status": "beta",
+      "tool_call": true
+    }
+  },
+  "name": "Vertex"
+}

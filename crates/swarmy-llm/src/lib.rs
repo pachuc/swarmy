@@ -1,6 +1,7 @@
 //! Shared inference contracts and subscription-backed `ChatGPT` inference.
 
 pub mod auth;
+pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
 pub mod responses;
@@ -8,7 +9,49 @@ pub mod responses;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{collections::BTreeMap, sync::Arc};
 use swarmy_core::{Message, Part, RequestId, SessionId};
+
+use auth::CredentialStore;
+use catalog::{Api, ModelInfo, ProviderInfo};
+
+/// Resolved credentials for a protocol client. Cloud credentials can add variants.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum ClientAuth {
+    None,
+    ApiKey(String),
+    Bearer(String),
+    ChatGpt(Arc<dyn CredentialStore>),
+    Headers(BTreeMap<String, String>),
+}
+
+/// Construct a client for the catalog's selected wire protocol.
+///
+/// # Errors
+/// Returns `Unsupported` for protocols awaiting implementation, or a credential
+/// or HTTP configuration error when constructing the `ChatGPT` client.
+pub fn client_for(
+    provider: &ProviderInfo,
+    model: &ModelInfo,
+    auth: ClientAuth,
+) -> Result<Arc<dyn Provider>, Error> {
+    let api = model.api.unwrap_or(provider.api);
+    // Keep separate arms so protocol implementations can land independently.
+    match api {
+        Api::AnthropicMessages => Err(Error::Unsupported(Api::AnthropicMessages)),
+        Api::OpenAiResponses => Err(Error::Unsupported(Api::OpenAiResponses)),
+        Api::OpenAiCodexResponses => match auth {
+            ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
+            _ => Err(Error::Credentials("ChatGPT requires a credential store")),
+        },
+        Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
+        Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
+        Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
+        Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
+        Api::Fake => Err(Error::Unsupported(Api::Fake)),
+    }
+}
 
 /// Durable inference work, shared by step workers and gateways.
 /// `request_id` must equal `RequestId::for_step(session_id, step)`.
@@ -107,6 +150,8 @@ pub trait Provider: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unsupported provider API: {0:?}")]
+    Unsupported(Api),
     #[error("credential I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid JSON: {0}")]
@@ -132,6 +177,42 @@ pub enum Error {
 #[cfg(test)]
 mod job_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn catalog_dispatch_constructs_chatgpt_and_rejects_other_protocols() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("chatgpt").unwrap();
+        let model = provider.models.values().next().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(auth::FileCredentialStore::new(
+            directory.path().join("auth.json"),
+        ));
+        assert!(client_for(provider, model, ClientAuth::ChatGpt(store)).is_ok());
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::Credentials(_))
+        ));
+        for provider in catalog
+            .providers()
+            .filter(|provider| provider.api != Api::OpenAiCodexResponses)
+        {
+            let model = provider.models.values().next().unwrap_or(model);
+            assert!(matches!(
+                client_for(provider, model, ClientAuth::None),
+                Err(Error::Unsupported(api)) if api == model.api.unwrap_or(provider.api)
+            ));
+        }
+        let router = catalog.provider("openrouter").unwrap();
+        let claude = router
+            .models
+            .values()
+            .find(|model| model.api == Some(Api::AnthropicMessages))
+            .unwrap();
+        assert!(matches!(
+            client_for(router, claude, ClientAuth::None),
+            Err(Error::Unsupported(Api::AnthropicMessages))
+        ));
+    }
 
     #[test]
     fn inference_jobs_with_tool_schemas_round_trip() {

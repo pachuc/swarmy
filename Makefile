@@ -3,6 +3,7 @@
 #   make install       build and install every swarmy binary into ~/.cargo/bin
 #   make install-node  also install swarmyd (only useful on a machine with root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
+#   make models        regenerate the provider and model catalog
 #   make check         the three CI commands: fmt, test, clippy
 #   make uninstall     remove the installed swarmy binaries
 #
@@ -19,7 +20,7 @@ ifeq ($(strip $(FDB_LIB_DIR)),)
 FDB_LIB_DIR := $(firstword $(foreach dir,$(FDB_CANDIDATES),$(if $(wildcard $(dir)/libfdb_c.so $(dir)/libfdb_c.dylib),$(dir),)))
 endif
 
-.PHONY: help install install-node dev-tools check uninstall fdb-check
+.PHONY: help install install-node dev-tools check uninstall fdb-check models
 
 help:
 	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
@@ -48,6 +49,9 @@ install-node: install
 
 dev-tools:
 	scripts/install-dev-tools.sh
+
+models:
+	python3 scripts/models/generate.py
 
 check:
 	$(CARGO) fmt --all --check

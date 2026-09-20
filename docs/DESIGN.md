@@ -879,17 +879,49 @@ which is a further reason memory pause matters.
 
 ## 9. Inference gateway
 
+The provider catalog is generated from models.dev and OpenRouter's live model
+list by `scripts/models/generate.py` (`make models`). Only tool-capable models
+from the provider allowlist are retained. JSON snapshots and source hashes are
+committed under `crates/swarmy-llm/catalog`; `--check` regenerates in a temporary
+directory and rejects differences. Builds never fetch model metadata.
+
 The provider work follows the inference-providers plan. Provider authentication
 uses the kinds each vendor permits: API keys for Anthropic, and the existing
 ChatGPT device login. Anthropic subscription OAuth and product identity
 impersonation are not implemented. ChatGPT subscription access through a
 third-party harness is treated as tolerated, not licensed.
 
-Provider normalization is written fresh in Rust in the `swarmy-llm` crate as
-a unified request and response type with adapters. Most providers reduce to
-four wire dialects: Anthropic Messages, OpenAI Chat and Responses, Gemini, and
-OpenAI-compatible generic. Bedrock and Vertex are auth and endpoint variants
-of the first three.
+| Provider id | Wire protocol | Auth | Notes |
+|---|---|---|---|
+| `anthropic` | Anthropic Messages | API key | Subscription OAuth is prohibited by Anthropic's terms for third-party harnesses and is not built. |
+| `openai` | OpenAI Responses | API key | Platform API at api.openai.com. |
+| `chatgpt` | OpenAI Responses (Codex backend) | Codex OAuth device login | Existing provider; tolerated by OpenAI, not licensed. |
+| `xai` | OpenAI Responses | API key | api.x.ai. |
+| `meta` | OpenAI Responses | API key | Muse Spark at api.meta.ai. |
+| `openrouter` | OpenAI Chat Completions; Anthropic Messages for `anthropic/*` | API key or PKCE login that mints a key | The live catalog supplies all models advertising tools. |
+| `azure` | OpenAI Responses | API key or Azure CLI Entra token | Azure OpenAI deployments; includes copies of every OpenAI catalog model. |
+| `amazon-bedrock` | Bedrock Converse stream | AWS credential chain or bearer token | SigV4 through the official AWS Rust SDK. |
+| `google` | Gemini generateContent | API key | Gemini API. |
+| `google-vertex` | Gemini generateContent on Vertex | Application Default Credentials or service account key | Cloud project and location configure the endpoint. |
+| `google-vertex-anthropic` | Anthropic Messages on Vertex | Same as `google-vertex` | |
+| `fake` | Scripted | None | Existing scripted provider is unchanged. |
+
+Provider normalization is written in Rust in `swarmy-llm`. `catalog::Catalog`
+parses the embedded provider files once behind `OnceLock` and supports exact
+provider/model lookup and case-insensitive substring search. Models carry
+protocol overrides, prices per million tokens with context tiers, limits,
+modalities, reasoning options, and an open `compat` quirk map. Reasoning effort
+uses `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; clamping keeps
+a supported request, then tries the next higher supported level, then the next
+lower. `xhigh` and `max` require explicit support; models without reasoning use
+`none`.
+
+`client_for(provider, model, auth)` is the dispatch point for protocol clients.
+The catalog task wires the existing ChatGPT client; all other arms return
+`Error::Unsupported`, including a fake placeholder. Later tasks implement the
+protocols and credential kinds in the table. The six ChatGPT models are
+hand-listed with zero token costs. See [providers.md](providers.md) for the
+environment variables, schema details, and regeneration steps.
 
 **First provider: ChatGPT subscription via the Codex backend.** Slice 1
 uses ChatGPT subscription inference, not the OpenAI platform API. Requests go
