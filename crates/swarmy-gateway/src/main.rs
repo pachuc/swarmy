@@ -60,10 +60,19 @@ async fn run(config: config::Config) -> Result<()> {
     )
     .await?;
     let provider = match config.provider {
-        config::ConfiguredProvider::ChatGpt(path) => {
-            Arc::new(swarmy_llm::chatgpt::ChatGptProvider::new(Arc::new(
-                credentials::ClusterCredentials::new(store.clone(), &path).await?,
-            ))?) as Arc<dyn Provider>
+        config::ConfiguredProvider::ChatGpt {
+            credential_file,
+            model,
+        } => {
+            let (provider, model) = config::chatgpt_catalog(&model)?;
+            let credentials =
+                credentials::ClusterCredentials::new(store.clone(), &credential_file).await?;
+            swarmy_llm::client_for(
+                provider,
+                model,
+                swarmy_llm::ClientAuth::ChatGpt(Arc::new(credentials)),
+            )
+            .context("cannot build the ChatGPT inference client")?
         }
         config::ConfiguredProvider::Fake(provider) => provider,
     };
@@ -163,7 +172,9 @@ impl Gateway {
     }
 
     async fn infer(&self, job: &InferenceJob) -> Result<Response, swarmy_llm::Error> {
-        let mut stream = self.provider.request(job.request.clone());
+        let mut stream = self
+            .provider
+            .request_for_session(job.request.clone(), job.session_id);
         let mut response = None;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
