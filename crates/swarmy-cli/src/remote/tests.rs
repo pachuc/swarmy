@@ -83,6 +83,7 @@ struct FakeHost {
     images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
     services: Cell<usize>,
     credentials: RefCell<Vec<std::path::PathBuf>>,
+    keyrings: RefCell<Vec<std::path::PathBuf>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
 }
 
@@ -96,6 +97,9 @@ impl Host for FakeHost {
         self.services.set(self.services.get() + 1);
         if let Some(path) = &options.credential {
             self.credentials.borrow_mut().push(path.clone());
+        }
+        if let Some(path) = &options.keyring {
+            self.keyrings.borrow_mut().push(path.clone());
         }
         std::future::ready(Ok(()))
     }
@@ -462,7 +466,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
     )
     .await
     .unwrap();
-    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO)
+    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
         .await
         .unwrap();
     let node = state.require("demo").unwrap();
@@ -526,7 +530,7 @@ async fn failed_join_retains_child_for_cleanup() {
         ..Default::default()
     };
     assert!(
-        super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO)
+        super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
             .await
             .is_err()
     );
@@ -630,7 +634,16 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
             .borrow_mut()
             .push_back(Some(instance("running")));
         let host = FakeHost::default();
-        let options = super::services::Options::new(&settings, copy, None).unwrap();
+        let keyring = dir.path().join("keyring");
+        swarmy_config::Keyring::generate_at(&keyring).unwrap();
+        let options = super::services::Options::with_keyring(
+            &settings,
+            copy,
+            None,
+            copy.then_some(keyring.clone()),
+        )
+        .unwrap();
+        assert_eq!(options.keyring, copy.then_some(keyring.clone()));
         up::run(
             &cloud,
             &host,
@@ -643,6 +656,10 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
         .await
         .unwrap();
         assert_eq!(host.services.get(), 1);
+        assert_eq!(
+            *host.keyrings.borrow(),
+            if copy { vec![keyring] } else { vec![] }
+        );
         assert_eq!(
             *host.credentials.borrow(),
             if copy { vec![auth] } else { vec![] }
@@ -662,4 +679,62 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
         chatgpt.remote.services = swarmy_config::RemoteServices::Laptop;
         assert!(super::services::Options::new(&chatgpt, true, None).is_err());
     }
+}
+
+#[tokio::test]
+async fn add_node_copies_both_secrets_only_when_requested() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(instance("running")),
+        Some(instance("running")),
+    ]);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        "demo",
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
+        .await
+        .unwrap();
+    assert_eq!(host.services.get(), 0);
+    assert!(host.keyrings.borrow().is_empty());
+    assert!(host.credentials.borrow().is_empty());
+    let auth = dir.path().join("auth.json");
+    let keyring = dir.path().join("keyring");
+    std::fs::write(&auth, "fixture").unwrap();
+    swarmy_config::Keyring::generate_at(&keyring).unwrap();
+    let settings = swarmy_config::Settings {
+        remote: swarmy_config::RemoteSettings {
+            services: swarmy_config::RemoteServices::Node,
+            ..settings()
+        },
+        credential_file: auth.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let options =
+        super::services::Options::with_keyring(&settings, true, None, Some(keyring.clone()))
+            .unwrap();
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        "demo",
+        Duration::ZERO,
+        Some(&options),
+    )
+    .await
+    .unwrap();
+    assert_eq!(host.services.get(), 1);
+    assert_eq!(*host.credentials.borrow(), vec![auth]);
+    assert_eq!(*host.keyrings.borrow(), vec![keyring]);
 }

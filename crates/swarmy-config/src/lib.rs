@@ -1,4 +1,6 @@
 //! Shared configuration for services and command-line programs.
+pub mod keyring;
+pub use keyring::Keyring;
 mod exports;
 mod object;
 mod remote;
@@ -16,6 +18,8 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("keyring: {0}")]
+    Keyring(&'static str),
     #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
     MissingImage,
     #[error("remote configuration: {0}")]

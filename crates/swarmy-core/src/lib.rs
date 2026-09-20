@@ -74,3 +74,6 @@ pub use timer::{
     CancelTimerArguments, MAX_AGENT_TIMERS, MAX_TIMER_NOTE_BYTES, SetTimerArguments, TimerRecord,
     TimerStatus,
 };
+
+pub mod credential;
+pub use credential::{CredentialKind, CredentialRecord, CredentialScope, CredentialStatus};
