@@ -302,5 +302,6 @@ fn usage(value: &Value) -> TokenUsage {
             .as_u64()
             .unwrap_or(0),
         total_tokens: value["total_tokens"].as_u64().unwrap_or(0),
+        cache_write_input_tokens: 0,
     }
 }

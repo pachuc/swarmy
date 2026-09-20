@@ -22,7 +22,9 @@ large_stack_frames = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }
-aws-config = "1"
+aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-smithy-types = { version = "1", default-features = false }
 aws-sdk-ec2 = "1"
 aws-sdk-ssm = "1"
 portable-pty = "0.9"
@@ -91,3 +93,8 @@ debug = false
 # client so release builds fit on the four-core development node too.
 [profile.release.package.aws-sdk-ec2]
 opt-level = 0
+
+# Bedrock is network bound; keep its generated client inexpensive to build.
+[profile.dev.package.aws-sdk-bedrockruntime]
+opt-level = 0
+debug = false

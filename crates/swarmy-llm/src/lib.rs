@@ -1,10 +1,12 @@
 //! Shared inference contracts and subscription-backed `ChatGPT` inference.
 
+pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
 pub mod responses;
+pub mod retry;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,10 @@ use catalog::{Api, ModelInfo, ProviderInfo};
 #[non_exhaustive]
 pub enum ClientAuth {
     None,
+    /// Provider settings from the credential record, including `region` and `bearer_token`.
+    Bedrock {
+        extra: BTreeMap<String, String>,
+    },
     ApiKey(String),
     Bearer(String),
     ChatGpt(Arc<dyn CredentialStore>),
@@ -30,7 +36,7 @@ pub enum ClientAuth {
 ///
 /// # Errors
 /// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing the `ChatGPT` client.
+/// or configuration error when constructing a client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
@@ -48,7 +54,10 @@ pub fn client_for(
         Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
-        Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
+        Api::BedrockConverse => Ok(Arc::new(api::bedrock::BedrockProvider::new(
+            model.clone(),
+            auth,
+        )?)),
         Api::Fake => Err(Error::Unsupported(Api::Fake)),
     }
 }
@@ -97,6 +106,9 @@ pub struct TokenUsage {
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+    /// Input written to the prompt cache, when reported separately.
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,11 +172,18 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
-    #[error("invalid ChatGPT credentials: {0}")]
+    #[error("HTTP request failed with retryable status {status}")]
+    Retryable {
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+    },
+    #[error("context overflow: {0}")]
+    ContextOverflow(String),
+    #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
-    #[error("invalid Responses stream: {0}")]
+    #[error("invalid provider protocol: {0}")]
     Protocol(String),
     #[error("device login timed out after 15 minutes")]
     LoginTimeout,
@@ -192,10 +211,12 @@ mod job_tests {
             client_for(provider, model, ClientAuth::None),
             Err(Error::Credentials(_))
         ));
-        for provider in catalog
-            .providers()
-            .filter(|provider| provider.api != Api::OpenAiCodexResponses)
-        {
+        for provider in catalog.providers().filter(|provider| {
+            !matches!(
+                provider.api,
+                Api::OpenAiCodexResponses | Api::BedrockConverse
+            )
+        }) {
             let model = provider.models.values().next().unwrap_or(model);
             assert!(matches!(
                 client_for(provider, model, ClientAuth::None),
