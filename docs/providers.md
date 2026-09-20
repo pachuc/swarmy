@@ -269,3 +269,48 @@ Without this flag, additional nodes run only `swarmyd` and receive neither
 secret. Ordinary checkout copying excludes the configured credential and
 keyring paths. Use the same cluster key on the CLI and every gateway.
 ||||||| 758da49
+
+## Choosing a model
+
+New ephemeral sessions accept provider, model, and reasoning effort overrides:
+
+```sh
+swarmy run 'Review this repository' --model openai/gpt-5.5 --effort max
+swarmy chat --provider openai --model gpt-5.5 --effort high
+swarmy agent create tommy --provider openrouter --model anthropic/claude-sonnet-4-6
+swarmy agent set tommy --effort medium
+swarmy agent set tommy --model default
+```
+
+A bare model id uses the selected provider, or the stack provider when omitted.
+The `provider/model` shorthand splits at the first slash. An explicit provider
+must agree with that prefix, except when the full model id exists under that
+provider, as with OpenRouter's `anthropic/claude-sonnet-4.6`.
+OpenRouter accepts dashed version aliases such as `anthropic/claude-sonnet-4-6`
+and stores the matching canonical catalog id `anthropic/claude-sonnet-4.6`.
+Unknown selections show up to five catalog suggestions. The CLI currently uses
+the embedded catalog; custom catalog validation will arrive with settings overlays.
+
+Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+At request time the worker clamps effort to the model's supported scale and
+records the first clamp in the session log. Session overrides take precedence
+over agent overrides, which take precedence over stack defaults. Overrides remain
+in the session across later turns. Agent updates affect subsequent requests.
+`agent set --provider default`, `--model default`, and `--effort default` clear
+individual overrides. A cleared field inherits the stack setting independently;
+choose a compatible provider and model together when changing providers.
+
+Inference flags apply only to a new ephemeral session. With `--agent`, configure
+the named agent instead. Resuming a session id uses its stored selection.
+`session show` marks inherited values, `session ls` includes `provider/model`,
+and the chat status header shows provider, model, and effort. `agent show` marks
+unset agent fields as stack defaults. With `--json`, `session show` emits a
+`session_selection` record containing stored overrides and resolved values before
+the event rows.
+
+Gateways advertise availability in an expiring `("gateway_provider", provider)`
+record, refreshed every 30 seconds. The store exposes `put_gateway_provider` with
+`GatewayProvider { expires_at }` and `gateway_serves`. The parallel gateway task
+owns startup and refresh calls. A missing advertisement produces
+`no gateway serves provider X; run swarmy auth set X or start a gateway with it`
+in the session log. The scripted `fake` provider needs no credential advertisement.

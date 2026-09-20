@@ -53,3 +53,11 @@ into Idle set that timestamp. Each candidate is rechecked in its closure
 transaction, so a concurrent wakeup either wins first or observes a completed
 session. An old Idle session without timestamp metadata starts its retention
 clock when the sweep first observes it. Active and named sessions remain open.
+
+Named agents store optional `provider`, `model`, and `reasoning_effort` fields.
+Unset fields inherit the corresponding stack defaults independently. Set them
+with `agent create` or `agent set`; `agent set --provider default`,
+`--model default`, or `--effort default` clears that override. These updates
+preserve the agent's identity, computer, and sessions and apply to the next
+inference request. Ephemeral sessions instead persist an `inference` selection
+when created. See [choosing a model](providers.md#choosing-a-model).

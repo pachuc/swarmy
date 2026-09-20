@@ -73,7 +73,9 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
             settings: GenerationSettings::default(),
             tools,
         },
-        summarize_at_tokens: 300_000,
+        summarize_at_tokens: Some(300_000),
+        model_context_window_tokens: None,
+        catalog: swarmy_llm::catalog::Catalog::merged(&[]),
         memory_dir: "/home/agent/memory".into(),
         memory_max_bytes: 32768,
         kill_point: None,
@@ -101,6 +103,13 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
         .collect();
     vec![
         Event::InferenceCompleted {
+            provider: String::new(),
+            model: String::new(),
+            effort_used: None,
+            usage: swarmy_core::TokenUsage::default(),
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
             seq: 0,
             request_id: RequestId::for_step(id, 1),
             message: Message {
@@ -158,6 +167,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 state: SessionState::Runnable,
                 head_seq: 0,
                 snapshot_ref: None,
+                inference: swarmy_core::InferenceSelection::default(),
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
                 plan: Vec::new(),
@@ -281,6 +291,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
                 state: SessionState::Runnable,
                 head_seq: 0,
                 snapshot_ref: None,
+                inference: swarmy_core::InferenceSelection::default(),
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
                 plan: Vec::new(),
@@ -337,3 +348,43 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
 }
 
 mod agent_settings;
+
+#[test]
+fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
+    let mut config = config(
+        String::new(),
+        String::new(),
+        "context_fixture",
+        Arc::default(),
+    );
+    let mut model = swarmy_llm::catalog::Catalog::get()
+        .provider("chatgpt")
+        .unwrap()
+        .models
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    model.id = "small-context".into();
+    model.limit.context = 1000;
+    config.catalog = swarmy_llm::catalog::Catalog::merged(&[swarmy_llm::catalog::CustomModel {
+        provider: "fake".into(),
+        model,
+    }]);
+    config.summarize_at_tokens = None;
+    assert_eq!(
+        config.summarization_threshold("fake", "small-context"),
+        Some(750)
+    );
+    assert_eq!(config.summarization_threshold("fake", "unknown"), None);
+    config.model_context_window_tokens = Some(2000);
+    assert_eq!(
+        config.summarization_threshold("fake", "small-context"),
+        Some(1500)
+    );
+    config.summarize_at_tokens = Some(100);
+    assert_eq!(
+        config.summarization_threshold("fake", "small-context"),
+        Some(100)
+    );
+}

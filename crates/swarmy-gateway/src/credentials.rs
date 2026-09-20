@@ -18,16 +18,21 @@ pub struct ClusterCredentials {
 }
 
 impl ClusterCredentials {
-    pub async fn new(store: Store, path: &str) -> anyhow::Result<Self> {
+    /// Open cluster credentials with the legacy file as an absent-record fallback.
+    /// # Errors
+    /// Returns unavailable keys or invalid stored credentials.
+    pub async fn new(store: Store, path: &str) -> crate::Result<Self> {
         let keyring = match Keyring::load() {
             Ok(key) => Some(key),
             Err(swarmy_config::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                anyhow::ensure!(
-                    !store
-                        .has_credential(CredentialScope::Cluster, "chatgpt")
-                        .await?,
-                    "cluster ChatGPT credential exists but keyring is missing; copy the cluster keyring or set SWARMY_KEYRING"
-                );
+                if store
+                    .has_credential(CredentialScope::Cluster, "chatgpt")
+                    .await?
+                {
+                    return Err(crate::Error::Configuration(
+                        "cluster ChatGPT credential exists but keyring is missing; copy the cluster keyring or set SWARMY_KEYRING",
+                    ));
+                }
                 tracing::warn!(
                     "keyring missing; using file-based ChatGPT credentials until a cluster keyring is installed"
                 );

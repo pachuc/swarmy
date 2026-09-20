@@ -100,6 +100,11 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         if loaded.settings.provider == "chatgpt" {
             checks.push(credentials(&loaded.settings));
         }
+        checks.push(Check::new(
+            "gateway providers",
+            gateway_providers(&loaded.settings).await,
+            "Check providers, the fake script, cluster keyring, and provider credentials.",
+        ));
         checks.extend(remote_checks(loaded).await);
         checks.extend(stack(loaded).await);
     } else {
@@ -408,4 +413,37 @@ async fn nats_round_trip(endpoint: &str) -> Result<String, String> {
     .await
     .map_err(|_| "NATS round trip timed out after 5s".to_owned())?
     .map_err(str::to_owned)
+}
+
+async fn gateway_providers(settings: &Settings) -> Result<String, String> {
+    // Keep the front end usable when the native database client cannot load.
+    let runtime = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .with_file_name("swarmy-session");
+    let output = timeout(
+        Duration::from_secs(5),
+        Command::new(runtime)
+            .arg("doctor-providers")
+            .envs(settings.environment())
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "provider discovery timed out".to_owned())?
+    .map_err(|error| format!("cannot start provider discovery: {error}"))?;
+    if !output.status.success() {
+        return Err(
+            "provider discovery failed; check configuration and database connectivity".into(),
+        );
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "invalid provider discovery response")?;
+    let detail = format!("served: {}; skipped: {}", value["served"], value["skipped"]);
+    if value["served"].as_array().is_none_or(Vec::is_empty) {
+        Err(detail)
+    } else {
+        Ok(detail)
+    }
 }

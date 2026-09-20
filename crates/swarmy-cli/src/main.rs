@@ -7,6 +7,7 @@ mod image_command;
 mod models;
 mod remote;
 mod remote_command;
+mod selection_command;
 mod session_command;
 mod tools;
 mod vol_command;
@@ -89,9 +90,12 @@ enum Command {
         /// Create a side conversation on the named agent
         #[arg(long, requires = "agent")]
         new: bool,
+        #[command(flatten)]
+        selection: selection_command::SelectionArgs,
     },
     /// Open a terminal conversation, or resume a session
     Chat {
+        #[arg(conflicts_with_all = ["provider", "model", "effort"])]
         session_id: Option<ulid::Ulid>,
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
@@ -102,6 +106,8 @@ enum Command {
         /// Create a side conversation on the named agent
         #[arg(long, requires = "agent")]
         new: bool,
+        #[command(flatten)]
+        selection: selection_command::SelectionArgs,
     },
     /// Inspect stored sessions
     Session {

@@ -126,6 +126,7 @@ impl Fixture {
                     state: SessionState::Idle,
                     head_seq: 0,
                     snapshot_ref: None,
+                    inference: swarmy_core::InferenceSelection::default(),
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -164,6 +165,13 @@ impl Fixture {
                 id,
                 head,
                 &[Event::InferenceCompleted {
+                    provider: String::new(),
+                    model: String::new(),
+                    effort_used: None,
+                    usage: swarmy_core::TokenUsage::default(),
+                    cost_micros: 0,
+                    effort_requested: None,
+                    effort_clamped: false,
                     seq: 0,
                     request_id,
                     message: Message {
@@ -939,6 +947,13 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
             id,
             1,
             &[Event::InferenceCompleted {
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: swarmy_core::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
                 seq: 0,
                 request_id: RequestId::for_step(id, 2),
                 message: Message {
