@@ -10,6 +10,7 @@
 mod agents;
 pub mod blob;
 mod computers;
+pub mod credentials;
 mod inference;
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
@@ -52,6 +53,12 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("keyring cannot decrypt credential; check SWARMY_KEYRING and the cluster key")]
+    Keyring,
+    #[error("credential does not exist")]
+    CredentialMissing,
+    #[error("credential refresh failed; login required")]
+    CredentialRefresh,
     #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
     InvalidGithubToken,
 

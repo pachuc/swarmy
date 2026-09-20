@@ -1,4 +1,5 @@
 mod agent_command;
+mod auth_command;
 mod bench_command;
 mod dev;
 mod doctor;
@@ -101,22 +102,14 @@ enum Command {
         #[command(subcommand)]
         command: session_command::Command,
     },
-    /// Manage `ChatGPT` subscription credentials
+    /// Manage encrypted provider credentials
     Auth {
         /// Swarmy's credential file (never defaults to Codex's auth.json)
         #[arg(long, env = "SWARMY_CHATGPT_AUTH", global = true)]
         auth_file: Option<PathBuf>,
         #[command(subcommand)]
-        command: AuthCommand,
+        command: auth_command::Command,
     },
-}
-
-#[derive(Subcommand)]
-enum AuthCommand {
-    /// Sign in with a dedicated `ChatGPT` device-code login
-    Login,
-    /// Import a Codex auth.json; stop its original refresh owner first
-    Import { source: PathBuf },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -139,7 +132,14 @@ fn main() -> anyhow::Result<()> {
     }
     if matches!(
         cli.command,
-        Command::Remote {
+        Command::Auth {
+            command: auth_command::Command::Set(_)
+                | auth_command::Command::Ls
+                | auth_command::Command::Rm { .. }
+                | auth_command::Command::Check { .. }
+                | auth_command::Command::Import { .. },
+            ..
+        } | Command::Remote {
             command: remote_command::Command::Status
         } | Command::Bench { .. }
             | Command::Run { .. }
@@ -190,7 +190,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
             let store = FileCredentialStore::new(&path);
             match command {
-                AuthCommand::Login => {
+                auth_command::Command::Login { provider } => {
+                    anyhow::ensure!(provider == "chatgpt", "only chatgpt login is available");
                     let oauth = OAuthClient::new()?;
                     let code = oauth.device_code().await?;
                     if cli.json {
@@ -207,15 +208,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     std::io::stdout().flush()?;
                     oauth.complete_login(code, &store).await?;
                 }
-                AuthCommand::Import { source } => store.import(&source).await?,
+                _ => unreachable!("database auth commands run in swarmy-session"),
             }
             if cli.json {
                 println!(
                     "{}",
-                    serde_json::json!({"event": "credentials_saved", "path": path})
+                    serde_json::json!({"event": "credentials_saved", "path": path, "note": "Login will save to the cluster after the logins change; use swarmy auth import now."})
                 );
             } else {
-                println!("Saved ChatGPT credentials to {}", path.display());
+                println!(
+                    "Saved ChatGPT credentials to {}. Login will save to the cluster after the logins change; use swarmy auth import now.",
+                    path.display()
+                );
             }
         }
         Command::Version => swarmy_version::print("swarmy", cli.json)?,

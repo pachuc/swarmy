@@ -1,4 +1,5 @@
 mod config;
+mod credentials;
 
 use std::{sync::Arc, time::Duration};
 
@@ -58,6 +59,14 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
+    let provider = match config.provider {
+        config::ConfiguredProvider::ChatGpt(path) => {
+            Arc::new(swarmy_llm::chatgpt::ChatGptProvider::new(Arc::new(
+                credentials::ClusterCredentials::new(store.clone(), &path).await?,
+            ))?) as Arc<dyn Provider>
+        }
+        config::ConfiguredProvider::Fake(provider) => provider,
+    };
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let queue = WorkQueue::Inference(config.class);
     bus.setup(std::slice::from_ref(&queue)).await?;
@@ -66,7 +75,7 @@ async fn run(config: config::Config) -> Result<()> {
         store,
         blobs,
         bus,
-        provider: config.provider,
+        provider,
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
