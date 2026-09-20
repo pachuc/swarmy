@@ -3,15 +3,7 @@ use crate::Error;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
-use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
-    time::Duration,
-};
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
+use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 pub const AUTH_ISSUER: &str = "https://auth.openai.com";
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -30,10 +22,18 @@ impl Credentials {
             ));
         }
         let credentials = Self(value);
-        for key in ["id_token", "access_token", "refresh_token", "account_id"] {
+        credentials.token("id_token")?;
+        credentials.validate()
+    }
+
+    fn validate(self) -> Result<Self, Error> {
+        let credentials = self;
+        for key in ["access_token", "refresh_token", "account_id"] {
             credentials.token(key)?;
         }
-        if account_from_id_token(credentials.token("id_token")?)? != credentials.account_id() {
+        if !credentials.0["tokens"]["id_token"].is_null()
+            && account_from_id_token(credentials.token("id_token")?)? != credentials.account_id()
+        {
             return Err(Error::AccountChanged);
         }
         credentials.0["last_refresh"]
@@ -94,7 +94,11 @@ impl Credentials {
                 access: self.access_token().into(),
                 refresh: self.token("refresh_token")?.into(),
                 expires_at,
-                extra: [("chatgpt_json".into(), serde_json::to_string(&metadata)?)].into(),
+                extra: [
+                    ("chatgpt_json".into(), serde_json::to_string(&metadata)?),
+                    ("account_id".into(), self.account_id().into()),
+                ]
+                .into(),
             },
             updated_at,
         })
@@ -115,15 +119,23 @@ impl Credentials {
         if extra.get("needs_login").is_some_and(|v| v == "true") {
             return Err(Error::Credentials("ChatGPT needs login"));
         }
-        let mut value: Value = serde_json::from_str(
-            extra
-                .get("chatgpt_json")
-                .ok_or(Error::Credentials("missing ChatGPT metadata"))?,
-        )?;
+        let mut value: Value = if let Some(metadata) = extra.get("chatgpt_json") {
+            serde_json::from_str(metadata)?
+        } else {
+            json!({"auth_mode":"chatgpt", "OPENAI_API_KEY":null, "tokens": {
+                "account_id": extra.get("account_id").ok_or(Error::Credentials("missing ChatGPT account_id"))?
+            }})
+        };
+        if extra
+            .get("account_id")
+            .is_some_and(|account| value["tokens"]["account_id"].as_str() != Some(account))
+        {
+            return Err(Error::AccountChanged);
+        }
         value["tokens"]["access_token"] = json!(access);
         value["tokens"]["refresh_token"] = json!(refresh);
         value["last_refresh"] = json!(record.updated_at.to_string());
-        Self::from_json(value)
+        Self(value).validate()
     }
 
     fn token(&self, key: &str) -> Result<&str, Error> {
@@ -138,7 +150,7 @@ impl Credentials {
         if let Ok(claims) = jwt_claims(self.access_token())
             && let Some(expiry) = claims["exp"].as_i64()
         {
-            return expiry <= now + 60;
+            return expiry < now + 300;
         }
         let refreshed = self.0["last_refresh"]
             .as_str()
@@ -166,33 +178,26 @@ fn account_from_id_token(token: &str) -> Result<String, Error> {
         .ok_or(Error::Credentials("missing account claim"))
 }
 
-/// Held across the refresh HTTP request and persistence. Dropping releases it.
-pub trait CredentialLock: Send {}
-
-/// Implementations must preserve account identity, atomically save credentials,
-/// and serialize refresh across every user of their authoritative account store.
+/// A live `ChatGPT` source reloads tokens and fences refresh through its authority.
 pub trait CredentialStore: Send + Sync {
-    /// Store adapters may replace file locking with a database refresh lease.
+    fn load(&self) -> BoxFuture<'_, Result<Credentials, Error>>;
     fn refresh<'a>(
         &'a self,
-        client: &'a OAuthClient,
-        observed: &'a Credentials,
+        _client: &'a OAuthClient,
+        _observed: &'a Credentials,
     ) -> BoxFuture<'a, Result<Credentials, Error>> {
-        Box::pin(client.refresh_locked(self, observed))
+        Box::pin(async {
+            Err(Error::Credentials(
+                "import the credential file before refreshing",
+            ))
+        })
     }
-
-    fn load(&self) -> BoxFuture<'_, Result<Credentials, Error>>;
-    fn save(&self, credentials: Credentials) -> BoxFuture<'_, Result<(), Error>>;
-    fn lock_refresh<'a>(
-        &'a self,
-        account_id: &'a str,
-    ) -> BoxFuture<'a, Result<Box<dyn CredentialLock>, Error>>;
 }
 
-#[derive(Clone)]
+/// Read-only compatibility with the old file format for `auth import`.
 pub struct FileCredentialStore {
     path: PathBuf,
-    account_id: Arc<OnceLock<String>>,
+    account_id: OnceLock<String>,
 }
 
 impl FileCredentialStore {
@@ -200,93 +205,9 @@ impl FileCredentialStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
-            account_id: Arc::default(),
+            account_id: OnceLock::new(),
         }
     }
-
-    fn check_account(&self, credentials: &Credentials) -> Result<(), Error> {
-        if self
-            .account_id
-            .get_or_init(|| credentials.account_id().to_owned())
-            != credentials.account_id()
-        {
-            return Err(Error::AccountChanged);
-        }
-        Ok(())
-    }
-
-    /// Import only reads the source. The source and copy share a refresh chain;
-    /// the operator must stop the source's refresh owner before using the copy.
-    /// # Errors
-    /// Returns an error for invalid credentials, account changes, or file I/O.
-    pub async fn import(&self, source: &Path) -> Result<(), Error> {
-        if let Ok(destination) = tokio::fs::canonicalize(&self.path).await
-            && destination == tokio::fs::canonicalize(source).await?
-        {
-            return Err(Error::Credentials(
-                "import source and destination must differ",
-            ));
-        }
-        let bytes = tokio::fs::read(source).await?;
-        let credentials = Credentials::from_json(serde_json::from_slice(&bytes)?)?;
-        let _lock = self.lock_refresh(credentials.account_id()).await?;
-        self.save(credentials).await
-    }
-}
-
-fn parent(path: &Path) -> &Path {
-    path.parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
-fn private_directory(path: &Path) -> Result<(), Error> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(path)?;
-    Ok(())
-}
-
-fn lock_file(path: &Path) -> Result<File, Error> {
-    private_directory(parent(path))?;
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(path)?;
-    fs2::FileExt::lock_exclusive(&file)?;
-    Ok(file)
-}
-
-struct FileLock {
-    _file: File,
-    _local: OwnedMutexGuard<()>,
-}
-impl CredentialLock for FileLock {}
-
-type AccountLocks = Mutex<HashMap<String, Weak<AsyncMutex<()>>>>;
-static ACCOUNT_LOCKS: OnceLock<AccountLocks> = OnceLock::new();
-
-fn account_lock(account: &str) -> Arc<AsyncMutex<()>> {
-    let mut locks = ACCOUNT_LOCKS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    locks.retain(|_, lock| lock.strong_count() > 0);
-    if let Some(lock) = locks.get(account).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(AsyncMutex::new(()));
-    locks.insert(account.to_owned(), Arc::downgrade(&lock));
-    lock
 }
 
 impl CredentialStore for FileCredentialStore {
@@ -295,61 +216,14 @@ impl CredentialStore for FileCredentialStore {
             let credentials = Credentials::from_json(serde_json::from_slice(
                 &tokio::fs::read(&self.path).await?,
             )?)?;
-            self.check_account(&credentials)?;
+            if self
+                .account_id
+                .get_or_init(|| credentials.account_id().into())
+                != credentials.account_id()
+            {
+                return Err(Error::AccountChanged);
+            }
             Ok(credentials)
-        })
-    }
-
-    fn save(&self, credentials: Credentials) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            self.check_account(&credentials)?;
-            let path = self.path.clone();
-            tokio::task::spawn_blocking(move || {
-                private_directory(parent(&path))?;
-                let _write_lock = lock_file(&path.with_extension("write.lock"))?;
-                match std::fs::read(&path) {
-                    Ok(bytes) => {
-                        let existing = Credentials::from_json(serde_json::from_slice(&bytes)?)?;
-                        if existing.account_id() != credentials.account_id() {
-                            return Err(Error::AccountChanged);
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(error) => return Err(error.into()),
-                }
-                let mut temporary = tempfile::NamedTempFile::new_in(parent(&path))?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    temporary
-                        .as_file()
-                        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-                }
-                temporary.write_all(&serde_json::to_vec_pretty(credentials.to_json())?)?;
-                temporary.as_file().sync_all()?;
-                temporary.persist(&path).map_err(|error| error.error)?;
-                File::open(parent(&path))?.sync_all()?;
-                Ok(())
-            })
-            .await?
-        })
-    }
-
-    fn lock_refresh<'a>(
-        &'a self,
-        account_id: &'a str,
-    ) -> BoxFuture<'a, Result<Box<dyn CredentialLock>, Error>> {
-        Box::pin(async move {
-            let local = account_lock(account_id).lock_owned().await;
-            let path = parent(&self.path).join(format!(
-                ".refresh-{}.lock",
-                blake3::hash(account_id.as_bytes()).to_hex()
-            ));
-            let file = tokio::task::spawn_blocking(move || lock_file(&path)).await??;
-            Ok(Box::new(FileLock {
-                _file: file,
-                _local: local,
-            }) as Box<dyn CredentialLock>)
         })
     }
 }
@@ -381,6 +255,7 @@ impl OAuthClient {
     pub fn with_issuer(issuer: &str) -> Result<Self, Error> {
         Ok(Self {
             client: reqwest::Client::builder()
+                .user_agent(concat!("swarmy/", env!("CARGO_PKG_VERSION")))
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(30))
                 .build()?,
@@ -416,14 +291,10 @@ impl OAuthClient {
         })
     }
 
-    /// Poll for authorization, exchange the supplied PKCE verifier, and persist.
+    /// Complete the device flow without choosing a persistence backend.
     /// # Errors
-    /// Returns an error on timeout, failed login, account change, or persistence.
-    pub async fn complete_login(
-        &self,
-        code: DeviceCode,
-        store: &dyn CredentialStore,
-    ) -> Result<(), Error> {
+    /// Returns login, HTTP, timeout, or account validation errors.
+    pub async fn exchange_device_code(&self, code: DeviceCode) -> Result<Credentials, Error> {
         tokio::time::timeout(Duration::from_mins(15), async {
             loop {
                 let response = self.client.post(format!("{}/api/accounts/deviceauth/token", self.issuer))
@@ -446,8 +317,7 @@ impl OAuthClient {
                     "tokens": {"id_token": required(&tokens, "id_token")?, "access_token": required(&tokens, "access_token")?, "refresh_token": required(&tokens, "refresh_token")?, "account_id": account_id},
                     "last_refresh": jiff::Timestamp::now().to_string(),
                 }))?;
-                let _lock = store.lock_refresh(credentials.account_id()).await?;
-                return store.save(credentials).await;
+                return Ok(credentials);
             }
         }).await.map_err(|_| Error::LoginTimeout)?
     }
@@ -462,24 +332,6 @@ impl OAuthClient {
         observed: &Credentials,
     ) -> Result<Credentials, Error> {
         store.refresh(self, observed).await
-    }
-
-    async fn refresh_locked<S: CredentialStore + ?Sized>(
-        &self,
-        store: &S,
-        observed: &Credentials,
-    ) -> Result<Credentials, Error> {
-        let _lock = store.lock_refresh(observed.account_id()).await?;
-        let current = store.load().await?;
-        if current.account_id() != observed.account_id() {
-            return Err(Error::AccountChanged);
-        }
-        if current != *observed {
-            return Ok(current);
-        }
-        let refreshed = self.refresh_credentials(current).await?;
-        store.save(refreshed.clone()).await?;
-        Ok(refreshed)
     }
 
     /// Exchange one refresh token. The caller must hold its authoritative lease.
@@ -499,7 +351,7 @@ impl OAuthClient {
             }
         }
         value["last_refresh"] = json!(jiff::Timestamp::now().to_string());
-        let refreshed = Credentials::from_json(value)?;
+        let refreshed = Credentials(value).validate()?;
         if refreshed.account_id() != account_id {
             return Err(Error::AccountChanged);
         }

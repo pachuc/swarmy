@@ -23,7 +23,7 @@ pub struct Config {
 
 pub enum ConfiguredProvider {
     Fake(Arc<dyn Provider>),
-    ChatGpt(String),
+    ChatGpt,
 }
 
 impl Config {
@@ -32,7 +32,7 @@ impl Config {
         let class = settings.provider.clone();
         let provider = match class.as_str() {
             "fake" => ConfiguredProvider::Fake(Arc::new(FileFake::from_settings(&settings)?)),
-            "chatgpt" => ConfiguredProvider::ChatGpt(settings.credential_file.clone()),
+            "chatgpt" => ConfiguredProvider::ChatGpt,
             _ => bail!("unsupported SWARMY_PROVIDER: {class}"),
         };
         let concurrency = settings.gateway_concurrency;

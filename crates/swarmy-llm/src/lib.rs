@@ -21,6 +21,15 @@ use catalog::{Api, ModelInfo, ProviderInfo};
 pub enum ClientAuth {
     None,
     ApiKey(String),
+    ApiKeyWithExtra {
+        key: String,
+        extra: BTreeMap<String, String>,
+    },
+    BearerWithExtra {
+        token: String,
+        extra: BTreeMap<String, String>,
+    },
+    Ambient,
     Bearer(String),
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
@@ -160,13 +169,15 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
-    #[error("invalid ChatGPT credentials: {0}")]
+    #[error("invalid credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
+    #[error("{0} needs login or an API key; Azure login/refresh requires az on this host")]
+    NeedsLogin(String),
     #[error("invalid Responses stream: {0}")]
     Protocol(String),
-    #[error("device login timed out after 15 minutes")]
+    #[error("login timed out after 15 minutes")]
     LoginTimeout,
     #[error("blocking credential operation failed: {0}")]
     Join(#[from] tokio::task::JoinError),

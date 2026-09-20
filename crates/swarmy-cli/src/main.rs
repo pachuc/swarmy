@@ -11,8 +11,7 @@ mod tools;
 mod vol_command;
 
 use clap::{Parser, Subcommand};
-use std::{io::Write, path::PathBuf};
-use swarmy_llm::auth::{FileCredentialStore, OAuthClient};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
@@ -132,16 +131,11 @@ fn main() -> anyhow::Result<()> {
     }
     if matches!(
         cli.command,
-        Command::Auth {
-            command: auth_command::Command::Set(_)
-                | auth_command::Command::Ls
-                | auth_command::Command::Rm { .. }
-                | auth_command::Command::Check { .. }
-                | auth_command::Command::Import { .. },
-            ..
-        } | Command::Remote {
-            command: remote_command::Command::Status
-        } | Command::Bench { .. }
+        Command::Auth { .. }
+            | Command::Remote {
+                command: remote_command::Command::Status
+            }
+            | Command::Bench { .. }
             | Command::Run { .. }
             | Command::Agent { .. }
             | Command::Session { .. }
@@ -179,49 +173,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Auth { auth_file, command } => {
-            let path = auth_file.map_or_else(
-                || {
-                    Ok::<_, anyhow::Error>(PathBuf::from(
-                        swarmy_config::Settings::load()?.settings.credential_file,
-                    ))
-                },
-                Ok,
-            )?;
-            let store = FileCredentialStore::new(&path);
-            match command {
-                auth_command::Command::Login { provider } => {
-                    anyhow::ensure!(provider == "chatgpt", "only chatgpt login is available");
-                    let oauth = OAuthClient::new()?;
-                    let code = oauth.device_code().await?;
-                    if cli.json {
-                        println!(
-                            "{}",
-                            serde_json::json!({"event": "device_code", "url": code.verification_url, "code": code.user_code})
-                        );
-                    } else {
-                        println!(
-                            "Open {} and enter code {}",
-                            code.verification_url, code.user_code
-                        );
-                    }
-                    std::io::stdout().flush()?;
-                    oauth.complete_login(code, &store).await?;
-                }
-                _ => unreachable!("database auth commands run in swarmy-session"),
-            }
-            if cli.json {
-                println!(
-                    "{}",
-                    serde_json::json!({"event": "credentials_saved", "path": path, "note": "Login will save to the cluster after the logins change; use swarmy auth import now."})
-                );
-            } else {
-                println!(
-                    "Saved ChatGPT credentials to {}. Login will save to the cluster after the logins change; use swarmy auth import now.",
-                    path.display()
-                );
-            }
-        }
+        Command::Auth { .. } => unreachable!("auth commands run in swarmy-session"),
         Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())

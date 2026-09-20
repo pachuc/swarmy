@@ -60,10 +60,16 @@ async fn run(config: config::Config) -> Result<()> {
     )
     .await?;
     let provider = match config.provider {
-        config::ConfiguredProvider::ChatGpt(path) => {
-            Arc::new(swarmy_llm::chatgpt::ChatGptProvider::new(Arc::new(
-                credentials::ClusterCredentials::new(store.clone(), &path).await?,
-            ))?) as Arc<dyn Provider>
+        config::ConfiguredProvider::ChatGpt => {
+            let resolver = swarmy_llm::auth::Resolver::new(Arc::new(
+                credentials::ClusterCredentials::new(store.clone()).await?,
+            ))?;
+            let swarmy_llm::ClientAuth::ChatGpt(credentials) =
+                swarmy_llm::auth::resolve("chatgpt", &resolver).await?
+            else {
+                anyhow::bail!("ChatGPT requires OAuth credentials");
+            };
+            Arc::new(swarmy_llm::chatgpt::ChatGptProvider::new(credentials)?) as Arc<dyn Provider>
         }
         config::ConfiguredProvider::Fake(provider) => provider,
     };

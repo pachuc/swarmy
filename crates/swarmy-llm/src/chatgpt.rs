@@ -8,9 +8,7 @@ use futures::StreamExt;
 use std::{sync::Arc, time::Duration};
 
 pub const BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
-/// The backend identifies clients by these headers; Codex sends the same values.
-const ORIGINATOR: &str = "codex_cli_rs";
-const USER_AGENT: &str = "codex_cli_rs/0.153.4";
+const USER_AGENT: &str = concat!("swarmy/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]
 pub struct ChatGptProvider {
@@ -96,7 +94,6 @@ impl ChatGptProvider {
             .header("chatgpt-account-id", credentials.account_id())
             .header("accept", "text/event-stream")
             .header("OpenAI-Beta", "responses=experimental")
-            .header("originator", ORIGINATOR)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .json(body)
             .send()

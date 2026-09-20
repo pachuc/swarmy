@@ -96,9 +96,7 @@ Unknown keys survive parsing. The quirk table is based on Pi's
 `packages/ai/scripts/generate-models.ts` and OpenCode's provider option tables;
 it contains metadata only, with no JavaScript runtime dependency.
 
-Custom model configuration and credential resolution belong to later tasks.
-This change supplies the catalog and client dispatch point without changing
-session selection or gateway behavior.
+Custom model configuration and additional protocol clients belong to separate tasks.
 
 ## Credentials
 
@@ -110,7 +108,7 @@ credential commands use your configured FoundationDB directory (including
 ```sh
 swarmy auth set anthropic --api-key sk-example
 swarmy auth set openai --from-env
-swarmy auth set azure --file /private/api-key --extra resource=my-resource
+swarmy auth set azure --file /private/api-key --extra resource_name=my-resource
 swarmy auth set google --from-env --extra project=my-project --extra region=us-central1
 swarmy auth ls --json
 swarmy auth check
@@ -134,34 +132,95 @@ exit nonzero. OAuth output includes signed seconds until expiry.
 | xai | `XAI_API_KEY` |
 | meta | `META_MODEL_API_KEY` |
 | openrouter | `OPENROUTER_API_KEY` |
-| azure | `AZURE_OPENAI_API_KEY` |
+| azure | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY` |
 | amazon-bedrock | `AWS_BEARER_TOKEN_BEDROCK` |
 | google | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | google-vertex, google-vertex-anthropic | `GOOGLE_CLOUD_API_KEY` |
 
-This store does not change the other providers' authentication yet. AWS and
-Google SDK credential chains and additional login flows belong to their
-provider tasks. ChatGPT requires OAuth and rejects `auth set`.
+### Interactive logins
+
+All three logins write directly to the encrypted cluster credential store.
+They require a running cluster and its keyring on the CLI host.
+
+```sh
+swarmy auth login chatgpt
+swarmy auth login openrouter
+az login
+swarmy auth login azure --resource my-resource
+swarmy auth login azure --resource my-resource --scope https://cognitiveservices.azure.com/.default
+swarmy auth set azure --api-key KEY --extra resource_name=my-resource
+```
+
+ChatGPT prints a device URL and short code, polls for approval, and stores the
+access token, refresh token, expiry, and account id as OAuth credentials. The
+existing device flow is tolerated by OpenAI rather than licensed. No new product
+identity headers are sent: inference identifies itself as `swarmy/<version>`.
+The existing device flow retains its existing OAuth client id as the exception
+specified by the provider plan.
+
+OpenRouter prints an authorization URL and attempts to open the browser. Choose
+browser callback to receive the code on an ephemeral `127.0.0.1` port, or pasted
+code for headless use. The callback listener is opened before the URL is shown.
+The login generates a random 32-byte PKCE verifier and S256 challenge, exchanges
+the code and verifier, and stores the returned API key. This is OpenRouter's
+[documented public flow](https://openrouter.ai/docs/guides/overview/auth/oauth);
+it has no client id and needs no refresh token.
+
+Azure runs `az account get-access-token --scope URL --output json` on the login
+host. The default scope is `https://cognitiveservices.azure.com/.default`. The
+OAuth record has an empty refresh token and retains `resource_name` and `scope`.
+Refresh runs the same command on the gateway host, which must have Azure CLI
+installed and signed in. Missing `az` or a failed token request reports
+`NeedsLogin`; rerun login or set an API key. The parser accepts Azure's local
+`expiresOn` timestamp and prefers the unambiguous `expires_on` epoch when the CLI
+supplies both, as described in the
+[Azure CLI authentication documentation](https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli).
+
+Anthropic, GitHub Copilot, Kimi, and xAI subscription logins are not offered under
+the project's terms policy: their terms prohibit third-party clients or require
+an authorized integration that swarmy does not have. Use permitted API keys.
+
+### Credential resolution
+
+The gateway uses `swarmy_llm::auth::Resolver::resolve(provider)` (also exposed as
+`auth::resolve(provider, &resolver)`). The explicit resolver context holds the
+cluster store; it avoids process-wide database globals. Resolution order is:
+
+1. Read the provider's cluster record. Refresh OAuth credentials with less than
+   five minutes remaining through `refresh_with_lease`. Competing gateways use
+   the winner's record. A failed refresh marks the record `needs_login` and never
+   falls back to environment variables.
+2. When no record exists, inspect the provider's catalog key variables:
+   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `META_MODEL_API_KEY`,
+   `OPENROUTER_API_KEY`, `AZURE_API_KEY` (with `AZURE_RESOURCE_NAME`), and
+   `GEMINI_API_KEY`. Azure also accepts `AZURE_OPENAI_API_KEY`; Google also accepts
+   `GOOGLE_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY`. Bedrock accepts
+   `AWS_BEARER_TOKEN_BEDROCK`. Endpoint, profile, and project settings are not
+   mistaken for API keys.
+3. For `amazon-bedrock`, `google-vertex`, and `google-vertex-anthropic`, return
+   `Ambient` so their protocol clients can use the host SDK credential chain.
+   Fake inference needs no credential. Other missing credentials report
+   `NeedsLogin`.
+
+Azure key and bearer credentials retain their resource metadata for protocol
+client construction. ChatGPT reads the current stored access token for every
+request and uses the database lease for refresh, including its single retry
+after an unauthorized response. `credential_file` has no gateway role.
 
 ### ChatGPT migration
 
 ```sh
-swarmy auth login chatgpt
 swarmy auth import
 # Or read a particular existing ChatGPT auth.json:
 swarmy auth import --file /private/auth.json
 ```
 
-Login still writes `credential_file` (normally `~/.swarmy/auth.json`);
-`--auth-file` / `SWARMY_CHATGPT_AUTH` overrides that path for login and import.
-Login prints a note about the later migration to cluster persistence. Import
-validates the ChatGPT file, preserves its provider metadata, and writes an
-OAuth record under `chatgpt` without deleting or modifying the source. Stop
-any other process refreshing that account before importing it. The gateway
-prefers the stored record, falls back to the file only when no record exists,
-and preserves its existing account identity checks. ChatGPT third-party
-subscription access is treated as tolerated, not licensed. Anthropic
-subscription OAuth is not supported.
+Import reads `credential_file` (normally `~/.swarmy/auth.json`), overridden by
+`--auth-file` / `SWARMY_CHATGPT_AUTH` or `auth import --file`. It validates the
+file, preserves provider metadata, and stores an OAuth record under `chatgpt`
+without modifying the source. Stop any other process refreshing that account
+before importing it. Login writes the store directly, so it needs no subsequent
+import. The gateway never falls back to the credential file.
 
 ### Keyring and remote gateways
 
@@ -181,4 +240,3 @@ over SSH. The keyring lands at `/home/ubuntu/.swarmy/keyring` with mode 600.
 Without this flag, additional nodes run only `swarmyd` and receive neither
 secret. Ordinary checkout copying excludes the configured credential and
 keyring paths. Use the same cluster key on the CLI and every gateway.
-||||||| 758da49
