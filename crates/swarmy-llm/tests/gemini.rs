@@ -235,7 +235,12 @@ async fn thinking_levels_and_budgets() {
         for (request, expected) in requests.iter().zip(expected) {
             let body: Value = request.body_json().unwrap();
             let config = &body["generationConfig"]["thinkingConfig"];
-            assert_eq!(config["includeThoughts"], true);
+            // A zero budget disables thinking, so thoughts are not requested.
+            if expected == json!(0) {
+                assert!(config.get("includeThoughts").is_none());
+            } else {
+                assert_eq!(config["includeThoughts"], true);
+            }
             assert_eq!(
                 config[if id.starts_with("gemini-3") {
                     "thinkingLevel"

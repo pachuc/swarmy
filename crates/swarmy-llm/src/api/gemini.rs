@@ -134,7 +134,20 @@ impl GeminiProvider {
                 retry_after,
             });
         }
-        Err(Error::Status(status))
+        Err(provider_error(status, &body))
+    }
+}
+
+/// Keep the provider's own explanation; a bare status hides configuration mistakes.
+fn provider_error(status: reqwest::StatusCode, body: &str) -> Error {
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| body.trim().chars().take(600).collect());
+    if message.is_empty() {
+        Error::Status(status)
+    } else {
+        Error::Protocol(format!("provider error ({status}): {message}"))
     }
 }
 
@@ -218,7 +231,12 @@ fn thinking_config(model: &str, effort: ReasoningEffort) -> Option<Value> {
             High | Xhigh | Max if model.contains("pro") => 32768,
             High | Xhigh | Max => 24576,
         };
-        Some(json!({"includeThoughts": true, "thinkingBudget": budget}))
+        // A zero budget disables thinking, and the API rejects asking for thoughts then.
+        if budget == 0 {
+            Some(json!({"thinkingBudget": 0}))
+        } else {
+            Some(json!({"includeThoughts": true, "thinkingBudget": budget}))
+        }
     } else {
         Option::None
     }
@@ -583,6 +601,28 @@ impl StreamState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zero_thinking_budget_never_requests_thoughts() {
+        let off = thinking_config("gemini-2.5-flash", ReasoningEffort::None).unwrap();
+        assert_eq!(off, json!({"thinkingBudget": 0}));
+        let on = thinking_config("gemini-2.5-flash", ReasoningEffort::Medium).unwrap();
+        assert_eq!(on["includeThoughts"], json!(true));
+        assert_eq!(on["thinkingBudget"], json!(8192));
+    }
+
+    #[test]
+    fn provider_errors_keep_the_message() {
+        let error = provider_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error": {"code": 400, "message": "thinking is disabled"}}"#,
+        );
+        assert!(error.to_string().contains("thinking is disabled"));
+        assert!(matches!(
+            provider_error(reqwest::StatusCode::FORBIDDEN, ""),
+            Error::Status(reqwest::StatusCode::FORBIDDEN)
+        ));
+    }
+
     use super::*;
 
     #[test]
