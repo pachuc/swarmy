@@ -31,6 +31,7 @@ fn session() -> SessionRecord {
         state: SessionState::Runnable,
         head_seq: 0,
         snapshot_ref: None,
+        inference: swarmy_core::InferenceSelection::default(),
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
         plan: Vec::new(),

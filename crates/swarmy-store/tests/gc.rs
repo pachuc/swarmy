@@ -618,6 +618,7 @@ async fn computer_session(
         state: swarmy_core::SessionState::Idle,
         head_seq: 0,
         snapshot_ref: None,
+        inference: swarmy_core::InferenceSelection::default(),
     };
     store
         .create_session(&session, Timestamp::now(), "base:test")

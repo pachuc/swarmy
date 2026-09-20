@@ -203,6 +203,7 @@ mod tests {
             state: SessionState::Idle,
             head_seq: 2,
             snapshot_ref: None,
+            inference: swarmy_core::InferenceSelection::default(),
             kind: swarmy_core::SessionKind::Ephemeral,
             computer_deleted: false,
             plan: Vec::new(),

@@ -46,7 +46,14 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     let mut samples = Vec::new();
     for shape in ["no_tool", "bash"] {
         // Every session pins its image at creation; the bench image serves both shapes.
-        let mut conversation = Conversation::open(None, Some(image.as_str()), None, false).await?;
+        let mut conversation = Conversation::open(
+            None,
+            Some(image.as_str()),
+            None,
+            false,
+            swarmy_core::InferenceSelection::default(),
+        )
+        .await?;
         let mut timeline = conversation.timeline().await?;
         for index in 0..=turns {
             let sample = tokio::time::timeout(
