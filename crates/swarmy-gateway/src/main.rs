@@ -226,7 +226,7 @@ impl Gateway {
         let client = self.providers.client(provider, model).await?;
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
-        let mut stream = client.request(request);
+        let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
