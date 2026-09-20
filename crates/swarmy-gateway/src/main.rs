@@ -11,7 +11,7 @@ use swarmy_core::{
 };
 use swarmy_llm::{Delta, InferenceJob, Response};
 use swarmy_store::{
-    InferenceClaim, InferenceCompletion, Store,
+    GatewayProvider, InferenceClaim, InferenceCompletion, Store,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tokio::{
@@ -62,17 +62,21 @@ async fn run(config: config::Config) -> Result<()> {
     let providers = Providers::discover(store.clone(), &config.settings).await;
     for (provider, reason) in &providers.skipped {
         info!(%provider, %reason, "provider skipped");
-        store
-            .record_gateway_provider(provider, false, reason)
-            .await?;
+        // Keep another gateway's live advertisement; only record the reason otherwise.
+        if !store.gateway_serves(provider).await? {
+            let record = GatewayProvider {
+                expires_at: Timestamp::now(),
+                reason: reason.clone(),
+            };
+            store.put_gateway_provider(provider, &record).await?;
+        }
     }
     for provider in &providers.served {
         info!(%provider, "serving provider");
-        store
-            .record_gateway_provider(provider, true, "credentials resolved")
-            .await?;
     }
     anyhow::ensure!(!providers.served.is_empty(), "no available providers");
+    advertise(&store, &providers.served).await?;
+    tokio::spawn(heartbeat(store.clone(), providers.served.clone()));
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let queues: Vec<_> = providers
         .served
@@ -122,6 +126,32 @@ async fn run(config: config::Config) -> Result<()> {
                 error!(%error, "delivery left unacknowledged");
             }
         });
+    }
+}
+
+/// Workers route to a provider only while a gateway advertisement is unexpired.
+const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(30);
+const ADVERTISEMENT_TTL: Duration = Duration::from_secs(90);
+
+async fn advertise(store: &Store, served: &[String]) -> Result<()> {
+    let record = GatewayProvider {
+        expires_at: Timestamp::now().checked_add(ADVERTISEMENT_TTL)?,
+        reason: "credentials resolved".into(),
+    };
+    for provider in served {
+        store.put_gateway_provider(provider, &record).await?;
+    }
+    Ok(())
+}
+
+async fn heartbeat(store: Store, served: Vec<String>) {
+    let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
+    ticks.tick().await;
+    loop {
+        ticks.tick().await;
+        if let Err(error) = advertise(&store, &served).await {
+            warn!(%error, "provider advertisement failed; workers may fail new requests");
+        }
     }
 }
 

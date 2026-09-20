@@ -280,7 +280,8 @@ async fn assert_user_order(fixture: &Fixture, id: SessionId) {
         .await;
     assert!(shown.status.success());
     let shown = String::from_utf8(shown.stdout).unwrap();
-    let mut lines = shown.lines();
+    // The selection line precedes the usage line.
+    let mut lines = shown.lines().skip(1);
     let usage: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert_eq!(usage["cost_dollars"], "0.0000");
     assert!(usage["session_usage"]["usage"]["input_tokens"].is_u64());
@@ -775,3 +776,17 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
 
 #[path = "chat_named.rs"]
 mod named;
+
+#[tokio::test]
+async fn header_shows_persisted_provider_model_and_effort() {
+    run(|fixture| async move {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
+        command.args(["chat", "--model", "openai/gpt-5.5", "--effort", "max"]);
+        let mut terminal = Terminal::command(&fixture, command, "fixture:test");
+        let screen = terminal.ready().await;
+        assert!(screen.contains("openai/gpt-5.5 max"), "{screen}");
+        terminal.type_text("\u{1b}");
+        terminal.exit(true).await;
+    })
+    .await;
+}

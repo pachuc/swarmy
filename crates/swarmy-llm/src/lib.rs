@@ -1,10 +1,12 @@
-//! Shared inference contracts and subscription-backed `ChatGPT` inference.
+//! Shared inference contracts and provider wire clients.
 
+pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
 pub mod responses;
+pub mod retry;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,11 @@ use swarmy_core::{Message, Part, RequestId, SessionId};
 use auth::CredentialStore;
 use catalog::{Api, ModelInfo, ProviderInfo};
 
+/// Refreshable cloud bearer credentials, supplied by the cloud auth adapter.
+pub trait BearerSource: Send + Sync {
+    fn token(&self) -> futures::future::BoxFuture<'_, Result<String, Error>>;
+}
+
 /// Resolved credentials for a protocol client. Cloud credentials can add variants.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -22,6 +29,11 @@ pub enum ClientAuth {
     None,
     ApiKey(String),
     Bearer(String),
+    Vertex {
+        project: String,
+        location: String,
+        source: Arc<dyn BearerSource>,
+    },
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
     Ambient,
@@ -32,7 +44,7 @@ pub enum ClientAuth {
 ///
 /// # Errors
 /// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing the `ChatGPT` client.
+/// or HTTP configuration error when constructing a client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
@@ -41,13 +53,15 @@ pub fn client_for(
     let api = model.api.unwrap_or(provider.api);
     // Keep separate arms so protocol implementations can land independently.
     match api {
-        Api::AnthropicMessages => Err(Error::Unsupported(Api::AnthropicMessages)),
+        Api::AnthropicMessages => api::anthropic::client_for(provider, model, auth),
         Api::OpenAiResponses => Err(Error::Unsupported(Api::OpenAiResponses)),
         Api::OpenAiCodexResponses => match auth {
             ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
             _ => Err(Error::Credentials("ChatGPT requires a credential store")),
         },
-        Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
+        Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
+            provider, model, auth,
+        )?)),
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
@@ -66,28 +80,8 @@ pub struct InferenceJob {
     pub step: u64,
     pub request_id: RequestId,
     pub request: Request,
-    #[serde(
-        default = "default_provider",
-        serialize_with = "swarmy_core::trailing::serialize",
-        deserialize_with = "deserialize_provider"
-    )]
+    #[serde(default)]
     pub provider: String,
-}
-
-fn deserialize_provider<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<String, D::Error> {
-    let provider: String = swarmy_core::trailing::deserialize(deserializer)?;
-    Ok(if provider.is_empty() {
-        default_provider()
-    } else {
-        provider
-    })
-}
-
-fn default_provider() -> String {
-    // An empty legacy selection is resolved from the gateway's loaded settings.
-    std::env::var("SWARMY_PROVIDER").unwrap_or_default()
 }
 
 /// Provider-neutral input built from durable core messages.
@@ -182,11 +176,18 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
-    #[error("invalid ChatGPT credentials: {0}")]
+    #[error("HTTP request failed with retryable status {status}")]
+    Retryable {
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+    },
+    #[error("context overflow: {0}")]
+    ContextOverflow(String),
+    #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
-    #[error("invalid Responses stream: {0}")]
+    #[error("invalid provider protocol: {0}")]
     Protocol(String),
     #[error("device login timed out after 15 minutes")]
     LoginTimeout,
@@ -201,7 +202,7 @@ mod job_tests {
     use super::*;
 
     #[tokio::test]
-    async fn catalog_dispatch_constructs_chatgpt_and_rejects_other_protocols() {
+    async fn catalog_dispatch_requires_credentials_and_rejects_unimplemented_protocols() {
         let catalog = catalog::Catalog::get();
         let provider = catalog.provider("chatgpt").unwrap();
         let model = provider.models.values().next().unwrap();
@@ -219,6 +220,16 @@ mod job_tests {
             .filter(|provider| provider.api != Api::OpenAiCodexResponses)
         {
             let model = provider.models.values().next().unwrap_or(model);
+            if matches!(
+                model.api.unwrap_or(provider.api),
+                Api::AnthropicMessages | Api::OpenAiCompletions
+            ) {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::Credentials(_))
+                ));
+                continue;
+            }
             assert!(matches!(
                 client_for(provider, model, ClientAuth::None),
                 Err(Error::Unsupported(api)) if api == model.api.unwrap_or(provider.api)
@@ -232,7 +243,7 @@ mod job_tests {
             .unwrap();
         assert!(matches!(
             client_for(router, claude, ClientAuth::None),
-            Err(Error::Unsupported(Api::AnthropicMessages))
+            Err(Error::Credentials(_))
         ));
     }
 
@@ -257,43 +268,5 @@ mod job_tests {
         };
         let encoded = swarmy_core::encode(&job).unwrap();
         assert_eq!(swarmy_core::decode::<InferenceJob>(&encoded).unwrap(), job);
-    }
-}
-
-#[cfg(test)]
-mod legacy_job_tests {
-    use super::*;
-
-    #[test]
-    fn old_binary_and_json_jobs_inherit_the_global_provider() {
-        #[derive(Serialize)]
-        struct LegacyJob {
-            session_id: SessionId,
-            step: u64,
-            request_id: RequestId,
-            request: Request,
-        }
-        let session_id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 1));
-        let legacy = LegacyJob {
-            session_id,
-            step: 1,
-            request_id: RequestId::for_step(session_id, 1),
-            request: Request {
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: GenerationSettings::default(),
-            },
-        };
-        let job: InferenceJob =
-            swarmy_core::decode(&swarmy_core::encode(&legacy).unwrap()).unwrap();
-        assert_eq!(job.provider, default_provider());
-        assert_eq!(
-            serde_json::from_value::<InferenceJob>(serde_json::to_value(legacy).unwrap()).unwrap(),
-            job
-        );
-        let mut bytes = swarmy_core::encode(&job).unwrap();
-        bytes.pop();
-        assert!(swarmy_core::decode::<InferenceJob>(&bytes).is_err());
     }
 }

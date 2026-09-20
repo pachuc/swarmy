@@ -27,6 +27,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 .fetch_session(id)
                 .await?
                 .context("session not found")?;
+            show_selection(&store, &session, json).await?;
             show_usage(&store.session_usage(id).await?, json);
             let mut after = 0;
             while after < session.head_seq {
@@ -60,6 +61,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     } else {
                         None
                     };
+                    let selection = crate::selection::resolved_session(&store, &session).await?;
                     let main = agent
                         .as_ref()
                         .is_some_and(|agent| agent.main_session == Some(session.session_id));
@@ -70,6 +72,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     value["next_session"] = serde_json::to_value(successor)?;
                     value["previous_session"] =
                         serde_json::to_value(store.previous_session(session.session_id).await?)?;
+                    value["resolved_inference"] = serde_json::to_value(&selection)?;
                     value["main"] = main.into();
                     value["agent_name"] = serde_json::to_value(&name)?;
                     let kind = match session.kind {
@@ -79,9 +82,11 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     crate::vol::output(
                         &value,
                         &format!(
-                            "{} {:?} kind={kind} agent={} head={} computer_deleted={} archived={} main={main}",
+                            "{} {:?} {}/{} kind={kind} agent={} head={} computer_deleted={} archived={} main={main}",
                             session.session_id,
                             session.state,
+                            selection.provider,
+                            selection.model,
                             name.as_deref().unwrap_or("-"),
                             session.head_seq,
                             session.computer_deleted,
@@ -122,10 +127,11 @@ pub async fn run(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
+    selection: swarmy_core::InferenceSelection,
     json: bool,
 ) -> Result<()> {
     let mut conversation =
-        Conversation::open(None, image.as_deref(), agent.as_deref(), new).await?;
+        Conversation::open(None, image.as_deref(), agent.as_deref(), new, selection).await?;
     announce(&conversation, json)?;
     conversation.send(prompt).await?;
     until_idle(&mut conversation, json).await
@@ -154,9 +160,11 @@ pub async fn chat_json(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
+    selection: swarmy_core::InferenceSelection,
 ) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    let mut conversation = Conversation::open(id, image.as_deref(), agent.as_deref(), new).await?;
+    let mut conversation =
+        Conversation::open(id, image.as_deref(), agent.as_deref(), new, selection).await?;
     announce(&conversation, true)?;
     until_idle(&mut conversation, true).await?;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -299,6 +307,10 @@ impl Output {
             );
         } else {
             match event {
+                Event::InferenceFailed { error, .. } => {
+                    self.finish_line();
+                    eprintln!("Error: {error}");
+                }
                 Event::ToolCallRequested { call, .. } => {
                     self.finish_line();
                     println!(
@@ -354,4 +366,27 @@ pub(crate) fn final_text(event: &Event) -> bool {
         if message.role == MessageRole::Assistant
         && message.parts.iter().any(|part| matches!(part, Part::Text { text } if !text.is_empty()))
         && !message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })))
+}
+
+async fn show_selection(
+    store: &swarmy_store::Store,
+    session: &swarmy_core::SessionRecord,
+    json: bool,
+) -> Result<()> {
+    let selection = crate::selection::resolved_session(store, session).await?;
+    let marker = |overridden: bool| if overridden { "" } else { " (inherited)" };
+    crate::vol::output(
+        &serde_json::json!({ "event": "session_selection", "inference": session.inference, "resolved": selection }),
+        &format!(
+            "provider={}{} model={}{} effort={}{}",
+            selection.provider,
+            marker(session.inference.provider.is_some()),
+            selection.model,
+            marker(session.inference.model.is_some()),
+            selection.effort,
+            marker(session.inference.effort.is_some())
+        ),
+        json,
+    )?;
+    Ok(())
 }

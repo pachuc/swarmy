@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use swarmy_core::ReasoningEffort;
 
 #[derive(Args)]
 pub struct InferenceArgs {
@@ -11,12 +10,15 @@ pub struct InferenceArgs {
     /// Read the system prompt from a UTF-8 file
     #[arg(long)]
     pub system_prompt_file: Option<PathBuf>,
+    /// Override the stack provider
+    #[arg(long)]
+    pub provider: Option<String>,
     /// Override the stack model
     #[arg(long)]
     pub model: Option<String>,
     /// Reasoning effort: none, minimal, low, medium, high, xhigh, or max
-    #[arg(long)]
-    pub effort: Option<ReasoningEffort>,
+    #[arg(long, value_parser = crate::selection_command::effort_or_default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Subcommand)]

@@ -173,6 +173,7 @@ impl Fixture {
                     state: SessionState::Runnable,
                     head_seq: 0,
                     snapshot_ref: None,
+                    inference: swarmy_core::InferenceSelection::default(),
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -233,7 +234,7 @@ impl Fixture {
             .await
             .unwrap();
         InferenceJob {
-            provider: String::new(),
+            provider: "fake".into(),
             session_id,
             step: lease.seq,
             request_id,
@@ -682,7 +683,8 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
             f.publish(&first).await;
             f.drained().await;
             assert_eq!(f.store.agent_usage(agent_id).await.unwrap(), agent_usage);
-            assert!(f.store.gateway_provider("scripted").await.unwrap().unwrap().served);
+            assert!(f.store.gateway_serves("scripted").await.unwrap());
+            assert_eq!(f.store.gateway_provider("scripted").await.unwrap().unwrap().reason, "credentials resolved");
         }).catch_unwind().await;
         f.cleanup().await;
         result.unwrap();

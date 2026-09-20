@@ -23,8 +23,10 @@ async fn create_set_and_show_inference_settings_in_text_and_json() {
                 "agent",
                 "create",
                 name,
+                "--provider",
+                "openai",
                 "--model",
-                "agent-model",
+                "gpt-5.5",
                 "--effort",
                 "high",
             ];
@@ -39,37 +41,25 @@ async fn create_set_and_show_inference_settings_in_text_and_json() {
                 json,
                 "Created",
                 prompt,
-                "agent-model",
+                "gpt-5.5",
                 ReasoningEffort::High,
             );
-            assert_show(&fixture, name, prompt, "agent-model", ReasoningEffort::High).await;
+            assert_show(&fixture, name, prompt, "gpt-5.5", ReasoningEffort::High).await;
             for (flag, value, expected_prompt, expected_model, effort) in [
                 (
                     "--model",
-                    "changed-model",
+                    "gpt-5.4",
                     prompt,
-                    "changed-model",
+                    "gpt-5.4",
                     ReasoningEffort::High,
                 ),
-                (
-                    "--effort",
-                    "none",
-                    prompt,
-                    "changed-model",
-                    ReasoningEffort::None,
-                ),
-                (
-                    "--system-prompt",
-                    "",
-                    "",
-                    "changed-model",
-                    ReasoningEffort::None,
-                ),
+                ("--effort", "none", prompt, "gpt-5.4", ReasoningEffort::None),
+                ("--system-prompt", "", "", "gpt-5.4", ReasoningEffort::None),
                 (
                     "--system-prompt-file",
                     path.to_str().unwrap(),
                     prompt,
-                    "changed-model",
+                    "gpt-5.4",
                     ReasoningEffort::None,
                 ),
             ] {
@@ -230,4 +220,127 @@ async fn assert_default_output(fixture: &Fixture) {
     for field in ["system_prompt", "model", "reasoning_effort"] {
         assert!(shown[field].is_null());
     }
+}
+
+#[tokio::test]
+async fn provider_selection_and_explicit_resets_are_durable() {
+    run(|fixture| async move {
+        success(
+            fixture
+                .output(&[
+                    "agent",
+                    "create",
+                    "tommy",
+                    "--provider",
+                    "openrouter",
+                    "--model",
+                    "anthropic/claude-sonnet-4-6",
+                    "--effort",
+                    "max",
+                ])
+                .await,
+        );
+        let read = || async {
+            serde_json::from_str::<AgentRecord>(&success(
+                fixture.output(&["agent", "show", "tommy", "--json"]).await,
+            ))
+            .unwrap()
+        };
+        let agent = read().await;
+        assert_eq!(agent.provider.as_deref(), Some("openrouter"));
+        assert_eq!(agent.model.as_deref(), Some("anthropic/claude-sonnet-4.6"));
+        assert_eq!(agent.reasoning_effort, Some(ReasoningEffort::Max));
+        success(
+            fixture
+                .output(&["agent", "set", "tommy", "--model", "default"])
+                .await,
+        );
+        assert!(read().await.model.is_none());
+        success(
+            fixture
+                .output(&[
+                    "agent",
+                    "set",
+                    "tommy",
+                    "--provider",
+                    "default",
+                    "--effort",
+                    "default",
+                ])
+                .await,
+        );
+        let agent = read().await;
+        assert!(agent.provider.is_none() && agent.reasoning_effort.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn ephemeral_selection_is_stored_and_invalid_flags_are_rejected() {
+    run(|fixture| async move {
+        let server = serve(&fixture, true).await;
+        success(
+            fixture
+                .output(&[
+                    "run",
+                    "hello",
+                    "--model",
+                    "openai/gpt-5.5",
+                    "--effort",
+                    "max",
+                ])
+                .await,
+        );
+        let session = fixture
+            .store
+            .list_sessions(None, 1)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(session.inference.provider.as_deref(), Some("openai"));
+        assert_eq!(session.inference.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(session.inference.effort, Some(ReasoningEffort::Max));
+        for args in [
+            vec![
+                "run",
+                "hello",
+                "--provider",
+                "anthropic",
+                "--model",
+                "openai/gpt-5.5",
+            ],
+            vec![
+                "run",
+                "hello",
+                "--provider",
+                "openai",
+                "--model",
+                "nonexistent",
+            ],
+            vec!["run", "hello", "--agent", "tommy", "--effort", "max"],
+            vec!["run", "hello", "--effort", "bogus"],
+        ] {
+            let output = fixture.output(&args).await;
+            assert!(!output.status.success(), "accepted {args:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            if args.contains(&"nonexistent") {
+                assert!(error.contains("closest matches:"), "{error}");
+            }
+            if args.contains(&"bogus") {
+                assert!(error.contains("max"), "{error}");
+            }
+        }
+        let id = session.session_id.to_string();
+        assert!(
+            !fixture
+                .output(&["chat", &id, "--model", "openai/gpt-5.5"])
+                .await
+                .status
+                .success()
+        );
+        let listing = success(fixture.output(&["session", "ls"]).await);
+        assert!(listing.contains("openai/gpt-5.5"));
+        server.abort();
+    })
+    .await;
 }

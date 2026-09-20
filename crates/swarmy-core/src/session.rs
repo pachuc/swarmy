@@ -78,6 +78,8 @@ pub struct SessionRecord {
     pub head_seq: u64,
     /// Absent until the first snapshot is written.
     pub snapshot_ref: Option<SnapshotRef>,
+    #[serde(default)]
+    pub inference: crate::InferenceSelection,
 }
 
 /// Lease times are supplied by callers; this crate never reads the clock.
@@ -148,11 +150,18 @@ mod tests {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
+            inference: crate::InferenceSelection::default(),
             kind: SessionKind::Ephemeral,
             computer_deleted: false,
             plan: Vec::new(),
         };
         assert_round_trip(&session);
+        let mut old = serde_json::to_value(&session).unwrap();
+        old.as_object_mut().unwrap().remove("inference");
+        assert_eq!(
+            serde_json::from_value::<SessionRecord>(old).unwrap(),
+            session
+        );
         session.kind = SessionKind::Named {
             agent_id: session.agent_id,
         };
