@@ -108,7 +108,7 @@ fn search_and_lookup_errors_are_clear() {
 fn commands_share_configured_catalog_and_filters() {
     let fixture = Fixture::new(
         r#"
-[providers.private]
+[custom_providers.private]
 api = "OpenAiCompletions"
 base_url = "http://localhost:8000/v1"
 [[models]]

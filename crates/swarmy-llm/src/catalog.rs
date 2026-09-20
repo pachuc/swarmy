@@ -255,30 +255,6 @@ impl Catalog {
         self.provider(provider)?.models.get(id)
     }
 
-    /// Merge explicit model entries over the embedded snapshot once at startup.
-    #[must_use]
-    pub fn merged(models: &[CustomModel]) -> Self {
-        let mut catalog = Self::get().clone();
-        for entry in models {
-            let provider = catalog
-                .providers
-                .entry(entry.provider.clone())
-                .or_insert_with(|| ProviderInfo {
-                    id: entry.provider.clone(),
-                    name: entry.provider.clone(),
-                    api: entry.model.api.unwrap_or(Api::OpenAiCompletions),
-                    base_url: entry.model.base_url.clone().unwrap_or_default(),
-                    env_keys: Vec::new(),
-                    auth_kinds: vec!["api_key".into()],
-                    models: BTreeMap::new(),
-                });
-            provider
-                .models
-                .insert(entry.model.id.clone(), entry.model.clone());
-        }
-        catalog
-    }
-
     /// Case-insensitive substring matches over `provider/model`, in stable order.
     #[must_use]
     pub fn find(&self, pattern: &str) -> Vec<(&ProviderInfo, &ModelInfo)> {
@@ -425,12 +401,4 @@ mod tests {
             effort
         );
     }
-}
-
-/// A configured model replaces the same provider/id entry in the snapshot.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CustomModel {
-    pub provider: String,
-    #[serde(flatten)]
-    pub model: ModelInfo,
 }

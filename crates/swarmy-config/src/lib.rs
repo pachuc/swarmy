@@ -83,8 +83,6 @@ impl Default for GarbageCollection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
-    pub providers: BTreeMap<String, CustomProvider>,
-    pub models: Vec<CustomModel>,
     pub state_dir: String,
     pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
@@ -108,7 +106,8 @@ pub struct Settings {
     pub bus_prefix: String,
     pub provider: String,
     pub providers: Option<Vec<String>>,
-    pub models: Vec<swarmy_llm::catalog::CustomModel>,
+    pub custom_providers: BTreeMap<String, CustomProvider>,
+    pub models: Vec<CustomModel>,
     pub model: String,
     pub default_image: Option<String>,
     pub reasoning_effort: String,
@@ -149,8 +148,6 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            providers: BTreeMap::new(),
-            models: Vec::new(),
             state_dir: ".swarmy".into(),
             remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
@@ -182,6 +179,7 @@ impl Default for Settings {
             bus_prefix: String::new(),
             provider: "fake".into(),
             providers: None,
+            custom_providers: BTreeMap::new(),
             models: Vec::new(),
             model: "gpt-5".into(),
             default_image: None,
@@ -256,42 +254,6 @@ impl Loaded {
 }
 
 impl Settings {
-    /// Merge configured models and preserve the legacy fake fixture model names.
-    #[must_use]
-    pub fn catalog(&self) -> swarmy_llm::catalog::Catalog {
-        let mut models = self.models.clone();
-        for id in ["", self.model.as_str()] {
-            if !models
-                .iter()
-                .any(|entry| entry.provider == "fake" && entry.model.id == id)
-            {
-                models.push(swarmy_llm::catalog::CustomModel {
-                    provider: "fake".into(),
-                    model: swarmy_llm::catalog::ModelInfo {
-                        id: id.into(),
-                        name: "Scripted model".into(),
-                        family: None,
-                        api: Some(swarmy_llm::catalog::Api::Fake),
-                        base_url: None,
-                        reasoning: None,
-                        tool_call: true,
-                        attachment: false,
-                        input_modalities: vec!["text".into()],
-                        limit: swarmy_llm::catalog::Limit {
-                            context: 400_000,
-                            output: None,
-                        },
-                        cost: swarmy_llm::catalog::Cost::default(),
-                        release_date: None,
-                        status: None,
-                        compat: swarmy_llm::catalog::Compat::default(),
-                    },
-                });
-            }
-        }
-        swarmy_llm::catalog::Catalog::merged(&models)
-    }
-
     /// Select the image for a new session, giving an explicit flag precedence.
     /// # Errors
     /// Requires a configured default or an explicit image.
@@ -602,6 +564,10 @@ impl Settings {
         } else if let Some(value) = environment.get("SWARMY_PROVIDER") {
             self.providers = Some(vec![value.clone()]);
         }
+        if let Some(value) = environment.get("SWARMY_CUSTOM_PROVIDERS") {
+            self.custom_providers = serde_json::from_str(value)
+                .map_err(|_| Error::Environment("SWARMY_CUSTOM_PROVIDERS".into()))?;
+        }
         if let Some(value) = environment.get("SWARMY_MODELS") {
             self.models = serde_json::from_str(value)
                 .map_err(|_| Error::Environment("SWARMY_MODELS".into()))?;
@@ -823,6 +789,10 @@ impl Settings {
             self.providers
                 .as_ref()
                 .map_or_else(String::new, |ids| ids.join(",")),
+        );
+        environment.insert(
+            "SWARMY_CUSTOM_PROVIDERS".into(),
+            serde_json::to_string(&self.custom_providers).expect("custom providers serialize"),
         );
         environment.insert(
             "SWARMY_MODELS".into(),

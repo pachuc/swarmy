@@ -17,7 +17,7 @@ pub struct CustomProvider {
     pub api: Option<Api>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomModel {
     pub provider: String,
@@ -35,7 +35,8 @@ pub struct CustomModel {
 impl Settings {
     /// Merge project metadata over the embedded snapshot. Omitted fields on
     /// existing models keep their snapshot values; later entries take precedence.
-    /// Workers, gateways, and model selection should all use this catalog.
+    /// Workers, gateways, and model selection all use this catalog. The legacy
+    /// fake fixture model names stay available under the `fake` provider.
     ///
     /// # Errors
     /// Rejects unknown providers, incomplete new providers, and empty identifiers.
@@ -44,7 +45,7 @@ impl Settings {
             .providers()
             .map(|provider| (provider.id.clone(), provider.clone()))
             .collect();
-        for (id, custom) in &self.providers {
+        for (id, custom) in &self.custom_providers {
             if id.trim().is_empty() || id.contains('/') {
                 return Err(Error::Catalog(format!("invalid provider id {id:?}")));
             }
@@ -86,7 +87,7 @@ impl Settings {
             }
             let provider = providers.get_mut(&custom.provider).ok_or_else(|| {
                 Error::Catalog(format!(
-                    "unknown provider {:?} for model {:?}; declare [providers.{}] with api and base_url",
+                    "unknown provider {:?} for model {:?}; declare [custom_providers.{}] with api and base_url",
                     custom.provider, custom.id, custom.provider
                 ))
             })?;
@@ -113,6 +114,31 @@ impl Settings {
                     compat: Compat::default(),
                 });
             custom.apply(model);
+        }
+        if let Some(fake) = providers.get_mut("fake") {
+            for id in ["", self.model.as_str()] {
+                fake.models
+                    .entry(id.to_owned())
+                    .or_insert_with(|| ModelInfo {
+                        id: id.into(),
+                        name: "Scripted model".into(),
+                        family: None,
+                        api: Some(Api::Fake),
+                        base_url: None,
+                        reasoning: None,
+                        tool_call: true,
+                        attachment: false,
+                        input_modalities: vec!["text".into()],
+                        limit: Limit {
+                            context: 400_000,
+                            output: None,
+                        },
+                        cost: Cost::default(),
+                        release_date: None,
+                        status: None,
+                        compat: Compat::default(),
+                    });
+            }
         }
         Ok(Catalog::from_providers(providers.into_values()))
     }
@@ -166,10 +192,10 @@ mod tests {
     fn custom_provider_and_models_merge_over_snapshot() {
         let settings = read(
             r#"
-[providers.private]
+[custom_providers.private]
 api = "OpenAiCompletions"
 base_url = "http://localhost:8000/v1"
-[providers.openai]
+[custom_providers.openai]
 base_url = "https://proxy.example/v1"
 [[models]]
 provider = "private"
@@ -287,7 +313,7 @@ reasoning = []
     #[test]
     fn unknown_api_is_a_load_error_with_allowed_values() {
         for config in [
-            "[providers.private]\napi = 'invalid'\nbase_url = 'http://localhost'",
+            "[custom_providers.private]\napi = 'invalid'\nbase_url = 'http://localhost'",
             "[[models]]\nprovider = 'openai'\nid = 'private'\napi = 'invalid'",
         ] {
             let error = read(config).err().unwrap().to_string();
@@ -311,11 +337,11 @@ reasoning = []
     fn incomplete_provider_and_unknown_model_provider_fail_loading() {
         for (config, message) in [
             (
-                "[providers.private]\nbase_url = 'http://localhost'",
+                "[custom_providers.private]\nbase_url = 'http://localhost'",
                 "requires api",
             ),
             (
-                "[providers.private]\napi = 'OpenAiCompletions'",
+                "[custom_providers.private]\napi = 'OpenAiCompletions'",
                 "requires base_url",
             ),
             (

@@ -58,8 +58,10 @@ pub fn provider_set(
 impl Providers {
     /// Discover providers without constructing protocol clients or calling providers.
     /// Unavailable credentials and scripts are recorded in `skipped`.
-    pub async fn discover(store: Store, settings: &Settings) -> Self {
-        let catalog = settings.catalog();
+    /// # Errors
+    /// Returns an invalid custom provider or model configuration.
+    pub async fn discover(store: Store, settings: &Settings) -> Result<Self, swarmy_config::Error> {
+        let catalog = settings.catalog()?;
         let keyring = Keyring::load().ok();
         let chatgpt = match ClusterCredentials::new(store.clone(), &settings.credential_file).await
         {
@@ -112,7 +114,7 @@ impl Providers {
                     .remove(&provider.id)
                     .unwrap_or_else(|| Err("credential unavailable".into()))
             });
-        result
+        Ok(result)
     }
 
     async fn auth(&self, provider: &ProviderInfo) -> Result<ResolvedAuth, swarmy_llm::Error> {
