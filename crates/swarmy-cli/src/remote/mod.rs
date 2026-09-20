@@ -54,13 +54,23 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 }
             }
         }
-        Command::AddNode { name } => {
+        Command::AddNode {
+            name,
+            copy_credential,
+        } => {
+            let mut settings = loaded.settings;
+            settings.remote.services = swarmy_config::RemoteServices::Node;
+            let options = if copy_credential {
+                Some(services::Options::new(&settings, true, None)?)
+            } else {
+                None
+            };
             let _lock = state.lock()?;
             let node = state.require(&name)?;
             let host = ssh::Ssh::discover()?;
             let cloud = aws::Aws::new(&node.region).await;
             tokio::select! {
-                result = Box::pin(add_node::run(&cloud, &host, &state, &name, Duration::from_secs(5))) => result,
+                result = Box::pin(add_node::run(&cloud, &host, &state, &name, Duration::from_secs(5), options.as_ref())) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")

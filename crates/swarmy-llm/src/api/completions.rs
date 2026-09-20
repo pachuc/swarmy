@@ -10,7 +10,7 @@ use crate::{
     ClientAuth, Delta, Error, Provider, ProviderStream, ReasoningEffort, Request, Response,
     StopReason, TokenUsage,
     catalog::{ModelInfo, ProviderInfo, ReasoningOptions},
-    retry::{RetryPolicy, is_retryable, provider_error, retry_after, with_retry},
+    retry::{RetryPolicy, retryable, with_retry},
 };
 
 #[derive(Clone)]
@@ -74,15 +74,17 @@ impl CompletionsProvider {
         if status.is_success() {
             return Ok(response);
         }
-        let delay = retry_after(response.headers());
+        let retry_after = retry_after(response.headers());
         let body = response.text().await?;
         let error = serde_json::from_str::<Value>(&body)
             .map_or_else(|_| provider_error(body), |value| error_from_json(&value));
-        if is_retryable(status) && !matches!(error, Error::ContextOverflow(_)) {
-            return Err(Error::RetryableStatus {
+        if matches!(error, Error::ContextOverflow(_)) {
+            return Err(error);
+        }
+        if retryable(status) {
+            return Err(Error::Retryable {
                 status,
-                retry_after: delay,
-                source: Box::new(error),
+                retry_after,
             });
         }
         Err(error)
@@ -367,6 +369,35 @@ fn cache_messages(messages: &mut [Value]) {
     }
 }
 
+/// Classify the shared context-overflow phrases before deciding to retry.
+fn provider_error(message: String) -> Error {
+    let lower = message.to_ascii_lowercase();
+    if [
+        "maximum context length",
+        "context_length_exceeded",
+        "exceeds the context window",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+    {
+        Error::ContextOverflow(message)
+    } else {
+        Error::Protocol(message)
+    }
+}
+
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = jiff::fmt::rfc2822::parse(value).ok()?.timestamp();
+    let seconds = date
+        .as_second()
+        .saturating_sub(jiff::Timestamp::now().as_second());
+    Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
+}
+
 fn error_from_json(value: &Value) -> Error {
     let error = value.get("error").unwrap_or(value);
     let message = error["message"]
@@ -502,6 +533,7 @@ impl SseParser {
                     .as_u64()
                     .unwrap_or(0),
                 total_tokens: usage["total_tokens"].as_u64().unwrap_or(0),
+                cache_write_input_tokens: 0,
             };
         }
         let Some(choice) = event["choices"]
@@ -692,4 +724,25 @@ fn append_detail(details: &mut Vec<Value>, detail: &Value) {
         return;
     }
     details.push(detail.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    #[test]
+    fn retry_after_supports_seconds_http_dates_and_invalid_values() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("12"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(12)));
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Sun, 06 Nov 1994 08:49:37 GMT"),
+        );
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("invalid"));
+        assert_eq!(retry_after(&headers), None);
+    }
 }

@@ -1,4 +1,4 @@
-//! Shared inference contracts and subscription-backed `ChatGPT` inference.
+//! Shared inference contracts and provider wire clients.
 
 pub mod api;
 pub mod auth;
@@ -17,6 +17,11 @@ use swarmy_core::{Message, Part, RequestId, SessionId};
 use auth::CredentialStore;
 use catalog::{Api, ModelInfo, ProviderInfo};
 
+/// Refreshable cloud bearer credentials, supplied by the cloud auth adapter.
+pub trait BearerSource: Send + Sync {
+    fn token(&self) -> futures::future::BoxFuture<'_, Result<String, Error>>;
+}
+
 /// Resolved credentials for a protocol client. Cloud credentials can add variants.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -24,6 +29,11 @@ pub enum ClientAuth {
     None,
     ApiKey(String),
     Bearer(String),
+    Vertex {
+        project: String,
+        location: String,
+        source: Arc<dyn BearerSource>,
+    },
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
 }
@@ -41,7 +51,7 @@ pub fn client_for(
     let api = model.api.unwrap_or(provider.api);
     // Keep separate arms so protocol implementations can land independently.
     match api {
-        Api::AnthropicMessages => Err(Error::Unsupported(Api::AnthropicMessages)),
+        Api::AnthropicMessages => api::anthropic::client_for(provider, model, auth),
         Api::OpenAiResponses => Err(Error::Unsupported(Api::OpenAiResponses)),
         Api::OpenAiCodexResponses => match auth {
             ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
@@ -96,11 +106,16 @@ pub use swarmy_core::ReasoningEffort;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
+    /// Total input, including cache reads and writes.
     pub input_tokens: u64,
+    /// Input read from the prompt cache.
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+    /// Input written to the prompt cache, when reported separately.
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,19 +179,18 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
+    #[error("HTTP request failed with retryable status {status}")]
+    Retryable {
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+    },
+    #[error("context overflow: {0}")]
+    ContextOverflow(String),
     #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
-    #[error("context window exceeded: {0}")]
-    ContextOverflow(String),
-    #[error("HTTP request failed with status {status}: {source}")]
-    RetryableStatus {
-        status: reqwest::StatusCode,
-        retry_after: Option<std::time::Duration>,
-        source: Box<Error>,
-    },
-    #[error("invalid provider stream: {0}")]
+    #[error("invalid provider protocol: {0}")]
     Protocol(String),
     #[error("device login timed out after 15 minutes")]
     LoginTimeout,
@@ -191,7 +205,7 @@ mod job_tests {
     use super::*;
 
     #[tokio::test]
-    async fn catalog_dispatch_constructs_chatgpt_and_rejects_other_protocols() {
+    async fn catalog_dispatch_requires_credentials_and_rejects_unimplemented_protocols() {
         let catalog = catalog::Catalog::get();
         let provider = catalog.provider("chatgpt").unwrap();
         let model = provider.models.values().next().unwrap();
@@ -209,7 +223,10 @@ mod job_tests {
             .filter(|provider| provider.api != Api::OpenAiCodexResponses)
         {
             let model = provider.models.values().next().unwrap_or(model);
-            if model.api.unwrap_or(provider.api) == Api::OpenAiCompletions {
+            if matches!(
+                model.api.unwrap_or(provider.api),
+                Api::AnthropicMessages | Api::OpenAiCompletions
+            ) {
                 assert!(matches!(
                     client_for(provider, model, ClientAuth::None),
                     Err(Error::Credentials(_))
@@ -229,7 +246,7 @@ mod job_tests {
             .unwrap();
         assert!(matches!(
             client_for(router, claude, ClientAuth::None),
-            Err(Error::Unsupported(Api::AnthropicMessages))
+            Err(Error::Credentials(_))
         ));
     }
 

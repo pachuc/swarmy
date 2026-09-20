@@ -159,7 +159,8 @@ async fn text_turn_reports_usage_and_uses_catalog_dispatch() {
                 cached_input_tokens: 12,
                 output_tokens: 9,
                 reasoning_output_tokens: 4,
-                total_tokens: 30
+                total_tokens: 30,
+                cache_write_input_tokens: 0,
             },
         }
     );
@@ -555,7 +556,7 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
         )
         .unwrap();
         provider.retry_policy = RetryPolicy {
-            max_retries: 1,
+            max_attempts: 2,
             initial_delay: Duration::from_secs(30),
             max_delay: Duration::from_millis(1),
         };
@@ -583,7 +584,7 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
     )
     .unwrap();
     provider.retry_policy = RetryPolicy {
-        max_retries: 1,
+        max_attempts: 2,
         initial_delay: Duration::ZERO,
         max_delay: Duration::ZERO,
     };
@@ -592,7 +593,13 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
         .try_collect::<Vec<_>>()
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::Protocol(message) if message == "quota exhausted"));
+    assert!(matches!(
+        error,
+        Error::Retryable {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -30,6 +30,7 @@ tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+wiremock.workspace = true
 async-nats.workspace = true
 foundationdb.workspace = true
 tempfile.workspace = true

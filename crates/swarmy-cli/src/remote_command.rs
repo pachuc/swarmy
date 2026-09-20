@@ -8,7 +8,7 @@ pub enum Command {
         /// Run control-plane services on the laptop (default) or the node
         #[arg(long)]
         services: Option<swarmy_config::RemoteServices>,
-        /// Acknowledge that the `ChatGPT` credential file leaves this laptop over SSH
+        /// Acknowledge that the `ChatGPT` credential file and cluster keyring leave this laptop over SSH
         #[arg(long)]
         copy_credential: bool,
         /// Skip building and registering the stack's default image
@@ -19,7 +19,12 @@ pub enum Command {
         image_recipe: std::path::PathBuf,
     },
     /// Join another node to a remote over its private network
-    AddNode { name: String },
+    AddNode {
+        name: String,
+        /// Copy the `ChatGPT` credential and keyring and run a gateway on this node
+        #[arg(long)]
+        copy_credential: bool,
+    },
     /// Terminate all nodes and remove their key pairs and local state
     Down { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports

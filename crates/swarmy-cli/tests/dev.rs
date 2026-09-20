@@ -30,6 +30,7 @@ impl Fixture {
         let mut command = AsyncCommand::new(CLI);
         command
             .current_dir(self.files.path())
+            .env("HOME", self.files.path())
             .args(args)
             .kill_on_drop(true);
         for (key, _) in std::env::vars_os() {
@@ -209,7 +210,24 @@ async fn check_startup(fixture: &Fixture) {
             previous
         );
     }
+    let keyring = fixture.files.path().join(".swarmy/keyring");
+    swarmy_config::Keyring::read(&keyring).unwrap();
+    let doctor = fixture
+        .command(&["doctor", "--json"])
+        .output()
+        .await
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let check = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "keyring")
+        .unwrap();
+    assert_eq!(check["ok"], true);
+    assert!(check["detail"].as_str().unwrap().contains("mode 600"));
     let up = String::from_utf8(up.stdout).unwrap();
+    assert!(up.contains("Generated cluster keyring"), "{up}");
     for name in ["stack", "scheduler", "worker", "gateway"] {
         assert!(up.contains(&format!("{name}: ready")), "{up}");
     }
