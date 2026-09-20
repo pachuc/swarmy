@@ -32,7 +32,13 @@ impl CompletionsProvider {
         auth: ClientAuth,
     ) -> Result<Self, Error> {
         let token = match auth {
-            ClientAuth::ApiKey(token) | ClientAuth::Bearer(token) if !token.is_empty() => token,
+            ClientAuth::ApiKey(token)
+            | ClientAuth::Bearer(token)
+            | ClientAuth::BearerWithExtra { token, .. }
+                if !token.is_empty() =>
+            {
+                token
+            }
             _ => {
                 return Err(Error::Credentials(
                     "Chat Completions requires an API key or bearer token",

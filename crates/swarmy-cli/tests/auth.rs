@@ -131,3 +131,45 @@ fn key_sources_are_exclusive_and_support_files_and_environment() {
     f.success(&["auth", "set", "anthropic", "--file", "key"]);
     assert_eq!(f.success(&["auth", "ls", "--json"]).lines().count(), 2);
 }
+
+#[test]
+#[cfg(unix)]
+fn azure_login_saves_to_cluster_and_missing_cli_reports_login_needed() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    let bin = f.0.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let az = bin.join("az");
+    fs::write(&az, r#"#!/bin/sh
+[ "$*" = 'account get-access-token --scope https://cognitiveservices.azure.com/.default --output json' ] || exit 1
+printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:04:05Z"}'
+"#).unwrap();
+    fs::set_permissions(&az, fs::Permissions::from_mode(0o700)).unwrap();
+    let original = fs::read(f.0.path().join("auth.json")).unwrap();
+    let result = f
+        .command(&["auth", "login", "azure", "--resource", "fixture", "--json"])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("secret-azure-fixture"));
+    let row: Value =
+        serde_json::from_str(&f.success(&["auth", "check", "azure", "--json"])).unwrap();
+    assert_eq!(row["kind"], "oauth");
+    assert_eq!(row["status"], "ready");
+    assert_eq!(fs::read(f.0.path().join("auth.json")).unwrap(), original);
+    fs::remove_file(az).unwrap();
+    let result = f
+        .command(&["auth", "login", "azure", "--resource", "fixture"])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("requires az on this host"));
+}
