@@ -9,7 +9,9 @@ mod event;
 mod id;
 mod message;
 mod scheduler;
+mod selection;
 mod session;
+pub use selection::{InferenceField, InferenceSelection, ResolvedSelection};
 mod store;
 mod volume;
 

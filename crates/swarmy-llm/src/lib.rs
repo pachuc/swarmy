@@ -73,6 +73,8 @@ pub struct InferenceJob {
     pub step: u64,
     pub request_id: RequestId,
     pub request: Request,
+    #[serde(default)]
+    pub provider: String,
 }
 
 /// Provider-neutral input built from durable core messages.
@@ -249,6 +251,7 @@ mod job_tests {
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
+            provider: "fake".into(),
             session_id,
             step: 7,
             request_id: RequestId::for_step(session_id, 7),
