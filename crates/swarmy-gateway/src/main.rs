@@ -154,7 +154,9 @@ impl Gateway {
     }
 
     async fn infer(&self, job: &InferenceJob) -> Result<Response, swarmy_llm::Error> {
-        let mut stream = self.provider.request(job.request.clone());
+        let mut stream = self
+            .provider
+            .request_for_session(job.request.clone(), job.session_id);
         let mut response = None;
         while let Some(delta) = stream.next().await {
             let delta = delta?;

@@ -6,8 +6,8 @@ use serde::Deserialize;
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_core::{MessageRole, Part, ToolCallId};
 use swarmy_llm::{
-    Provider, ProviderStream, Request, Response, StopReason, TokenUsage, auth::FileCredentialStore,
-    chatgpt::ChatGptProvider, fake::FakeProvider,
+    ClientAuth, Provider, ProviderStream, Request, Response, StopReason, TokenUsage,
+    auth::FileCredentialStore, catalog::Catalog, client_for, fake::FakeProvider,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -28,9 +28,22 @@ impl Config {
         let class = settings.provider.clone();
         let provider: Arc<dyn Provider> = match class.as_str() {
             "fake" => Arc::new(FileFake::from_settings(&settings)?),
-            "chatgpt" => Arc::new(ChatGptProvider::new(Arc::new(FileCredentialStore::new(
-                &settings.credential_file,
-            )))?),
+            "chatgpt" => {
+                let catalog = Catalog::get();
+                let provider = catalog
+                    .provider("chatgpt")
+                    .ok_or_else(|| anyhow::anyhow!("missing ChatGPT catalog"))?;
+                let model = catalog
+                    .model("chatgpt", &settings.model)
+                    .ok_or_else(|| anyhow::anyhow!("unknown ChatGPT model: {}", settings.model))?;
+                client_for(
+                    provider,
+                    model,
+                    ClientAuth::ChatGpt(Arc::new(FileCredentialStore::new(
+                        &settings.credential_file,
+                    ))),
+                )?
+            }
             _ => bail!("unsupported SWARMY_PROVIDER: {class}"),
         };
         let concurrency = settings.gateway_concurrency;

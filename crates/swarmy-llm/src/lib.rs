@@ -1,10 +1,12 @@
-//! Shared inference contracts and subscription-backed `ChatGPT` inference.
+//! Shared inference contracts and catalog-driven provider clients.
 
+pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
 pub mod responses;
+pub mod retry;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,11 @@ use catalog::{Api, ModelInfo, ProviderInfo};
 pub enum ClientAuth {
     None,
     ApiKey(String),
+    /// Provider metadata, such as Azure's `resource_name`, alongside an API key.
+    ApiKeyWithExtra {
+        key: String,
+        extra: BTreeMap<String, String>,
+    },
     Bearer(String),
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
@@ -30,21 +37,24 @@ pub enum ClientAuth {
 ///
 /// # Errors
 /// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing the `ChatGPT` client.
+/// or HTTP configuration error when constructing a Responses client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
     auth: ClientAuth,
 ) -> Result<Arc<dyn Provider>, Error> {
     let api = model.api.unwrap_or(provider.api);
-    // Keep separate arms so protocol implementations can land independently.
+    // Each protocol implementation owns its dispatch arm.
     match api {
         Api::AnthropicMessages => Err(Error::Unsupported(Api::AnthropicMessages)),
-        Api::OpenAiResponses => Err(Error::Unsupported(Api::OpenAiResponses)),
-        Api::OpenAiCodexResponses => match auth {
-            ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
-            _ => Err(Error::Credentials("ChatGPT requires a credential store")),
-        },
+        Api::OpenAiResponses | Api::OpenAiCodexResponses => {
+            let endpoint = api::responses::ResponsesEndpoint::from_catalog(provider, model, auth)?;
+            Ok(Arc::new(api::responses::ResponsesProvider::new(
+                endpoint,
+                provider.id.clone(),
+                model.clone(),
+            )?))
+        }
         Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
@@ -146,6 +156,11 @@ pub type ProviderStream = BoxStream<'static, Result<Delta, Error>>;
 /// Object-safe interface so the gateway can select a provider at runtime.
 pub trait Provider: Send + Sync {
     fn request(&self, request: Request) -> ProviderStream;
+
+    /// Attach session affinity without changing the durable request format.
+    fn request_for_session(&self, request: Request, _session_id: SessionId) -> ProviderStream {
+        self.request(request)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -160,7 +175,14 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
-    #[error("invalid ChatGPT credentials: {0}")]
+    #[error("HTTP request failed with retryable status {status}")]
+    RetryableStatus {
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+    },
+    #[error("context window exceeded: {0}")]
+    ContextOverflow(String),
+    #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
@@ -192,10 +214,12 @@ mod job_tests {
             client_for(provider, model, ClientAuth::None),
             Err(Error::Credentials(_))
         ));
-        for provider in catalog
-            .providers()
-            .filter(|provider| provider.api != Api::OpenAiCodexResponses)
-        {
+        for provider in catalog.providers().filter(|provider| {
+            !matches!(
+                provider.api,
+                Api::OpenAiCodexResponses | Api::OpenAiResponses
+            )
+        }) {
             let model = provider.models.values().next().unwrap_or(model);
             assert!(matches!(
                 client_for(provider, model, ClientAuth::None),
