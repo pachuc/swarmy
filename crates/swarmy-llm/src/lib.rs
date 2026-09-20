@@ -198,6 +198,12 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
+    #[error("provider returned {status}: {message}")]
+    ProviderResponse {
+        status: reqwest::StatusCode,
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("HTTP request failed with retryable status {status}")]
     Retryable {
         status: reqwest::StatusCode,

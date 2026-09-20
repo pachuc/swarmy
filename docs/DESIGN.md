@@ -879,134 +879,91 @@ which is a further reason memory pause matters.
 
 ## 9. Inference gateway
 
-The provider catalog is generated from models.dev and OpenRouter's live model
-list by `scripts/models/generate.py` (`make models`). Only tool-capable models
-from the provider allowlist are retained. JSON snapshots and source hashes are
-committed under `crates/swarmy-llm/catalog`; `--check` regenerates in a temporary
-directory and rejects differences. Builds never fetch model metadata.
+The implemented provider layer consists of an embedded catalog, Rust protocol
+clients, encrypted cluster credentials, and a gateway that routes by provider.
+[providers.md](providers.md) is the operator reference for supported providers,
+auth commands, model configuration, terms decisions, and live verification.
 
-The provider work follows the inference-providers plan. Provider authentication
-uses the kinds each vendor permits: API keys for Anthropic, and the existing
-ChatGPT device login. Anthropic subscription OAuth and product identity
-impersonation are not implemented. ChatGPT subscription access through a
-third-party harness is treated as tolerated, not licensed.
+### 9.1 Catalog and protocol clients
 
-| Provider id | Wire protocol | Auth | Notes |
-|---|---|---|---|
-| `anthropic` | Anthropic Messages | API key | Subscription OAuth is prohibited by Anthropic's terms for third-party harnesses and is not built. |
-| `openai` | OpenAI Responses | API key | Platform API at api.openai.com. |
-| `chatgpt` | OpenAI Responses (Codex backend) | Codex OAuth device login | Existing provider; tolerated by OpenAI, not licensed. |
-| `xai` | OpenAI Responses | API key | api.x.ai. |
-| `meta` | OpenAI Responses | API key | Muse Spark at api.meta.ai. |
-| `openrouter` | OpenAI Chat Completions; Anthropic Messages for `anthropic/*` | API key or PKCE login that mints a key | The live catalog supplies all models advertising tools. |
-| `azure` | OpenAI Responses | API key or Azure CLI Entra token | Azure OpenAI deployments; includes copies of every OpenAI catalog model. |
-| `amazon-bedrock` | Bedrock Converse stream | AWS credential chain or bearer token | SigV4 through the official AWS Rust SDK. |
-| `google` | Gemini generateContent | API key | Gemini API. |
-| `google-vertex` | Gemini generateContent on Vertex | Application Default Credentials or service account key | Cloud project and location configure the endpoint. |
-| `google-vertex-anthropic` | Anthropic Messages on Vertex | Same as `google-vertex` | |
-| `fake` | Scripted | None | Existing scripted provider is unchanged. |
+`scripts/models/generate.py` combines models.dev and OpenRouter's live list,
+filters to tool-capable models from the provider allowlist, and applies protocol
+compatibility flags. JSON snapshots and source hashes are committed under
+`crates/swarmy-llm/catalog`; builds never fetch metadata. `Settings::catalog()`
+merges custom provider and model definitions over the snapshot. Metadata includes
+context/output limits, prices and context tiers, modalities, and reasoning.
 
-Provider normalization is written in Rust in `swarmy-llm`. `catalog::Catalog`
-parses the embedded provider files once behind `OnceLock` and supports exact
-provider/model lookup and case-insensitive substring search. Models carry
-protocol overrides, prices per million tokens with context tiers, limits,
-modalities, reasoning options, and an open `compat` quirk map. Reasoning effort
-uses `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; clamping keeps
-a supported request, then tries the next higher supported level, then the next
-lower. `xhigh` and `max` require explicit support; models without reasoning use
-`none`.
+`client_for(provider, model, auth)` dispatches Anthropic Messages, OpenAI
+Responses (including ChatGPT and Azure), OpenAI Chat Completions, Gemini on the
+public API and Vertex, and Bedrock Converse through the official AWS Rust SDK.
+OpenRouter's Anthropic model ids use Messages. Fake clients use configured
+scripts. Protocol clients translate core messages and streamed deltas, preserve
+same-model reasoning signatures, normalize tool ids, repair orphan calls, and
+report usage including cache reads/writes and reasoning. Shared retry handling
+covers transient HTTP failures; context overflow is classified separately.
 
-`client_for(provider, model, auth)` is the dispatch point for protocol clients.
-The catalog task wires the existing ChatGPT client; all other arms return
-`Error::Unsupported`, including a fake placeholder. Later tasks implement the
-protocols and credential kinds in the table. The six ChatGPT models are
-hand-listed with zero token costs. See [providers.md](providers.md) for the
-environment variables, schema details, and regeneration steps.
+Reasoning uses `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+Unsupported requests clamp to the next supported higher level, then the next
+lower. Non-reasoning models use `none`; `xhigh` and `max` need explicit support.
+Catalog image metadata does not yet enable image inputs.
 
-**First provider: ChatGPT subscription via the Codex backend.** Slice 1
-uses ChatGPT subscription inference, not the OpenAI platform API. Requests go
-to the ChatGPT backend Responses endpoint with a Bearer access token and the
-account id header, in the Responses API wire dialect. Auth is the Codex OAuth
-device-code flow with refresh tokens, stored in the same auth.json shape the
-Codex CLI uses so an existing login can be imported. The Codex CLI is itself
-Rust, so its login crate and backend client are the reference implementation
-to port or depend on. Operating rules learned from running Codex in remote
-sandboxes: one credential cache is one refresh chain, concurrent refreshers
-get the whole session revoked server-side, so refresh is serialized per
-account through a single writer, gateways read the current access token from
-the credential store on every request, and a key pool here means many
-ChatGPT accounts, each with its own quota counters. Using subscription
-inference in a third-party harness is the operator's decision and is taken as
-given in this design.
+### 9.2 Credential storage and refresh
 
-### 9.1 Encrypted credentials and refresh ownership
+Records at `("credential", scope, provider)` hold API keys or OAuth material,
+provider metadata, and an update timestamp. The CLI uses cluster scope;
+`agent:<id>` is reserved. Versioned records use XChaCha20-Poly1305 with a random
+24-byte nonce and scope/provider authenticated as associated data. The 32-byte
+cluster data key stays outside FoundationDB in `~/.swarmy/keyring` (mode 600),
+overridden by `SWARMY_KEYRING`. `dev up` creates it only when absent; explicit
+remote credential copying installs the same key on gateway hosts.
 
-A copy of an OAuth file on each gateway creates competing refresh owners.
-Providers rotate refresh tokens, so those copies can invalidate one another.
-The authoritative provider record instead lives in FoundationDB at
-`("credential", scope, provider)`. The current CLI uses `cluster`; the shared
-`CredentialScope::Agent` reserves `agent:<id>` for future per-agent credentials.
-API-key and OAuth records include provider-specific string metadata and an
-update timestamp. Their versioned Postcard encoding is encrypted with
-XChaCha20-Poly1305. A random 24-byte nonce precedes each ciphertext; the encoded
-scope and provider are authenticated associated data. Moving ciphertext to
-another provider or scope fails authentication.
+The resolver reads the store before environment keys and ambient AWS or Google
+credentials. An existing record's decryption or refresh failure never selects an
+environment fallback. OAuth refresh is fenced by a lease and verifies both its
+owner and unchanged credential before committing a rotation. Waiters use the
+winner's record. Failed refresh preserves the record and marks `needs_login`;
+explicit replacement or deletion fences outstanding refreshes. Lease expiry
+cannot cancel an already-sent external request, so uncertain refresh outcomes
+may require login.
 
-The 32-byte data key is base64 in `~/.swarmy/keyring`, overridden with
-`SWARMY_KEYRING`, and must have mode 600. It stays outside the database, so a
-database backup alone does not reveal credentials. `swarmy dev up` atomically
-creates the key only when absent and never replaces an existing key.
-`swarmy doctor` reports its presence and mode. Remote credential copying is
-explicit: `remote up --services node --copy-credential` and
-`remote add-node --copy-credential` also install the key at
-`/home/ubuntu/.swarmy/keyring`, with mode 600. Nodes running only `swarmyd` need
-neither credentials nor the key. Back up the key separately; replacing or
-losing it makes existing encrypted records unreadable. Wrong-key errors are
-reported as keyring errors, without printing token values.
+`swarmy auth set|ls|rm|check|import|login` manages the encrypted store. ChatGPT,
+OpenRouter PKCE, and Azure CLI logins persist directly to it. Import copies an
+existing ChatGPT file; gateways never fall back to that file. Stop other refresh
+owners before importing. Anthropic subscription OAuth and other disallowed
+product login flows are not implemented. The terms audit dated 2026-09-19 keeps
+the existing ChatGPT flow as tolerated, not licensed.
 
-`Store::credentials(keyring)` exposes put, get, list, delete, and
-`refresh_with_lease`. Listing decrypts each value once and returns only provider,
-kind, status, update time, and expiry. Status is `ready` until actual expiry,
-`expired` afterwards, or `needs_login` for absent token material or a recorded
-refresh failure. Refresh can start 60 seconds before OAuth expiry.
+### 9.3 Routing, metering, and verification
 
-A refresh transaction claims `("credential_lease", scope, provider)` with a
-unique owner and expiry and reads the current encrypted value. The provider
-request runs once outside transaction retries. A second transaction verifies
-the unexpired owner and unchanged credential before writing the replacement
-and clearing the lease together. Waiters return the winner's record. Dead
-owners expire; stale owners cannot commit. Explicit put or delete clears the
-lease and fences outstanding refreshes. A failed refresh preserves the tokens
-and records `needs_login` rather than repeatedly rotating them. An expired
-lease cannot fence an already-sent provider HTTP request; lease TTLs must exceed
-the provider request timeout, and uncertain external outcomes can require login.
+A gateway discovers all credential-backed providers or a configured `providers`
+subset, and subscribes to `infer.req.<provider>`. It advertises served providers
+in expiring FoundationDB records, refreshed every 30 seconds; skipped records
+retain a reason without granting routing authority. Requests carry provider,
+model, and reasoning effort. The gateway resolves credentials and caches clients
+by provider, model, and credential version so rotation retires old clients.
 
-The gateway adapter reads the stored ChatGPT record on each request, falling
-back to the file only when the record is absent. It never falls back after a
-decryption or refresh failure. A stored credential without its key fails at
-startup. The adapter routes stored refreshes through the fenced operation;
-legacy file credentials keep their existing file locks. `auth import` copies
-the existing file into the cluster without deleting it; operators must stop
-other refresh owners of that file. `auth login chatgpt` continues to save the
-file until the separate logins task moves login persistence to the cluster.
-See [provider commands](providers.md).
+Workers use session overrides before agent overrides and stack defaults. They
+validate selections against the merged catalog and use the selected model's
+context window for summarization unless explicitly overridden. Completions
+record provider, model, token usage, and catalog-priced `cost_micros`; session
+usage totals include these costs. Deltas stream live, and completed results are
+durable before their completion event. An interrupted stream can cost a retry.
 
-Swarm additions:
+`swarmy models probe` verifies credentials and protocol directly from the CLI,
+including an optional tool round trip. `swarmy doctor` reports local credential
+status and actual gateway advertisements without needing a running gateway.
+`scripts/providers/smoke.sh` checks direct and routed inference for configured
+providers and is never run in CI. Fixture tests use fake scripts and local
+protocol servers without real keys.
 
-- **Key pools.** Many keys per provider, each with its own quota counters.
-- **Admission.** Token buckets per provider, key, and model, with request and
-  token dimensions. The scheduler consults them before marking a session
-  `Runnable` for an inference step, so waiting sessions hold no lease.
-- **Affinity.** A session sticks to one provider and key while it is warm so
-  prompt caches hit. Broken only on failure or quota exhaustion.
-- **Failover.** Ordered fallback list per model class.
-- **Journaling.** Streamed deltas are published live. Completed responses are
-  written durably before the completion event. A gateway crash costs one
-  retry.
-- **Metering.** Tokens and cost per session, agent, provider, and key,
-  written as counters in FoundationDB.
-- **Mock provider.** Configurable latency and canned tool-calling behavior,
-  so the control plane can be exercised without quota.
+### 9.4 Future quota work
+
+- Key pools: multiple keys per provider with independent quota counters.
+- Admission: request and token buckets per provider, key, and model, consulted
+  before inference admission so waiting sessions hold no worker lease.
+- Affinity: retain a session's provider/key choice while its prompt cache is warm.
+- Failover: ordered fallback models and providers on failure or quota exhaustion.
+- Metering expansion: aggregate usage by agent and key in addition to sessions.
 
 ## 10. Channels and self-organization
 

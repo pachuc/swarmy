@@ -10,7 +10,7 @@ use crate::{
     auth::{CredentialStore, Credentials, OAuthClient},
     catalog::{Api, Catalog, Compat, ModelInfo, ProviderInfo},
     responses::{SseParser, is_context_overflow, request_json_for},
-    retry::{RetryPolicy, retryable, with_retry},
+    retry::{RetryPolicy, with_retry},
 };
 
 #[derive(Clone)]
@@ -182,7 +182,10 @@ impl ResponsesProvider {
                 credentials = self.oauth.refresh(store.as_ref(), &credentials).await?;
             }
             match self.send_with_retry(body, Some(&credentials)).await {
-                Err(Error::Status(reqwest::StatusCode::UNAUTHORIZED)) => {
+                Err(Error::ProviderResponse {
+                    status: reqwest::StatusCode::UNAUTHORIZED,
+                    ..
+                }) => {
                     credentials = self.oauth.refresh(store.as_ref(), &credentials).await?;
                     self.send_with_retry(body, Some(&credentials)).await
                 }
@@ -279,13 +282,11 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
     if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(&body) {
         return Err(Error::ContextOverflow(body));
     }
-    if retryable(status) {
-        return Err(Error::Retryable {
-            status,
-            retry_after,
-        });
-    }
-    Err(Error::Status(status))
+    Err(Error::ProviderResponse {
+        status,
+        message: body,
+        retry_after,
+    })
 }
 
 fn retry_after(value: &str) -> Option<Duration> {

@@ -70,36 +70,26 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
 }
 
 #[test]
-fn validates_chatgpt_credentials_without_printing_secrets() {
+fn providers_report_environment_without_gateway_or_secret_values() {
     let fixture = Fixture::new();
-    fixture.config("provider = 'chatgpt'\ncredential_file = 'auth.json'");
-    let output = fixture.doctor(true);
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "credentials")["ok"], false);
-    fs::write(
-        fixture.0.path().join("auth.json"),
-        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"DO_NOT_PRINT"}}"#,
-    )
-    .unwrap();
-    let output = fixture.doctor(true);
+    fixture.config("provider = 'fake'");
+    let output = fixture
+        .command(true)
+        .env("OPENAI_API_KEY", "DO_NOT_PRINT")
+        .output()
+        .unwrap();
     assert!(!String::from_utf8_lossy(&output.stdout).contains("DO_NOT_PRINT"));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "credentials")["ok"], false);
-    let credentials = include_bytes!("../../swarmy-llm/tests/fixtures/auth.json");
-    let auth = fixture.0.path().join("auth.json");
-    fs::write(&auth, credentials).unwrap();
-    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
-    assert_eq!(check(&report, "credentials")["ok"], true);
-    assert_eq!(fs::read(auth).unwrap(), credentials);
-    fixture.config("provider = 'fake'");
-    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
-    assert!(
-        !report["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|check| check["name"] == "credentials")
-    );
+    let providers = report["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 12);
+    let openai = providers
+        .iter()
+        .find(|row| row["provider"] == "openai")
+        .unwrap();
+    assert_eq!(openai["credential"], "environment");
+    assert_eq!(openai["status"], "unverified");
+    assert_eq!(openai["gateway"], "unknown");
+    assert!(String::from_utf8_lossy(&fixture.doctor(false).stdout).contains("Providers:"));
 }
 
 #[test]
@@ -301,4 +291,94 @@ fn reports_keyring_presence_and_permissions() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     let invalid: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
     assert_eq!(check(&invalid, "keyring")["ok"], false);
+}
+
+#[tokio::test]
+async fn provider_section_reads_store_status_and_gateway_expiry() {
+    use std::sync::Arc;
+    use swarmy_core::{CredentialKind, CredentialRecord, CredentialScope};
+    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        eprintln!("Skipping provider report integration: source .dev/env");
+        return;
+    };
+    let _network = swarmy_store::boot();
+    let fixture = Fixture::new();
+    fixture.config("provider = 'fake'");
+    let key_path = fixture.0.path().join(".swarmy/keyring");
+    let keyring = swarmy_config::Keyring::generate_at(&key_path).unwrap();
+    let directory = format!("doctor-providers-{}", ulid::Ulid::generate());
+    let store = swarmy_store::Store::open(
+        Some(&cluster),
+        Some(std::slice::from_ref(&directory)),
+        Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let now = jiff::Timestamp::now();
+    store
+        .credentials(keyring.clone())
+        .put_credential(
+            CredentialScope::Cluster,
+            "openai",
+            &CredentialRecord {
+                kind: CredentialKind::ApiKey {
+                    key: "DO_NOT_PRINT".into(),
+                    extra: std::collections::BTreeMap::new(),
+                },
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .credentials(keyring)
+        .put_credential(
+            CredentialScope::Cluster,
+            "azure",
+            &CredentialRecord {
+                kind: CredentialKind::OAuth {
+                    access: "DO_NOT_PRINT".into(),
+                    refresh: "DO_NOT_PRINT".into(),
+                    expires_at: jiff::Timestamp::from_second(now.as_second() - 60).unwrap(),
+                    extra: std::collections::BTreeMap::new(),
+                },
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+    for (provider, seconds) in [("openai", 60_i64), ("anthropic", -60)] {
+        store
+            .put_gateway_provider(
+                provider,
+                &swarmy_store::GatewayProvider {
+                    expires_at: jiff::Timestamp::from_second(now.as_second() + seconds).unwrap(),
+                    reason: "fixture".into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let output = fixture
+        .command(true)
+        .env("SWARMY_FDB_CLUSTER_FILE", cluster)
+        .env("SWARMY_STORE_DIRECTORY", directory)
+        .env("OPENAI_API_KEY", "DO_NOT_PRINT_ENV")
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("DO_NOT_PRINT"));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = report["providers"].as_array().unwrap();
+    let openai = rows.iter().find(|row| row["provider"] == "openai").unwrap();
+    assert_eq!(openai["credential"], "store", "{report}");
+    assert_eq!(openai["status"], "ready");
+    assert_eq!(openai["gateway"], "served");
+    let anthropic = rows
+        .iter()
+        .find(|row| row["provider"] == "anthropic")
+        .unwrap();
+    assert_eq!(anthropic["gateway"], "expired");
+    let azure = rows.iter().find(|row| row["provider"] == "azure").unwrap();
+    assert_eq!(azure["status"], "expired");
+    assert_eq!(azure["gateway"], "not served");
 }

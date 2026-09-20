@@ -2,7 +2,6 @@ use std::{path::Path, process::Stdio, time::Duration};
 
 use serde::Serialize;
 use swarmy_config::{Loaded, Settings};
-use swarmy_llm::auth::Credentials;
 use tokio::{net::TcpStream, process::Command, time::timeout};
 
 #[derive(Serialize)]
@@ -97,14 +96,6 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
     }
 
     if let Ok(loaded) = &loaded {
-        if loaded.settings.provider == "chatgpt" {
-            checks.push(credentials(&loaded.settings));
-        }
-        checks.push(Check::new(
-            "gateway providers",
-            gateway_providers(&loaded.settings).await,
-            "Check providers, the fake script, cluster keyring, and provider credentials.",
-        ));
         checks.extend(remote_checks(loaded).await);
         checks.extend(stack(loaded).await);
     } else {
@@ -116,9 +107,28 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
             ));
         }
     }
+    let providers = if let Ok(loaded) = &loaded {
+        match gateway_providers(&loaded.settings).await {
+            Ok(rows) => rows,
+            Err(_) => crate::provider_report::local(&loaded.settings.catalog()?, "unavailable"),
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(report(checks, providers, json))
+}
+
+fn report(
+    checks: Vec<Check>,
+    providers: Vec<crate::provider_report::ProviderRow>,
+    json: bool,
+) -> bool {
     let ok = checks.iter().all(|check| check.ok);
     if json {
-        println!("{}", serde_json::json!({"ok": ok, "checks": checks}));
+        println!(
+            "{}",
+            serde_json::json!({"ok": ok, "checks": checks, "providers": providers})
+        );
     } else {
         for check in checks {
             if let Some(fix) = check.fix {
@@ -127,8 +137,20 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
                 println!("ok {}: {}", check.name, check.detail);
             }
         }
+        println!("Providers:");
+        for row in providers {
+            println!(
+                "  {}: credential={} status={} store={} gateway={} {}",
+                row.provider,
+                row.credential,
+                row.status,
+                row.store,
+                row.gateway,
+                row.gateway_reason
+            );
+        }
     }
-    Ok(ok)
+    ok
 }
 
 async fn remote_checks(loaded: &Loaded) -> Vec<Check> {
@@ -263,30 +285,6 @@ fn keyring() -> Result<String, String> {
     }
 }
 
-fn credentials(settings: &Settings) -> Check {
-    let path = Path::new(&settings.credential_file);
-    let result = std::fs::read(path)
-        .map_err(|error| format!("{}: {error}", path.display()))
-        .and_then(|bytes| {
-            serde_json::from_slice(&bytes)
-                .map_err(|_| format!("{} contains invalid JSON", path.display()))
-        })
-        .and_then(|value| {
-            Credentials::from_json(value).map_err(|_| {
-                format!(
-                    "{} contains invalid ChatGPT OAuth credentials",
-                    path.display()
-                )
-            })
-        })
-        .map(|_| format!("{} (valid ChatGPT credentials)", path.display()));
-    Check::new(
-        "credentials",
-        result,
-        "Run swarmy auth login to save dedicated ChatGPT credentials to the configured credential_file.",
-    )
-}
-
 async fn stack(loaded: &Loaded) -> Vec<Check> {
     let settings = &loaded.settings;
     if let Some(name) = &settings.remote.profile
@@ -415,7 +413,9 @@ async fn nats_round_trip(endpoint: &str) -> Result<String, String> {
     .map_err(str::to_owned)
 }
 
-async fn gateway_providers(settings: &Settings) -> Result<String, String> {
+async fn gateway_providers(
+    settings: &Settings,
+) -> Result<Vec<crate::provider_report::ProviderRow>, String> {
     // Keep the front end usable when the native database client cannot load.
     let runtime = std::env::current_exe()
         .map_err(|error| error.to_string())?
@@ -438,12 +438,5 @@ async fn gateway_providers(settings: &Settings) -> Result<String, String> {
             "provider discovery failed; check configuration and database connectivity".into(),
         );
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| "invalid provider discovery response")?;
-    let detail = format!("served: {}; skipped: {}", value["served"], value["skipped"]);
-    if value["served"].as_array().is_none_or(Vec::is_empty) {
-        Err(detail)
-    } else {
-        Ok(detail)
-    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "invalid provider report".into())
 }

@@ -23,6 +23,7 @@ impl Fixture {
         }
         command
             .current_dir(self.0.path())
+            .env_remove("OPENAI_API_KEY")
             .env("HOME", self.0.path())
             .env("XDG_CONFIG_HOME", self.0.path())
             .args(args)
@@ -168,4 +169,55 @@ fn terminal_tables_fit_eighty_columns() {
                 .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 80)
         );
     }
+}
+
+#[test]
+fn probe_streams_fake_and_completes_tool_round_trip() {
+    let fixture = Fixture::new(
+        "model = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
+    );
+    let script = fixture.0.path().join("script.json");
+    fs::write(
+        &script,
+        r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"ready"}}"#,
+    )
+    .unwrap();
+    let text = fixture.success(&["models", "probe", "fake/scripted", "--effort", "high"]);
+    for expected in ["ready", "Usage:", "Cost:", "Effort used: high", "Elapsed:"] {
+        assert!(text.contains(expected), "{text}");
+    }
+    let output = fixture.run(&["models", "probe", "fake/scripted", "--tools"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did not request get_time"));
+    fs::write(
+        &script,
+        r#"{"request_based":{"steps":2,"tool_steps":[0],"final_answer":"ready"}}"#,
+    )
+    .unwrap();
+    let text = fixture.success(&["models", "probe", "fake/scripted", "--tools", "--json"]);
+    let rows: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.last().unwrap()["event"], "probe_summary");
+    assert_eq!(rows.last().unwrap()["cost_micros"], 0);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["delta"].get("Completed").is_some())
+            .count(),
+        2
+    );
+    fs::write(&script, r#"{"fail":true}"#).unwrap();
+    let output = fixture.run(&["models", "probe", "fake/scripted"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("scripted provider failure"));
+}
+
+#[test]
+fn probe_missing_credential_names_auth_set() {
+    let fixture = Fixture::new("");
+    let output = fixture.run(&["models", "probe", "openai/gpt-5.5"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("swarmy auth set openai"), "{error}");
 }

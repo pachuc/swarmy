@@ -10,6 +10,10 @@ mod conversation;
 mod gc;
 mod image;
 mod image_command;
+mod models_probe;
+mod models_probe_command;
+mod provider_report;
+mod provider_runtime;
 mod remote_command;
 // Status only needs the health and command helpers; provisioning helpers stay unused here.
 #[allow(dead_code)]
@@ -39,7 +43,16 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ProbeCommand {
+    Probe(models_probe_command::Args),
+}
+
+#[derive(Subcommand)]
 enum Command {
+    Models {
+        #[command(subcommand)]
+        command: ProbeCommand,
+    },
     Auth {
         #[arg(long, env = "SWARMY_CHATGPT_AUTH", global = true)]
         auth_file: Option<std::path::PathBuf>,
@@ -127,19 +140,14 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Models {
+                command: ProbeCommand::Probe(args),
+            } => models_probe::run(args, cli.json).await,
             Command::Auth { command, auth_file } => auth::run(command, auth_file, cli.json).await,
             Command::Bench { command } => bench::run(command, cli.json).await,
             Command::DoctorProviders => {
-                let settings = swarmy_config::Settings::load()?.settings;
-                let providers = swarmy_gateway::providers::Providers::discover(
-                    conversation::store().await?,
-                    &settings,
-                )
-                .await?;
-                println!(
-                    "{}",
-                    serde_json::json!({"served": providers.served, "skipped": providers.skipped})
-                );
+                let rows = provider_runtime::report().await?;
+                println!("{}", serde_json::to_string(&rows)?);
                 Ok(())
             }
             Command::DoctorFdb => {
