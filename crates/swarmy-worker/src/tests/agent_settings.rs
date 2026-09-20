@@ -248,6 +248,7 @@ async fn session_selection_routes_and_missing_gateway_fails_immediately() {
             if available {
                 f.store.put_gateway_provider("openai", &swarmy_store::GatewayProvider {
                     expires_at: Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(),
+                    reason: "credentials resolved".into(),
                 }).await.unwrap();
             }
             let id = SessionId::from_ulid(Ulid::generate());

@@ -741,3 +741,5 @@ mod compatibility_tests {
         assert_eq!(encode(&header).unwrap(), original);
     }
 }
+
+mod usage;

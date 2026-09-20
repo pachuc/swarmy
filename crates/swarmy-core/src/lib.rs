@@ -15,8 +15,8 @@ pub use selection::{InferenceField, InferenceSelection, ResolvedSelection};
 mod store;
 mod volume;
 
-pub use encoding::json;
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
+pub use encoding::{json, trailing};
 pub use event::Event;
 pub use id::{
     AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
@@ -79,3 +79,6 @@ pub use timer::{
 
 pub mod credential;
 pub use credential::{CredentialKind, CredentialRecord, CredentialScope, CredentialStatus};
+
+mod usage;
+pub use usage::{TokenUsage, UsageTotals};

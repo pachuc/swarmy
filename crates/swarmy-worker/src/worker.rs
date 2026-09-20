@@ -994,7 +994,11 @@ impl Worker {
             .usage
             .input_tokens
             .saturating_add(response.usage.output_tokens);
-        if tokens < self.config.summarize_at_tokens {
+        if self
+            .config
+            .summarization_threshold(self.job_provider(&job), &job.request.settings.model)
+            .is_none_or(|threshold| tokens < threshold)
+        {
             return Ok(false);
         }
         let request = swarmy_llm::Request {

@@ -522,3 +522,5 @@ async fn checked_json(response: reqwest::Response) -> Result<Value, Error> {
 }
 
 pub mod google;
+pub mod resolve;
+pub use resolve::{ResolvedAuth, resolve};

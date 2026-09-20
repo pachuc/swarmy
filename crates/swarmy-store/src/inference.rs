@@ -251,6 +251,19 @@ impl Store {
             if session.state != SessionState::WaitingInference {
                 return Err(StoreError::InvalidState);
             }
+            if let Event::InferenceCompleted {
+                usage, cost_micros, ..
+            } = &completion.event
+            {
+                self.record_usage(
+                    &trx,
+                    session.session_id,
+                    session.agent_id,
+                    usage,
+                    *cost_micros,
+                )
+                .await?;
+            }
             trx.set(&self.event_space(claim.session_id).pack(&(head,)), event);
             trx.set(
                 &self.inference_key("inference_result", claim.request_id),

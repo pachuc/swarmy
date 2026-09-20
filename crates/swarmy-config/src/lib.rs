@@ -101,6 +101,8 @@ pub struct Settings {
     pub store_directory: String,
     pub bus_prefix: String,
     pub provider: String,
+    pub providers: Option<Vec<String>>,
+    pub models: Vec<swarmy_llm::catalog::CustomModel>,
     pub model: String,
     pub default_image: Option<String>,
     pub reasoning_effort: String,
@@ -117,7 +119,7 @@ pub struct Settings {
     pub system_prompt: String,
     /// Override the default three quarters of `model_context_window_tokens`.
     pub summarize_at_tokens: Option<std::num::NonZeroU64>,
-    pub model_context_window_tokens: std::num::NonZeroU64,
+    pub model_context_window_tokens: Option<std::num::NonZeroU64>,
     pub memory_dir: String,
     pub memory_max_bytes: std::num::NonZeroUsize,
     pub worker_kill_point: Option<String>,
@@ -171,6 +173,8 @@ impl Default for Settings {
             store_directory: "swarmy".into(),
             bus_prefix: String::new(),
             provider: "fake".into(),
+            providers: None,
+            models: Vec::new(),
             model: "gpt-5".into(),
             default_image: None,
             reasoning_effort: "medium".into(),
@@ -186,7 +190,7 @@ impl Default for Settings {
             gateway_concurrency: 4,
             system_prompt: include_str!("system_prompt.txt").into(),
             summarize_at_tokens: None,
-            model_context_window_tokens: std::num::NonZeroU64::new(400_000).unwrap(),
+            model_context_window_tokens: None,
             memory_dir: "/home/agent/memory".into(),
             memory_max_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
             worker_kill_point: None,
@@ -244,6 +248,42 @@ impl Loaded {
 }
 
 impl Settings {
+    /// Merge configured models and preserve the legacy fake fixture model names.
+    #[must_use]
+    pub fn catalog(&self) -> swarmy_llm::catalog::Catalog {
+        let mut models = self.models.clone();
+        for id in ["", self.model.as_str()] {
+            if !models
+                .iter()
+                .any(|entry| entry.provider == "fake" && entry.model.id == id)
+            {
+                models.push(swarmy_llm::catalog::CustomModel {
+                    provider: "fake".into(),
+                    model: swarmy_llm::catalog::ModelInfo {
+                        id: id.into(),
+                        name: "Scripted model".into(),
+                        family: None,
+                        api: Some(swarmy_llm::catalog::Api::Fake),
+                        base_url: None,
+                        reasoning: None,
+                        tool_call: true,
+                        attachment: false,
+                        input_modalities: vec!["text".into()],
+                        limit: swarmy_llm::catalog::Limit {
+                            context: 400_000,
+                            output: None,
+                        },
+                        cost: swarmy_llm::catalog::Cost::default(),
+                        release_date: None,
+                        status: None,
+                        compat: swarmy_llm::catalog::Compat::default(),
+                    },
+                });
+            }
+        }
+        swarmy_llm::catalog::Catalog::merged(&models)
+    }
+
     /// Select the image for a new session, giving an explicit flag precedence.
     /// # Errors
     /// Requires a configured default or an explicit image.
@@ -530,11 +570,32 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_WORKER_KILL_POINT") {
             self.worker_kill_point = Some(value.clone());
         }
+        self.apply_provider_environment(environment)?;
         if let Some(value) = environment.get("SWARMY_FAKE_SCRIPT") {
             self.fake.script.clone_from(value);
         }
         if let Some(value) = environment.get("SWARMY_FAKE_CALL_LOG") {
             self.fake.call_log.clone_from(value);
+        }
+        Ok(())
+    }
+
+    fn apply_provider_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_PROVIDERS") {
+            self.providers = if value.is_empty() {
+                None
+            } else {
+                Some(value.split(',').map(|id| id.trim().to_owned()).collect())
+            };
+        } else if let Some(value) = environment.get("SWARMY_PROVIDER") {
+            self.providers = Some(vec![value.clone()]);
+        }
+        if let Some(value) = environment.get("SWARMY_MODELS") {
+            self.models = serde_json::from_str(value)
+                .map_err(|_| Error::Environment("SWARMY_MODELS".into()))?;
         }
         Ok(())
     }
@@ -555,9 +616,14 @@ impl Settings {
             };
         }
         if let Some(value) = environment.get("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS") {
-            self.model_context_window_tokens = value
-                .parse()
-                .map_err(|_| Error::Environment("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into()))?;
+            self.model_context_window_tokens =
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.parse().map_err(|_| {
+                        Error::Environment("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into())
+                    })?)
+                };
         }
         if let Some(value) = environment.get("SWARMY_MEMORY_MAX_BYTES") {
             self.memory_max_bytes = value
@@ -703,6 +769,7 @@ impl Settings {
         if let Some(name) = &self.remote.profile {
             environment.insert("SWARMY_REMOTE".into(), name.clone());
         }
+        self.provider_environment(&mut environment);
         self.session_environment(&mut environment);
         self.node_environment(&mut environment);
         for (name, value) in [
@@ -741,6 +808,19 @@ impl Settings {
         environment
     }
 
+    fn provider_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "SWARMY_PROVIDERS".into(),
+            self.providers
+                .as_ref()
+                .map_or_else(String::new, |ids| ids.join(",")),
+        );
+        environment.insert(
+            "SWARMY_MODELS".into(),
+            serde_json::to_string(&self.models).expect("catalog models serialize"),
+        );
+    }
+
     fn session_environment(&self, environment: &mut BTreeMap<String, String>) {
         environment.extend([
             (
@@ -750,7 +830,8 @@ impl Settings {
             ),
             (
                 "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into(),
-                self.model_context_window_tokens.to_string(),
+                self.model_context_window_tokens
+                    .map_or_else(String::new, |n| n.to_string()),
             ),
             ("SWARMY_MEMORY_DIR".into(), self.memory_dir.clone()),
             (
@@ -1110,5 +1191,51 @@ mod tests {
         );
         assert!(parse_exports("export SWARMY_MODEL=x; touch /tmp/no").is_err());
         assert!(parse_exports("export HOME=/tmp").is_err());
+    }
+}
+
+#[cfg(test)]
+mod provider_settings_tests {
+    use super::*;
+
+    #[test]
+    fn provider_subset_and_context_overrides_round_trip() {
+        let mut settings = Settings::default();
+        assert!(settings.providers.is_none());
+        assert!(settings.model_context_window_tokens.is_none());
+        settings
+            .apply_environment(&BTreeMap::from([(
+                "SWARMY_PROVIDER".into(),
+                "chatgpt".into(),
+            )]))
+            .unwrap();
+        assert_eq!(settings.providers, Some(vec!["chatgpt".into()]));
+        settings
+            .apply_environment(&BTreeMap::from([
+                ("SWARMY_PROVIDER".into(), "chatgpt".into()),
+                ("SWARMY_PROVIDERS".into(), "openai, anthropic".into()),
+                ("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into(), "4096".into()),
+            ]))
+            .unwrap();
+        assert_eq!(
+            settings.providers,
+            Some(vec!["openai".into(), "anthropic".into()])
+        );
+        assert_eq!(settings.model_context_window_tokens.unwrap().get(), 4096);
+        let mut reloaded = Settings::default();
+        reloaded.apply_environment(&settings.environment()).unwrap();
+        assert_eq!(reloaded.providers, settings.providers);
+        assert_eq!(
+            reloaded.model_context_window_tokens,
+            settings.model_context_window_tokens
+        );
+        assert!(
+            settings
+                .apply_environment(&BTreeMap::from([(
+                    "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS".into(),
+                    "0".into()
+                )]))
+                .is_err()
+        );
     }
 }

@@ -28,6 +28,11 @@ pub trait BearerSource: Send + Sync {
 pub enum ClientAuth {
     None,
     ApiKey(String),
+    /// Provider metadata, such as Azure's `resource_name`, alongside an API key.
+    ApiKeyWithExtra {
+        key: String,
+        extra: BTreeMap<String, String>,
+    },
     Bearer(String),
     Vertex {
         project: String,
@@ -36,6 +41,8 @@ pub enum ClientAuth {
     },
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
+    Ambient,
+    Scripted(Arc<dyn Provider>),
 }
 
 /// Construct a client for the catalog's selected wire protocol.
@@ -49,20 +56,28 @@ pub fn client_for(
     auth: ClientAuth,
 ) -> Result<Arc<dyn Provider>, Error> {
     let api = model.api.unwrap_or(provider.api);
-    // Keep separate arms so protocol implementations can land independently.
+    // Each protocol implementation owns its dispatch arm.
     match api {
         Api::AnthropicMessages => api::anthropic::client_for(provider, model, auth),
-        Api::OpenAiResponses => Err(Error::Unsupported(Api::OpenAiResponses)),
-        Api::OpenAiCodexResponses => match auth {
-            ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
-            _ => Err(Error::Credentials("ChatGPT requires a credential store")),
-        },
-        Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
+        Api::OpenAiResponses | Api::OpenAiCodexResponses => {
+            let endpoint = api::responses::ResponsesEndpoint::from_catalog(provider, model, auth)?;
+            Ok(Arc::new(api::responses::ResponsesProvider::new(
+                endpoint,
+                provider.id.clone(),
+                model.clone(),
+            )?))
+        }
+        Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
+            provider, model, auth,
+        )?)),
         Api::GoogleGenerativeAi | Api::GoogleVertex => {
             api::gemini::client_for(provider, model, auth)
         }
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
-        Api::Fake => Err(Error::Unsupported(Api::Fake)),
+        Api::Fake => match auth {
+            ClientAuth::Scripted(client) => Ok(client),
+            _ => Err(Error::Unsupported(Api::Fake)),
+        },
     }
 }
 
@@ -105,19 +120,7 @@ pub struct GenerationSettings {
 
 pub use swarmy_core::ReasoningEffort;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenUsage {
-    /// Total input, including cache reads and writes.
-    pub input_tokens: u64,
-    /// Input read from the prompt cache.
-    pub cached_input_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_output_tokens: u64,
-    pub total_tokens: u64,
-    /// Input written to the prompt cache, when reported separately.
-    #[serde(default)]
-    pub cache_write_input_tokens: u64,
-}
+pub use swarmy_core::TokenUsage;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,10 +169,17 @@ pub type ProviderStream = BoxStream<'static, Result<Delta, Error>>;
 /// Object-safe interface so the gateway can select a provider at runtime.
 pub trait Provider: Send + Sync {
     fn request(&self, request: Request) -> ProviderStream;
+
+    /// Attach session affinity without changing the durable request format.
+    fn request_for_session(&self, request: Request, _session_id: SessionId) -> ProviderStream {
+        self.request(request)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown catalog model: {provider}/{model}")]
+    UnknownModel { provider: String, model: String },
     #[error("unsupported provider API: {0:?}")]
     Unsupported(Api),
     #[error("credential I/O failed: {0}")]
@@ -219,14 +229,17 @@ mod job_tests {
             client_for(provider, model, ClientAuth::None),
             Err(Error::Credentials(_))
         ));
-        for provider in catalog
-            .providers()
-            .filter(|provider| provider.api != Api::OpenAiCodexResponses)
-        {
+        for provider in catalog.providers() {
             let model = provider.models.values().next().unwrap_or(model);
+            // Implemented protocols reject missing credentials before building a client.
             if matches!(
                 model.api.unwrap_or(provider.api),
-                Api::AnthropicMessages | Api::GoogleGenerativeAi | Api::GoogleVertex
+                Api::AnthropicMessages
+                    | Api::OpenAiCompletions
+                    | Api::OpenAiResponses
+                    | Api::OpenAiCodexResponses
+                    | Api::GoogleGenerativeAi
+                    | Api::GoogleVertex
             ) {
                 assert!(matches!(
                     client_for(provider, model, ClientAuth::None),

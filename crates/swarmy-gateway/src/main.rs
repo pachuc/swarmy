@@ -1,5 +1,4 @@
-mod config;
-mod credentials;
+use swarmy_gateway::{config, cost::cost_micros, providers::Providers};
 
 use std::{sync::Arc, time::Duration};
 
@@ -10,9 +9,9 @@ use swarmy_bus::{Bus, LiveFeed, WorkMessage, WorkQueue};
 use swarmy_core::{
     Event, IdempotencyState, LeaseOwnerId, Message, MessageId, MessageRole, RequestId,
 };
-use swarmy_llm::{Delta, InferenceJob, Provider, Response};
+use swarmy_llm::{Delta, InferenceJob, Response};
 use swarmy_store::{
-    InferenceClaim, InferenceCompletion, Store,
+    GatewayProvider, InferenceClaim, InferenceCompletion, Store,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tokio::{
@@ -27,7 +26,8 @@ struct Gateway {
     store: Store,
     blobs: Arc<dyn BlobStore>,
     bus: Bus,
-    provider: Arc<dyn Provider>,
+    providers: Providers,
+    default_provider: String,
     ack_wait: Duration,
     max_deliver: i64,
     resend_interval: Duration,
@@ -59,23 +59,44 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
-    let provider = match config.provider {
-        config::ConfiguredProvider::ChatGpt(path) => {
-            Arc::new(swarmy_llm::chatgpt::ChatGptProvider::new(Arc::new(
-                credentials::ClusterCredentials::new(store.clone(), &path).await?,
-            ))?) as Arc<dyn Provider>
+    let providers = Providers::discover(store.clone(), &config.settings).await;
+    for (provider, reason) in &providers.skipped {
+        info!(%provider, %reason, "provider skipped");
+        // Keep another gateway's live advertisement; only record the reason otherwise.
+        if !store.gateway_serves(provider).await? {
+            let record = GatewayProvider {
+                expires_at: Timestamp::now(),
+                reason: reason.clone(),
+            };
+            store.put_gateway_provider(provider, &record).await?;
         }
-        config::ConfiguredProvider::Fake(provider) => provider,
-    };
+    }
+    for provider in &providers.served {
+        info!(%provider, "serving provider");
+    }
+    anyhow::ensure!(!providers.served.is_empty(), "no available providers");
+    advertise(&store, &providers.served).await?;
+    tokio::spawn(heartbeat(store.clone(), providers.served.clone()));
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
-    let queue = WorkQueue::Inference(config.class);
-    bus.setup(std::slice::from_ref(&queue)).await?;
-    let mut messages = bus.consume::<InferenceJob>(&queue).await?;
+    let queues: Vec<_> = providers
+        .served
+        .iter()
+        .map(|id| swarmy_bus::SubjectToken::new(id).map(WorkQueue::Inference))
+        .collect::<Result<_, _>>()?;
+    bus.setup(&queues).await?;
+    let mut messages = futures::stream::SelectAll::new();
+    for queue in queues {
+        let mut stream = bus.consume::<InferenceJob>(&queue).await?;
+        messages.push(Box::pin(async_stream::stream! {
+            while let Some(message) = stream.next().await { yield message; }
+        }) as futures::stream::BoxStream<'static, _>);
+    }
     let gateway = Arc::new(Gateway {
         store,
         blobs,
         bus,
-        provider,
+        providers,
+        default_provider: config.settings.provider,
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
@@ -105,6 +126,32 @@ async fn run(config: config::Config) -> Result<()> {
                 error!(%error, "delivery left unacknowledged");
             }
         });
+    }
+}
+
+/// Workers route to a provider only while a gateway advertisement is unexpired.
+const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(30);
+const ADVERTISEMENT_TTL: Duration = Duration::from_secs(90);
+
+async fn advertise(store: &Store, served: &[String]) -> Result<()> {
+    let record = GatewayProvider {
+        expires_at: Timestamp::now().checked_add(ADVERTISEMENT_TTL)?,
+        reason: "credentials resolved".into(),
+    };
+    for provider in served {
+        store.put_gateway_provider(provider, &record).await?;
+    }
+    Ok(())
+}
+
+async fn heartbeat(store: Store, served: Vec<String>) {
+    let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
+    ticks.tick().await;
+    loop {
+        ticks.tick().await;
+        if let Err(error) = advertise(&store, &served).await {
+            warn!(%error, "provider advertisement failed; workers may fail new requests");
+        }
     }
 }
 
@@ -162,8 +209,24 @@ impl Gateway {
         }
     }
 
-    async fn infer(&self, job: &InferenceJob) -> Result<Response, swarmy_llm::Error> {
-        let mut stream = self.provider.request(job.request.clone());
+    async fn infer(
+        &self,
+        job: &InferenceJob,
+        provider: &str,
+        effort: Option<swarmy_core::ReasoningEffort>,
+    ) -> Result<Response, swarmy_llm::Error> {
+        let model = self
+            .providers
+            .catalog
+            .model(provider, &job.request.settings.model)
+            .ok_or_else(|| swarmy_llm::Error::UnknownModel {
+                provider: provider.into(),
+                model: job.request.settings.model.clone(),
+            })?;
+        let client = self.providers.client(provider, model).await?;
+        let mut request = job.request.clone();
+        request.settings.reasoning_effort = effort;
+        let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
@@ -193,6 +256,23 @@ impl Gateway {
         claim: &InferenceClaim,
     ) -> Result<()> {
         let job = &message.value;
+        let provider = if job.provider.is_empty() {
+            &self.default_provider
+        } else {
+            &job.provider
+        };
+        let model = self
+            .providers
+            .catalog
+            .model(provider, &job.request.settings.model);
+        let effort_requested = job.request.settings.reasoning_effort;
+        let (effort_used, effort_clamped) =
+            model
+                .zip(effort_requested)
+                .map_or((effort_requested, false), |(model, requested)| {
+                    let (used, clamped) = model.clamp_effort(requested);
+                    (Some(used), clamped)
+                });
         let turn = job
             .request
             .messages
@@ -210,7 +290,7 @@ impl Gateway {
                 ))
                 .await;
         }
-        let result = self.infer(job).await;
+        let result = self.infer(job, provider, effort_used).await;
         if let Some(turn) = turn {
             self.bus
                 .record_turn(&Bus::turn_event(
@@ -223,7 +303,12 @@ impl Gateway {
         }
         let result = match result {
             Ok(response) => Ok(response),
-            Err(error) if message.delivery_count()? < self.max_deliver => {
+            Err(error)
+                if !matches!(
+                    error,
+                    swarmy_llm::Error::UnknownModel { .. } | swarmy_llm::Error::Unsupported(_)
+                ) && message.delivery_count()? < self.max_deliver =>
+            {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
                 self.store.release_inference(claim).await?;
                 let exponent = u32::try_from(message.delivery_count()?.saturating_sub(1).min(5))?;
@@ -236,6 +321,13 @@ impl Gateway {
         };
         let event = match &result {
             Ok(response) => Event::InferenceCompleted {
+                provider: provider.clone(),
+                model: job.request.settings.model.clone(),
+                effort_used,
+                usage: response.usage.clone(),
+                cost_micros: model.map_or(0, |model| cost_micros(&model.cost, &response.usage)),
+                effort_requested,
+                effort_clamped,
                 seq: 0,
                 request_id: job.request_id,
                 message: Message {
