@@ -885,6 +885,12 @@ from the provider allowlist are retained. JSON snapshots and source hashes are
 committed under `crates/swarmy-llm/catalog`; `--check` regenerates in a temporary
 directory and rejects differences. Builds never fetch model metadata.
 
+The provider work follows the inference-providers plan. Provider authentication
+uses the kinds each vendor permits: API keys for Anthropic, and the existing
+ChatGPT device login. Anthropic subscription OAuth and product identity
+impersonation are not implemented. ChatGPT subscription access through a
+third-party harness is treated as tolerated, not licensed.
+
 | Provider id | Wire protocol | Auth | Notes |
 |---|---|---|---|
 | `anthropic` | Anthropic Messages | API key | Subscription OAuth is prohibited by Anthropic's terms for third-party harnesses and is not built. |
@@ -932,6 +938,58 @@ the credential store on every request, and a key pool here means many
 ChatGPT accounts, each with its own quota counters. Using subscription
 inference in a third-party harness is the operator's decision and is taken as
 given in this design.
+
+### 9.1 Encrypted credentials and refresh ownership
+
+A copy of an OAuth file on each gateway creates competing refresh owners.
+Providers rotate refresh tokens, so those copies can invalidate one another.
+The authoritative provider record instead lives in FoundationDB at
+`("credential", scope, provider)`. The current CLI uses `cluster`; the shared
+`CredentialScope::Agent` reserves `agent:<id>` for future per-agent credentials.
+API-key and OAuth records include provider-specific string metadata and an
+update timestamp. Their versioned Postcard encoding is encrypted with
+XChaCha20-Poly1305. A random 24-byte nonce precedes each ciphertext; the encoded
+scope and provider are authenticated associated data. Moving ciphertext to
+another provider or scope fails authentication.
+
+The 32-byte data key is base64 in `~/.swarmy/keyring`, overridden with
+`SWARMY_KEYRING`, and must have mode 600. It stays outside the database, so a
+database backup alone does not reveal credentials. `swarmy dev up` atomically
+creates the key only when absent and never replaces an existing key.
+`swarmy doctor` reports its presence and mode. Remote credential copying is
+explicit: `remote up --services node --copy-credential` and
+`remote add-node --copy-credential` also install the key at
+`/home/ubuntu/.swarmy/keyring`, with mode 600. Nodes running only `swarmyd` need
+neither credentials nor the key. Back up the key separately; replacing or
+losing it makes existing encrypted records unreadable. Wrong-key errors are
+reported as keyring errors, without printing token values.
+
+`Store::credentials(keyring)` exposes put, get, list, delete, and
+`refresh_with_lease`. Listing decrypts each value once and returns only provider,
+kind, status, update time, and expiry. Status is `ready` until actual expiry,
+`expired` afterwards, or `needs_login` for absent token material or a recorded
+refresh failure. Refresh can start 60 seconds before OAuth expiry.
+
+A refresh transaction claims `("credential_lease", scope, provider)` with a
+unique owner and expiry and reads the current encrypted value. The provider
+request runs once outside transaction retries. A second transaction verifies
+the unexpired owner and unchanged credential before writing the replacement
+and clearing the lease together. Waiters return the winner's record. Dead
+owners expire; stale owners cannot commit. Explicit put or delete clears the
+lease and fences outstanding refreshes. A failed refresh preserves the tokens
+and records `needs_login` rather than repeatedly rotating them. An expired
+lease cannot fence an already-sent provider HTTP request; lease TTLs must exceed
+the provider request timeout, and uncertain external outcomes can require login.
+
+The gateway adapter reads the stored ChatGPT record on each request, falling
+back to the file only when the record is absent. It never falls back after a
+decryption or refresh failure. A stored credential without its key fails at
+startup. The adapter routes stored refreshes through the fenced operation;
+legacy file credentials keep their existing file locks. `auth import` copies
+the existing file into the cluster without deleting it; operators must stop
+other refresh owners of that file. `auth login chatgpt` continues to save the
+file until the separate logins task moves login persistence to the cluster.
+See [provider commands](providers.md).
 
 Swarm additions:
 

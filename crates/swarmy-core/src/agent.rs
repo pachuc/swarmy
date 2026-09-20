@@ -21,6 +21,8 @@ pub struct AgentRecord {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// Optional inference overrides. Omitted fields inherit the stack defaults on create
@@ -30,4 +32,41 @@ pub struct AgentSettings {
     pub system_prompt: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub provider: Option<String>,
+}
+
+impl AgentRecord {
+    #[must_use]
+    pub fn inference(&self) -> crate::InferenceSelection {
+        crate::InferenceSelection {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            effort: self.reasoning_effort,
+        }
+    }
+}
+
+impl AgentSettings {
+    /// Apply only supplied settings, after clearing explicitly reset fields.
+    pub fn apply_to(&self, agent: &mut AgentRecord, resets: &[crate::InferenceField]) {
+        for field in resets {
+            match field {
+                crate::InferenceField::Provider => agent.provider = None,
+                crate::InferenceField::Model => agent.model = None,
+                crate::InferenceField::Effort => agent.reasoning_effort = None,
+            }
+        }
+        if let Some(provider) = &self.provider {
+            agent.provider = Some(provider.clone());
+        }
+        if let Some(prompt) = &self.system_prompt {
+            agent.system_prompt = Some(prompt.clone());
+        }
+        if let Some(model) = &self.model {
+            agent.model = Some(model.clone());
+        }
+        if let Some(effort) = self.reasoning_effort {
+            agent.reasoning_effort = Some(effort);
+        }
+    }
 }

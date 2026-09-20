@@ -1,2 +1,4 @@
-//! Catalog-driven wire protocol clients.
+//! Provider wire protocols.
+
+pub mod anthropic;
 pub mod responses;

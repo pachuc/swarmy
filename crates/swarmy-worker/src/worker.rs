@@ -367,30 +367,57 @@ impl Worker {
             .await
     }
 
-    async fn build_inference(
+    async fn prepare_request(
         &self,
-        session: &mut SessionRecord,
-        lease: &ActiveLease,
-        preceding: &[Event],
-        mut request: swarmy_llm::Request,
-    ) -> Result<()> {
+        session: &SessionRecord,
+        request: &mut swarmy_llm::Request,
+        preceding: &mut Vec<Event>,
+    ) -> Result<String> {
         // Resolve on every inference so existing sessions see later agent updates.
         // A summary request keeps its own prompt; every other request gets the agent's
         // prompt override first and then the memory directory and contents appended.
         let summarizing = request.system_prompt == swarmy_harness::SUMMARY_PROMPT;
+        let mut defaults = swarmy_core::ResolvedSelection {
+            provider: self.config.provider.clone(),
+            model: request.settings.model.clone(),
+            effort: request
+                .settings
+                .reasoning_effort
+                .unwrap_or(swarmy_core::ReasoningEffort::None),
+        };
         if let swarmy_core::SessionKind::Named { agent_id } = session.kind
             && let Some(agent) = self.store.get_agent(agent_id).await?
         {
+            defaults = agent.inference().resolve(&defaults);
             if let Some(prompt) = agent.system_prompt
                 && !summarizing
             {
                 request.system_prompt = prompt;
             }
-            if let Some(model) = agent.model {
-                request.settings.model = model;
-            }
-            if let Some(effort) = agent.reasoning_effort {
-                request.settings.reasoning_effort = Some(effort);
+        }
+        let selection = session.inference.resolve(&defaults);
+        request.settings.model.clone_from(&selection.model);
+        request.settings.reasoning_effort = Some(selection.effort);
+
+        if let Some(model) =
+            swarmy_llm::catalog::Catalog::get().model(&selection.provider, &selection.model)
+        {
+            let (effort, changed) = model.clamp_effort(selection.effort);
+            request.settings.reasoning_effort = Some(effort);
+            if changed && !self.has_effort_notice(session.session_id).await? {
+                preceding.push(Event::MessageAppended {
+                    seq: 0,
+                    message: swarmy_core::Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: swarmy_core::MessageRole::System,
+                        parts: vec![swarmy_core::Part::Text {
+                            text: format!(
+                                "Reasoning effort clamped from {} to {effort} for {}/{}",
+                                selection.effort, selection.provider, selection.model
+                            ),
+                        }],
+                    },
+                });
             }
         }
         if !summarizing {
@@ -413,6 +440,23 @@ impl Worker {
                 )?;
             }
         }
+        Ok(selection.provider)
+    }
+
+    async fn build_inference(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        preceding: &[Event],
+        mut request: swarmy_llm::Request,
+    ) -> Result<()> {
+        let mut preceding = preceding.to_vec();
+        let provider = self
+            .prepare_request(session, &mut request, &mut preceding)
+            .await?;
+        for (event, seq) in preceding.iter_mut().zip(session.head_seq + 1..) {
+            event.set_seq(seq);
+        }
         let id = session.session_id;
         let step = session
             .head_seq
@@ -420,6 +464,7 @@ impl Worker {
             .and_then(|head| head.checked_add(1))
             .context("sequence overflow")?;
         let job = InferenceJob {
+            provider,
             session_id: id,
             step,
             request_id: RequestId::for_step(id, step),
@@ -436,25 +481,28 @@ impl Worker {
                     &InflightRecord {
                         session_id: id,
                         seq: step,
-                        provider: self.config.provider.clone(),
+                        provider: job.provider.clone(),
                         key_id: String::new(),
                     },
                     &job,
-                    preceding,
+                    &preceding,
                 )
                 .await?;
             *token = None;
             event
         };
         session.head_seq = event.seq();
-        self.publish_events(id, preceding).await?;
+        self.publish_events(id, &preceding).await?;
         self.publish_events(id, std::slice::from_ref(&event))
             .await?;
         self.kill("after_request_event");
         self.kill("after_release");
+        if self.fail_unserved(&job).await? {
+            return Ok(());
+        }
         self.bus
             .publish_work(
-                &WorkQueue::Inference(SubjectToken::new(&self.config.provider)?),
+                &WorkQueue::Inference(SubjectToken::new(&job.provider)?),
                 &job,
             )
             .await?;
@@ -778,7 +826,7 @@ impl Worker {
                     &InflightRecord {
                         session_id: job.session_id,
                         seq: job.step,
-                        provider: self.config.provider.clone(),
+                        provider: self.job_provider(job).to_owned(),
                         key_id: String::new(),
                     },
                     token.as_ref().context("lease released")?,
@@ -790,9 +838,12 @@ impl Worker {
         self.transition(job.session_id, lease, SessionState::WaitingInference)
             .await?;
         self.kill("after_release");
+        if self.fail_unserved(job).await? {
+            return Ok(());
+        }
         self.bus
             .publish_work(
-                &WorkQueue::Inference(SubjectToken::new(&self.config.provider)?),
+                &WorkQueue::Inference(SubjectToken::new(self.job_provider(job))?),
                 job,
             )
             .await?;
@@ -1040,6 +1091,80 @@ impl Worker {
         reply.map_err(anyhow::Error::msg)
     }
 
+    fn job_provider<'a>(&'a self, job: &'a InferenceJob) -> &'a str {
+        if job.provider.is_empty() {
+            &self.config.provider
+        } else {
+            &job.provider
+        }
+    }
+
+    async fn has_effort_notice(&self, id: SessionId) -> Result<bool> {
+        let mut after = 0;
+        loop {
+            let events = self.store.read_events(id, after, MAX_SCAN_LIMIT).await?;
+            if events.is_empty() {
+                return Ok(false);
+            }
+            for event in events {
+                after = event.seq();
+                if let Event::MessageAppended { message, .. } = event
+                    && message.role == swarmy_core::MessageRole::System
+                    && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("Reasoning effort clamped from "))) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    async fn fail_unserved(&self, job: &InferenceJob) -> Result<bool> {
+        let provider = self.job_provider(job);
+        // The scripted provider needs no credentials; the gateway task advertises real providers.
+        if provider == "fake" || self.store.gateway_serves(provider).await? {
+            return Ok(false);
+        }
+        let now = Timestamp::now();
+        let claim = swarmy_store::InferenceClaim {
+            session_id: job.session_id,
+            request_id: job.request_id,
+            owner: LeaseOwnerId::from_ulid(Ulid::generate()),
+            expires_at: now.checked_add(std::time::Duration::from_secs(30))?,
+        };
+        if self.store.start_inference(&claim, now).await? {
+            let session = self
+                .store
+                .fetch_session(job.session_id)
+                .await?
+                .context("session missing")?;
+            let event = Event::InferenceFailed {
+                seq: session
+                    .head_seq
+                    .checked_add(1)
+                    .context("sequence overflow")?,
+                request_id: job.request_id,
+                error: format!(
+                    "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
+                ),
+            };
+            let committed = self
+                .store
+                .complete_inference(
+                    &swarmy_store::InferenceCompletion {
+                        claim,
+                        expected_head: session.head_seq,
+                        event: event.clone(),
+                        now,
+                    },
+                    &(),
+                )
+                .await?;
+            if committed {
+                self.publish_events(job.session_id, &[event]).await?;
+            }
+        }
+        Ok(true)
+    }
+
     async fn load_job(&self, id: RequestId) -> Result<InferenceJob> {
         let job: InferenceJob = self
             .store
@@ -1097,6 +1222,9 @@ impl Worker {
             .context("session missing")?;
         if session.state == SessionState::WaitingInference {
             let job = self.load_job(request_id).await?;
+            if self.fail_unserved(&job).await? {
+                return Ok(());
+            }
             self.bus
                 .publish_work(
                     &WorkQueue::Inference(SubjectToken::new(&record.provider)?),

@@ -56,6 +56,7 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         },
         "Run swarmy dev up to create .swarmy/config.toml; repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
+    checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
     checks.push(Check::new("libfdb_c", client_library(),
         "Run scripts/install-dev-tools.sh and the printed cargo install command; keep libfdb_c.so (libfdb_c.dylib on macOS) in the directory selected by SWARMY_FDB_LIB_DIR at build time."));
     let remote = loaded
@@ -240,6 +241,21 @@ async fn binary_version(name: &str, argument: &str) -> Result<String, String> {
         .find(|line| !line.trim().is_empty())
         .ok_or_else(|| format!("{} did not report a version", path.display()))?;
     Ok(format!("{}: {version}", path.display()))
+}
+
+fn keyring() -> Result<String, String> {
+    let path = swarmy_config::Keyring::path().map_err(|e| e.to_string())?;
+    // Fake-only stacks do not require encryption, but still report absence.
+    match swarmy_config::Keyring::read(&path) {
+        Ok(_) => Ok(format!("{} present (mode 600)", path.display())),
+        Err(swarmy_config::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(format!(
+                "{} absent (required for encrypted credentials)",
+                path.display()
+            ))
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 fn credentials(settings: &Settings) -> Check {

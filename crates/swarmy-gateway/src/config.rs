@@ -6,8 +6,9 @@ use serde::Deserialize;
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_core::{MessageRole, Part, ToolCallId};
 use swarmy_llm::{
-    ClientAuth, Provider, ProviderStream, Request, Response, StopReason, TokenUsage,
-    auth::FileCredentialStore, catalog::Catalog, client_for, fake::FakeProvider,
+    Provider, ProviderStream, Request, Response, StopReason, TokenUsage,
+    catalog::{Catalog, ModelInfo, ProviderInfo},
+    fake::FakeProvider,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -19,30 +20,43 @@ pub struct Config {
     pub class: SubjectToken,
     pub concurrency: usize,
     pub resend_interval: Duration,
-    pub provider: Arc<dyn Provider>,
+    pub provider: ConfiguredProvider,
+}
+
+pub enum ConfiguredProvider {
+    Fake(Arc<dyn Provider>),
+    /// Cluster credentials at `credential_file` drive the catalog's Codex client.
+    ChatGpt {
+        credential_file: String,
+        model: String,
+    },
+}
+
+/// Resolve the `chatgpt` catalog entry for a configured model.
+pub fn chatgpt_catalog(model: &str) -> Result<(&'static ProviderInfo, &'static ModelInfo)> {
+    let catalog = Catalog::get();
+    let provider = catalog
+        .provider("chatgpt")
+        .ok_or_else(|| anyhow::anyhow!("missing chatgpt catalog entry"))?;
+    let model = catalog.model("chatgpt", model).ok_or_else(|| {
+        anyhow::anyhow!("SWARMY_MODEL {model} is not in the chatgpt catalog entry")
+    })?;
+    Ok((provider, model))
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
         let class = settings.provider.clone();
-        let provider: Arc<dyn Provider> = match class.as_str() {
-            "fake" => Arc::new(FileFake::from_settings(&settings)?),
+        let provider = match class.as_str() {
+            "fake" => ConfiguredProvider::Fake(Arc::new(FileFake::from_settings(&settings)?)),
             "chatgpt" => {
-                let catalog = Catalog::get();
-                let provider = catalog
-                    .provider("chatgpt")
-                    .ok_or_else(|| anyhow::anyhow!("missing ChatGPT catalog"))?;
-                let model = catalog
-                    .model("chatgpt", &settings.model)
-                    .ok_or_else(|| anyhow::anyhow!("unknown ChatGPT model: {}", settings.model))?;
-                client_for(
-                    provider,
-                    model,
-                    ClientAuth::ChatGpt(Arc::new(FileCredentialStore::new(
-                        &settings.credential_file,
-                    ))),
-                )?
+                // Reject an unknown model before the store boots.
+                chatgpt_catalog(&settings.model)?;
+                ConfiguredProvider::ChatGpt {
+                    credential_file: settings.credential_file.clone(),
+                    model: settings.model.clone(),
+                }
             }
             _ => bail!("unsupported SWARMY_PROVIDER: {class}"),
         };

@@ -1,4 +1,4 @@
-//! Shared inference contracts and catalog-driven provider clients.
+//! Shared inference contracts and provider wire clients.
 
 pub mod api;
 pub mod auth;
@@ -17,6 +17,11 @@ use swarmy_core::{Message, Part, RequestId, SessionId};
 use auth::CredentialStore;
 use catalog::{Api, ModelInfo, ProviderInfo};
 
+/// Refreshable cloud bearer credentials, supplied by the cloud auth adapter.
+pub trait BearerSource: Send + Sync {
+    fn token(&self) -> futures::future::BoxFuture<'_, Result<String, Error>>;
+}
+
 /// Resolved credentials for a protocol client. Cloud credentials can add variants.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -29,6 +34,11 @@ pub enum ClientAuth {
         extra: BTreeMap<String, String>,
     },
     Bearer(String),
+    Vertex {
+        project: String,
+        location: String,
+        source: Arc<dyn BearerSource>,
+    },
     ChatGpt(Arc<dyn CredentialStore>),
     Headers(BTreeMap<String, String>),
 }
@@ -37,7 +47,7 @@ pub enum ClientAuth {
 ///
 /// # Errors
 /// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing a Responses client.
+/// or HTTP configuration error when constructing a client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
@@ -46,7 +56,7 @@ pub fn client_for(
     let api = model.api.unwrap_or(provider.api);
     // Each protocol implementation owns its dispatch arm.
     match api {
-        Api::AnthropicMessages => Err(Error::Unsupported(Api::AnthropicMessages)),
+        Api::AnthropicMessages => api::anthropic::client_for(provider, model, auth),
         Api::OpenAiResponses | Api::OpenAiCodexResponses => {
             let endpoint = api::responses::ResponsesEndpoint::from_catalog(provider, model, auth)?;
             Ok(Arc::new(api::responses::ResponsesProvider::new(
@@ -71,6 +81,8 @@ pub struct InferenceJob {
     pub step: u64,
     pub request_id: RequestId,
     pub request: Request,
+    #[serde(default)]
+    pub provider: String,
 }
 
 /// Provider-neutral input built from durable core messages.
@@ -102,11 +114,16 @@ pub use swarmy_core::ReasoningEffort;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
+    /// Total input, including cache reads and writes.
     pub input_tokens: u64,
+    /// Input read from the prompt cache.
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+    /// Input written to the prompt cache, when reported separately.
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,17 +193,17 @@ pub enum Error {
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
     #[error("HTTP request failed with retryable status {status}")]
-    RetryableStatus {
+    Retryable {
         status: reqwest::StatusCode,
         retry_after: Option<std::time::Duration>,
     },
-    #[error("context window exceeded: {0}")]
+    #[error("context overflow: {0}")]
     ContextOverflow(String),
     #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
-    #[error("invalid Responses stream: {0}")]
+    #[error("invalid provider protocol: {0}")]
     Protocol(String),
     #[error("device login timed out after 15 minutes")]
     LoginTimeout,
@@ -201,7 +218,7 @@ mod job_tests {
     use super::*;
 
     #[tokio::test]
-    async fn catalog_dispatch_constructs_chatgpt_and_rejects_other_protocols() {
+    async fn catalog_dispatch_requires_credentials_and_rejects_unimplemented_protocols() {
         let catalog = catalog::Catalog::get();
         let provider = catalog.provider("chatgpt").unwrap();
         let model = provider.models.values().next().unwrap();
@@ -221,6 +238,13 @@ mod job_tests {
             )
         }) {
             let model = provider.models.values().next().unwrap_or(model);
+            if model.api.unwrap_or(provider.api) == Api::AnthropicMessages {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::Credentials(_))
+                ));
+                continue;
+            }
             assert!(matches!(
                 client_for(provider, model, ClientAuth::None),
                 Err(Error::Unsupported(api)) if api == model.api.unwrap_or(provider.api)
@@ -234,7 +258,7 @@ mod job_tests {
             .unwrap();
         assert!(matches!(
             client_for(router, claude, ClientAuth::None),
-            Err(Error::Unsupported(Api::AnthropicMessages))
+            Err(Error::Credentials(_))
         ));
     }
 
@@ -242,6 +266,7 @@ mod job_tests {
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
+            provider: "fake".into(),
             session_id,
             step: 7,
             request_id: RequestId::for_step(session_id, 7),

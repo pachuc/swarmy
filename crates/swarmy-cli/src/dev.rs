@@ -206,10 +206,34 @@ async fn node_services(layout: &Layout) -> Result<bool> {
     Ok(false)
 }
 
+fn ensure_keyring() -> Result<()> {
+    let keyring_path = swarmy_config::Keyring::path()?;
+    match swarmy_config::Keyring::read(&keyring_path) {
+        Ok(_) => (),
+        Err(swarmy_config::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            match swarmy_config::Keyring::generate() {
+                Ok(_) => println!(
+                    "Generated cluster keyring at {} (mode 600)",
+                    keyring_path.display()
+                ),
+                Err(swarmy_config::Error::Io(e))
+                    if e.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    swarmy_config::Keyring::load()?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
+}
+
 async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
     if node_services(layout).await? {
         return Ok(());
     }
+    ensure_keyring()?;
     let binaries = check_versions(allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway"]

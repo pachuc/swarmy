@@ -511,11 +511,42 @@ fn provider_error(value: &Value) -> Error {
             .unwrap_or("unknown"),
         value["message"].as_str().unwrap_or("request failed")
     );
-    if crate::retry::is_context_overflow(&message) {
+    if is_context_overflow(&message) {
         Error::ContextOverflow(message)
     } else {
         Error::Protocol(message)
     }
+}
+
+/// Vendor error codes and phrases used for context-window failures.
+pub(crate) fn is_context_overflow(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    if ["rate limit", "rate_limit", "too many requests", "throttl"]
+        .iter()
+        .any(|phrase| message.contains(phrase))
+    {
+        return false;
+    }
+    [
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "exceeds the context window",
+        "maximum prompt length",
+        "prompt is too long",
+        "prompt too long",
+        "input is too long",
+        "request_too_large",
+        "too many tokens",
+        "token limit exceeded",
+        "exceeded model token limit",
+        "reduce the length of the messages",
+        "exceeds the available context size",
+        "greater than the context length",
+        "maximum allowed input length",
+    ]
+    .iter()
+    .any(|phrase| message.contains(phrase))
 }
 
 fn item_parts(item: &Value) -> Result<Vec<Part>, Error> {
@@ -568,5 +599,6 @@ fn usage(value: &Value) -> TokenUsage {
             .as_u64()
             .unwrap_or(0),
         total_tokens: value["total_tokens"].as_u64().unwrap_or(0),
+        cache_write_input_tokens: 0,
     }
 }

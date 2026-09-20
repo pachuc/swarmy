@@ -11,6 +11,7 @@ pub async fn run(
     state: &State,
     name: &str,
     delay: Duration,
+    options: Option<&super::services::Options<'_>>,
 ) -> Result<()> {
     let mut primary = state.require(name)?;
     let settings = primary.launch_settings.clone().context(
@@ -77,6 +78,9 @@ pub async fn run(
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
         let address = host.provision(&node, Some(&primary)).await?;
+        if let Some(options) = options {
+            host.services(&node, &address, options).await?;
+        }
         println!("Remote node {} joined {name}", node.name);
         println!("{}", super::ssh::command_line(&node, &address)?);
         Ok::<_, anyhow::Error>(())

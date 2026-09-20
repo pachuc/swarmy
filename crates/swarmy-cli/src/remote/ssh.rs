@@ -190,7 +190,13 @@ impl Ssh {
         let settings = swarmy_config::Settings::load_base()?.settings;
         let credential = Path::new(&settings.credential_file);
         let mut copy = Command::new("rsync");
-        for relative in credential_excludes(&self.repo, credential) {
+        for relative in credential_excludes(&self.repo, credential)
+            .into_iter()
+            .chain(credential_excludes(
+                &self.repo,
+                &swarmy_config::Keyring::path()?,
+            ))
+        {
             copy.arg(format!("--exclude=/{}", relative.display()));
         }
         checked(

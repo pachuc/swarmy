@@ -276,3 +276,29 @@ fn remote_doctor_proves_real_database_and_nats_through_profile() {
             .contains("round trip succeeded")
     );
 }
+
+#[test]
+fn reports_keyring_presence_and_permissions() {
+    let fixture = Fixture::new();
+    fixture.config("provider = 'fake'");
+    let absent: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert!(
+        check(&absent, "keyring")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("absent")
+    );
+    let path = fixture.0.path().join(".swarmy/keyring");
+    swarmy_config::Keyring::generate_at(&path).unwrap();
+    let present: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&present, "keyring")["ok"], true);
+    assert!(
+        check(&present, "keyring")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("mode 600")
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let invalid: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&invalid, "keyring")["ok"], false);
+}

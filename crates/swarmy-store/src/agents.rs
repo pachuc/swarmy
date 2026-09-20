@@ -116,6 +116,7 @@ impl Store {
                     system_prompt: settings.system_prompt.clone(),
                     model: settings.model.clone(),
                     reasoning_effort: settings.reasoning_effort,
+                    provider: settings.provider.clone(),
                 };
                 write(&trx, &self.agent_key(id), &record)?;
                 if let Some(token) = github_token {
@@ -211,20 +212,24 @@ impl Store {
     /// # Errors
     /// Rejects unknown agents, oversized records, and storage failures.
     pub async fn set_agent(&self, id: AgentId, settings: &AgentSettings) -> Result<AgentRecord> {
+        self.set_agent_with_resets(id, settings, &[]).await
+    }
+
+    /// Apply overrides and explicit resets in the same transaction.
+    /// # Errors
+    /// Rejects unknown agents, oversized records, and storage failures.
+    pub async fn set_agent_with_resets(
+        &self,
+        id: AgentId,
+        settings: &AgentSettings,
+        resets: &[swarmy_core::InferenceField],
+    ) -> Result<AgentRecord> {
         self.transaction(|trx| async move {
             let mut agent = self
                 .read_agent(&trx, id)
                 .await?
                 .ok_or(StoreError::AgentMissing)?;
-            if let Some(prompt) = &settings.system_prompt {
-                agent.system_prompt = Some(prompt.clone());
-            }
-            if let Some(model) = &settings.model {
-                agent.model = Some(model.clone());
-            }
-            if let Some(effort) = settings.reasoning_effort {
-                agent.reasoning_effort = Some(effort);
-            }
+            settings.apply_to(&mut agent, resets);
             write(&trx, &self.agent_key(id), &agent)?;
             Ok(agent)
         })
@@ -259,6 +264,27 @@ impl Store {
         image: Option<&str>,
         now: Timestamp,
     ) -> Result<SessionRecord> {
+        self.create_session_with_inference(
+            id,
+            agent,
+            image,
+            now,
+            &swarmy_core::InferenceSelection::default(),
+        )
+        .await
+    }
+
+    /// Create a session with immutable inference overrides before its first turn.
+    /// # Errors
+    /// Rejects invalid agents/images and duplicate sessions.
+    pub async fn create_session_with_inference(
+        &self,
+        id: SessionId,
+        agent: Option<AgentId>,
+        image: Option<&str>,
+        now: Timestamp,
+        inference: &swarmy_core::InferenceSelection,
+    ) -> Result<SessionRecord> {
         let session = SessionRecord {
             session_id: id,
             agent_id: agent.unwrap_or_else(|| AgentId::from_ulid(ulid::Ulid::generate())),
@@ -270,6 +296,7 @@ impl Store {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
+            inference: inference.clone(),
         };
         self.create_session_record(&session, now, image).await?;
         Ok(session)
@@ -346,6 +373,7 @@ impl Store {
         .validate()
         .map_err(|_| StoreError::InvalidState)?;
         write(trx, &self.session_plan_key(id), &session.plan)?;
+        write(trx, &self.session_inference_key(id), &session.inference)?;
         write(trx, &self.session_kind_key(id), &session.kind)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         write(trx, &self.session_idle_key(id), &now)?;
@@ -358,6 +386,7 @@ impl Store {
                 state: session.state,
                 head_seq: 0,
                 snapshot_seq: None,
+                inference: session.inference.clone(),
                 kind: session.kind,
                 computer_deleted: false,
                 plan: Vec::new(),
@@ -423,6 +452,7 @@ impl Store {
                 state: SessionState::Idle,
                 head_seq: 0,
                 snapshot_ref: None,
+                inference: swarmy_core::InferenceSelection::default(),
                 plan: Vec::new(),
             };
             self.create_session_in(&trx, &session, now, None).await?;
@@ -514,6 +544,7 @@ impl Store {
                     state: SessionState::Idle,
                     head_seq: 0,
                     snapshot_ref: None,
+                    inference: swarmy_core::InferenceSelection::default(),
                     plan: Vec::new(),
                 };
                 self.create_session_in(&trx, &session, now, None).await?;
@@ -642,9 +673,36 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
         main_session: Option<SessionId>,
     }
 
+    #[derive(serde::Deserialize)]
+    struct SettingsAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+        main_session: Option<SessionId>,
+        system_prompt: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
+    }
+
     match decode(bytes) {
         Ok(agent) => Ok(agent),
         Err(error) => {
+            if let Ok(old) = decode::<SettingsAgent>(bytes) {
+                return Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: old.main_session,
+                    system_prompt: old.system_prompt,
+                    model: old.model,
+                    reasoning_effort: old.reasoning_effort,
+                    provider: None,
+                });
+            }
             if let Ok(old) = decode::<MainSessionAgent>(bytes) {
                 return Ok(AgentRecord {
                     agent_id: old.agent_id,
@@ -656,6 +714,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     system_prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    provider: None,
                 });
             }
             match decode::<LegacyAgent>(bytes) {
@@ -669,6 +728,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     system_prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    provider: None,
                 }),
                 Err(_) => Err(error.into()),
             }
@@ -705,6 +765,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_records_decode_without_provider() {
+        let record = AgentRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            name: "old".into(),
+            image: ImageRecord {
+                name: "base".into(),
+                tag: ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            description: String::new(),
+            created_at: Timestamp::UNIX_EPOCH,
+            main_session: None,
+            system_prompt: Some("prompt".into()),
+            model: Some("gpt-5.5".into()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            provider: None,
+        };
+        let bytes = encode(&(
+            record.agent_id,
+            &record.name,
+            &record.image,
+            &record.description,
+            record.created_at,
+            record.main_session,
+            &record.system_prompt,
+            &record.model,
+            record.reasoning_effort,
+        ))
+        .unwrap();
+        assert_eq!(decode_agent(&bytes).unwrap(), record);
+        assert_eq!(decode_agent(&encode(&record).unwrap()).unwrap(), record);
+    }
+
+    #[test]
     fn malformed_extended_agent_is_not_treated_as_a_legacy_record() {
         let record = AgentRecord {
             agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
@@ -720,6 +814,7 @@ mod tests {
             system_prompt: Some("prompt".into()),
             model: Some("model".into()),
             reasoning_effort: Some(ReasoningEffort::High),
+            provider: Some("openai".into()),
         };
         let mut bytes = encode(&record).unwrap();
         assert_eq!(decode_agent(&bytes).unwrap(), record);

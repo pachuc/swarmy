@@ -62,6 +62,70 @@ impl Credentials {
             .unwrap_or_default()
     }
 
+    /// Convert the existing file format while retaining unknown provider fields.
+    /// # Errors
+    /// Returns invalid timestamp or token errors.
+    pub fn to_record(&self) -> Result<swarmy_core::CredentialRecord, Error> {
+        let updated_at: jiff::Timestamp = self.0["last_refresh"]
+            .as_str()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|_| Error::Credentials("invalid last_refresh"))?;
+        let expires_at = jwt_claims(self.access_token())
+            .ok()
+            .and_then(|v| v["exp"].as_i64())
+            .and_then(|v| jiff::Timestamp::from_second(v).ok())
+            .unwrap_or(
+                updated_at
+                    .checked_add(Duration::from_hours(192))
+                    .map_err(|_| Error::Credentials("invalid expiry"))?,
+            );
+        let mut metadata = self.0.clone();
+        metadata["tokens"]
+            .as_object_mut()
+            .ok_or(Error::Credentials("missing tokens"))?
+            .remove("access_token");
+        metadata["tokens"]
+            .as_object_mut()
+            .ok_or(Error::Credentials("missing tokens"))?
+            .remove("refresh_token");
+        Ok(swarmy_core::CredentialRecord {
+            kind: swarmy_core::CredentialKind::OAuth {
+                access: self.access_token().into(),
+                refresh: self.token("refresh_token")?.into(),
+                expires_at,
+                extra: [("chatgpt_json".into(), serde_json::to_string(&metadata)?)].into(),
+            },
+            updated_at,
+        })
+    }
+
+    /// # Errors
+    /// Rejects non-OAuth records, missing metadata, and invalid account identities.
+    pub fn from_record(record: &swarmy_core::CredentialRecord) -> Result<Self, Error> {
+        let swarmy_core::CredentialKind::OAuth {
+            access,
+            refresh,
+            extra,
+            ..
+        } = &record.kind
+        else {
+            return Err(Error::Credentials("ChatGPT requires OAuth"));
+        };
+        if extra.get("needs_login").is_some_and(|v| v == "true") {
+            return Err(Error::Credentials("ChatGPT needs login"));
+        }
+        let mut value: Value = serde_json::from_str(
+            extra
+                .get("chatgpt_json")
+                .ok_or(Error::Credentials("missing ChatGPT metadata"))?,
+        )?;
+        value["tokens"]["access_token"] = json!(access);
+        value["tokens"]["refresh_token"] = json!(refresh);
+        value["last_refresh"] = json!(record.updated_at.to_string());
+        Self::from_json(value)
+    }
+
     fn token(&self, key: &str) -> Result<&str, Error> {
         self.0["tokens"][key]
             .as_str()
@@ -108,6 +172,15 @@ pub trait CredentialLock: Send {}
 /// Implementations must preserve account identity, atomically save credentials,
 /// and serialize refresh across every user of their authoritative account store.
 pub trait CredentialStore: Send + Sync {
+    /// Store adapters may replace file locking with a database refresh lease.
+    fn refresh<'a>(
+        &'a self,
+        client: &'a OAuthClient,
+        observed: &'a Credentials,
+    ) -> BoxFuture<'a, Result<Credentials, Error>> {
+        Box::pin(client.refresh_locked(self, observed))
+    }
+
     fn load(&self) -> BoxFuture<'_, Result<Credentials, Error>>;
     fn save(&self, credentials: Credentials) -> BoxFuture<'_, Result<(), Error>>;
     fn lock_refresh<'a>(
@@ -388,6 +461,14 @@ impl OAuthClient {
         store: &dyn CredentialStore,
         observed: &Credentials,
     ) -> Result<Credentials, Error> {
+        store.refresh(self, observed).await
+    }
+
+    async fn refresh_locked<S: CredentialStore + ?Sized>(
+        &self,
+        store: &S,
+        observed: &Credentials,
+    ) -> Result<Credentials, Error> {
         let _lock = store.lock_refresh(observed.account_id()).await?;
         let current = store.load().await?;
         if current.account_id() != observed.account_id() {
@@ -396,6 +477,16 @@ impl OAuthClient {
         if current != *observed {
             return Ok(current);
         }
+        let refreshed = self.refresh_credentials(current).await?;
+        store.save(refreshed.clone()).await?;
+        Ok(refreshed)
+    }
+
+    /// Exchange one refresh token. The caller must hold its authoritative lease.
+    /// # Errors
+    /// Returns HTTP, malformed reply, and account identity errors.
+    pub async fn refresh_credentials(&self, current: Credentials) -> Result<Credentials, Error> {
+        let account_id = current.account_id().to_owned();
         let response = self.client.post(format!("{}/oauth/token", self.issuer)).json(&json!({
             "grant_type": "refresh_token", "client_id": CLIENT_ID, "refresh_token": current.token("refresh_token")?,
         })).send().await?;
@@ -409,7 +500,9 @@ impl OAuthClient {
         }
         value["last_refresh"] = json!(jiff::Timestamp::now().to_string());
         let refreshed = Credentials::from_json(value)?;
-        store.save(refreshed.clone()).await?;
+        if refreshed.account_id() != account_id {
+            return Err(Error::AccountChanged);
+        }
         Ok(refreshed)
     }
 }

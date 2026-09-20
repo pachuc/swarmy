@@ -82,6 +82,7 @@ pub struct Conversation {
     pub id: SessionId,
     pub agent_name: Option<String>,
     pub opened: Opened,
+    pub selection: swarmy_core::ResolvedSelection,
     turn: Option<ClientTurn>,
     store: Store,
     bus: Bus,
@@ -105,13 +106,22 @@ impl Conversation {
         image: Option<&str>,
         agent: Option<&str>,
         new: bool,
+        selection: swarmy_core::InferenceSelection,
     ) -> Result<Self> {
         ensure!(
             agent.is_none() || (image.is_none() && id.is_none()),
             "--agent cannot be combined with --image or a session id"
         );
         ensure!(!new || agent.is_some(), "--new requires --agent");
+        ensure!(
+            (id.is_none() && agent.is_none())
+                || selection == swarmy_core::InferenceSelection::default(),
+            "inference flags apply only to a new ephemeral session"
+        );
         let settings = swarmy_config::Settings::load()?.settings;
+        if id.is_none() && agent.is_none() {
+            crate::selection::validate(&selection, &crate::selection::defaults(&settings)?)?;
+        }
         let image = if id.is_none() && agent.is_none() {
             Some(settings.session_image(image)?)
         } else {
@@ -131,11 +141,12 @@ impl Conversation {
                 store.open_main_session(agent, Timestamp::now()).await?
             } else {
                 let session = store
-                    .create_session_for_agent(
+                    .create_session_with_inference(
                         SessionId::from_ulid(Ulid::generate()),
                         agent,
                         image,
                         Timestamp::now(),
+                        &selection,
                     )
                     .await?;
                 (session.session_id, true)
@@ -162,7 +173,9 @@ impl Conversation {
         })
         .await
         .context("cannot reach scheduler: live subscription timed out")??;
+        let selection = crate::selection::resolved_session(&store, &session).await?;
         let mut conversation = Self {
+            selection,
             id,
             agent_name,
             opened: if created {
@@ -384,6 +397,7 @@ impl Conversation {
                 .fetch_session(self.id)
                 .await?
                 .context("session disappeared")?;
+            self.selection = crate::selection::resolved_session(&self.store, &session).await?;
             while self.after < session.head_seq {
                 let events = self
                     .store

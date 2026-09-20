@@ -1,4 +1,5 @@
 mod config;
+mod credentials;
 
 use std::{sync::Arc, time::Duration};
 
@@ -58,6 +59,23 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
+    let provider = match config.provider {
+        config::ConfiguredProvider::ChatGpt {
+            credential_file,
+            model,
+        } => {
+            let (provider, model) = config::chatgpt_catalog(&model)?;
+            let credentials =
+                credentials::ClusterCredentials::new(store.clone(), &credential_file).await?;
+            swarmy_llm::client_for(
+                provider,
+                model,
+                swarmy_llm::ClientAuth::ChatGpt(Arc::new(credentials)),
+            )
+            .context("cannot build the ChatGPT inference client")?
+        }
+        config::ConfiguredProvider::Fake(provider) => provider,
+    };
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let queue = WorkQueue::Inference(config.class);
     bus.setup(std::slice::from_ref(&queue)).await?;
@@ -66,7 +84,7 @@ async fn run(config: config::Config) -> Result<()> {
         store,
         blobs,
         bus,
-        provider: config.provider,
+        provider,
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,

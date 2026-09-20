@@ -9,7 +9,9 @@ mod event;
 mod id;
 mod message;
 mod scheduler;
+mod selection;
 mod session;
+pub use selection::{InferenceField, InferenceSelection, ResolvedSelection};
 mod store;
 mod volume;
 
@@ -74,3 +76,6 @@ pub use timer::{
     CancelTimerArguments, MAX_AGENT_TIMERS, MAX_TIMER_NOTE_BYTES, SetTimerArguments, TimerRecord,
     TimerStatus,
 };
+
+pub mod credential;
+pub use credential::{CredentialKind, CredentialRecord, CredentialScope, CredentialStatus};

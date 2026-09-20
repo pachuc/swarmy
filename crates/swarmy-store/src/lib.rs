@@ -10,7 +10,10 @@
 mod agents;
 pub mod blob;
 mod computers;
+pub mod credentials;
 mod inference;
+mod selection;
+pub use selection::GatewayProvider;
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;
@@ -52,6 +55,12 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("keyring cannot decrypt credential; check SWARMY_KEYRING and the cluster key")]
+    Keyring,
+    #[error("credential does not exist")]
+    CredentialMissing,
+    #[error("credential refresh failed; login required")]
+    CredentialRefresh,
     #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
     InvalidGithubToken,
 
@@ -161,6 +170,8 @@ struct StoredSession {
     computer_deleted: bool,
     #[serde(skip)]
     plan: Vec<swarmy_core::PlanStep>,
+    #[serde(skip)]
+    inference: swarmy_core::InferenceSelection,
 }
 
 #[derive(Clone)]
@@ -326,12 +337,24 @@ impl Store {
         trx: &Transaction,
         mut session: StoredSession,
     ) -> Result<StoredSession> {
-        (session.kind, session.computer_deleted, session.plan) = futures::try_join!(
+        (
+            session.kind,
+            session.computer_deleted,
+            session.plan,
+            session.inference,
+        ) = futures::try_join!(
             self.session_kind(trx, session.session_id),
             self.computer_deleted(trx, session.agent_id),
             async {
                 Ok::<_, StoreError>(
                     read(trx, &self.session_plan_key(session.session_id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_inference_key(session.session_id))
                         .await?
                         .unwrap_or_default(),
                 )
@@ -358,6 +381,7 @@ impl Store {
             state: session.state,
             head_seq: session.head_seq,
             snapshot_ref,
+            inference: session.inference,
         })
     }
 
@@ -711,6 +735,7 @@ mod compatibility_tests {
         assert_eq!(header.snapshot_seq, Some(20));
         assert_eq!(header.kind, swarmy_core::SessionKind::Ephemeral);
         assert!(!header.computer_deleted);
+        assert_eq!(header.inference, swarmy_core::InferenceSelection::default());
         header.kind = swarmy_core::SessionKind::Named { agent_id: agent };
         header.computer_deleted = true;
         assert_eq!(encode(&header).unwrap(), original);

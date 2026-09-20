@@ -1,6 +1,8 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
 mod agent;
 mod agent_command;
+mod auth;
+mod auth_command;
 mod bench;
 mod bench_command;
 mod chat;
@@ -15,6 +17,8 @@ mod remote_command;
 mod remote_ssh;
 #[path = "remote/status.rs"]
 mod remote_status;
+mod selection;
+mod selection_command;
 mod session;
 mod session_command;
 mod vol;
@@ -36,6 +40,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Auth {
+        #[arg(long, env = "SWARMY_CHATGPT_AUTH", global = true)]
+        auth_file: Option<std::path::PathBuf>,
+        #[command(subcommand)]
+        command: auth_command::Command,
+    },
     /// Create and manage named agents
     Agent {
         #[command(subcommand)]
@@ -78,8 +88,11 @@ enum Command {
         /// Create a side conversation on the named agent
         #[arg(long, requires = "agent")]
         new: bool,
+        #[command(flatten)]
+        selection: selection_command::SelectionArgs,
     },
     Chat {
+        #[arg(conflicts_with_all = ["provider", "model", "effort"])]
         session_id: Option<ulid::Ulid>,
         /// Base image in NAME:TAG form; otherwise use `default_image`.
         #[arg(long, conflicts_with = "session_id")]
@@ -90,6 +103,8 @@ enum Command {
         /// Create a side conversation on the named agent
         #[arg(long, requires = "agent")]
         new: bool,
+        #[command(flatten)]
+        selection: selection_command::SelectionArgs,
     },
     Session {
         #[command(subcommand)]
@@ -110,6 +125,7 @@ fn main() -> anyhow::Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
         match cli.command {
+            Command::Auth { command, auth_file } => auth::run(command, auth_file, cli.json).await,
             Command::Bench { command } => bench::run(command, cli.json).await,
             Command::DoctorFdb => {
                 conversation::store().await?.list_sessions(None, 1).await?;
@@ -130,18 +146,44 @@ fn main() -> anyhow::Result<()> {
                 image,
                 agent,
                 new,
-            } => session::run(prompt, image, agent, new, cli.json).await,
+                selection,
+            } => {
+                session::run(
+                    prompt,
+                    image,
+                    agent,
+                    new,
+                    crate::selection::normalize(selection.into())?,
+                    cli.json,
+                )
+                .await
+            }
             Command::Chat {
                 session_id,
                 image,
                 agent,
                 new,
+                selection,
             } => {
                 let id = session_id.map(swarmy_core::SessionId::from_ulid);
                 if cli.json {
-                    session::chat_json(id, image, agent, new).await
+                    session::chat_json(
+                        id,
+                        image,
+                        agent,
+                        new,
+                        crate::selection::normalize(selection.into())?,
+                    )
+                    .await
                 } else {
-                    chat::run(id, image, agent, new).await
+                    chat::run(
+                        id,
+                        image,
+                        agent,
+                        new,
+                        crate::selection::normalize(selection.into())?,
+                    )
+                    .await
                 }
             }
             Command::Session { command } => session::inspect(command, cli.json).await,

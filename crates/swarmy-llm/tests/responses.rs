@@ -320,7 +320,7 @@ fn retry_client(server: &MockServer) -> ResponsesProvider {
         ResponsesEndpoint::from_catalog(&info, &model, ClientAuth::ApiKey("key".into())).unwrap();
     let mut client = ResponsesProvider::new(endpoint, info.id, model).unwrap();
     client.retry_policy = RetryPolicy {
-        max_retries: 2,
+        max_attempts: 3,
         initial_delay: Duration::from_millis(1),
         max_delay: Duration::from_millis(2),
     };

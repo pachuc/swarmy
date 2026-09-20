@@ -99,3 +99,131 @@ it contains metadata only, with no JavaScript runtime dependency.
 Custom model configuration and credential resolution belong to later tasks.
 This change supplies the catalog and client dispatch point without changing
 session selection or gateway behavior.
+
+## Credentials
+
+Run `swarmy dev up` to create the local keyring and development stack. The
+credential commands use your configured FoundationDB directory (including
+`--remote NAME`) and the local cluster keyring. All auth commands accept
+`--json`; list and check emit one JSON object per provider, with no secrets.
+
+```sh
+swarmy auth set anthropic --api-key sk-example
+swarmy auth set openai --from-env
+swarmy auth set azure --file /private/api-key --extra resource=my-resource
+swarmy auth set google --from-env --extra project=my-project --extra region=us-central1
+swarmy auth ls --json
+swarmy auth check
+swarmy auth check chatgpt --json
+swarmy auth rm anthropic
+```
+
+Choose exactly one of `--api-key`, `--from-env`, or `--file`. A key file is UTF-8
+text with surrounding whitespace removed. Repeat `--extra name=value` for
+resource names, deployments, projects, regions, bearer tokens, or other
+provider settings. Extra values are encrypted too. No shell commands are
+executed to resolve values. `--file` avoids putting a key in shell history or
+process arguments. `auth check` verifies decryption and local status; it does
+not make a provider request. Missing providers or expired/needs-login records
+exit nonzero. OAuth output includes signed seconds until expiry.
+
+| Provider | `--from-env` lookup order |
+| --- | --- |
+| anthropic | `ANTHROPIC_API_KEY` |
+| openai | `OPENAI_API_KEY` |
+| xai | `XAI_API_KEY` |
+| meta | `META_MODEL_API_KEY` |
+| openrouter | `OPENROUTER_API_KEY` |
+| azure | `AZURE_OPENAI_API_KEY` |
+| amazon-bedrock | `AWS_BEARER_TOKEN_BEDROCK` |
+| google | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| google-vertex, google-vertex-anthropic | `GOOGLE_CLOUD_API_KEY` |
+
+This store does not change the other providers' authentication yet. AWS and
+Google SDK credential chains and additional login flows belong to their
+provider tasks. ChatGPT requires OAuth and rejects `auth set`.
+
+### ChatGPT migration
+
+```sh
+swarmy auth login chatgpt
+swarmy auth import
+# Or read a particular existing ChatGPT auth.json:
+swarmy auth import --file /private/auth.json
+```
+
+Login still writes `credential_file` (normally `~/.swarmy/auth.json`);
+`--auth-file` / `SWARMY_CHATGPT_AUTH` overrides that path for login and import.
+Login prints a note about the later migration to cluster persistence. Import
+validates the ChatGPT file, preserves its provider metadata, and writes an
+OAuth record under `chatgpt` without deleting or modifying the source. Stop
+any other process refreshing that account before importing it. The gateway
+prefers the stored record, falls back to the file only when no record exists,
+and preserves its existing account identity checks. ChatGPT third-party
+subscription access is treated as tolerated, not licensed. Anthropic
+subscription OAuth is not supported.
+
+### Keyring and remote gateways
+
+The keyring is a base64 32-byte key with mode 600. Override its path with
+`SWARMY_KEYRING`. `swarmy dev up` creates it atomically only when absent, and
+`swarmy doctor` reports its presence and mode. Keep a separate backup: a new
+key cannot decrypt old records. Gateways fail clearly when stored credentials
+cannot be decrypted.
+
+```sh
+swarmy remote up demo --services node --copy-credential
+swarmy remote add-node demo --copy-credential
+```
+
+The same explicit flag copies both the legacy ChatGPT file and the keyring
+over SSH. The keyring lands at `/home/ubuntu/.swarmy/keyring` with mode 600.
+Without this flag, additional nodes run only `swarmyd` and receive neither
+secret. Ordinary checkout copying excludes the configured credential and
+keyring paths. Use the same cluster key on the CLI and every gateway.
+||||||| 758da49
+
+## Choosing a model
+
+New ephemeral sessions accept provider, model, and reasoning effort overrides:
+
+```sh
+swarmy run 'Review this repository' --model openai/gpt-5.5 --effort max
+swarmy chat --provider openai --model gpt-5.5 --effort high
+swarmy agent create tommy --provider openrouter --model anthropic/claude-sonnet-4-6
+swarmy agent set tommy --effort medium
+swarmy agent set tommy --model default
+```
+
+A bare model id uses the selected provider, or the stack provider when omitted.
+The `provider/model` shorthand splits at the first slash. An explicit provider
+must agree with that prefix, except when the full model id exists under that
+provider, as with OpenRouter's `anthropic/claude-sonnet-4.6`.
+OpenRouter accepts dashed version aliases such as `anthropic/claude-sonnet-4-6`
+and stores the matching canonical catalog id `anthropic/claude-sonnet-4.6`.
+Unknown selections show up to five catalog suggestions. The CLI currently uses
+the embedded catalog; custom catalog validation will arrive with settings overlays.
+
+Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+At request time the worker clamps effort to the model's supported scale and
+records the first clamp in the session log. Session overrides take precedence
+over agent overrides, which take precedence over stack defaults. Overrides remain
+in the session across later turns. Agent updates affect subsequent requests.
+`agent set --provider default`, `--model default`, and `--effort default` clear
+individual overrides. A cleared field inherits the stack setting independently;
+choose a compatible provider and model together when changing providers.
+
+Inference flags apply only to a new ephemeral session. With `--agent`, configure
+the named agent instead. Resuming a session id uses its stored selection.
+`session show` marks inherited values, `session ls` includes `provider/model`,
+and the chat status header shows provider, model, and effort. `agent show` marks
+unset agent fields as stack defaults. With `--json`, `session show` emits a
+`session_selection` record containing stored overrides and resolved values before
+the event rows.
+
+Gateways advertise availability in an expiring `("gateway_provider", provider)`
+record, refreshed every 30 seconds. The store exposes `put_gateway_provider` with
+`GatewayProvider { expires_at }` and `gateway_serves`. The parallel gateway task
+owns startup and refresh calls. A missing advertisement produces
+`no gateway serves provider X; run swarmy auth set X or start a gateway with it`
+in the session log. The scripted `fake` provider needs no credential advertisement.

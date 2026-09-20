@@ -399,3 +399,22 @@ async fn provider_rejects_an_explicit_non_stream_content_type() {
         .unwrap_err();
     assert!(error.to_string().contains("got text/html"), "{error}");
 }
+
+#[test]
+fn chatgpt_record_round_trip_preserves_metadata() {
+    let credentials = swarmy_llm::auth::Credentials::from_json(
+        serde_json::from_str(include_str!("fixtures/auth.json")).unwrap(),
+    )
+    .unwrap();
+    let record = credentials.to_record().unwrap();
+    let reconstructed = swarmy_llm::auth::Credentials::from_record(&record).unwrap();
+    assert_eq!(credentials.to_json(), reconstructed.to_json());
+    let swarmy_core::CredentialKind::OAuth {
+        access, refresh, ..
+    } = record.kind
+    else {
+        panic!("expected OAuth");
+    };
+    assert_eq!(access, credentials.access_token());
+    assert!(!refresh.is_empty());
+}
