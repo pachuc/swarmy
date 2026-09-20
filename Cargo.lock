@@ -3661,6 +3661,7 @@ dependencies = [
  "serde_json",
  "shell-words",
  "swarmy-core",
+ "swarmy-llm",
  "tempfile",
  "thiserror 2.0.20",
  "toml",

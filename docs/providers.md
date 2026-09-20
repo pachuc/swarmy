@@ -96,9 +96,96 @@ Unknown keys survive parsing. The quirk table is based on Pi's
 `packages/ai/scripts/generate-models.ts` and OpenCode's provider option tables;
 it contains metadata only, with no JavaScript runtime dependency.
 
-Custom model configuration and credential resolution belong to later tasks.
-This change supplies the catalog and client dispatch point without changing
-session selection or gateway behavior.
+## Browsing models
+
+```sh
+swarmy models ls --provider anthropic
+swarmy models ls --reasoning --json
+swarmy models show openrouter/anthropic/claude-sonnet-4.6
+swarmy models search sonnet
+swarmy models providers
+```
+
+These commands use the embedded snapshot plus your configuration and need no
+network or credentials. Lists sort by provider id, then model id. `--reasoning`
+keeps models with at least one supported effort other than `none`. Search uses
+`Catalog::find`, a case-insensitive substring match against `provider/model`;
+no matches exit nonzero. Show splits at the first slash, so model ids can contain
+slashes, and prints all metadata, including compatibility flags.
+
+The terminal list uses several short lines per model, with context and output
+limits in tokens, input and output prices in dollars per million tokens, and
+supported efforts. Unknown output limits display as `unknown`. Provider output
+lists wire protocols, authentication kinds, and environment variable names.
+The credential column currently reports `unknown`; use `swarmy auth ls` to
+inspect stored credentials.
+
+Use the stable `--json` form for scripts. List and search return a JSON array
+of model objects; show returns one object. Each includes `key` (`provider/model`),
+`provider`, every `ModelInfo` field, `supported_efforts`, `effective_api`, and
+`effective_base_url`. The effective fields resolve model overrides against the
+provider defaults. Providers returns an array with `id`, `api`, `auth_kinds`,
+`env_keys`, and `credential`. JSON output never truncates identifiers.
+
+## Custom providers and models
+
+Add entries to `.swarmy/config.toml` (or the user configuration file discovered
+by swarmy). A private OpenAI-compatible endpoint needs no snapshot regeneration:
+
+```toml
+[providers.private]
+api = "OpenAiCompletions"
+base_url = "http://localhost:8000/v1"
+
+[[models]]
+provider = "private"
+id = "team/coder"
+name = "Private coder"
+context_window = 65536
+max_output_tokens = 8192
+reasoning = ["none", "low", "medium", "high"]
+cost = { input = 0.5, output = 1.5, cache_read = 0.1, cache_write = 0.5 }
+compat = { max_tokens_field = "max_tokens", supports_developer_role = false }
+
+[[models]]
+provider = "openai"
+id = "gpt-5.5"
+context_window = 128000
+```
+
+Provider tables accept `api` and `base_url`. Both are required for a new provider;
+an existing provider retains omitted settings, models, auth kinds, and environment
+names. New providers use their id as their name, advertise API-key auth, and have
+no implicit environment variable names. Catalog definitions do not implement a
+wire client or credential flow; dispatch support still depends on the protocol
+tasks described above.
+
+Each model requires `provider` and `id`. Optional fields are `name`, `api`,
+`base_url`, `context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`.
+New models default to their id as name, text input, tool calling enabled, no
+attachments or reasoning, 128000 context tokens, 16384 output tokens, and zero
+price placeholders. Supply actual limits and prices for your endpoint. New
+models inherit the provider's API and base URL unless overridden.
+
+An existing `provider`/`id` entry retains omitted snapshot fields, including any
+model-specific API or base URL. Explicit fields override them. Multiple entries
+for the same model apply in file order. Compatibility keys merge individually;
+`cost` replaces the complete price object, requiring `input` and `output` and
+defaulting omitted cache prices and tiers to zero and empty. Costs support the
+same `tiers` schema described above. `reasoning` replaces the effort list; an
+empty list disables reasoning. The allowed efforts are `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`.
+
+API strings use these exact names: `AnthropicMessages`, `OpenAiResponses`,
+`OpenAiCodexResponses`, `OpenAiCompletions`, `GoogleGenerativeAi`, `GoogleVertex`,
+`BedrockConverse`, and `Fake`. An unknown API fails configuration loading and
+reports the allowed names. A model referring to an undeclared provider also
+fails loading.
+
+`Settings::catalog()` returns the merged, owned catalog without changing the
+embedded snapshot. Selection flags, and later worker and gateway catalog
+lookups, should call this method instead of `Catalog::get()`. This change does
+not alter session selection or gateway dispatch.
 
 ## Credentials
 

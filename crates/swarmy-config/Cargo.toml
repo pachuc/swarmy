@@ -15,6 +15,7 @@ tempfile.workspace = true
 object_store.workspace = true
 tracing.workspace = true
 swarmy-core.workspace = true
+swarmy-llm.workspace = true
 ulid.workspace = true
 fs2.workspace = true
 serde.workspace = true

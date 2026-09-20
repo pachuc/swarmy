@@ -2,7 +2,9 @@
 pub mod keyring;
 pub use keyring::Keyring;
 mod exports;
+mod models;
 mod object;
+pub use models::{CustomModel, CustomProvider};
 mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
@@ -18,6 +20,8 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid model catalog configuration: {0}")]
+    Catalog(String),
     #[error("keyring: {0}")]
     Keyring(&'static str),
     #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
@@ -79,6 +83,8 @@ impl Default for GarbageCollection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub providers: BTreeMap<String, CustomProvider>,
+    pub models: Vec<CustomModel>,
     pub state_dir: String,
     pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
@@ -141,6 +147,8 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            providers: BTreeMap::new(),
+            models: Vec::new(),
             state_dir: ".swarmy".into(),
             remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
@@ -369,6 +377,7 @@ impl Settings {
     pub fn read(path: &Path) -> Result<Self, Error> {
         let settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
         settings.s3_namespace()?;
+        settings.catalog()?;
         Ok(settings)
     }
 

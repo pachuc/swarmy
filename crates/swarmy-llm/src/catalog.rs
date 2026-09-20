@@ -211,6 +211,17 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Build an owned catalog from provider metadata, ordered by provider id.
+    #[must_use]
+    pub fn from_providers(providers: impl IntoIterator<Item = ProviderInfo>) -> Self {
+        Self {
+            providers: providers
+                .into_iter()
+                .map(|provider| (provider.id.clone(), provider))
+                .collect(),
+        }
+    }
+
     /// The immutable snapshot is parsed once for the lifetime of the process.
     ///
     /// # Panics
