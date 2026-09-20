@@ -64,7 +64,10 @@ impl CredentialRecord {
                 extra,
                 ..
             } if access.is_empty()
-                || refresh.is_empty()
+                || (refresh.is_empty()
+                    && extra
+                        .get("token_source")
+                        .is_none_or(|source| source != "azure_cli"))
                 || extra.get("needs_login").is_some_and(|v| v == "true") =>
             {
                 CredentialStatus::NeedsLogin
@@ -76,11 +79,11 @@ impl CredentialRecord {
         }
     }
 
-    /// Refresh a minute early, but report the actual expiration in status output.
+    /// Refresh within five minutes, but report actual expiration in status output.
     #[must_use]
     pub fn needs_refresh(&self, now: Timestamp) -> bool {
         matches!(&self.kind, CredentialKind::OAuth { expires_at, .. }
-            if expires_at.as_second() <= now.as_second().saturating_add(60))
+            if expires_at.as_second() < now.as_second().saturating_add(300))
     }
 
     #[must_use]
@@ -102,8 +105,8 @@ mod tests {
         for (expiry, status, refresh) in [
             (999, CredentialStatus::Expired, true),
             (1000, CredentialStatus::Expired, true),
-            (1060, CredentialStatus::Ready, true),
-            (1061, CredentialStatus::Ready, false),
+            (1299, CredentialStatus::Ready, true),
+            (1300, CredentialStatus::Ready, false),
         ] {
             let record = CredentialRecord {
                 kind: CredentialKind::OAuth {

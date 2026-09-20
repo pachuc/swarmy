@@ -34,6 +34,11 @@ pub enum ClientAuth {
         extra: BTreeMap<String, String>,
     },
     Bearer(String),
+    /// Provider metadata, such as Azure's `resource_name`, alongside a bearer token.
+    BearerWithExtra {
+        token: String,
+        extra: BTreeMap<String, String>,
+    },
     Vertex {
         project: String,
         location: String,
@@ -200,9 +205,11 @@ pub enum Error {
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
+    #[error("{0} needs login or an API key; Azure login/refresh requires az on this host")]
+    NeedsLogin(String),
     #[error("invalid provider protocol: {0}")]
     Protocol(String),
-    #[error("device login timed out after 15 minutes")]
+    #[error("login timed out after 15 minutes")]
     LoginTimeout,
     #[error("blocking credential operation failed: {0}")]
     Join(#[from] tokio::task::JoinError),

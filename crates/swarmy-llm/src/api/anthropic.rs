@@ -215,9 +215,12 @@ pub(crate) fn client_for(
                 "Vertex requires a bearer source, project, and location",
             ));
         }
-        ("openrouter", ClientAuth::ApiKey(api_key) | ClientAuth::Bearer(api_key)) => {
-            Endpoint::OpenRouter { api_key }
-        }
+        (
+            "openrouter",
+            ClientAuth::ApiKey(api_key)
+            | ClientAuth::Bearer(api_key)
+            | ClientAuth::BearerWithExtra { token: api_key, .. },
+        ) => Endpoint::OpenRouter { api_key },
         ("openrouter", _) => return Err(Error::Credentials("OpenRouter requires an API key")),
         (_, ClientAuth::ApiKey(api_key)) => Endpoint::Direct { api_key },
         _ => return Err(Error::Credentials("Anthropic requires an API key")),

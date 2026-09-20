@@ -1,10 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use swarmy_config::{Keyring, Settings};
-use swarmy_core::CredentialScope;
+use swarmy_config::Settings;
 use swarmy_llm::{
     ClientAuth, Provider,
-    auth::{CredentialStore, ResolvedAuth},
+    auth::{ResolvedAuth, Resolver},
     catalog::{Api, Catalog, ProviderInfo},
 };
 use swarmy_store::Store;
@@ -18,9 +17,7 @@ pub struct Providers {
     pub catalog: Catalog,
     pub served: Vec<String>,
     pub skipped: BTreeMap<String, String>,
-    store: Store,
-    keyring: Option<Keyring>,
-    chatgpt: Option<Arc<dyn CredentialStore>>,
+    resolver: Result<Resolver, &'static str>,
     scripted: Result<Arc<dyn Provider>, &'static str>,
     clients: Mutex<BTreeMap<ClientKey, Arc<dyn Provider>>>,
 }
@@ -62,17 +59,13 @@ impl Providers {
     /// Returns an invalid custom provider or model configuration.
     pub async fn discover(store: Store, settings: &Settings) -> Result<Self, swarmy_config::Error> {
         let catalog = settings.catalog()?;
-        let keyring = Keyring::load().ok();
-        let chatgpt = match ClusterCredentials::new(store.clone(), &settings.credential_file).await
-        {
-            Ok(credentials) => {
-                if credentials.load().await.is_ok() {
-                    Some(Arc::new(credentials) as Arc<dyn CredentialStore>)
-                } else {
-                    None
-                }
+        let resolver = match ClusterCredentials::new(store).await {
+            Ok(credentials) => Resolver::new(Arc::new(credentials))
+                .map_err(|_| "credential resolver cannot configure its HTTP client"),
+            Err(error) => {
+                tracing::warn!(%error, "cluster credential store unavailable");
+                Err("cluster credential store unavailable; check keyring and database")
             }
-            Err(_) => None,
         };
         let scripted = if std::path::Path::new(&settings.fake.script).is_file() {
             FileFake::from_settings(settings)
@@ -85,9 +78,7 @@ impl Providers {
             catalog,
             served: Vec::new(),
             skipped: BTreeMap::new(),
-            store,
-            keyring,
-            chatgpt,
+            resolver,
             scripted,
             clients: Mutex::new(BTreeMap::new()),
         };
@@ -128,31 +119,11 @@ impl Providers {
                 })
                 .map_err(swarmy_llm::Error::Credentials);
         }
-        let record = if let Some(keyring) = &self.keyring {
-            self.store
-                .credentials(keyring.clone())
-                .get_credential(CredentialScope::Cluster, &provider.id)
-                .await
-                .map_err(|_| swarmy_llm::Error::Credentials("cannot decrypt stored credential"))?
-        } else {
-            if self
-                .store
-                .has_credential(CredentialScope::Cluster, &provider.id)
-                .await
-                .map_err(|_| swarmy_llm::Error::Credentials("credential store unavailable"))?
-            {
-                return Err(swarmy_llm::Error::Credentials(
-                    "stored credential requires a readable cluster keyring",
-                ));
-            }
-            None
-        };
-        swarmy_llm::auth::resolve(
-            provider,
-            record.as_ref(),
-            |key| std::env::var(key).ok(),
-            self.chatgpt.clone(),
-        )
+        self.resolver
+            .as_ref()
+            .map_err(|reason| swarmy_llm::Error::Credentials(reason))?
+            .resolve(&provider.id)
+            .await
     }
 
     /// Resolve the current credential version before reusing a client.

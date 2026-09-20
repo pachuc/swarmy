@@ -119,34 +119,7 @@ impl Settings {
             for id in ["", self.model.as_str()] {
                 fake.models
                     .entry(id.to_owned())
-                    .or_insert_with(|| ModelInfo {
-                        id: id.into(),
-                        name: "Scripted model".into(),
-                        family: None,
-                        api: Some(Api::Fake),
-                        base_url: None,
-                        // A scripted model accepts every effort so fixtures never see a clamp notice.
-                        reasoning: Some(ReasoningOptions::Effort(vec![
-                            ReasoningEffort::None,
-                            ReasoningEffort::Minimal,
-                            ReasoningEffort::Low,
-                            ReasoningEffort::Medium,
-                            ReasoningEffort::High,
-                            ReasoningEffort::Xhigh,
-                            ReasoningEffort::Max,
-                        ])),
-                        tool_call: true,
-                        attachment: false,
-                        input_modalities: vec!["text".into()],
-                        limit: Limit {
-                            context: 400_000,
-                            output: None,
-                        },
-                        cost: Cost::default(),
-                        release_date: None,
-                        status: None,
-                        compat: Compat::default(),
-                    });
+                    .or_insert_with(|| fake_fixture_model(id));
             }
         }
         Ok(Catalog::from_providers(providers.into_values()))
@@ -183,6 +156,37 @@ impl CustomModel {
         if let Some(compat) = &self.compat {
             model.compat.0.extend(compat.0.clone());
         }
+    }
+}
+
+/// A scripted model accepts every effort so fixtures never see a clamp notice.
+fn fake_fixture_model(id: &str) -> ModelInfo {
+    ModelInfo {
+        id: id.into(),
+        name: "Scripted model".into(),
+        family: None,
+        api: Some(Api::Fake),
+        base_url: None,
+        reasoning: Some(ReasoningOptions::Effort(vec![
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+        ])),
+        tool_call: true,
+        attachment: false,
+        input_modalities: vec!["text".into()],
+        limit: Limit {
+            context: 400_000,
+            output: None,
+        },
+        cost: Cost::default(),
+        release_date: None,
+        status: None,
+        compat: Compat::default(),
     }
 }
 

@@ -44,7 +44,8 @@ impl ResponsesEndpoint {
         let base = model.base_url.as_deref().unwrap_or(&provider.base_url);
         let base = if provider.id == "azure" && base.is_empty() {
             let extra = match &auth {
-                ClientAuth::ApiKeyWithExtra { extra, .. } => extra.get("resource_name").cloned(),
+                ClientAuth::ApiKeyWithExtra { extra, .. }
+                | ClientAuth::BearerWithExtra { extra, .. } => extra.get("resource_name").cloned(),
                 _ => None,
             };
             let resource = extra
@@ -218,7 +219,8 @@ impl ResponsesProvider {
         request = match &self.endpoint.auth {
             ClientAuth::ApiKey(key)
             | ClientAuth::Bearer(key)
-            | ClientAuth::ApiKeyWithExtra { key, .. } => request.bearer_auth(key),
+            | ClientAuth::ApiKeyWithExtra { key, .. }
+            | ClientAuth::BearerWithExtra { token: key, .. } => request.bearer_auth(key),
             ClientAuth::Headers(headers) => {
                 for (name, value) in headers {
                     request = request.header(name, value);

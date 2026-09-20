@@ -3,10 +3,14 @@ use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Sign in with the existing file-based `ChatGPT` device flow
+    /// Sign in with `ChatGPT`, `OpenRouter`, or Azure
     Login {
         #[arg(default_value = "chatgpt")]
         provider: String,
+        #[arg(long)]
+        resource: Option<String>,
+        #[arg(long)]
+        scope: Option<String>,
     },
     /// Store a provider API key in the cluster
     Set(Set),
