@@ -42,10 +42,13 @@ pub fn normalize(mut selection: InferenceSelection) -> Result<InferenceSelection
     Ok(selection)
 }
 
-pub fn validate(selection: &InferenceSelection, defaults: &ResolvedSelection) -> Result<()> {
+pub fn validate(
+    settings: &swarmy_config::Settings,
+    selection: &InferenceSelection,
+    defaults: &ResolvedSelection,
+) -> Result<()> {
     let resolved = selection.resolve(defaults);
-    // Use Settings::catalog() here when the custom catalog task merges.
-    let catalog = Catalog::get();
+    let catalog = settings.catalog()?;
     if catalog.provider(&resolved.provider).is_some()
         && (selection.model.is_none()
             || catalog.model(&resolved.provider, &resolved.model).is_some()
@@ -171,6 +174,7 @@ mod tests {
             effort: ReasoningEffort::Medium,
         };
         let err = validate(
+            &swarmy_config::Settings::default(),
             &InferenceSelection {
                 model: Some("nonexistent".into()),
                 ..Default::default()

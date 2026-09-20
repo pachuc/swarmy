@@ -27,7 +27,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
-        let catalog = settings.catalog();
+        let catalog = settings.catalog()?;
         let provider = settings.provider;
         ensure!(
             catalog.provider(&provider).is_some(),

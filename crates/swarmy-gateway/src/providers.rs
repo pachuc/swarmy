@@ -55,8 +55,10 @@ pub fn provider_set(
 impl Providers {
     /// Discover providers without constructing protocol clients or calling providers.
     /// Unavailable credentials and scripts are recorded in `skipped`.
-    pub async fn discover(store: Store, settings: &Settings) -> Self {
-        let catalog = settings.catalog();
+    /// # Errors
+    /// Returns an invalid custom provider or model configuration.
+    pub async fn discover(store: Store, settings: &Settings) -> Result<Self, swarmy_config::Error> {
+        let catalog = settings.catalog()?;
         let resolver = match ClusterCredentials::new(store).await {
             Ok(credentials) => Resolver::new(Arc::new(credentials))
                 .map_err(|_| "credential resolver cannot configure its HTTP client"),
@@ -103,7 +105,7 @@ impl Providers {
                     .remove(&provider.id)
                     .unwrap_or_else(|| Err("credential unavailable".into()))
             });
-        result
+        Ok(result)
     }
 
     async fn auth(&self, provider: &ProviderInfo) -> Result<ResolvedAuth, swarmy_llm::Error> {

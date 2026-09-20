@@ -3,4 +3,5 @@
 pub mod anthropic;
 pub mod bedrock;
 pub mod completions;
+pub mod gemini;
 pub mod responses;

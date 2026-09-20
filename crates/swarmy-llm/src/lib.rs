@@ -75,8 +75,9 @@ pub fn client_for(
         Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
             provider, model, auth,
         )?)),
-        Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
-        Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
+        Api::GoogleGenerativeAi | Api::GoogleVertex => {
+            api::gemini::client_for(provider, model, auth)
+        }
         Api::BedrockConverse => Ok(Arc::new(api::bedrock::BedrockProvider::new(
             model.clone(),
             auth,
@@ -248,6 +249,8 @@ mod job_tests {
                     | Api::OpenAiCompletions
                     | Api::OpenAiResponses
                     | Api::OpenAiCodexResponses
+                    | Api::GoogleGenerativeAi
+                    | Api::GoogleVertex
             ) {
                 assert!(matches!(
                     client_for(provider, model, ClientAuth::None),

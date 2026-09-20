@@ -4,6 +4,7 @@ mod bench_command;
 mod dev;
 mod doctor;
 mod image_command;
+mod models;
 mod remote;
 mod remote_command;
 mod selection_command;
@@ -33,6 +34,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Browse the configured provider and model catalog
+    Models {
+        #[command(subcommand)]
+        command: models::Command,
+    },
     /// Create and manage named agents
     Agent {
         #[command(subcommand)]
@@ -164,6 +170,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Models { command } => models::run(command, cli.json)?,
         Command::Remote { command } => remote::run(command, cli.json).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Bench { .. }

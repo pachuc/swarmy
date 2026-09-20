@@ -1,5 +1,5 @@
 //! Resolve stored credentials before host environment and ambient cloud chains.
-use super::{CredentialStore, Credentials, Login, OAuthClient, login_for};
+use super::{CredentialStore, Credentials, Login, OAuthClient, google, login_for};
 use crate::{ClientAuth, Error};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -79,10 +79,13 @@ impl Resolver {
             });
         }
         if let Some(record) = record {
-            return Ok(ResolvedAuth {
-                version: version(&record)?,
-                auth: auth_from_kind(record.kind)?,
-            });
+            let version = version(&record)?;
+            let auth = if is_vertex(provider) {
+                vertex_from_record(record.kind)
+            } else {
+                auth_from_kind(record.kind)?
+            };
+            return Ok(ResolvedAuth { auth, version });
         }
         environment(provider, environment_value)
     }
@@ -126,6 +129,27 @@ pub async fn resolve(provider: &str, resolver: &Resolver) -> Result<ResolvedAuth
 /// retires cached clients without exposing the secret itself.
 fn version(record: &CredentialRecord) -> Result<[u8; 32], Error> {
     Ok(*blake3::hash(&serde_json::to_vec(record)?).as_bytes())
+}
+
+fn is_vertex(provider: &str) -> bool {
+    matches!(provider, "google-vertex" | "google-vertex-anthropic")
+}
+
+/// Stored Vertex records carry project, location, and credential extras for the
+/// shared Google builder; a bare secret is an explicit access token. Records the
+/// builder cannot use leave the host SDK chain to the protocol client.
+fn vertex_from_record(kind: CredentialKind) -> ClientAuth {
+    let (secret, mut extra) = match kind {
+        CredentialKind::ApiKey { key, extra } => (key, extra),
+        CredentialKind::OAuth { access, extra, .. } => (access, extra),
+    };
+    if !secret.is_empty()
+        && !extra.contains_key("service_account_json")
+        && !extra.contains_key("access_token")
+    {
+        extra.insert("access_token".into(), secret);
+    }
+    google::vertex_auth(&extra).unwrap_or(ClientAuth::Ambient)
 }
 
 fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
@@ -207,10 +231,25 @@ fn environment(
         };
         return Ok(ResolvedAuth { auth, version });
     }
-    if matches!(
-        provider,
-        "amazon-bedrock" | "google-vertex" | "google-vertex-anthropic"
-    ) {
+    if is_vertex(provider) {
+        // Host Google credentials build the shared Vertex auth; without them the
+        // protocol client is left to the SDK chain.
+        return match google::vertex_auth_with(&BTreeMap::new(), &get) {
+            Ok(auth) => {
+                let mut hasher = blake3::Hasher::new();
+                for name in &info.env_keys {
+                    hasher.update(get(name).unwrap_or_default().as_bytes());
+                    hasher.update(&[0]);
+                }
+                Ok(ResolvedAuth {
+                    auth,
+                    version: *hasher.finalize().as_bytes(),
+                })
+            }
+            Err(_) => ambient(ClientAuth::Ambient),
+        };
+    }
+    if provider == "amazon-bedrock" {
         return ambient(ClientAuth::Ambient);
     }
     Err(Error::NeedsLogin(provider.into()))
@@ -338,6 +377,61 @@ mod tests {
 
     fn resolver(record: Option<CredentialRecord>) -> Resolver {
         Resolver::new(Arc::new(Store { record })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn vertex_credentials_build_shared_auth_before_ambient() {
+        let adc = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            adc.path(),
+            r#"{"client_id":"id","client_secret":"secret","refresh_token":"refresh"}"#,
+        )
+        .unwrap();
+        let path = adc.path().to_str().unwrap().to_owned();
+        for provider in ["google-vertex", "google-vertex-anthropic"] {
+            let resolved = environment(provider, |name| match name {
+                "GOOGLE_APPLICATION_CREDENTIALS" => Some(path.clone()),
+                "GOOGLE_CLOUD_PROJECT" => Some("proj".into()),
+                _ => None,
+            })
+            .unwrap();
+            assert!(matches!(
+                &resolved.auth,
+                ClientAuth::Vertex { project, location, .. }
+                    if project == "proj" && location == "us-central1"
+            ));
+            assert_ne!(resolved.version, [0; 32]);
+            // Without a project the builder cannot resolve, so the SDK chain remains.
+            let resolved = environment(provider, |name| {
+                (name == "GOOGLE_APPLICATION_CREDENTIALS").then(|| path.clone())
+            })
+            .unwrap();
+            assert!(matches!(resolved.auth, ClientAuth::Ambient));
+        }
+        let record = CredentialRecord {
+            kind: CredentialKind::ApiKey {
+                key: "ya29.token".into(),
+                extra: BTreeMap::from([
+                    ("project".into(), "proj".into()),
+                    ("location".into(), "global".into()),
+                ]),
+            },
+            updated_at: jiff::Timestamp::now(),
+        };
+        let resolved = resolver(Some(record))
+            .resolve_using("google-vertex", |_| {
+                panic!("stored records never inspect environment")
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(resolved.auth, ClientAuth::Vertex { location, .. } if location == "global")
+        );
+        let resolved = environment("google", |name| {
+            (name == "GEMINI_API_KEY").then(|| "key".into())
+        })
+        .unwrap();
+        assert!(matches!(resolved.auth, ClientAuth::ApiKey(_)));
     }
 
     #[tokio::test]

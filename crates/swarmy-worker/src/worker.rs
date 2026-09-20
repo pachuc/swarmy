@@ -399,8 +399,10 @@ impl Worker {
         request.settings.model.clone_from(&selection.model);
         request.settings.reasoning_effort = Some(selection.effort);
 
-        if let Some(model) =
-            swarmy_llm::catalog::Catalog::get().model(&selection.provider, &selection.model)
+        if let Some(model) = self
+            .config
+            .catalog
+            .model(&selection.provider, &selection.model)
         {
             let (effort, changed) = model.clamp_effort(selection.effort);
             request.settings.reasoning_effort = Some(effort);
