@@ -65,7 +65,9 @@ pub fn client_for(
                 model.clone(),
             )?))
         }
-        Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
+        Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
+            provider, model, auth,
+        )?)),
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
@@ -231,14 +233,16 @@ mod job_tests {
             client_for(provider, model, ClientAuth::None),
             Err(Error::Credentials(_))
         ));
-        for provider in catalog.providers().filter(|provider| {
-            !matches!(
-                provider.api,
-                Api::OpenAiCodexResponses | Api::OpenAiResponses
-            )
-        }) {
+        for provider in catalog.providers() {
             let model = provider.models.values().next().unwrap_or(model);
-            if model.api.unwrap_or(provider.api) == Api::AnthropicMessages {
+            // Implemented protocols reject missing credentials before building a client.
+            if matches!(
+                model.api.unwrap_or(provider.api),
+                Api::AnthropicMessages
+                    | Api::OpenAiCompletions
+                    | Api::OpenAiResponses
+                    | Api::OpenAiCodexResponses
+            ) {
                 assert!(matches!(
                     client_for(provider, model, ClientAuth::None),
                     Err(Error::Credentials(_))
