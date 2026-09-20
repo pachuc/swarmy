@@ -14,7 +14,7 @@ pub struct InferenceArgs {
     /// Override the stack model
     #[arg(long)]
     pub model: Option<String>,
-    /// Reasoning effort: none, minimal, low, medium, high, or xhigh
+    /// Reasoning effort: none, minimal, low, medium, high, xhigh, or max
     #[arg(long)]
     pub effort: Option<ReasoningEffort>,
 }
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn agent_inference_flags_validate_without_connecting_to_the_stack() {
         for command in ["create", "set"] {
-            for effort in ["none", "minimal", "low", "medium", "high", "xhigh"] {
+            for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
                 assert!(
                     crate::Cli::try_parse_from([
                         "swarmy", "agent", command, "tommy", "--effort", effort

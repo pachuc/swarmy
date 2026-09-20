@@ -1,0 +1,528 @@
+{
+  "api": "AnthropicMessages",
+  "auth_kinds": [
+    "api_key"
+  ],
+  "base_url": "https://api.anthropic.com",
+  "env_keys": [
+    "ANTHROPIC_API_KEY"
+  ],
+  "id": "anthropic",
+  "models": {
+    "claude-fable-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-07",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-fable-5-1": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.25,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5-1",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5.1",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-01",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-haiku-4-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1,
+        "output": 5,
+        "tiers": []
+      },
+      "family": "claude-haiku",
+      "id": "claude-haiku-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Haiku 4.5 (latest)",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-10-15",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-haiku-4-5-20251001": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1,
+        "output": 5,
+        "tiers": []
+      },
+      "family": "claude-haiku",
+      "id": "claude-haiku-4-5-20251001",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Haiku 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-10-15",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Opus 4.5 (latest)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-5-20251101": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-5-20251101",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Opus 4.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-6": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-6",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-04",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-7": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-7",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.7",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-04-14",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-8": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-8",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.8",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-05-28",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4.5 (latest)",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-09-29",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-5-20250929": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": false,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-5-20250929",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-09-29",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-6": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-6",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Sonnet 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-17",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": true
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Sonnet 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-29",
+      "status": null,
+      "tool_call": true
+    }
+  },
+  "name": "Anthropic"
+}

@@ -9,6 +9,7 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -21,6 +22,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -32,7 +34,7 @@ impl std::fmt::Display for ReasoningEffort {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("reasoning effort must be one of: none, minimal, low, medium, high, xhigh")]
+#[error("reasoning effort must be one of: none, minimal, low, medium, high, xhigh, max")]
 pub struct InvalidReasoningEffort;
 
 impl std::str::FromStr for ReasoningEffort {
@@ -46,6 +48,7 @@ impl std::str::FromStr for ReasoningEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
             _ => Err(InvalidReasoningEffort),
         }
     }
@@ -57,13 +60,32 @@ mod tests {
 
     #[test]
     fn effort_names_match_the_config_contract() {
-        for value in ["none", "minimal", "low", "medium", "high", "xhigh"] {
+        for value in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
             let effort: ReasoningEffort = value.parse().unwrap();
             assert_eq!(effort.to_string(), value);
             crate::encoding::tests::assert_round_trip(&effort);
         }
         for value in ["", "HIGH", " high", "high ", "ultra", "unknown"] {
             assert!(value.parse::<ReasoningEffort>().is_err());
+        }
+    }
+
+    #[test]
+    fn postcard_effort_tags_remain_compatible() {
+        for (tag, effort) in (0_u8..).zip([
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+        ]) {
+            assert_eq!(postcard::to_stdvec(&effort).unwrap(), vec![tag]);
+            assert_eq!(
+                postcard::from_bytes::<ReasoningEffort>(&[tag]).unwrap(),
+                effort
+            );
         }
     }
 }
