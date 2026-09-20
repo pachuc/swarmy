@@ -197,10 +197,13 @@ cluster store; it avoids process-wide database globals. Resolution order is:
    `GOOGLE_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY`. Bedrock accepts
    `AWS_BEARER_TOKEN_BEDROCK`. Endpoint, profile, and project settings are not
    mistaken for API keys.
-3. For `amazon-bedrock`, `google-vertex`, and `google-vertex-anthropic`, return
-   `Ambient` so their protocol clients can use the host SDK credential chain.
-   Fake inference needs no credential. Other missing credentials report
-   `NeedsLogin`.
+3. For `google-vertex` and `google-vertex-anthropic`, build the shared `Vertex`
+   auth from `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and Google
+   credentials (`GOOGLE_APPLICATION_CREDENTIALS`, the gcloud ADC file, or a
+   stored record's `service_account_json` or `access_token` extra). When none
+   resolve, and always for `amazon-bedrock`, return `Ambient` so the protocol
+   client can use the host SDK credential chain. Fake inference needs no
+   credential. Other missing credentials report `NeedsLogin`.
 
 Azure key and bearer credentials retain their resource metadata for protocol
 client construction. ChatGPT reads the current stored access token for every

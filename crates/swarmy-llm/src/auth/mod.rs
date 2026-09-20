@@ -1,5 +1,6 @@
 //! Interactive logins and provider credential resolution.
 mod azure;
+pub mod google;
 mod legacy;
 mod openrouter;
 mod resolve;
