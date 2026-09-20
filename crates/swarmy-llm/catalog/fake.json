@@ -1,0 +1,11 @@
+{
+  "api": "Fake",
+  "auth_kinds": [
+    "none"
+  ],
+  "base_url": "",
+  "env_keys": [],
+  "id": "fake",
+  "models": {},
+  "name": "Fake"
+}

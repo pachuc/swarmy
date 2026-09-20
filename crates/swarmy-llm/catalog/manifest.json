@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-09-20T01:13:19+00:00",
+  "sources": {
+    "models.dev": {
+      "sha256": "5f67f81c68d10a28905a6d299418854f6c8cb444f27538e1134975510c1e81fe",
+      "url": "https://models.dev/api.json"
+    },
+    "openrouter": {
+      "sha256": "ec3c1ae13146edd3742274f92674650171e568971a306357c108b926e474015f",
+      "url": "https://openrouter.ai/api/v1/models"
+    }
+  }
+}

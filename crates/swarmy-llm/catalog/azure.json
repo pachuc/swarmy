@@ -1,0 +1,2866 @@
+{
+  "api": "OpenAiResponses",
+  "auth_kinds": [
+    "api_key",
+    "entra"
+  ],
+  "base_url": "",
+  "env_keys": [
+    "AZURE_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_RESOURCE_NAME",
+    "AZURE_OPENAI_BASE_URL"
+  ],
+  "id": "azure",
+  "models": {
+    "claude-fable-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-09",
+      "status": "beta",
+      "tool_call": true
+    },
+    "claude-fable-5-1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.25,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-fable",
+      "id": "claude-fable-5-1",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Fable 5.1",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-01",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-haiku-4-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1,
+        "output": 5,
+        "tiers": []
+      },
+      "family": "claude-haiku",
+      "id": "claude-haiku-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Haiku 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-11-18",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-mythos-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": []
+      },
+      "family": "claude-mythos",
+      "id": "claude-mythos-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Mythos 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-09",
+      "status": "beta",
+      "tool_call": true
+    },
+    "claude-opus-4-1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1.5,
+        "cache_write": 18.75,
+        "input": 15,
+        "output": 75,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-1",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 32000
+      },
+      "name": "Claude Opus 4.1",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-11-18",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Opus 4.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-6": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 12.5,
+            "input": 10,
+            "input_tokens_above": 200000,
+            "output": 37.5
+          }
+        ]
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-6",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-05",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-7": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-7",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.7",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-04-16",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-4-8": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 12.5,
+            "input": 10,
+            "input_tokens_above": 200000,
+            "output": 37.5
+          }
+        ]
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-4-8",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 4.8",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-05-28",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-opus-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+        "input": 5,
+        "output": 25,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-24",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4.5",
+      "reasoning": {
+        "budget_tokens": {
+          "max": null,
+          "min": 1024
+        }
+      },
+      "release_date": "2025-11-18",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-4-6": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-4-6",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 64000
+      },
+      "name": "Claude Sonnet 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-02-17",
+      "status": null,
+      "tool_call": true
+    },
+    "claude-sonnet-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "claude-sonnet",
+      "id": "claude-sonnet-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Sonnet 5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-06-30",
+      "status": null,
+      "tool_call": true
+    },
+    "codestral-2501": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.3,
+        "output": 0.9,
+        "tiers": []
+      },
+      "family": "codestral",
+      "id": "codestral-2501",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 256000,
+        "output": 256000
+      },
+      "name": "Codestral 25.01",
+      "reasoning": null,
+      "release_date": "2025-01-01",
+      "status": null,
+      "tool_call": true
+    },
+    "codex-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.375,
+        "cache_write": 0,
+        "input": 1.5,
+        "output": 6,
+        "tiers": []
+      },
+      "family": "gpt-codex-mini",
+      "id": "codex-mini",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "Codex Mini",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-05-16",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "cohere-command-a": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 2.5,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "command-a",
+      "id": "cohere-command-a",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 131072,
+        "output": 8192
+      },
+      "name": "Command A",
+      "reasoning": "toggle",
+      "release_date": "2025-03-13",
+      "status": null,
+      "tool_call": true
+    },
+    "deepseek-v3.2": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.58,
+        "output": 1.68,
+        "tiers": []
+      },
+      "family": "deepseek",
+      "id": "deepseek-v3.2",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 128000
+      },
+      "name": "DeepSeek-V3.2",
+      "reasoning": "toggle",
+      "release_date": "2025-12-01",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 30,
+        "output": 60,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 8192,
+        "output": 8192
+      },
+      "name": "GPT-4",
+      "reasoning": null,
+      "release_date": "2023-11-06",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-4-turbo": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 10,
+        "output": 30,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4-turbo",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 4096
+      },
+      "name": "GPT-4 Turbo",
+      "reasoning": null,
+      "release_date": "2023-11-06",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-4-turbo-vision": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 10,
+        "output": 30,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4-turbo-vision",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 4096
+      },
+      "name": "GPT-4 Turbo Vision",
+      "reasoning": null,
+      "release_date": "2023-11-06",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-4.1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 2,
+        "output": 8,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4.1",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1047576,
+        "output": 32768
+      },
+      "name": "GPT-4.1",
+      "reasoning": null,
+      "release_date": "2025-04-14",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4.1-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 0,
+        "input": 0.4,
+        "output": 1.6,
+        "tiers": []
+      },
+      "family": "gpt-mini",
+      "id": "gpt-4.1-mini",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1047576,
+        "output": 32768
+      },
+      "name": "GPT-4.1 mini",
+      "reasoning": null,
+      "release_date": "2025-04-14",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4.1-nano": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.1,
+        "output": 0.4,
+        "tiers": []
+      },
+      "family": "gpt-nano",
+      "id": "gpt-4.1-nano",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1047576,
+        "output": 32768
+      },
+      "name": "GPT-4.1 nano",
+      "reasoning": null,
+      "release_date": "2025-04-14",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-4o": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1.25,
+        "cache_write": 0,
+        "input": 2.5,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4o",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-4o",
+      "reasoning": null,
+      "release_date": "2024-05-13",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4o-2024-05-13": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 5,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4o-2024-05-13",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 4096
+      },
+      "name": "GPT-4o (2024-05-13)",
+      "reasoning": null,
+      "release_date": "2024-05-13",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-4o-2024-08-06": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1.25,
+        "cache_write": 0,
+        "input": 2.5,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4o-2024-08-06",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-4o (2024-08-06)",
+      "reasoning": null,
+      "release_date": "2024-08-06",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4o-2024-11-20": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1.25,
+        "cache_write": 0,
+        "input": 2.5,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-4o-2024-11-20",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-4o (2024-11-20)",
+      "reasoning": null,
+      "release_date": "2024-11-20",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-4o-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.075,
+        "cache_write": 0,
+        "input": 0.15,
+        "output": 0.6,
+        "tiers": []
+      },
+      "family": "gpt-mini",
+      "id": "gpt-4o-mini",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-4o mini",
+      "reasoning": null,
+      "release_date": "2024-07-18",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.125,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-5",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-08-07",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5-codex": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.13,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5-codex",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5-Codex",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-09-15",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 2,
+        "tiers": []
+      },
+      "family": "gpt-mini",
+      "id": "gpt-5-mini",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5 Mini",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-08-07",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5-nano": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.005,
+        "cache_write": 0,
+        "input": 0.05,
+        "output": 0.4,
+        "tiers": []
+      },
+      "family": "gpt-nano",
+      "id": "gpt-5-nano",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5 Nano",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-08-07",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 15,
+        "output": 120,
+        "tiers": []
+      },
+      "family": "gpt-pro",
+      "id": "gpt-5-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 272000
+      },
+      "name": "GPT-5 Pro",
+      "reasoning": {
+        "effort": [
+          "high"
+        ]
+      },
+      "release_date": "2025-10-06",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.125,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-5.1",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.1",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-13",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.1-codex": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.125,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.1-codex",
+      "input_modalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.1 Codex",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-14",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.1-codex-max": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.125,
+        "cache_write": 0,
+        "input": 1.25,
+        "output": 10,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.1-codex-max",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.1 Codex Max",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2025-11-13",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.1-codex-mini": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.025,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 2,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.1-codex-mini",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.1 Codex Mini",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-11-14",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.2": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-5.2",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.2",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2025-12-11",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.2-chat-latest": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.2-chat-latest",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-5.2 Chat",
+      "reasoning": {
+        "effort": [
+          "medium"
+        ]
+      },
+      "release_date": "2025-12-11",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-5.2-codex": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.2-codex",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.2 Codex",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-01-14",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.2-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 21,
+        "output": 168,
+        "tiers": []
+      },
+      "family": "gpt-pro",
+      "id": "gpt-5.2-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.2 Pro",
+      "reasoning": {
+        "effort": [
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2025-12-11",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.3-chat-latest": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-5.3-chat-latest",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT-5.3 Chat (latest)",
+      "reasoning": null,
+      "release_date": "2026-03-03",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "gpt-5.3-codex": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt-codex",
+      "id": "gpt-5.3-codex",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.3 Codex",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-02-05",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.3-codex-spark": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.175,
+        "cache_write": 0,
+        "input": 1.75,
+        "output": 14,
+        "tiers": []
+      },
+      "family": "gpt-codex-spark",
+      "id": "gpt-5.3-codex-spark",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 32000
+      },
+      "name": "GPT-5.3 Codex Spark",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-02-05",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.4": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.25,
+        "cache_write": 0,
+        "input": 2.5,
+        "output": 15,
+        "tiers": [
+          {
+            "cache_read": 0.5,
+            "cache_write": 0,
+            "input": 5,
+            "input_tokens_above": 272000,
+            "output": 22.5
+          }
+        ]
+      },
+      "family": "gpt",
+      "id": "gpt-5.4",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.4",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-03-05",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.4-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.075,
+        "cache_write": 0,
+        "input": 0.75,
+        "output": 4.5,
+        "tiers": []
+      },
+      "family": "gpt-mini",
+      "id": "gpt-5.4-mini",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.4 mini",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-03-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.4-nano": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.02,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 1.25,
+        "tiers": []
+      },
+      "family": "gpt-nano",
+      "id": "gpt-5.4-nano",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 400000,
+        "output": 128000
+      },
+      "name": "GPT-5.4 nano",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-03-17",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.4-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 30,
+        "output": 180,
+        "tiers": [
+          {
+            "cache_read": 0,
+            "cache_write": 0,
+            "input": 60,
+            "input_tokens_above": 272000,
+            "output": 270
+          }
+        ]
+      },
+      "family": "gpt-pro",
+      "id": "gpt-5.4-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.4 Pro",
+      "reasoning": {
+        "effort": [
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-03-05",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 5,
+        "output": 30,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 0,
+            "input": 10,
+            "input_tokens_above": 272000,
+            "output": 45
+          }
+        ]
+      },
+      "family": "gpt",
+      "id": "gpt-5.5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.5",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-04-23",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.5-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 30,
+        "output": 180,
+        "tiers": [
+          {
+            "cache_read": 0,
+            "cache_write": 0,
+            "input": 60,
+            "input_tokens_above": 272000,
+            "output": 270
+          }
+        ]
+      },
+      "family": "gpt-pro",
+      "id": "gpt-5.5-pro",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.5 Pro",
+      "reasoning": {
+        "effort": [
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-04-23",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.6": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.4,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": [
+          {
+            "cache_read": 0.8,
+            "cache_write": 10,
+            "input": 8,
+            "input_tokens_above": 272000,
+            "output": 30
+          }
+        ]
+      },
+      "family": "gpt-sol",
+      "id": "gpt-5.6",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.6",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-09",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.6-luna": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.02,
+        "cache_write": 0.25,
+        "input": 0.2,
+        "output": 1.2,
+        "tiers": [
+          {
+            "cache_read": 0.04,
+            "cache_write": 0.5,
+            "input": 0.4,
+            "input_tokens_above": 272000,
+            "output": 1.8
+          }
+        ]
+      },
+      "family": "gpt-luna",
+      "id": "gpt-5.6-luna",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.6 Luna",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-09",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.6-sol": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.4,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": [
+          {
+            "cache_read": 0.8,
+            "cache_write": 10,
+            "input": 8,
+            "input_tokens_above": 272000,
+            "output": 30
+          }
+        ]
+      },
+      "family": "gpt-sol",
+      "id": "gpt-5.6-sol",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.6 Sol",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-09",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-5.6-terra": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 12,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 5,
+            "input": 4,
+            "input_tokens_above": 272000,
+            "output": 18
+          }
+        ]
+      },
+      "family": "gpt-terra",
+      "id": "gpt-5.6-terra",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-5.6 Terra",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-07-09",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-6-astra": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50,
+        "tiers": [
+          {
+            "cache_read": 2,
+            "cache_write": 25,
+            "input": 20,
+            "input_tokens_above": 272000,
+            "output": 75
+          }
+        ]
+      },
+      "family": "gpt-astra",
+      "id": "gpt-6-astra",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Astra",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-04",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-chat-latest": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 5,
+        "output": 30,
+        "tiers": []
+      },
+      "family": null,
+      "id": "gpt-chat-latest",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 16384
+      },
+      "name": "GPT Chat Latest",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-05-05",
+      "status": "beta",
+      "tool_call": true
+    },
+    "gpt-realtime-2.1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.4,
+        "cache_write": 0,
+        "input": 4,
+        "output": 24,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-realtime-2.1",
+      "input_modalities": [
+        "text",
+        "audio",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 32000
+      },
+      "name": "GPT-Realtime-2.1",
+      "reasoning": {
+        "effort": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-07-06",
+      "status": null,
+      "tool_call": true
+    },
+    "grok-4-1-fast-non-reasoning": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.05,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "grok-4-1-fast-non-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 8192
+      },
+      "name": "Grok 4.1 Fast (Non-Reasoning)",
+      "reasoning": null,
+      "release_date": "2025-06-27",
+      "status": null,
+      "tool_call": true
+    },
+    "grok-4-1-fast-reasoning": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.05,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "grok-4-1-fast-reasoning",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 8192
+      },
+      "name": "Grok 4.1 Fast (Reasoning)",
+      "reasoning": "toggle",
+      "release_date": "2025-06-27",
+      "status": null,
+      "tool_call": true
+    },
+    "grok-4-20-non-reasoning": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 2,
+        "output": 6,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "grok-4-20-non-reasoning",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 262000,
+        "output": 8192
+      },
+      "name": "Grok 4.20 (Non-Reasoning)",
+      "reasoning": null,
+      "release_date": "2026-04-08",
+      "status": "beta",
+      "tool_call": true
+    },
+    "grok-4-20-reasoning": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 2,
+        "output": 6,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "grok-4-20-reasoning",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 262000,
+        "output": 8192
+      },
+      "name": "Grok 4.20 (Reasoning)",
+      "reasoning": "toggle",
+      "release_date": "2026-04-08",
+      "status": "beta",
+      "tool_call": true
+    },
+    "grok-4.6": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0,
+        "output": 0,
+        "tiers": []
+      },
+      "family": "grok",
+      "id": "grok-4.6",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 128000
+      },
+      "name": "Grok 4.6",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-08-12",
+      "status": "beta",
+      "tool_call": true
+    },
+    "kimi-k2.5": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.6,
+        "output": 3,
+        "tiers": []
+      },
+      "family": "kimi-k2",
+      "id": "kimi-k2.5",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 262144
+      },
+      "name": "Kimi K2.5",
+      "reasoning": "toggle",
+      "release_date": "2026-02-06",
+      "status": null,
+      "tool_call": true
+    },
+    "kimi-k2.6": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.95,
+        "output": 4,
+        "tiers": []
+      },
+      "family": "kimi-k2",
+      "id": "kimi-k2.6",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 262144
+      },
+      "name": "Kimi K2.6",
+      "reasoning": "toggle",
+      "release_date": "2026-04-22",
+      "status": null,
+      "tool_call": true
+    },
+    "kimi-k2.7-code": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.19,
+        "cache_write": 0,
+        "input": 0.95,
+        "output": 4,
+        "tiers": []
+      },
+      "family": "kimi-k2",
+      "id": "kimi-k2.7-code",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 262144
+      },
+      "name": "Kimi K2.7 Code",
+      "reasoning": "toggle",
+      "release_date": "2026-06-12",
+      "status": null,
+      "tool_call": true
+    },
+    "llama-3.3-70b-instruct": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.71,
+        "output": 0.71,
+        "tiers": []
+      },
+      "family": "llama",
+      "id": "llama-3.3-70b-instruct",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 32768
+      },
+      "name": "Llama-3.3-70B-Instruct",
+      "reasoning": null,
+      "release_date": "2024-12-06",
+      "status": null,
+      "tool_call": true
+    },
+    "llama-4-maverick-17b-128e-instruct-fp8": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.25,
+        "output": 1,
+        "tiers": []
+      },
+      "family": "llama",
+      "id": "llama-4-maverick-17b-128e-instruct-fp8",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 16384
+      },
+      "name": "Llama 4 Maverick 17B 128E Instruct FP8",
+      "reasoning": null,
+      "release_date": "2025-04-05",
+      "status": null,
+      "tool_call": true
+    },
+    "llama-4-scout-17b-16e-instruct": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.2,
+        "output": 0.78,
+        "tiers": []
+      },
+      "family": "llama",
+      "id": "llama-4-scout-17b-16e-instruct",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 8192
+      },
+      "name": "Llama 4 Scout 17B 16E Instruct",
+      "reasoning": null,
+      "release_date": "2025-04-05",
+      "status": null,
+      "tool_call": true
+    },
+    "ministral-3b": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.04,
+        "output": 0.04,
+        "tiers": []
+      },
+      "family": "ministral",
+      "id": "ministral-3b",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 8192
+      },
+      "name": "Ministral 3B",
+      "reasoning": null,
+      "release_date": "2024-10-22",
+      "status": null,
+      "tool_call": true
+    },
+    "mistral-medium-2505": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.4,
+        "output": 2,
+        "tiers": []
+      },
+      "family": "mistral-medium",
+      "id": "mistral-medium-2505",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 128000
+      },
+      "name": "Mistral Medium 3",
+      "reasoning": null,
+      "release_date": "2025-05-07",
+      "status": null,
+      "tool_call": true
+    },
+    "mistral-small-2503": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.1,
+        "output": 0.3,
+        "tiers": []
+      },
+      "family": "mistral-small",
+      "id": "mistral-small-2503",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 32768
+      },
+      "name": "Mistral Small 3.1",
+      "reasoning": null,
+      "release_date": "2025-03-01",
+      "status": null,
+      "tool_call": true
+    },
+    "model-router": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.14,
+        "output": 0,
+        "tiers": []
+      },
+      "family": "model-router",
+      "id": "model-router",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 16384
+      },
+      "name": "Model Router",
+      "reasoning": null,
+      "release_date": "2025-05-19",
+      "status": null,
+      "tool_call": true
+    },
+    "o1": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 7.5,
+        "cache_write": 0,
+        "input": 15,
+        "output": 60,
+        "tiers": []
+      },
+      "family": "o",
+      "id": "o1",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o1",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2024-12-05",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "o1-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 150,
+        "output": 600,
+        "tiers": []
+      },
+      "family": "o-pro",
+      "id": "o1-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o1-pro",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-03-19",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "o3": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 2,
+        "output": 8,
+        "tiers": []
+      },
+      "family": "o",
+      "id": "o3",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o3",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-04-16",
+      "status": null,
+      "tool_call": true
+    },
+    "o3-mini": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.55,
+        "cache_write": 0,
+        "input": 1.1,
+        "output": 4.4,
+        "tiers": []
+      },
+      "family": "o-mini",
+      "id": "o3-mini",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o3-mini",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2024-12-20",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "o3-pro": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 20,
+        "output": 80,
+        "tiers": []
+      },
+      "family": "o-pro",
+      "id": "o3-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o3-pro",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-06-10",
+      "status": null,
+      "tool_call": true
+    },
+    "o4-mini": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.275,
+        "cache_write": 0,
+        "input": 1.1,
+        "output": 4.4,
+        "tiers": []
+      },
+      "family": "o-mini",
+      "id": "o4-mini",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 200000,
+        "output": 100000
+      },
+      "name": "o4-mini",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2025-04-16",
+      "status": "deprecated",
+      "tool_call": true
+    },
+    "phi-4-mini": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.075,
+        "output": 0.3,
+        "tiers": []
+      },
+      "family": "phi",
+      "id": "phi-4-mini",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 4096
+      },
+      "name": "Phi-4-mini",
+      "reasoning": null,
+      "release_date": "2024-12-11",
+      "status": null,
+      "tool_call": true
+    },
+    "phi-4-mini-reasoning": {
+      "attachment": false,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0.075,
+        "output": 0.3,
+        "tiers": []
+      },
+      "family": "phi",
+      "id": "phi-4-mini-reasoning",
+      "input_modalities": [
+        "text"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 4096
+      },
+      "name": "Phi-4-mini-reasoning",
+      "reasoning": "toggle",
+      "release_date": "2024-12-11",
+      "status": null,
+      "tool_call": true
+    }
+  },
+  "name": "Azure"
+}
