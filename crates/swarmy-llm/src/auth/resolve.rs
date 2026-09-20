@@ -1,13 +1,30 @@
 //! Resolve stored credentials before host environment and ambient cloud chains.
-use std::sync::Arc;
-
+use super::{CredentialStore, Credentials, Login, OAuthClient, login_for};
+use crate::{ClientAuth, Error};
+use async_trait::async_trait;
+use futures::future::BoxFuture;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 use swarmy_core::{CredentialKind, CredentialRecord, CredentialStatus};
 
-use super::CredentialStore;
-use crate::{
-    ClientAuth, Error,
-    catalog::{Api, ProviderInfo},
-};
+/// The gateway supplies persistence so protocol clients do not link `FoundationDB`.
+#[async_trait]
+pub trait AuthStore: Send + Sync {
+    /// # Errors
+    /// Returns database and decryption errors.
+    async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error>;
+    /// Implementations must re-read under the lease and refresh only if unchanged.
+    /// # Errors
+    /// Returns lease, persistence, and provider refresh errors.
+    async fn refresh(
+        &self,
+        provider: &str,
+        observed: &CredentialRecord,
+        login: &dyn Login,
+    ) -> Result<CredentialRecord, Error>;
+}
 
 /// The version is opaque and must never be logged. It changes with credential content.
 pub struct ResolvedAuth {
@@ -15,139 +32,351 @@ pub struct ResolvedAuth {
     pub version: [u8; 32],
 }
 
-/// Resolve authentication using a caller-supplied store record and environment lookup.
-/// A stored record owns the provider; invalid records never fall back to environment.
-/// # Errors
-/// Returns a credential error for absent, invalid, or expired credentials.
-pub fn resolve(
-    provider: &ProviderInfo,
-    record: Option<&CredentialRecord>,
-    environment: impl Fn(&str) -> Option<String>,
-    chatgpt: Option<Arc<dyn CredentialStore>>,
-) -> Result<ResolvedAuth, Error> {
-    if let Some(record) = record {
-        if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
-            return Err(Error::Credentials("stored credential needs login"));
+#[derive(Clone)]
+pub struct Resolver {
+    store: Arc<dyn AuthStore>,
+    chatgpt: OAuthClient,
+}
+
+impl Resolver {
+    /// # Errors
+    /// Returns HTTP client configuration errors.
+    pub fn new(store: Arc<dyn AuthStore>) -> Result<Self, Error> {
+        Ok(Self::with_chatgpt(store, OAuthClient::new()?))
+    }
+
+    /// Use a local issuer for protocol tests.
+    #[must_use]
+    pub fn with_chatgpt(store: Arc<dyn AuthStore>, chatgpt: OAuthClient) -> Self {
+        Self { store, chatgpt }
+    }
+
+    /// Store first, then provider environment, then host SDK credentials.
+    /// # Errors
+    /// A stored credential failure is terminal; it never selects an environment key.
+    pub async fn resolve(&self, provider: &str) -> Result<ResolvedAuth, Error> {
+        self.resolve_using(provider, |name| std::env::var(name).ok())
+            .await
+    }
+
+    async fn resolve_using(
+        &self,
+        provider: &str,
+        environment_value: impl Fn(&str) -> Option<String>,
+    ) -> Result<ResolvedAuth, Error> {
+        let record = self.record(provider).await?;
+        if provider == "chatgpt" {
+            let record = record.ok_or_else(|| Error::NeedsLogin(provider.into()))?;
+            let credentials = Credentials::from_record(&record)?;
+            let account = OnceLock::new();
+            let _ = account.set(credentials.account_id().into());
+            return Ok(ResolvedAuth {
+                auth: ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
+                    resolver: self.clone(),
+                    account,
+                })),
+                version: version(&record)?,
+            });
         }
-        let auth = if provider.id == "chatgpt" {
-            ClientAuth::ChatGpt(
-                chatgpt.ok_or(Error::Credentials("ChatGPT credential store unavailable"))?,
-            )
-        } else {
-            match &record.kind {
-                CredentialKind::ApiKey { key, .. } => ClientAuth::ApiKey(key.clone()),
-                CredentialKind::OAuth { access, .. } => {
-                    if provider.id == "anthropic" {
-                        return Err(Error::Credentials("Anthropic requires an API key"));
-                    }
-                    if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
-                        return Err(Error::Credentials("stored credential expired"));
-                    }
-                    ClientAuth::Bearer(access.clone())
-                }
-            }
+        if let Some(record) = record {
+            return Ok(ResolvedAuth {
+                version: version(&record)?,
+                auth: auth_from_kind(record.kind)?,
+            });
+        }
+        environment(provider, environment_value)
+    }
+
+    async fn record(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
+        let Some(mut record) = self.store.get(provider).await? else {
+            return Ok(None);
         };
-        return Ok(ResolvedAuth {
-            auth,
-            version: *blake3::hash(&serde_json::to_vec(record)?).as_bytes(),
-        });
-    }
-    for key in &provider.env_keys {
-        // Cloud catalog entries also name project, region, and SDK-chain variables.
-        // Those values are configuration, never an API key.
-        if !key.ends_with("_API_KEY") && key != "AWS_BEARER_TOKEN_BEDROCK" {
-            continue;
+        if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
+            return Err(Error::NeedsLogin(provider.into()));
         }
-        if let Some(value) = environment(key).filter(|value| !value.is_empty()) {
-            let version = *blake3::hash(value.as_bytes()).as_bytes();
-            let auth = if key == "AWS_BEARER_TOKEN_BEDROCK" {
-                ClientAuth::Bearer(value)
+        if provider == "anthropic" && matches!(record.kind, CredentialKind::OAuth { .. }) {
+            return Err(Error::Credentials("Anthropic requires an API key"));
+        }
+        if record.needs_refresh(jiff::Timestamp::now()) {
+            let login: Box<dyn Login> = if provider == "chatgpt" {
+                Box::new(self.chatgpt.clone())
             } else {
-                ClientAuth::ApiKey(value)
+                login_for(provider, None, None)?
             };
-            return Ok(ResolvedAuth { auth, version });
+            record = self
+                .store
+                .refresh(provider, &record, login.as_ref())
+                .await?;
+        }
+        if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
+            return Err(Error::NeedsLogin(provider.into()));
+        }
+        Ok(Some(record))
+    }
+}
+
+/// Resolve using an explicitly supplied cluster context, without process globals.
+/// # Errors
+/// Returns credential, refresh, and persistence errors.
+pub async fn resolve(provider: &str, resolver: &Resolver) -> Result<ResolvedAuth, Error> {
+    resolver.resolve(provider).await
+}
+
+/// Stored credentials version with their serialized content, so rotation
+/// retires cached clients without exposing the secret itself.
+fn version(record: &CredentialRecord) -> Result<[u8; 32], Error> {
+    Ok(*blake3::hash(&serde_json::to_vec(record)?).as_bytes())
+}
+
+fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
+    match kind {
+        CredentialKind::ApiKey { key, extra } => {
+            if key.is_empty() {
+                return Err(Error::Credentials("empty API key"));
+            }
+            if extra.is_empty() {
+                Ok(ClientAuth::ApiKey(key))
+            } else {
+                Ok(ClientAuth::ApiKeyWithExtra { key, extra })
+            }
+        }
+        CredentialKind::OAuth { access, extra, .. } => {
+            if extra.is_empty() {
+                Ok(ClientAuth::Bearer(access))
+            } else {
+                Ok(ClientAuth::BearerWithExtra {
+                    token: access,
+                    extra,
+                })
+            }
         }
     }
-    let auth = if provider.api == Api::Fake {
-        ClientAuth::None
-    } else if matches!(
-        provider.id.as_str(),
+}
+
+fn environment(
+    provider: &str,
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<ResolvedAuth, Error> {
+    let ambient = |auth| {
+        Ok(ResolvedAuth {
+            auth,
+            version: [0; 32],
+        })
+    };
+    if provider == "fake" {
+        return ambient(ClientAuth::None);
+    }
+    // Catalog env_keys also lists endpoint and SDK settings. Only these are keys.
+    let key_names: &[&str] = match provider {
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "openai" => &["OPENAI_API_KEY"],
+        "xai" => &["XAI_API_KEY"],
+        "meta" => &["META_MODEL_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "azure" => &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
+        "google" => &[
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ],
+        "amazon-bedrock" => &["AWS_BEARER_TOKEN_BEDROCK"],
+        _ => &[],
+    };
+    let catalog = crate::catalog::Catalog::get();
+    let info = catalog
+        .provider(provider)
+        .ok_or(Error::Credentials("unknown provider"))?;
+    let key = key_names
+        .iter()
+        .filter(|name| info.env_keys.iter().any(|env| env == **name))
+        .find_map(|name| get(name).filter(|value| !value.trim().is_empty()));
+    if let Some(key) = key {
+        let version = *blake3::hash(key.as_bytes()).as_bytes();
+        let auth = if provider == "azure" {
+            let resource = get("AZURE_RESOURCE_NAME")
+                .filter(|s| !s.trim().is_empty())
+                .ok_or(Error::Credentials("Azure requires AZURE_RESOURCE_NAME"))?;
+            ClientAuth::ApiKeyWithExtra {
+                key,
+                extra: BTreeMap::from([("resource_name".into(), resource)]),
+            }
+        } else if provider == "amazon-bedrock" {
+            ClientAuth::Bearer(key)
+        } else {
+            ClientAuth::ApiKey(key)
+        };
+        return Ok(ResolvedAuth { auth, version });
+    }
+    if matches!(
+        provider,
         "amazon-bedrock" | "google-vertex" | "google-vertex-anthropic"
     ) {
-        ClientAuth::Ambient
-    } else if let Some(store) = chatgpt.filter(|_| provider.id == "chatgpt") {
-        ClientAuth::ChatGpt(store)
-    } else {
-        return Err(Error::Credentials("no stored or environment credential"));
-    };
-    Ok(ResolvedAuth {
-        auth,
-        version: [0; 32],
-    })
+        return ambient(ClientAuth::Ambient);
+    }
+    Err(Error::NeedsLogin(provider.into()))
+}
+
+struct ChatGptCredentials {
+    resolver: Resolver,
+    account: OnceLock<String>,
+}
+
+impl ChatGptCredentials {
+    fn check(&self, record: &CredentialRecord) -> Result<Credentials, Error> {
+        let credentials = Credentials::from_record(record)?;
+        if self.account.get_or_init(|| credentials.account_id().into()) != credentials.account_id()
+        {
+            return Err(Error::AccountChanged);
+        }
+        Ok(credentials)
+    }
+}
+
+impl CredentialStore for ChatGptCredentials {
+    fn load(&self) -> BoxFuture<'_, Result<Credentials, Error>> {
+        Box::pin(async {
+            let record = self
+                .resolver
+                .record("chatgpt")
+                .await?
+                .ok_or_else(|| Error::NeedsLogin("chatgpt".into()))?;
+            self.check(&record)
+        })
+    }
+    fn refresh<'a>(
+        &'a self,
+        client: &'a OAuthClient,
+        observed: &'a Credentials,
+    ) -> BoxFuture<'a, Result<Credentials, Error>> {
+        Box::pin(async move {
+            let record = self
+                .resolver
+                .store
+                .get("chatgpt")
+                .await?
+                .ok_or_else(|| Error::NeedsLogin("chatgpt".into()))?;
+            let current = self.check(&record)?;
+            if current != *observed {
+                return Ok(current);
+            }
+            self.check(
+                &self
+                    .resolver
+                    .store
+                    .refresh("chatgpt", &record, client)
+                    .await?,
+            )
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::Catalog;
-
     #[test]
-    fn stored_credentials_own_provider_and_versions_follow_rotation() {
-        let provider = Catalog::get().provider("openai").unwrap();
-        let record = |key: &str| CredentialRecord {
-            kind: CredentialKind::ApiKey {
-                key: key.into(),
-                extra: std::collections::BTreeMap::new(),
-            },
-            updated_at: jiff::Timestamp::now(),
-        };
-        let first = record("stored");
-        let resolved =
-            resolve(provider, Some(&first), |_| Some("environment".into()), None).unwrap();
-        assert!(matches!(resolved.auth, ClientAuth::ApiKey(key) if key == "stored"));
-        let second = resolve(provider, Some(&record("rotated")), |_| None, None).unwrap();
-        assert_ne!(resolved.version, second.version);
-        assert!(
-            resolve(
-                provider,
-                Some(&record("")),
-                |_| Some("environment".into()),
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            matches!(resolve(provider, None, |_| Some("environment".into()), None).unwrap().auth, ClientAuth::ApiKey(key) if key == "environment")
-        );
-    }
-
-    #[test]
-    fn cloud_configuration_is_not_sent_as_an_api_key() {
-        for id in ["amazon-bedrock", "google-vertex", "google-vertex-anthropic"] {
-            let provider = Catalog::get().provider(id).unwrap();
-            assert!(matches!(
-                resolve(
-                    provider,
-                    None,
-                    |key| (key != "AWS_BEARER_TOKEN_BEDROCK").then(|| "configuration".into()),
-                    None
-                )
+    fn environment_keys_metadata_and_ambient() {
+        let resolved = environment("openai", |_| Some("env-key".into())).unwrap();
+        assert!(matches!(resolved.auth, ClientAuth::ApiKey(key) if key == "env-key"));
+        assert_ne!(resolved.version, [0; 32]);
+        assert_ne!(
+            resolved.version,
+            environment("openai", |_| Some("rotated".into()))
                 .unwrap()
-                .auth,
-                ClientAuth::Ambient
-            ));
+                .version
+        );
+        for provider in ["amazon-bedrock", "google-vertex", "google-vertex-anthropic"] {
+            let resolved = environment(provider, |key| {
+                (key != "AWS_BEARER_TOKEN_BEDROCK").then(|| "configuration".into())
+            })
+            .unwrap();
+            assert!(matches!(resolved.auth, ClientAuth::Ambient));
+            assert_eq!(resolved.version, [0; 32]);
         }
-        let provider = Catalog::get().provider("amazon-bedrock").unwrap();
         assert!(matches!(
-            resolve(
-                provider,
-                None,
-                |key| (key == "AWS_BEARER_TOKEN_BEDROCK").then(|| "token".into()),
-                None
-            )
+            environment("amazon-bedrock", |key| (key == "AWS_BEARER_TOKEN_BEDROCK")
+                .then(|| "token".into()))
             .unwrap()
             .auth,
             ClientAuth::Bearer(_)
+        ));
+        assert!(
+            matches!(environment("azure", |name| Some(name.into())).unwrap().auth, ClientAuth::ApiKeyWithExtra { key, extra } if key == "AZURE_API_KEY" && extra["resource_name"] == "AZURE_RESOURCE_NAME")
+        );
+        assert!(
+            environment("azure", |name| (name == "AZURE_API_KEY")
+                .then(|| "key".into()))
+            .is_err()
+        );
+    }
+    struct Store {
+        record: Option<CredentialRecord>,
+    }
+    #[async_trait]
+    impl AuthStore for Store {
+        async fn get(&self, _: &str) -> Result<Option<CredentialRecord>, Error> {
+            Ok(self.record.clone())
+        }
+        async fn refresh(
+            &self,
+            provider: &str,
+            _: &CredentialRecord,
+            _: &dyn Login,
+        ) -> Result<CredentialRecord, Error> {
+            Err(Error::NeedsLogin(provider.into()))
+        }
+    }
+
+    fn api_key(key: &str) -> CredentialRecord {
+        CredentialRecord {
+            kind: CredentialKind::ApiKey {
+                key: key.into(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        }
+    }
+
+    fn resolver(record: Option<CredentialRecord>) -> Resolver {
+        Resolver::new(Arc::new(Store { record })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn store_precedence_absence_and_failed_refresh() {
+        let stored = resolver(Some(api_key("stored")))
+            .resolve_using("openai", |_| Some("environment".into()))
+            .await
+            .unwrap();
+        assert!(matches!(stored.auth, ClientAuth::ApiKey(key) if key == "stored"));
+        let rotated = resolver(Some(api_key("rotated")))
+            .resolve_using("openai", |_| None)
+            .await
+            .unwrap();
+        assert_ne!(stored.version, rotated.version);
+        assert!(
+            resolver(Some(api_key("")))
+                .resolve_using("openai", |_| Some("environment".into()))
+                .await
+                .is_err()
+        );
+        assert!(
+            matches!(resolver(None).resolve_using("openai", |_| Some("environment".into())).await.unwrap().auth, ClientAuth::ApiKey(key) if key == "environment")
+        );
+        let record = CredentialRecord {
+            kind: CredentialKind::OAuth {
+                access: "old".into(),
+                refresh: "refresh".into(),
+                expires_at: jiff::Timestamp::now(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        };
+        assert!(matches!(
+            resolver(Some(record))
+                .resolve_using("azure", |_| panic!(
+                    "stored refresh failure must not inspect environment"
+                ))
+                .await,
+            Err(Error::NeedsLogin(_))
         ));
     }
 }

@@ -431,16 +431,10 @@ async fn orphaned_calls_get_results_and_ids_are_normalized() {
 
 #[tokio::test]
 async fn codex_dispatch_preserves_auth_headers_and_instructions() {
-    use swarmy_llm::auth::{CredentialStore, Credentials, FileCredentialStore};
     let server = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
     let mut credentials: Value = serde_json::from_str(include_str!("fixtures/auth.json")).unwrap();
     credentials["last_refresh"] = json!(jiff::Timestamp::now().to_string());
-    store
-        .save(Credentials::from_json(credentials).unwrap())
-        .await
-        .unwrap();
+    let store = Arc::new(MemoryCredentials::new(credentials));
     let mut info = Catalog::get().provider("chatgpt").unwrap().clone();
     info.base_url = server.uri();
     let client = client_for(
@@ -522,19 +516,11 @@ fn azure_environment_resource_is_resolved_without_mutating_process_environment()
 
 #[tokio::test]
 async fn oauth_refresh_failure_is_never_retried() {
-    use swarmy_llm::{
-        auth::{CredentialStore, Credentials, FileCredentialStore, OAuthClient},
-        chatgpt::ChatGptProvider,
-    };
+    use swarmy_llm::{auth::OAuthClient, chatgpt::ChatGptProvider};
     let server = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(FileCredentialStore::new(directory.path().join("auth.json")));
     let mut credentials: Value = serde_json::from_str(include_str!("fixtures/auth.json")).unwrap();
     credentials["last_refresh"] = json!("2000-01-01T00:00:00Z");
-    store
-        .save(Credentials::from_json(credentials).unwrap())
-        .await
-        .unwrap();
+    let store = Arc::new(MemoryCredentials::new(credentials));
     Mock::given(path("/oauth/token"))
         .respond_with(ResponseTemplate::new(500))
         .expect(1)
@@ -568,4 +554,41 @@ async fn strict_capability_does_not_make_optional_tool_parameters_required() {
     let body = body(&server).await;
     assert_eq!(body["tools"][0]["strict"], false);
     assert_eq!(body["tools"][0]["parameters"], schema);
+}
+
+// Protocol fixtures use memory; production refresh ownership is tested against FDB.
+struct MemoryCredentials(tokio::sync::Mutex<swarmy_llm::auth::Credentials>);
+
+impl MemoryCredentials {
+    fn new(value: Value) -> Self {
+        Self(tokio::sync::Mutex::new(
+            swarmy_llm::auth::Credentials::from_json(value).unwrap(),
+        ))
+    }
+}
+
+impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
+    fn load(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<swarmy_llm::auth::Credentials, swarmy_llm::Error>>
+    {
+        Box::pin(async { Ok(self.0.lock().await.clone()) })
+    }
+
+    fn refresh<'a>(
+        &'a self,
+        client: &'a swarmy_llm::auth::OAuthClient,
+        observed: &'a swarmy_llm::auth::Credentials,
+    ) -> futures::future::BoxFuture<'a, Result<swarmy_llm::auth::Credentials, swarmy_llm::Error>>
+    {
+        Box::pin(async move {
+            let mut stored = self.0.lock().await;
+            if *stored != *observed {
+                return Ok(stored.clone());
+            }
+            let updated = client.refresh_credentials(stored.clone()).await?;
+            *stored = updated.clone();
+            Ok(updated)
+        })
+    }
 }

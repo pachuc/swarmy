@@ -3667,6 +3667,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
+ "async-trait",
  "aws-config",
  "aws-sdk-ec2",
  "aws-sdk-ssm",
@@ -3742,6 +3743,7 @@ dependencies = [
  "anyhow",
  "async-nats",
  "async-stream",
+ "async-trait",
  "blake3",
  "foundationdb",
  "futures",
@@ -3784,23 +3786,26 @@ name = "swarmy-llm"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "async-trait",
  "aws-config",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
  "base64",
  "blake3",
- "fs2",
  "futures",
  "httpdate",
  "jiff",
+ "rand 0.9.5",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "ulid",
+ "url",
  "wiremock",
 ]
 
