@@ -157,10 +157,12 @@ fn environment(
     provider: &str,
     get: impl Fn(&str) -> Option<String>,
 ) -> Result<ResolvedAuth, Error> {
-    let ambient = |auth| Ok(ResolvedAuth {
-        auth,
-        version: [0; 32],
-    });
+    let ambient = |auth| {
+        Ok(ResolvedAuth {
+            auth,
+            version: [0; 32],
+        })
+    };
     if provider == "fake" {
         return ambient(ClientAuth::None);
     }
