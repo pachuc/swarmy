@@ -1,10 +1,12 @@
 //! Shared inference contracts and subscription-backed `ChatGPT` inference.
 
+pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
 pub mod responses;
+pub mod retry;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -30,7 +32,7 @@ pub enum ClientAuth {
 ///
 /// # Errors
 /// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing the `ChatGPT` client.
+/// or HTTP configuration error when constructing a client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
@@ -45,7 +47,9 @@ pub fn client_for(
             ClientAuth::ChatGpt(store) => Ok(Arc::new(chatgpt::ChatGptProvider::new(store)?)),
             _ => Err(Error::Credentials("ChatGPT requires a credential store")),
         },
-        Api::OpenAiCompletions => Err(Error::Unsupported(Api::OpenAiCompletions)),
+        Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
+            provider, model, auth,
+        )?)),
         Api::GoogleGenerativeAi => Err(Error::Unsupported(Api::GoogleGenerativeAi)),
         Api::GoogleVertex => Err(Error::Unsupported(Api::GoogleVertex)),
         Api::BedrockConverse => Err(Error::Unsupported(Api::BedrockConverse)),
@@ -160,11 +164,19 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("HTTP request failed with status {0}")]
     Status(reqwest::StatusCode),
-    #[error("invalid ChatGPT credentials: {0}")]
+    #[error("invalid provider credentials: {0}")]
     Credentials(&'static str),
     #[error("credential account cannot change")]
     AccountChanged,
-    #[error("invalid Responses stream: {0}")]
+    #[error("context window exceeded: {0}")]
+    ContextOverflow(String),
+    #[error("HTTP request failed with status {status}: {source}")]
+    RetryableStatus {
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+        source: Box<Error>,
+    },
+    #[error("invalid provider stream: {0}")]
     Protocol(String),
     #[error("device login timed out after 15 minutes")]
     LoginTimeout,
@@ -197,6 +209,13 @@ mod job_tests {
             .filter(|provider| provider.api != Api::OpenAiCodexResponses)
         {
             let model = provider.models.values().next().unwrap_or(model);
+            if model.api.unwrap_or(provider.api) == Api::OpenAiCompletions {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::Credentials(_))
+                ));
+                continue;
+            }
             assert!(matches!(
                 client_for(provider, model, ClientAuth::None),
                 Err(Error::Unsupported(api)) if api == model.api.unwrap_or(provider.api)
