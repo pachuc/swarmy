@@ -43,11 +43,27 @@ direct message as a two-member channel, sends that wake the recipient. This is
 what turns one very good agent into a swarm; nothing else below matters until
 more than one agent works together.
 
-### Provider breadth and quota (slice 8)
-Anthropic Messages, OpenAI keys, Gemini, OpenAI-compatible providers, and a
-scheduler that shares limited model capacity fairly across agents. A swarm
+### Provider quota and pools (the rest of slice 8)
+The provider breadth is built and verified live as of 2026-09-21: anthropic,
+openai, chatgpt, xai, meta, openrouter, azure, amazon-bedrock, google, and
+google-vertex all pass the direct probe and a routed turn through a node
+(`scripts/providers/smoke.sh`). Still to build: key pools with per-key quota
+counters, admission control in the scheduler, affinity, and failover. A swarm
 burns through a single subscription quickly; the Codex fleet hit its limit
-three times this week.
+three times in one week.
+
+Known gaps from the live runs:
+- Claude on Vertex is unverified live. The project's quota for the model is
+  zero and two increase requests were denied; the client reaches the endpoint
+  and is refused only on quota, and the same client is proven direct, through
+  OpenRouter, and through Bedrock.
+- Bedrock API keys issued from the console expire after twelve hours; the
+  credential store reports them as expired and does not refresh them.
+- The `azure` provider assumes the classic `openai.azure.com` host. A Foundry
+  resource needs a `[custom_providers.azure]` base URL override in config.
+- The Gemini API refuses Gemini 2.5 models for new keys; the smoke script's
+  default should move to a current model.
+- The catalog prices Grok on Azure at zero, so its cost totals read zero.
 
 ### Browser and screen (slice 7)
 A display server and Chromium in the image, tools that drive them through the
