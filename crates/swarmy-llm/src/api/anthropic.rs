@@ -171,7 +171,20 @@ impl AnthropicProvider {
                 retry_after,
             });
         }
-        Err(Error::Status(status))
+        Err(provider_error(status, &body))
+    }
+}
+
+/// Keep the provider's own explanation; a bare status hides schema mistakes.
+fn provider_error(status: reqwest::StatusCode, body: &str) -> Error {
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| body.trim().chars().take(600).collect());
+    if message.is_empty() {
+        Error::Status(status)
+    } else {
+        Error::Protocol(format!("provider error ({status}): {message}"))
     }
 }
 
@@ -809,5 +822,23 @@ impl SseParser {
             total_tokens: input.saturating_add(output),
             reasoning_output_tokens: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_errors_keep_the_message() {
+        let error = provider_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"tools.14: bad schema"}}"#,
+        );
+        assert!(error.to_string().contains("tools.14: bad schema"));
+        assert!(matches!(
+            provider_error(reqwest::StatusCode::FORBIDDEN, ""),
+            Error::Status(reqwest::StatusCode::FORBIDDEN)
+        ));
     }
 }
