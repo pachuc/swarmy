@@ -30,8 +30,7 @@ timer_tool!(
         "delay_seconds":{"type":"integer","minimum":1},
         "at":{"type":"string","format":"date-time"},
         "note":{"type":"string","minLength":1,"maxLength":1024}
-    },"required":["note"],"additionalProperties":false,
-    "oneOf":[{"required":["delay_seconds"]},{"required":["at"]}]})
+    },"required":["note"],"additionalProperties":false})
 );
 timer_tool!(
     ListTimers,

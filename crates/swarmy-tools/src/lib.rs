@@ -115,6 +115,26 @@ mod tests {
     use super::*;
     use swarmy_core::{BashArguments, decode, encode};
 
+    /// Anthropic, Bedrock, xAI, and Azure reject combinators at the top level of a
+    /// tool schema, so every registered tool must be a plain object there.
+    #[test]
+    fn tool_schemas_are_plain_objects_at_the_top_level() {
+        let mut registry = ToolRegistry::default();
+        register(&mut registry);
+        let definitions = registry.definitions();
+        assert!(definitions.len() >= 16);
+        for tool in definitions {
+            assert_eq!(tool.parameters["type"], "object", "{}", tool.name);
+            for key in ["oneOf", "anyOf", "allOf", "enum", "const", "not"] {
+                assert!(
+                    tool.parameters.get(key).is_none(),
+                    "{} uses {key} at the top level",
+                    tool.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn sandbox_tools_describe_and_validate_new_behavior() {
         use swarmy_core::SandboxArguments;
