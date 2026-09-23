@@ -14,6 +14,7 @@ swarmy-version.workspace = true
 swarmy-config.workspace = true
 anyhow.workspace = true
 jiff.workspace = true
+ulid.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
 swarmy-store.workspace = true
