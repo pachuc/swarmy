@@ -1,13 +1,19 @@
 use std::{
     num::NonZeroUsize,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use foundationdb::{Database, api::NetworkAutoStop, tuple::Subspace};
-use futures::TryStreamExt;
+use futures::{TryStreamExt, stream::BoxStream};
 use jiff::Timestamp;
-use object_store::{ObjectStore, local::LocalFileSystem, path::Path};
+use object_store::{
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, local::LocalFileSystem, path::Path,
+};
 use swarmy_config::GarbageCollection;
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, GcRun, ImageTag, Lease, LeaseOwnerId, ManifestId, VolumeId,
@@ -24,6 +30,62 @@ struct Fixture {
     directory: tempfile::TempDir,
     db: Arc<Database>,
     root: Subspace,
+}
+
+#[derive(Debug)]
+struct FailOneDelete {
+    inner: Arc<LocalFileSystem>,
+    path: Path,
+    fail: AtomicBool,
+}
+
+impl std::fmt::Display for FailOneDelete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("delete failure fixture")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for FailOneDelete {
+    async fn put_opts(
+        &self,
+        path: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(path, payload, options).await
+    }
+    async fn put_multipart_opts(
+        &self,
+        path: &Path,
+        options: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(path, options).await
+    }
+    async fn get_opts(&self, path: &Path, options: GetOptions) -> object_store::Result<GetResult> {
+        self.inner.get_opts(path, options).await
+    }
+    async fn delete(&self, path: &Path) -> object_store::Result<()> {
+        if *path == self.path && self.fail.swap(false, Ordering::SeqCst) {
+            return Err(object_store::Error::Generic {
+                store: "delete failure fixture",
+                source: std::io::Error::other("injected delete failure").into(),
+            });
+        }
+        self.inner.delete(path).await
+    }
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+    async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy(from, to).await
+    }
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy_if_not_exists(from, to).await
+    }
 }
 impl Fixture {
     fn new() -> Option<Self> {
@@ -100,6 +162,17 @@ impl Fixture {
             })
             .await
             .unwrap();
+    }
+
+    async fn gc_row_exists(&self, kind: &str, hash: ContentHash) -> bool {
+        let key = self.root.pack(&(kind, hash.0.as_slice()));
+        self.db
+            .create_trx()
+            .unwrap()
+            .get(&key, false)
+            .await
+            .unwrap()
+            .is_some()
     }
 }
 fn manifest_id() -> ManifestId {
@@ -472,9 +545,10 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
         .unwrap();
     assert!(
         test.store
-            .claim_gc_chunk(run.owner, old.hash, run.started_at, false)
+            .claim_gc_chunks(run.owner, &[old.hash], run.started_at, false)
             .await
             .unwrap()
+            .contains(&old.hash)
     );
     assert!(matches!(
         test.store.protect_reused_chunk(old.hash).await,
@@ -493,7 +567,7 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
         .await
         .unwrap();
     test.store
-        .finish_gc_chunk(run.owner, old.hash)
+        .finish_gc_chunks(run.owner, &[old.hash])
         .await
         .unwrap();
     let recreated = uploading.await.unwrap();
@@ -505,6 +579,126 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
         .unwrap();
     assert_eq!(collected.deleted, 0);
     assert_eq!(chunks.get_chunk(old.hash).await.unwrap(), data);
+    test.clear().await;
+}
+
+#[tokio::test]
+async fn page_claim_skips_hash_reused_after_cutoff() {
+    let Some(test) = Fixture::new() else { return };
+    let run = run_record();
+    let lease = test
+        .store
+        .acquire_gc_lease(
+            &run,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hashes = [
+        ContentHash([1; 32]),
+        ContentHash([2; 32]),
+        ContentHash([3; 32]),
+    ];
+    let cutoff = Timestamp::now();
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    test.store.protect_reused_chunk(hashes[1]).await.unwrap();
+    let claimed = test
+        .store
+        .claim_gc_chunks(run.owner, &hashes, cutoff, false)
+        .await
+        .unwrap();
+    assert_eq!(claimed, vec![hashes[0], hashes[2]]);
+    assert!(!test.gc_row_exists("gc_deleting", hashes[1]).await);
+    for hash in claimed {
+        assert!(test.gc_row_exists("gc_deleting", hash).await);
+    }
+    test.store.finish_gc_run(&lease, &run).await.unwrap();
+    test.clear().await;
+}
+
+#[tokio::test]
+async fn page_finish_leaves_omitted_marker_and_reuse_row() {
+    let Some(test) = Fixture::new() else { return };
+    let run = run_record();
+    let lease = test
+        .store
+        .acquire_gc_lease(
+            &run,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hashes = [
+        ContentHash([4; 32]),
+        ContentHash([5; 32]),
+        ContentHash([6; 32]),
+    ];
+    for hash in hashes {
+        test.store.protect_reused_chunk(hash).await.unwrap();
+    }
+    let cutoff = Timestamp::now()
+        .checked_add(Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(
+        test.store
+            .claim_gc_chunks(run.owner, &hashes, cutoff, false)
+            .await
+            .unwrap(),
+        hashes
+    );
+    test.store
+        .finish_gc_chunks(run.owner, &[hashes[0], hashes[2]])
+        .await
+        .unwrap();
+    for hash in [hashes[0], hashes[2]] {
+        assert!(!test.gc_row_exists("gc_deleting", hash).await);
+        assert!(!test.gc_row_exists("chunk_reused", hash).await);
+    }
+    assert!(test.gc_row_exists("gc_deleting", hashes[1]).await);
+    assert!(test.gc_row_exists("chunk_reused", hashes[1]).await);
+    test.store.finish_gc_run(&lease, &run).await.unwrap();
+    test.clear().await;
+}
+
+#[tokio::test]
+async fn failed_delete_stays_reserved_until_following_run_reclaims_it() {
+    let Some(test) = Fixture::new() else { return };
+    let chunks = ChunkStore::new(test.objects.clone());
+    let hashes = [
+        chunks
+            .put_chunk(&vec![41; CHUNK_SIZE as usize])
+            .await
+            .unwrap()
+            .hash,
+        chunks
+            .put_chunk(&vec![42; CHUNK_SIZE as usize])
+            .await
+            .unwrap()
+            .hash,
+    ];
+    test.age_chunks().await;
+    let failed = hashes[0];
+    let wrapped = Arc::new(FailOneDelete {
+        inner: test.objects.clone(),
+        path: Path::from(format!("chunks/{}/{failed}", &failed.to_string()[..2])),
+        fail: AtomicBool::new(true),
+    });
+    let first = collect(&test.store, wrapped.clone(), policy(), false)
+        .await
+        .unwrap();
+    assert_eq!(first.candidates, 2);
+    assert_eq!(first.deleted, 1);
+    assert!(test.gc_row_exists("gc_deleting", failed).await);
+    assert!(!test.gc_row_exists("gc_deleting", hashes[1]).await);
+    let second = collect(&test.store, wrapped, policy(), false)
+        .await
+        .unwrap();
+    assert_eq!(second.deleted, 1);
+    assert!(!test.gc_row_exists("gc_deleting", failed).await);
     test.clear().await;
 }
 

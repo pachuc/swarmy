@@ -69,6 +69,8 @@ pub struct GarbageCollection {
     pub grace_seconds: std::num::NonZeroU64,
     pub interval_seconds: std::num::NonZeroU64,
     pub filter_bytes: std::num::NonZeroUsize,
+    pub batch_size: std::num::NonZeroUsize,
+    pub delete_concurrency: std::num::NonZeroUsize,
 }
 impl Default for GarbageCollection {
     fn default() -> Self {
@@ -76,6 +78,27 @@ impl Default for GarbageCollection {
             grace_seconds: std::num::NonZeroU64::new(6 * 60 * 60).unwrap(),
             interval_seconds: std::num::NonZeroU64::new(60 * 60).unwrap(),
             filter_bytes: std::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+            batch_size: std::num::NonZeroUsize::new(256).unwrap(),
+            delete_concurrency: std::num::NonZeroUsize::new(32).unwrap(),
+        }
+    }
+}
+impl GarbageCollection {
+    fn add_to_environment(self, environment: &mut BTreeMap<String, String>) {
+        for (name, value) in [
+            ("SWARMY_GC_GRACE_SECONDS", self.grace_seconds.to_string()),
+            (
+                "SWARMY_GC_INTERVAL_SECONDS",
+                self.interval_seconds.to_string(),
+            ),
+            ("SWARMY_GC_FILTER_BYTES", self.filter_bytes.to_string()),
+            ("SWARMY_GC_BATCH_SIZE", self.batch_size.to_string()),
+            (
+                "SWARMY_GC_DELETE_CONCURRENCY",
+                self.delete_concurrency.to_string(),
+            ),
+        ] {
+            environment.insert(name.into(), value);
         }
     }
 }
@@ -442,6 +465,17 @@ impl Settings {
                 .parse()
                 .map_err(|_| Error::Environment("SWARMY_GC_FILTER_BYTES".into()))?;
         }
+        for (name, target) in [
+            ("SWARMY_GC_BATCH_SIZE", &mut self.gc.batch_size),
+            (
+                "SWARMY_GC_DELETE_CONCURRENCY",
+                &mut self.gc.delete_concurrency,
+            ),
+        ] {
+            if let Some(value) = environment.get(name) {
+                *target = value.parse().map_err(|_| Error::Environment(name.into()))?;
+            }
+        }
         Ok(())
     }
 
@@ -747,16 +781,7 @@ impl Settings {
         self.provider_environment(&mut environment);
         self.session_environment(&mut environment);
         self.node_environment(&mut environment);
-        for (name, value) in [
-            ("SWARMY_GC_GRACE_SECONDS", self.gc.grace_seconds.to_string()),
-            (
-                "SWARMY_GC_INTERVAL_SECONDS",
-                self.gc.interval_seconds.to_string(),
-            ),
-            ("SWARMY_GC_FILTER_BYTES", self.gc.filter_bytes.to_string()),
-        ] {
-            environment.insert(name.into(), value);
-        }
+        self.gc.add_to_environment(&mut environment);
         environment.insert(
             "SWARMY_EPHEMERAL_RETENTION_SECONDS".into(),
             self.ephemeral_retention_seconds.to_string(),
@@ -927,10 +952,14 @@ mod tests {
         assert_eq!(settings.gc.grace_seconds.get(), 21600);
         assert_eq!(settings.gc.interval_seconds.get(), 3600);
         assert_eq!(settings.gc.filter_bytes.get(), 64 * 1024 * 1024);
+        assert_eq!(settings.gc.batch_size.get(), 256);
+        assert_eq!(settings.gc.delete_concurrency.get(), 32);
         for (name, field) in [
             ("SWARMY_GC_GRACE_SECONDS", "grace_seconds"),
             ("SWARMY_GC_INTERVAL_SECONDS", "interval_seconds"),
             ("SWARMY_GC_FILTER_BYTES", "filter_bytes"),
+            ("SWARMY_GC_BATCH_SIZE", "batch_size"),
+            ("SWARMY_GC_DELETE_CONCURRENCY", "delete_concurrency"),
         ] {
             settings
                 .apply_environment(&BTreeMap::from([(name.into(), "123".into())]))

@@ -594,8 +594,8 @@ than that bound. Operators must not restore a pruned manifest or register it as
 an image without first restoring its data. Content deduplication does not make
 an unreferenced, old object a durable staging reference. For that reason,
 attached volume writers and image uploads record a reuse timestamp in the
-store before trusting an existing chunk. A collector reserves each candidate
-in a transaction that checks this timestamp against its fixed cutoff. Reuse
+store before trusting an existing chunk. A collector reserves candidates in
+page transactions that check each timestamp against its fixed cutoff. Reuse
 and deletion reservations conflict: if deletion wins, the uploader waits for
 it to finish, checks existence again, and recreates the chunk if necessary.
 If reuse wins, this run keeps the object. New objects need no reuse row because
@@ -607,9 +607,9 @@ A fixed-size Bloom filter holds chunk references, using 64 MiB by default and
 seven probes per hash. False positives only keep extra chunks; saturation
 reduces reclamation without permitting deletion of referenced data. Roots and
 leaves are always traversed, even if their hashes appear in the filter. Memory
-also includes one manifest root and leaf, one metadata page, and streaming
-object listing pages for at most sixteen of the 256 prefixes. It does not grow
-with the total number of chunk objects or live roots.
+also includes one manifest root and leaf, one metadata page, one candidate
+page, and streaming object listing pages for at most sixteen of the 256
+prefixes. It does not grow with the total number of chunk objects or live roots.
 
 A store lease admits one collector per metadata namespace, using the same
 complete-token and retained-sequence fencing as writer leases. It expires after
@@ -654,10 +654,21 @@ overrides); no objects need moving. A legacy prefix combined with a non-empty
 explicit prefix is rejected as ambiguous. Exported configuration includes
 `SWARMY_S3_PREFIX`, including when empty, so child services use the same setting.
 
+The collector groups eligible listed chunks into pages of up to `batch_size`.
+Pages are capped at 512 hashes to stay within FoundationDB's transaction
+limits. Each page has one lease-checked transaction that reserves hashes whose reuse
+timestamps precede the run's fixed cutoff. Up to `delete_concurrency` object
+deletes run at once. A final transaction clears reservations and reuse rows
+only for successful deletes. Failed deletes remain reserved during the run and
+are left for a later collection attempt. Dry runs check the same pages without
+writing reservations.
+
 Configuration is under `[gc]`: `grace_seconds` defaults to 21600,
-`interval_seconds` to 3600, and `filter_bytes` to 67108864. All are positive.
+`interval_seconds` to 3600, `filter_bytes` to 67108864, `batch_size` to 256,
+and `delete_concurrency` to 32. All are positive.
 The corresponding environment overrides are `SWARMY_GC_GRACE_SECONDS`,
-`SWARMY_GC_INTERVAL_SECONDS`, and `SWARMY_GC_FILTER_BYTES`.
+`SWARMY_GC_INTERVAL_SECONDS`, `SWARMY_GC_FILTER_BYTES`,
+`SWARMY_GC_BATCH_SIZE`, and `SWARMY_GC_DELETE_CONCURRENCY`.
 
 The [local scale measurement](gc-benchmarks.md) covers 22,534 chunk objects,
 dry-run accounting, deletion, lease renewal, elapsed time, and peak memory.
