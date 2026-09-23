@@ -36,28 +36,73 @@ pub enum TurnStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum HealthStatus {
-    Healthy,
-    Degraded,
-    Unavailable,
+pub enum SessionKind {
+    Ephemeral,
+    Named,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Idle,
+    Runnable,
+    Leased,
+    WaitingInference,
+    WaitingTools,
+    Sleeping,
+    Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+/// An ISO 8601 timestamp is used for `wake_at`; reasons are human-readable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WaitingReason {
+    pub wake_at: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ImageRef {
+    pub name: String,
+    pub tag: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Agent {
     pub id: String,
     pub name: String,
-    pub image_id: String,
-    pub provider_id: String,
-    pub model_id: String,
-    pub prompt: String,
+    pub description: String,
+    pub image: ImageRef,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+    pub system_prompt: Option<String>,
+    pub created_at: String,
+    pub main_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Session {
     pub id: String,
     pub agent_id: Option<String>,
+    pub kind: SessionKind,
+    pub state: SessionState,
     pub log_id: LogId,
-    pub latest_sequence: u64,
+    pub head_sequence: u64,
+    pub created_at: String,
+    pub computer_deleted: bool,
+    pub waiting: Option<WaitingReason>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -65,6 +110,8 @@ pub struct Turn {
     pub id: String,
     pub session_id: String,
     pub status: TurnStatus,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -102,71 +149,111 @@ pub struct Model {
 pub struct Provider {
     pub id: String,
     pub name: String,
-    pub status: HealthStatus,
+    pub status: String,
 }
 
-/// Only metadata is returned; no credential response includes secret material.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialKind {
+    Subscription,
+    ApiKey,
+    Cloud,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialStatus {
+    Ready,
+    Expired,
+    NeedsLogin,
+}
+
+/// Credential metadata contains no secret material.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Credential {
-    pub id: String,
-    pub provider_id: String,
-    pub kind: String,
-    pub valid: bool,
-    pub expires_at: Option<String>,
+    pub provider: String,
+    pub kind: CredentialKind,
+    pub label: String,
+    pub status: CredentialStatus,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    Sandbox,
+    Volume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct NodeCapacity {
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+    pub sandboxes: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Node {
     pub id: String,
-    pub status: HealthStatus,
-    pub capacity: u32,
-    pub occupied: u32,
+    pub roles: Vec<NodeRole>,
+    pub capacity: NodeCapacity,
+    pub alive: bool,
+    pub last_seen: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ServiceHealth {
-    pub service: String,
-    pub status: HealthStatus,
-    pub detail: Option<String>,
+    pub role: String,
+    pub instance_id: String,
+    pub version: String,
+    pub alive: bool,
+    pub last_seen: String,
 }
 
-/// Idempotency keys are unique to a mutation intent, not to a retry attempt.
+/// Every client mutation has a key that survives retries of the same intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateAgent {
     pub idempotency_key: String,
     pub name: String,
-    pub image_id: String,
-    pub provider_id: String,
-    pub model_id: String,
-    pub prompt: String,
+    pub description: String,
+    pub image: ImageRef,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+    pub system_prompt: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateAgent {
     pub idempotency_key: String,
-    pub prompt: Option<String>,
-    pub provider_id: Option<String>,
-    pub model_id: Option<String>,
+    pub description: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+    pub system_prompt: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateSession {
     pub idempotency_key: String,
     pub agent_id: Option<String>,
-    pub image_id: Option<String>,
+    pub image: Option<ImageRef>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
 }
+/// `close` terminates the session; other fields override inference selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateSession {
     pub idempotency_key: String,
-    pub agent_id: Option<String>,
+    pub close: bool,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateTurn {
     pub idempotency_key: String,
     pub session_id: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateTurn {
-    pub idempotency_key: String,
-    pub status: TurnStatus,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateMessage {
@@ -175,78 +262,21 @@ pub struct CreateMessage {
     pub role: MessageRole,
     pub text: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateMessage {
-    pub idempotency_key: String,
-    pub text: String,
-}
+/// Register an already built image; image builds are not mutations of this resource.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateImage {
     pub idempotency_key: String,
     pub name: String,
     pub tag: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateImage {
-    pub idempotency_key: String,
-    pub tag: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct CreateModel {
-    pub idempotency_key: String,
-    pub provider_id: String,
-    pub context_window: u64,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateModel {
-    pub idempotency_key: String,
-    pub context_window: u64,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct CreateProvider {
-    pub idempotency_key: String,
-    pub name: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateProvider {
-    pub idempotency_key: String,
-    pub status: HealthStatus,
-}
-/// Secret material is accepted only on input, and is never echoed in a response.
+/// Setting the same provider again replaces its credential without exposing its secret on reads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateCredential {
     pub idempotency_key: String,
-    pub provider_id: String,
-    pub kind: String,
+    pub provider: String,
+    pub kind: CredentialKind,
+    pub label: String,
     pub secret: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateCredential {
-    pub idempotency_key: String,
-    pub secret: Option<String>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct CreateNode {
-    pub idempotency_key: String,
-    pub capacity: u32,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateNode {
-    pub idempotency_key: String,
-    pub status: HealthStatus,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct CreateServiceHealth {
-    pub idempotency_key: String,
-    pub service: String,
-    pub status: HealthStatus,
-    pub detail: Option<String>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UpdateServiceHealth {
-    pub idempotency_key: String,
-    pub status: HealthStatus,
-    pub detail: Option<String>,
 }
 
 /// A durable event has a cursor even when delivered on a multiplexed connection.
@@ -313,45 +343,11 @@ pub struct ApiError {
     info(title = "Swarmy API", version = "1.0.0"),
     servers((url = "/v1", description = "Version 1 control plane")),
     components(schemas(
-    LogId,
-    Cursor,
-    Subscription,
-    TurnStatus,
-    HealthStatus,
-    Agent,
-    Session,
-    Turn,
-    MessageRole,
-    Message,
-    Image,
-    Model,
-    Provider,
-    Credential,
-    Node,
-    ServiceHealth,
-    CreateAgent,
-    UpdateAgent,
-    CreateSession,
-    UpdateSession,
-    CreateTurn,
-    UpdateTurn,
-    CreateMessage,
-    UpdateMessage,
-    CreateImage,
-    UpdateImage,
-    CreateModel,
-    UpdateModel,
-    CreateProvider,
-    UpdateProvider,
-    CreateCredential,
-    UpdateCredential,
-    CreateNode,
-    UpdateNode,
-    CreateServiceHealth,
-    UpdateServiceHealth,
-    Event,
-    EventPayload,
-    ApiError
+    LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
+    Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
+    Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
+    CreateTurn, CreateMessage, CreateImage, CreateCredential, Event, EventPayload, ApiError
 )))]
 pub struct ApiDocument;
 
@@ -359,281 +355,107 @@ pub struct ApiDocument;
 mod tests {
     use super::*;
 
-    fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(value: &T) {
-        let json = serde_json::to_string(value).unwrap();
-        assert_eq!(&serde_json::from_str::<T>(&json).unwrap(), value);
+    fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(
+        input: serde_json::Value,
+    ) {
+        let value: T = serde_json::from_value(input).unwrap();
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(serde_json::from_str::<T>(&json).unwrap(), value);
+    }
+
+    macro_rules! check {
+        ($ty:ty, $($value:tt)+) => {
+            round_trip::<$ty>(serde_json::json!($($value)+))
+        };
     }
 
     #[test]
     fn resource_json_contract() {
-        let log = LogId::Session("s".into());
-        let health = HealthStatus::Healthy;
-        let role = MessageRole::User;
-        let status = TurnStatus::Running;
-        let message = Message {
-            id: "m".into(),
-            session_id: "s".into(),
-            role: role.clone(),
-            text: "hi".into(),
-        };
-        let turn = Turn {
-            id: "t".into(),
-            session_id: "s".into(),
-            status: status.clone(),
-        };
-        let node = Node {
-            id: "n".into(),
-            status: health.clone(),
-            capacity: 2,
-            occupied: 1,
-        };
-        let service = ServiceHealth {
-            service: "gateway".into(),
-            status: health.clone(),
-            detail: None,
-        };
-        let error = ApiError {
-            code: "provider_error".into(),
-            message: "failed".into(),
-            provider_text: Some("original".into()),
-        };
-        round_trip(&log);
-        round_trip(&LogId::Channel("c".into()));
-        round_trip(&Cursor {
-            log_id: log.clone(),
-            sequence: 0,
-        });
-        round_trip(&Subscription {
-            cursors: vec![Cursor {
-                log_id: log.clone(),
-                sequence: 1,
-            }],
-            token_deltas: false,
-        });
-        round_trip(&status);
-        round_trip(&TurnStatus::Finished);
-        round_trip(&TurnStatus::Failed);
-        round_trip(&health);
-        round_trip(&HealthStatus::Degraded);
-        round_trip(&HealthStatus::Unavailable);
-        round_trip(&role);
-        round_trip(&MessageRole::Assistant);
-        round_trip(&MessageRole::Tool);
-        round_trip(&MessageRole::System);
-        round_trip(&Agent {
-            id: "a".into(),
-            name: "agent".into(),
-            image_id: "i".into(),
-            provider_id: "p".into(),
-            model_id: "m".into(),
-            prompt: "prompt".into(),
-        });
-        round_trip(&Session {
-            id: "s".into(),
-            agent_id: Some("a".into()),
-            log_id: log,
-            latest_sequence: 1,
-        });
-        round_trip(&turn);
-        round_trip(&message);
-        round_trip(&Image {
-            id: "i".into(),
-            name: "base".into(),
-            tag: "v1".into(),
-        });
-        round_trip(&Model {
-            id: "m".into(),
-            provider_id: "p".into(),
-            context_window: 100,
-        });
-        round_trip(&Provider {
-            id: "p".into(),
-            name: "provider".into(),
-            status: health,
-        });
-        round_trip(&Credential {
-            id: "k".into(),
-            provider_id: "p".into(),
-            kind: "api_key".into(),
-            valid: true,
-            expires_at: None,
-        });
-        round_trip(&node);
-        round_trip(&service);
-        round_trip(&error);
+        check!(LogId, {"kind":"session","id":"s"});
+        check!(LogId, {"kind":"channel","id":"c"});
+        check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
+        check!(Subscription, {"cursors":[],"token_deltas":false});
+        for status in ["running", "finished", "failed"] {
+            check!(TurnStatus, status);
+        }
+        for kind in ["ephemeral", "named"] {
+            check!(SessionKind, kind);
+        }
+        for state in [
+            "idle",
+            "runnable",
+            "leased",
+            "waiting_inference",
+            "waiting_tools",
+            "sleeping",
+            "completed",
+        ] {
+            check!(SessionState, state);
+        }
+        for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            check!(ReasoningEffort, effort);
+        }
+        check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
+        check!(ImageRef, {"name":"base","tag":"dev"});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s"});
+        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]}});
+        check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
+        for role in ["user", "assistant", "tool", "system"] {
+            check!(MessageRole, role);
+        }
+        check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
+        check!(Image, {"id":"i","name":"base","tag":"dev"});
+        check!(Model, {"id":"m","provider_id":"p","context_window":100});
+        check!(Provider, {"id":"p","name":"provider","status":"available"});
+        for kind in ["subscription", "api_key", "cloud"] {
+            check!(CredentialKind, kind);
+        }
+        for status in ["ready", "expired", "needs_login"] {
+            check!(CredentialStatus, status);
+        }
+        check!(Credential, {"provider":"openai","kind":"api_key","label":"primary","status":"ready","updated_at":"2026-09-23T12:00:00Z"});
+        for role in ["sandbox", "volume"] {
+            check!(NodeRole, role);
+        }
+        check!(NodeCapacity, {"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2});
+        check!(Node, {"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        check!(ServiceHealth, {"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        check!(ApiError, {"code":"provider_error","message":"failed","provider_text":"original"});
     }
 
     #[test]
     fn mutation_json_contract() {
-        let status = TurnStatus::Running;
-        let role = MessageRole::User;
-        let health = HealthStatus::Healthy;
-        round_trip(&CreateAgent {
-            idempotency_key: "k".into(),
-            name: "a".into(),
-            image_id: "i".into(),
-            provider_id: "p".into(),
-            model_id: "m".into(),
-            prompt: "p".into(),
-        });
-        round_trip(&UpdateAgent {
-            idempotency_key: "k".into(),
-            prompt: None,
-            provider_id: None,
-            model_id: None,
-        });
-        round_trip(&CreateSession {
-            idempotency_key: "k".into(),
-            agent_id: None,
-            image_id: Some("i".into()),
-        });
-        round_trip(&UpdateSession {
-            idempotency_key: "k".into(),
-            agent_id: None,
-        });
-        round_trip(&CreateTurn {
-            idempotency_key: "k".into(),
-            session_id: "s".into(),
-        });
-        round_trip(&UpdateTurn {
-            idempotency_key: "k".into(),
-            status,
-        });
-        round_trip(&CreateMessage {
-            idempotency_key: "k".into(),
-            session_id: "s".into(),
-            role,
-            text: "hi".into(),
-        });
-        round_trip(&UpdateMessage {
-            idempotency_key: "k".into(),
-            text: "hi".into(),
-        });
-        round_trip(&CreateImage {
-            idempotency_key: "k".into(),
-            name: "base".into(),
-            tag: "v1".into(),
-        });
-        round_trip(&UpdateImage {
-            idempotency_key: "k".into(),
-            tag: "v2".into(),
-        });
-        round_trip(&CreateModel {
-            idempotency_key: "k".into(),
-            provider_id: "p".into(),
-            context_window: 100,
-        });
-        round_trip(&UpdateModel {
-            idempotency_key: "k".into(),
-            context_window: 100,
-        });
-        round_trip(&CreateProvider {
-            idempotency_key: "k".into(),
-            name: "p".into(),
-        });
-        round_trip(&UpdateProvider {
-            idempotency_key: "k".into(),
-            status: health.clone(),
-        });
-        round_trip(&CreateCredential {
-            idempotency_key: "k".into(),
-            provider_id: "p".into(),
-            kind: "api_key".into(),
-            secret: "input-only".into(),
-        });
-        round_trip(&UpdateCredential {
-            idempotency_key: "k".into(),
-            secret: None,
-        });
-        round_trip(&CreateNode {
-            idempotency_key: "k".into(),
-            capacity: 2,
-        });
-        round_trip(&UpdateNode {
-            idempotency_key: "k".into(),
-            status: health.clone(),
-        });
-        round_trip(&CreateServiceHealth {
-            idempotency_key: "k".into(),
-            service: "gateway".into(),
-            status: health.clone(),
-            detail: None,
-        });
-        round_trip(&UpdateServiceHealth {
-            idempotency_key: "k".into(),
-            status: health,
-            detail: None,
-        });
+        check!(CreateAgent, {"idempotency_key":"k","name":"a","description":"d","image":{"name":"base","tag":"dev"},"provider":null,"model":null,"effort":null,"system_prompt":null});
+        check!(UpdateAgent, {"idempotency_key":"k","description":null,"provider":"openai","model":null,"effort":"high","system_prompt":null});
+        check!(CreateSession, {"idempotency_key":"k","agent_id":null,"image":{"name":"base","tag":"dev"},"provider":null,"model":null,"effort":null});
+        check!(UpdateSession, {"idempotency_key":"k","close":true,"provider":null,"model":null,"effort":null});
+        check!(CreateTurn, {"idempotency_key":"k","session_id":"s"});
+        check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
+        check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
+        check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
     }
 
     #[test]
     fn event_json_contract() {
-        let log = LogId::Session("s".into());
-        let health = HealthStatus::Healthy;
-        let role = MessageRole::User;
-        let status = TurnStatus::Running;
-        let message = Message {
-            id: "m".into(),
-            session_id: "s".into(),
-            role,
-            text: "hi".into(),
-        };
-        let turn = Turn {
-            id: "t".into(),
-            session_id: "s".into(),
-            status,
-        };
-        let node = Node {
-            id: "n".into(),
-            status: health.clone(),
-            capacity: 2,
-            occupied: 1,
-        };
-        let service = ServiceHealth {
-            service: "gateway".into(),
-            status: health,
-            detail: None,
-        };
-        let error = ApiError {
-            code: "provider_error".into(),
-            message: "failed".into(),
-            provider_text: Some("original".into()),
-        };
-        for payload in [
-            EventPayload::MessageAppended { message },
-            EventPayload::TurnStarted { turn: turn.clone() },
-            EventPayload::TurnFinished { turn },
-            EventPayload::ToolCall {
-                turn_id: "t".into(),
-                call_id: "c".into(),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command":"ls"}),
-            },
-            EventPayload::ToolResult {
-                turn_id: "t".into(),
-                call_id: "c".into(),
-                result: serde_json::json!({"output":"ok"}),
-            },
-            EventPayload::InferenceError {
-                turn_id: "t".into(),
-                error,
-            },
-            EventPayload::Idle {
-                session_id: "s".into(),
-            },
-            EventPayload::TokenDelta {
-                turn_id: "t".into(),
-                text: "a".into(),
-            },
-            EventPayload::ServiceStatusChanged { health: service },
-            EventPayload::NodeStatusChanged { node },
-        ] {
-            round_trip(&payload.clone());
-            round_trip(&Event {
-                log_id: log.clone(),
-                sequence: 1,
-                payload,
-            });
+        let message = serde_json::json!({"id":"m","session_id":"s","role":"user","text":"hi"});
+        let turn = serde_json::json!({"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
+        let node = serde_json::json!({"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        let health = serde_json::json!({"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        let payloads = [
+            serde_json::json!({"type":"message_appended","data":{"message":message}}),
+            serde_json::json!({"type":"turn_started","data":{"turn":turn}}),
+            serde_json::json!({"type":"turn_finished","data":{"turn":turn}}),
+            serde_json::json!({"type":"tool_call","data":{"turn_id":"t","call_id":"c","name":"bash","arguments":{"command":"ls"}}}),
+            serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
+            serde_json::json!({"type":"inference_error","data":{"turn_id":"t","error":{"code":"provider_error","message":"failed","provider_text":"original"}}}),
+            serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
+            serde_json::json!({"type":"token_delta","data":{"turn_id":"t","text":"a"}}),
+            serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
+            serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
+        ];
+        for payload in payloads {
+            round_trip::<EventPayload>(payload.clone());
+            check!(Event, {"log_id":{"kind":"session","id":"s"},"sequence":1,"payload":payload});
         }
     }
 

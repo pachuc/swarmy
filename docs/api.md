@@ -1,51 +1,86 @@
 # Control plane API v1
 
-All client operations use HTTP JSON under `/v1`. The `swarmy-api-types` crate is
-its wire contract; `docs/openapi.json` is generated from that crate. The
-schema document has no paths yet: endpoint routing belongs to the server task,
-and this task freezes the common wire shapes first. IDs are opaque strings.
-An agent owns a persistent computer and can have multiple sessions. A session
-is an ordered append-only log; a turn groups inference and tool activity, and
-messages belong to sessions. Images select computer roots,
-models belong to providers, and credentials expose only metadata and validity.
-Nodes and service health report availability. Credential secrets are accepted
-only in create and update requests, never returned by read operations.
+The public HTTP API uses JSON under `/v1`. `swarmy-api-types` owns its wire
+shapes, and its schema test generates `docs/openapi.json`. The schema document
+has no paths until the server task defines routing. IDs are opaque. Timestamps
+are ISO 8601 strings in UTC.
 
-## Events and replay
+## Resource model
+
+**Agents** are named, persistent identities with a description, a selected
+image name and tag, optional provider, model, effort and system prompt, a
+creation time, and an optional main session ID. An agent may have side
+sessions without moving the main-session pointer.
+
+**Sessions** are ordered, append-only logs attached to a computer. Their kind
+is ephemeral or named; their state is idle, runnable, leased,
+waiting_inference, waiting_tools, sleeping, or completed. The head sequence is
+zero before the first append. `computer_deleted` reports teardown; an optional
+`waiting` value gives a wake time and human-readable reasons for a parked
+session. A session may reference an agent.
+
+**Turns** group inference and tool work within a session. Each has a status,
+start time, and optional finish time.
+
+**Messages** carry a role and text and belong to a session. A client may
+append messages but never edit old ones.
+
+**Images** identify built computer roots by name and tag. Clients register
+already built images; they do not edit image manifests via this API.
+
+**Models** identify provider models and their context windows. Clients
+select them for inference but do not edit catalog records.
+
+**Providers** are read-only catalog entries. Clients select them for inference
+but do not create or edit providers.
+
+**Credentials** return only provider, kind (subscription, api_key, cloud),
+label, status, and update time. Setting or replacing a provider credential
+uses a create request with input-only secret material; no read or event
+returns a secret.
+
+**Nodes** report roles, CPU, memory, disk and sandbox capacity, liveness and
+last seen time. They are not client-created or edited.
+
+**Service health** reports a service role, instance ID, version, liveness and
+last seen time. Health records are not client-created or edited.
+
+## Event stream contract
 
 `Event` has a `log_id`, a `sequence`, and a tagged `payload`. `LogId` is a
-namespace-tagged value (`{"kind":"session","id":"..."}`); the `channel`
-namespace is reserved for future channel logs. Sequences start at one, are
-contiguous within a log, and are independent between logs. The pair `(log_id,
-sequence)` is the durable cursor. Clients store the last processed cursor per
-log; a subscription supplies a set of these cursors and receives events
-strictly *after* each sequence, including after reconnect. Sequence zero
-requests replay from the beginning. The server reads durable logs for replay,
-then follows live changes without a gap. Duplicates across reconnections are
-possible; consumers deduplicate by the cursor pair. There is no global order
-between logs.
+namespace-tagged value (`{"kind":"session","id":"..."}`); `channel` is
+reserved for future channel logs. Sequences start at one, are contiguous
+within a log, and are independent between logs. The pair `(log_id, sequence)`
+is the durable cursor. There is no global order between logs.
 
-One SSE connection multiplexes all logs in a `Subscription`. Each SSE data
-frame contains one JSON `Event` with its own cursor. `token_deltas` defaults
-conceptually to false and must be explicitly enabled. Token deltas are live
-rendering hints, not durable log records and not replayed. For a token delta,
-`sequence` is the most recently committed sequence of its `log_id`, not a new
-sequence; clients must not advance durable cursors on deltas. Final messages
-and idle events are durable.
-The client may submit another message after observing idle.
+One SSE connection multiplexes the logs in a `Subscription`, which supplies a
+cursor per log. The server replays events strictly after each supplied cursor
+and then follows live appends without a gap. Sequence zero requests replay
+from the beginning. The SSE `id` is base64url without padding of the UTF-8
+JSON `Cursor` (`log_id` and `sequence`), so reconnects can resume; consumers
+persist the last processed cursor per log and deduplicate by that pair if
+replay repeats a frame. Each SSE data frame contains a JSON `Event`.
 
-## Mutations and errors
+Token deltas require `token_deltas: true` in the subscription. They are live
+rendering hints, not durable log events, and are not replayed. Their
+`sequence` is the last committed sequence of that log, not a new sequence.
+A token-delta frame has no durable SSE `id`; it cannot advance a cursor.
+Final messages and idle events are durable. Input can be re-enabled after an
+idle event.
 
-Every mutation includes a required `idempotency_key`. Reuse the same key for
-retries of the same intent; the server returns the original result instead of
-performing the mutation again. Use a fresh key for a different intent. The
-server rejects reuse with a different body. Errors include a stable `code`
-for machine handling, a human-readable `message`, and `provider_text` when a
-provider supplied original error text; the latter is preserved verbatim.
+## Idempotency
 
-## Compatibility
+Every client mutation has a required `idempotency_key`. The same key and body
+on retry return the original result without repeating the mutation. A key
+reused with a different body is rejected; a different intent needs a fresh
+key. Keys are scoped to the caller and retained with the mutation result.
+Errors have a stable machine-readable `code` and a human-readable message;
+`provider_text` preserves the provider's original error text when present.
 
-The path is versioned (`/v1`). Within v1 changes are additive: existing fields,
-variant names, meanings, and cursor behavior do not change. Consumers should
-ignore unknown JSON fields and unknown event variants; producers keep required
-fields stable. Incompatible changes require `/v2`, with a migration window.
+## Versioning policy
+
+The API path is `/v1`. Changes within v1 are additive only: no removal or
+reinterpretation of existing fields, event variants, cursors, or behavior.
+Deprecations are announced before removal, and existing v1 shapes continue
+to work. Clients should ignore unknown fields and event variants. Breaking
+changes require `/v2` with a migration window.

@@ -23,29 +23,59 @@
         "required": [
           "id",
           "name",
-          "image_id",
-          "provider_id",
-          "model_id",
-          "prompt"
+          "description",
+          "image",
+          "created_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
-          "image_id": {
-            "type": "string"
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
           },
-          "model_id": {
-            "type": "string"
+          "main_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
           },
-          "prompt": {
-            "type": "string"
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "provider_id": {
-            "type": "string"
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -73,43 +103,64 @@
       },
       "CreateAgent": {
         "type": "object",
-        "description": "Idempotency keys are unique to a mutation intent, not to a retry attempt.",
+        "description": "Every client mutation has a key that survives retries of the same intent.",
         "required": [
           "idempotency_key",
           "name",
-          "image_id",
-          "provider_id",
-          "model_id",
-          "prompt"
+          "description",
+          "image"
         ],
         "properties": {
+          "description": {
+            "type": "string"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
           },
-          "image_id": {
-            "type": "string"
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
           },
-          "model_id": {
-            "type": "string"
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
           },
-          "prompt": {
-            "type": "string"
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "provider_id": {
-            "type": "string"
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "CreateCredential": {
         "type": "object",
-        "description": "Secret material is accepted only on input, and is never echoed in a response.",
+        "description": "Setting the same provider again replaces its credential without exposing its secret on reads.",
         "required": [
           "idempotency_key",
-          "provider_id",
+          "provider",
           "kind",
+          "label",
           "secret"
         ],
         "properties": {
@@ -117,9 +168,12 @@
             "type": "string"
           },
           "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "label": {
             "type": "string"
           },
-          "provider_id": {
+          "provider": {
             "type": "string"
           },
           "secret": {
@@ -129,6 +183,7 @@
       },
       "CreateImage": {
         "type": "object",
+        "description": "Register an already built image; image builds are not mutations of this resource.",
         "required": [
           "idempotency_key",
           "name",
@@ -169,84 +224,6 @@
           }
         }
       },
-      "CreateModel": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "provider_id",
-          "context_window"
-        ],
-        "properties": {
-          "context_window": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "provider_id": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateNode": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "capacity"
-        ],
-        "properties": {
-          "capacity": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
-          "idempotency_key": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateProvider": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "name"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateServiceHealth": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "service",
-          "status"
-        ],
-        "properties": {
-          "detail": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
-          }
-        }
-      },
       "CreateSession": {
         "type": "object",
         "required": [
@@ -259,10 +236,36 @@
               "null"
             ]
           },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
           },
-          "image_id": {
+          "image": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
             "type": [
               "string",
               "null"
@@ -287,33 +290,47 @@
       },
       "Credential": {
         "type": "object",
-        "description": "Only metadata is returned; no credential response includes secret material.",
+        "description": "Credential metadata contains no secret material.",
         "required": [
-          "id",
-          "provider_id",
+          "provider",
           "kind",
-          "valid"
+          "label",
+          "status",
+          "updated_at"
         ],
         "properties": {
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
           "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "label": {
             "type": "string"
           },
-          "provider_id": {
+          "provider": {
             "type": "string"
           },
-          "valid": {
-            "type": "boolean"
+          "status": {
+            "$ref": "#/components/schemas/CredentialStatus"
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
+      },
+      "CredentialKind": {
+        "type": "string",
+        "enum": [
+          "subscription",
+          "api_key",
+          "cloud"
+        ]
+      },
+      "CredentialStatus": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "expired",
+          "needs_login"
+        ]
       },
       "Cursor": {
         "type": "object",
@@ -643,14 +660,6 @@
           }
         ]
       },
-      "HealthStatus": {
-        "type": "string",
-        "enum": [
-          "healthy",
-          "degraded",
-          "unavailable"
-        ]
-      },
       "Image": {
         "type": "object",
         "required": [
@@ -662,6 +671,21 @@
           "id": {
             "type": "string"
           },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageRef": {
+        "type": "object",
+        "required": [
+          "name",
+          "tag"
+        ],
+        "properties": {
           "name": {
             "type": "string"
           },
@@ -768,28 +792,69 @@
         "type": "object",
         "required": [
           "id",
-          "status",
+          "roles",
           "capacity",
-          "occupied"
+          "alive",
+          "last_seen"
         ],
         "properties": {
+          "alive": {
+            "type": "boolean"
+          },
           "capacity": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
+            "$ref": "#/components/schemas/NodeCapacity"
           },
           "id": {
             "type": "string"
           },
-          "occupied": {
+          "last_seen": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeRole"
+            }
+          }
+        }
+      },
+      "NodeCapacity": {
+        "type": "object",
+        "required": [
+          "cpu_millis",
+          "memory_bytes",
+          "disk_bytes",
+          "sandboxes"
+        ],
+        "properties": {
+          "cpu_millis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disk_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sandboxes": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
-          },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
           }
         }
+      },
+      "NodeRole": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "volume"
+        ]
       },
       "Provider": {
         "type": "object",
@@ -806,28 +871,46 @@
             "type": "string"
           },
           "status": {
-            "$ref": "#/components/schemas/HealthStatus"
+            "type": "string"
           }
         }
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "ServiceHealth": {
         "type": "object",
         "required": [
-          "service",
-          "status"
+          "role",
+          "instance_id",
+          "version",
+          "alive",
+          "last_seen"
         ],
         "properties": {
-          "detail": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "alive": {
+            "type": "boolean"
           },
-          "service": {
+          "instance_id": {
             "type": "string"
           },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
+          "last_seen": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -835,8 +918,12 @@
         "type": "object",
         "required": [
           "id",
+          "kind",
+          "state",
           "log_id",
-          "latest_sequence"
+          "head_sequence",
+          "created_at",
+          "computer_deleted"
         ],
         "properties": {
           "agent_id": {
@@ -845,18 +932,59 @@
               "null"
             ]
           },
-          "id": {
+          "computer_deleted": {
+            "type": "boolean"
+          },
+          "created_at": {
             "type": "string"
           },
-          "latest_sequence": {
+          "head_sequence": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "waiting": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaitingReason"
+              }
+            ]
           }
         }
+      },
+      "SessionKind": {
+        "type": "string",
+        "enum": [
+          "ephemeral",
+          "named"
+        ]
+      },
+      "SessionState": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "runnable",
+          "leased",
+          "waiting_inference",
+          "waiting_tools",
+          "sleeping",
+          "completed"
+        ]
       },
       "Subscription": {
         "type": "object",
@@ -882,13 +1010,23 @@
         "required": [
           "id",
           "session_id",
-          "status"
+          "status",
+          "started_at"
         ],
         "properties": {
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
           "session_id": {
+            "type": "string"
+          },
+          "started_at": {
             "type": "string"
           },
           "status": {
@@ -910,173 +1048,101 @@
           "idempotency_key"
         ],
         "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "model_id": {
+          "description": {
             "type": [
               "string",
               "null"
             ]
           },
-          "prompt": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "UpdateCredential": {
-        "type": "object",
-        "required": [
-          "idempotency_key"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "secret": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "UpdateImage": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "tag"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "tag": {
-            "type": "string"
-          }
-        }
-      },
-      "UpdateMessage": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "text"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          }
-        }
-      },
-      "UpdateModel": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "context_window"
-        ],
-        "properties": {
-          "context_window": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "idempotency_key": {
-            "type": "string"
-          }
-        }
-      },
-      "UpdateNode": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "status"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
-          }
-        }
-      },
-      "UpdateProvider": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "status"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
-          }
-        }
-      },
-      "UpdateServiceHealth": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "status"
-        ],
-        "properties": {
-          "detail": {
-            "type": [
-              "string",
-              "null"
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
             ]
           },
           "idempotency_key": {
             "type": "string"
           },
-          "status": {
-            "$ref": "#/components/schemas/HealthStatus"
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "UpdateSession": {
         "type": "object",
+        "description": "`close` terminates the session; other fields override inference selection.",
         "required": [
-          "idempotency_key"
+          "idempotency_key",
+          "close"
         ],
         "properties": {
-          "agent_id": {
+          "close": {
+            "type": "boolean"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "model": {
             "type": [
               "string",
               "null"
             ]
           },
-          "idempotency_key": {
-            "type": "string"
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
-      "UpdateTurn": {
+      "WaitingReason": {
         "type": "object",
+        "description": "An ISO 8601 timestamp is used for `wake_at`; reasons are human-readable.",
         "required": [
-          "idempotency_key",
-          "status"
+          "reasons"
         ],
         "properties": {
-          "idempotency_key": {
-            "type": "string"
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "status": {
-            "$ref": "#/components/schemas/TurnStatus"
+          "wake_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }
