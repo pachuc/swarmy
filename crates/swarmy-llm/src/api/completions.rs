@@ -82,14 +82,17 @@ impl CompletionsProvider {
         }
         let retry_after = retry_after(response.headers());
         let body = response.text().await?;
-        let error = serde_json::from_str::<Value>(&body)
-            .map_or_else(|_| provider_error(body), |value| error_from_json(&value));
+        let error = serde_json::from_str::<Value>(&body).map_or_else(
+            |_| provider_error(body.clone()),
+            |value| error_from_json(&value),
+        );
         if matches!(error, Error::ContextOverflow(_)) {
             return Err(error);
         }
         if retryable(status) {
-            return Err(Error::Retryable {
+            return Err(Error::ProviderResponse {
                 status,
+                message: body,
                 retry_after,
             });
         }

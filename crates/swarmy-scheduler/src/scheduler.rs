@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 use swarmy_bus::Bus;
-use swarmy_core::{SessionId, SessionState, WakeReply, WakeRequest};
-use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, runnable_partition};
+use swarmy_core::{Event, SessionId, SessionState, WakeReply, WakeRequest};
+use swarmy_store::{CredentialKey, MAX_SCAN_LIMIT, Store, StoreError, runnable_partition};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
@@ -44,6 +44,46 @@ impl Scheduler {
                 .fetch_session(session_id)
                 .await?
                 .ok_or(StoreError::SessionMissing)?;
+            if session.state == SessionState::Runnable {
+                let provider = session
+                    .inference
+                    .provider
+                    .as_deref()
+                    .unwrap_or(&self.config.provider);
+                if let Some(until) = self
+                    .store
+                    .provider_open_until(&CredentialKey(provider.to_owned()), Timestamp::now())
+                    .await?
+                {
+                    let wait = self.store.inference_wait(session_id).await?;
+                    let failure_pending = if session.head_seq == 0 {
+                        false
+                    } else {
+                        self.store
+                            .read_events(session_id, session.head_seq - 1, 1)
+                            .await?
+                            .first()
+                            .is_some_and(|event| {
+                                matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
+                                    if wait.as_ref().is_none_or(|wait| wait.last_failure_seq != *seq))
+                            })
+                    };
+                    let wait_expired = wait.as_ref().is_some_and(|wait| {
+                        wait.since
+                            .checked_add(self.config.max_inference_wait)
+                            .is_ok_and(|limit| limit <= Timestamp::now())
+                    });
+                    if !failure_pending && !wait_expired {
+                        let reason = self.store.provider_reason(&CredentialKey(provider.to_owned())).await?
+                            .unwrap_or_else(|| "provider temporarily unavailable".into());
+                        if self.store.park_runnable_for_breaker(
+                            session_id, &reason, until, Timestamp::now(), self.config.max_inference_wait
+                        ).await? {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             let turn = self.store.turn_id(session_id).await?;
             self.bus
                 .nudge(
@@ -88,6 +128,11 @@ impl Scheduler {
 
     async fn scan_timers(&self) -> Result<(), StoreError> {
         let now = Timestamp::now();
+        for id in self.store.scan_due_inference_waits(now).await? {
+            if self.store.wake_inference_wait(id, now).await? {
+                self.nudge(id, false).await;
+            }
+        }
         let mut cursor = None;
         loop {
             let page = self.store.scan_due_timers(now, cursor.as_ref()).await?;

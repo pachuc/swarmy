@@ -465,7 +465,7 @@ async fn transient_statuses_retry_and_stop_after_three_attempts() {
         .await;
     assert!(matches!(
         send(&server, request("claude-sonnet-4-5")).await,
-        Err(Error::Retryable { .. })
+        Err(Error::ProviderResponse { .. })
     ));
 }
 
@@ -479,7 +479,7 @@ async fn retry_after_http_date_is_parsed() {
         .mount(&server)
         .await;
     assert!(matches!(send(&server, request("claude-sonnet-4-5")).await,
-        Err(Error::Retryable { retry_after: Some(delay), .. }) if delay == Duration::ZERO));
+        Err(Error::ProviderResponse { retry_after: Some(delay), .. }) if delay == Duration::ZERO));
 }
 
 #[tokio::test]

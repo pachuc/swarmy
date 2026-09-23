@@ -3863,6 +3863,7 @@ dependencies = [
  "foundationdb",
  "futures",
  "jiff",
+ "reqwest",
  "serde",
  "serde_json",
  "swarmy-bus",

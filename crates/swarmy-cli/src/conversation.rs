@@ -48,6 +48,7 @@ pub enum TranscriptEvent {
     State(SessionState),
     SessionIdle,
     Error(String),
+    Waiting(String),
 }
 
 pub enum Notification {
@@ -449,6 +450,18 @@ impl Conversation {
                 && !self.replay.pending_user
             {
                 self.idle();
+            } else if session.state == SessionState::Sleeping
+                && self.state != Some(SessionState::Sleeping)
+            {
+                if let Some(wait) = self.store.inference_wait(self.id).await? {
+                    self.emit(TranscriptEvent::Waiting(format!(
+                        "{} (retry at {})",
+                        wait.reasons.join("; "),
+                        wait.wake_at
+                    )));
+                }
+                self.emit(TranscriptEvent::State(SessionState::Sleeping));
+                self.state = Some(SessionState::Sleeping);
             } else if self.state != Some(session.state) {
                 self.emit(TranscriptEvent::State(session.state));
                 self.state = Some(session.state);
@@ -514,6 +527,15 @@ impl Replay {
                 call: call_id.clone(),
                 result: result.clone(),
             }),
+            Event::InferenceFailed {
+                error,
+                retryable: true,
+                retry_at,
+                ..
+            } => Some(TranscriptEvent::Waiting(format!(
+                "{error} (retry at {})",
+                retry_at.map_or_else(|| "soon".into(), |at| at.to_string())
+            ))),
             Event::InferenceFailed { error, .. } => Some(TranscriptEvent::Error(error.clone())),
             Event::StateChanged {
                 to: SessionState::Idle,

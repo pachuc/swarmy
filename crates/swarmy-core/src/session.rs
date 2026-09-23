@@ -32,7 +32,8 @@ pub enum SessionKind {
 /// Whether a state change is allowed, independently of leases, timers, or I/O.
 ///
 /// Wakeups and completed external work make a session runnable. Only a leased
-/// step can dispatch work, end a turn, sleep, or complete a session. An expired
+/// step can dispatch work, end a turn, sleep, or complete a session. The
+/// scheduler can also park a runnable session behind a provider breaker. An expired
 /// lease returns to runnable so another worker can retry the step. Sleeping
 /// sessions wake to runnable on a timer or message. Completed is terminal and
 /// moving to the same state is not a transition.
@@ -48,7 +49,7 @@ pub const fn can_transition(from: SessionState, to: SessionState) -> bool {
     matches!(
         (from, to),
         (Idle | WaitingInference | WaitingTools | Sleeping, Runnable)
-            | (Runnable, Leased)
+            | (Runnable, Leased | Sleeping)
             | (
                 Leased,
                 Runnable | WaitingInference | WaitingTools | Idle | Sleeping | Completed
@@ -123,7 +124,7 @@ mod tests {
         // including every self-transition and every transition out of Completed.
         let allowed = [
             [false, true, false, false, false, false, false],
-            [false, false, true, false, false, false, false],
+            [false, false, true, false, false, true, false],
             [true, true, false, true, true, true, true],
             [false, true, false, false, false, false, false],
             [false, true, false, false, false, false, false],

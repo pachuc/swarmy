@@ -595,7 +595,7 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
         .unwrap_err();
     assert!(matches!(
         error,
-        Error::Retryable {
+        Error::ProviderResponse {
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
             ..
         }

@@ -129,8 +129,9 @@ impl GeminiProvider {
             ));
         }
         if retryable(status) {
-            return Err(Error::Retryable {
+            return Err(Error::ProviderResponse {
                 status,
+                message: body,
                 retry_after,
             });
         }

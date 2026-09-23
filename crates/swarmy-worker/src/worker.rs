@@ -248,6 +248,12 @@ impl Worker {
         // Replaying the tail also fans out events written by the gateway or a caller,
         // and retries a publication interrupted by the previous worker's death.
         self.publish_tail(id, &events).await?;
+        if self
+            .handle_inference_wait(&mut session, turn, lease, &snapshot, &mut events)
+            .await?
+        {
+            return Ok(());
+        }
         if self.summary_completed(&session, &events).await? {
             return self
                 .finish(&mut session, lease, &snapshot, &mut events, turn)
@@ -337,6 +343,108 @@ impl Worker {
                 }
             }
         }
+    }
+
+    async fn handle_inference_wait(
+        &self,
+        session: &mut SessionRecord,
+        turn: Option<MessageId>,
+        lease: &ActiveLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+    ) -> Result<bool> {
+        let id = session.session_id;
+        if matches!(
+            events.iter().rev().find(|event| matches!(
+                event,
+                Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
+            )),
+            Some(
+                Event::InferenceCompleted { .. }
+                    | Event::InferenceFailed {
+                        retryable: false,
+                        ..
+                    }
+            )
+        ) {
+            self.store.clear_inference_wait(id).await?;
+        }
+        if let Some(wait) = self.store.inference_wait(id).await?
+            && wait
+                .since
+                .checked_add(self.config.max_inference_wait)
+                .is_ok_and(|limit| jiff::Timestamp::now() >= limit)
+        {
+            let request_id = events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    Event::InferenceFailed { request_id, .. } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap_or(RequestId::for_step(
+                    id,
+                    session
+                        .head_seq
+                        .checked_add(1)
+                        .context("sequence overflow")?,
+                ));
+            let terminal = Event::InferenceFailed {
+                seq: 0,
+                request_id,
+                error: format!(
+                    "inference wait exceeded: {} ({} attempts)",
+                    wait.reasons.join("; "),
+                    wait.attempts
+                ),
+                retryable: false,
+                retry_at: None,
+            };
+            self.append(session, lease, events, &[terminal]).await?;
+            self.store.clear_inference_wait(id).await?;
+            self.finish(session, lease, snapshot, events, turn).await?;
+            return Ok(true);
+        }
+        if let Some(Event::InferenceFailed {
+            seq,
+            error,
+            retryable: true,
+            retry_at: Some(retry_at),
+            ..
+        }) = events.iter().rev().find(|event| {
+            matches!(
+                event,
+                Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
+            )
+        }) {
+            let now = jiff::Timestamp::now();
+            let wait = self.store.inference_wait(id).await?;
+            if wait
+                .as_ref()
+                .is_none_or(|wait| wait.last_failure_seq != *seq)
+            {
+                let mut token = lease.lock().await;
+                let parked = self
+                    .store
+                    .park_inference(
+                        id,
+                        token.as_ref().context("lease released")?,
+                        &swarmy_store::InferenceFailureWait {
+                            seq: *seq,
+                            reason: error,
+                            wake_at: *retry_at,
+                        },
+                        now,
+                        self.config.max_inference_wait,
+                    )
+                    .await?;
+                if parked {
+                    *token = None;
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     async fn fold_results(
@@ -1151,6 +1259,8 @@ impl Worker {
                 error: format!(
                     "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
                 ),
+                retryable: false,
+                retry_at: None,
             };
             let committed = self
                 .store

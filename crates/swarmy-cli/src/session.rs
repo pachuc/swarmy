@@ -29,6 +29,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 .context("session not found")?;
             show_selection(&store, &session, json).await?;
             show_usage(&store.session_usage(id).await?, json);
+            show_inference_wait(&store, &session, json).await?;
             let mut after = 0;
             while after < session.head_seq {
                 let events = store.read_events(id, after, MAX_SCAN_LIMIT).await?;
@@ -98,6 +99,28 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+async fn show_inference_wait(
+    store: &swarmy_store::Store,
+    session: &swarmy_core::SessionRecord,
+    json: bool,
+) -> Result<()> {
+    if session.state == SessionState::Sleeping
+        && let Some(wait) = store.inference_wait(session.session_id).await?
+    {
+        let value = serde_json::json!({"state": "waiting_for_inference", "wake_at": wait.wake_at, "reasons": wait.reasons});
+        crate::vol::output(
+            &value,
+            &format!(
+                "WaitingForInference until {}: {}",
+                wait.wake_at,
+                wait.reasons.join("; ")
+            ),
+            json,
+        )?;
     }
     Ok(())
 }
@@ -307,9 +330,26 @@ impl Output {
             );
         } else {
             match event {
-                Event::InferenceFailed { error, .. } => {
+                Event::InferenceFailed {
+                    error,
+                    retryable: false,
+                    ..
+                } => {
                     self.finish_line();
                     eprintln!("Error: {error}");
+                }
+                Event::InferenceFailed {
+                    error,
+                    retryable: true,
+                    retry_at,
+                    ..
+                } => {
+                    self.finish_line();
+                    self.streamed.clear();
+                    eprintln!(
+                        "Waiting for inference until {}: {error}",
+                        retry_at.map_or_else(|| "soon".into(), |at| at.to_string())
+                    );
                 }
                 Event::ToolCallRequested { call, .. } => {
                     self.finish_line();

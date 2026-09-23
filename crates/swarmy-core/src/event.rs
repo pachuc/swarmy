@@ -54,11 +54,13 @@ pub enum Event {
         seq: u64,
         snapshot: SnapshotRef,
     },
-    /// Provider retries were exhausted; the next step can handle the failure.
+    /// The gateway records an exhausted provider attempt for the next step.
     InferenceFailed {
         seq: u64,
         request_id: RequestId,
         error: String,
+        retryable: bool,
+        retry_at: Option<jiff::Timestamp>,
     },
 }
 
@@ -153,6 +155,8 @@ mod tests {
                 seq: 8,
                 request_id,
                 error: "provider failed".into(),
+                retryable: false,
+                retry_at: None,
             },
         ]
     }
@@ -195,5 +199,31 @@ mod tests {
         };
         assert_eq!(decode::<Event>(&bytes).unwrap(), event);
         assert_eq!(encode(&event).unwrap(), bytes);
+    }
+
+    #[test]
+    fn old_failure_defaults_to_permanent_and_new_failure_keeps_retry_time() {
+        let id = RequestId::for_step(SessionId::from_ulid(Ulid::from_parts(1, 2)), 3);
+        let old =
+            serde_json::json!({"inference_failed": {"seq": 3, "request_id": id, "error": "old"}});
+        assert_eq!(
+            serde_json::from_value::<Event>(old).unwrap(),
+            Event::InferenceFailed {
+                seq: 3,
+                request_id: id,
+                error: "old".into(),
+                retryable: false,
+                retry_at: None,
+            }
+        );
+        let retry_at = "2026-09-23T01:00:00Z".parse().unwrap();
+        let event = Event::InferenceFailed {
+            seq: 4,
+            request_id: id,
+            error: "limit reached".into(),
+            retryable: true,
+            retry_at: Some(retry_at),
+        };
+        assert_round_trip(&event);
     }
 }

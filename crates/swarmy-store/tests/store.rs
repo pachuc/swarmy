@@ -12,10 +12,97 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    Store, StoreError,
+    CredentialKey, Store, StoreError,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };
+
+#[tokio::test]
+async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
+    let Some(f) = TestStore::memory() else { return };
+    let key = CredentialKey("fake".into());
+    f.store
+        .provider_failure(&key, timestamp(105), "quota reached")
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.claim_provider(&key, timestamp(100)).await.unwrap(),
+        Some(timestamp(105))
+    );
+    let reopened = Store::with_subspace(
+        f.db.clone(),
+        f.root.clone(),
+        Arc::new(MemoryBlobStore::default()),
+    );
+    assert_eq!(
+        reopened
+            .provider_open_until(&key, timestamp(100))
+            .await
+            .unwrap(),
+        Some(timestamp(105))
+    );
+    assert_eq!(
+        reopened.claim_provider(&key, timestamp(105)).await.unwrap(),
+        None
+    );
+    assert!(
+        reopened
+            .claim_provider(&key, timestamp(105))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let id = f.create().await;
+    assert!(
+        f.store
+            .park_runnable_for_breaker(
+                id,
+                "quota reached",
+                timestamp(105),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert!(
+        f.store
+            .scan_due_inference_waits(timestamp(104))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.store
+            .scan_due_inference_waits(timestamp(105))
+            .await
+            .unwrap(),
+        vec![id]
+    );
+    assert!(
+        f.store
+            .wake_inference_wait(id, timestamp(105))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    f.store.provider_success(&key).await.unwrap();
+    assert!(
+        f.store
+            .provider_open_until(&key, timestamp(105))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.cleanup().await;
+}
 use ulid::Ulid;
 
 fn timestamp(second: i64) -> Timestamp {
@@ -793,6 +880,8 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
             seq: 999,
             request_id,
             error: "exhausted".into(),
+            retryable: false,
+            retry_at: None,
         },
         now: timestamp(12),
     };
@@ -837,6 +926,8 @@ async fn assert_completion_published_once(
         seq: 0,
         request_id: completion.claim.request_id,
         error: "must not be published".into(),
+        retryable: false,
+        retry_at: None,
     };
     assert!(
         !store
