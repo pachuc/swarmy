@@ -1,0 +1,1151 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Swarmy API",
+    "description": "",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/v1",
+      "description": "Version 1 control plane"
+    }
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Agent": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "image",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
+          },
+          "main_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "description": "`provider_text` preserves the original provider error without rewriting it.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "provider_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateAgent": {
+        "type": "object",
+        "description": "Every client mutation has a key that survives retries of the same intent.",
+        "required": [
+          "idempotency_key",
+          "name",
+          "description",
+          "image"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateCredential": {
+        "type": "object",
+        "description": "Setting the same provider again replaces its credential without exposing its secret on reads.",
+        "required": [
+          "idempotency_key",
+          "provider",
+          "kind",
+          "label",
+          "secret"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateImage": {
+        "type": "object",
+        "description": "Register an already built image; image builds are not mutations of this resource.",
+        "required": [
+          "idempotency_key",
+          "name",
+          "tag"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateMessage": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "session_id",
+          "role",
+          "text"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateSession": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              }
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateTurn": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "session_id"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "description": "Credential metadata contains no secret material.",
+        "required": [
+          "provider",
+          "kind",
+          "label",
+          "status",
+          "updated_at"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CredentialStatus"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialKind": {
+        "type": "string",
+        "enum": [
+          "subscription",
+          "api_key",
+          "cloud"
+        ]
+      },
+      "CredentialStatus": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "expired",
+          "needs_login"
+        ]
+      },
+      "Cursor": {
+        "type": "object",
+        "description": "A sequence is local to one log, starts at one, and increases without gaps.",
+        "required": [
+          "log_id",
+          "sequence"
+        ],
+        "properties": {
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "description": "A durable event has a cursor even when delivered on a multiplexed connection.",
+        "required": [
+          "log_id",
+          "sequence",
+          "payload"
+        ],
+        "properties": {
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/EventPayload"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EventPayload": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "$ref": "#/components/schemas/Message"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "message_appended"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn"
+                ],
+                "properties": {
+                  "turn": {
+                    "$ref": "#/components/schemas/Turn"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn"
+                ],
+                "properties": {
+                  "turn": {
+                    "$ref": "#/components/schemas/Turn"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_finished"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "call_id",
+                  "name",
+                  "arguments"
+                ],
+                "properties": {
+                  "arguments": {},
+                  "call_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_call"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "call_id",
+                  "result"
+                ],
+                "properties": {
+                  "call_id": {
+                    "type": "string"
+                  },
+                  "result": {},
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_result"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "error"
+                ],
+                "properties": {
+                  "error": {
+                    "$ref": "#/components/schemas/ApiError"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "inference_error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "session_id"
+                ],
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "idle"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "token_delta"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "health"
+                ],
+                "properties": {
+                  "health": {
+                    "$ref": "#/components/schemas/ServiceHealth"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "service_status_changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "node"
+                ],
+                "properties": {
+                  "node": {
+                    "$ref": "#/components/schemas/Node"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "node_status_changed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "Image": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "tag"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageRef": {
+        "type": "object",
+        "required": [
+          "name",
+          "tag"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "LogId": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "session"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A log namespace. The tagged representation reserves channels without changing session cursors."
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "role",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "MessageRole": {
+        "type": "string",
+        "enum": [
+          "user",
+          "assistant",
+          "tool",
+          "system"
+        ]
+      },
+      "Model": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider_id",
+          "context_window"
+        ],
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Node": {
+        "type": "object",
+        "required": [
+          "id",
+          "roles",
+          "capacity",
+          "alive",
+          "last_seen"
+        ],
+        "properties": {
+          "alive": {
+            "type": "boolean"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/NodeCapacity"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeRole"
+            }
+          }
+        }
+      },
+      "NodeCapacity": {
+        "type": "object",
+        "required": [
+          "cpu_millis",
+          "memory_bytes",
+          "disk_bytes",
+          "sandboxes"
+        ],
+        "properties": {
+          "cpu_millis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disk_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sandboxes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "NodeRole": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "volume"
+        ]
+      },
+      "Provider": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "ServiceHealth": {
+        "type": "object",
+        "required": [
+          "role",
+          "instance_id",
+          "version",
+          "alive",
+          "last_seen"
+        ],
+        "properties": {
+          "alive": {
+            "type": "boolean"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "log_id",
+          "head_sequence",
+          "created_at",
+          "computer_deleted"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "computer_deleted": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "head_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionKind"
+          },
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SessionState"
+          },
+          "waiting": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaitingReason"
+              }
+            ]
+          }
+        }
+      },
+      "SessionKind": {
+        "type": "string",
+        "enum": [
+          "ephemeral",
+          "named"
+        ]
+      },
+      "SessionState": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "runnable",
+          "leased",
+          "waiting_inference",
+          "waiting_tools",
+          "sleeping",
+          "completed"
+        ]
+      },
+      "Subscription": {
+        "type": "object",
+        "description": "One connection may replay and follow several logs at once.",
+        "required": [
+          "cursors",
+          "token_deltas"
+        ],
+        "properties": {
+          "cursors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cursor"
+            }
+          },
+          "token_deltas": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Turn": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "status",
+          "started_at"
+        ],
+        "properties": {
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatus"
+          }
+        }
+      },
+      "TurnStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "finished",
+          "failed"
+        ]
+      },
+      "UpdateAgent": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateSession": {
+        "type": "object",
+        "description": "`close` terminates the session; other fields override inference selection.",
+        "required": [
+          "idempotency_key",
+          "close"
+        ],
+        "properties": {
+          "close": {
+            "type": "boolean"
+          },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WaitingReason": {
+        "type": "object",
+        "description": "An ISO 8601 timestamp is used for `wake_at`; reasons are human-readable.",
+        "required": [
+          "reasons"
+        ],
+        "properties": {
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wake_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
