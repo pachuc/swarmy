@@ -399,10 +399,11 @@ async fn survives_renewals(
 }
 
 async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentId) {
-    // A host listener observes external effects even after the rootfs is gone.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    // A listener in the old network namespace observes effects even after
+    // runc removes the old rootfs. Its host-side marker survives teardown.
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
     invoke(
         node,
         store,
@@ -412,6 +413,31 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
         serde_json::json!({"command": format!("sleep 5; curl http://127.0.0.1:{port}/stale-effect")}),
     )
     .await;
+    let state = Command::new("runc")
+        .arg("--root")
+        .arg(node.root.path().join(".swarmy/node/runc"))
+        .args(["state", &agent.to_string()])
+        .output()
+        .unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&state.stdout).unwrap();
+    let namespace_pid = state["pid"].as_u64().unwrap();
+    let marker = tempfile::tempdir().unwrap();
+    let ready = marker.path().join("ready");
+    let accepted = marker.path().join("accepted");
+    let mut listener = tokio::process::Command::new("nsenter")
+        .args(["-t", &namespace_pid.to_string(), "-n", "python3", "-u", "-c", "import pathlib,socket,sys; s=socket.socket(); s.bind(('127.0.0.1',int(sys.argv[1]))); s.listen(); pathlib.Path(sys.argv[2]).touch(); s.accept(); pathlib.Path(sys.argv[3]).touch()", &port.to_string()])
+        .arg(&ready)
+        .arg(&accepted)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let path = device(node, agent);
     let old = store.get_by_agent(agent).await.unwrap().unwrap();
     store.release(&old).await.unwrap();
@@ -420,10 +446,11 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
     tokio::time::sleep(Duration::from_secs(2)).await;
     absent(node, agent, &path);
     tokio::time::sleep(Duration::from_secs(4)).await;
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
+    assert!(
+        !accepted.exists(),
+        "superseded process reached its listener"
     );
+    listener.kill().await.unwrap();
     assert_eq!(
         store.get_by_agent(agent).await.unwrap().unwrap(),
         replacement

@@ -196,6 +196,33 @@ impl Drop for Node {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
+                let pid_path = bundle.path().join("pasta.pid");
+                if let Ok(pid) = std::fs::read_to_string(&pid_path)
+                    && let Ok(pid) = pid.trim().parse::<u32>()
+                {
+                    let command = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                    if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
+                        && command
+                            .windows(pid_path.as_os_str().as_encoded_bytes().len())
+                            .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
+                    {
+                        let _ = Command::new("kill")
+                            .arg(pid.to_string())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status();
+                    }
+                }
+                let _ = Command::new("ip")
+                    .args(["netns", "delete"])
+                    .arg(format!(
+                        "swarmy-{}-{}",
+                        self.id,
+                        bundle.file_name().to_string_lossy()
+                    ))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 let mount = bundle.path().join("rootfs");
                 let source = Command::new("findmnt")
                     .args(["--noheadings", "--output", "SOURCE", "--mountpoint"])
@@ -358,6 +385,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         0
     );
     let sandbox = node.create(volume).await;
+    sandbox_network(&node, &sandbox).await;
     let (result, _, stderr) = node.exec(&sandbox, "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y jq && jq --version", 600_000).await;
     assert_eq!(result.exit_code, 0, "{}", String::from_utf8_lossy(&stderr));
     assert!(!result.timed_out);
@@ -366,6 +394,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     let manifest = store.get_volume(volume).await.unwrap().unwrap();
     assert!(manifest.writer_lease.is_none());
     assert_ne!(manifest.head_manifest, base);
+    network_cycles(&node, &store, manifest.head_manifest).await;
     let next = VolumeId::from_ulid(ulid::Ulid::generate());
     store
         .create_volume(next, manifest.head_manifest)
@@ -386,6 +415,99 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     node.stop().await;
     // Settings now carries the merged remote configuration, so this future is boxed.
     Box::pin(persistent::run(node.settings.clone(), &store, base)).await;
+}
+
+async fn sandbox_network(node: &Node, sandbox: &Sandbox) {
+    let (result, stdout, stderr) = node.exec(
+        sandbox,
+        "curl --fail --silent --show-error --max-time 30 https://github.com >/dev/null && getent hosts crates.io && python3 -c 'import socket; s=socket.socket(); s.bind((\"127.0.0.1\",4500)); print(\"bound\")' && ! bash -c 'exec 3<>/dev/tcp/127.0.0.1/4500'",
+        60_000,
+    ).await;
+    assert_eq!(result.exit_code, 0, "{}", String::from_utf8_lossy(&stderr));
+    assert!(String::from_utf8_lossy(&stdout).contains("bound"));
+    let private_ip = Command::new("hostname").arg("-I").output().unwrap();
+    let private_ip = String::from_utf8_lossy(&private_ip.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    for address in [private_ip.as_str(), "10.0.2.1"] {
+        for port in [4500, 4222, 8333] {
+            let command = format!("! timeout 3 bash -c 'exec 3<>/dev/tcp/{address}/{port}'");
+            assert_eq!(node.exec(sandbox, &command, 5_000).await.0.exit_code, 0);
+        }
+    }
+}
+
+async fn network_cycles(node: &Node, store: &Store, head: ManifestId) {
+    let links_before = Command::new("ip")
+        .args(["-o", "link", "show"])
+        .output()
+        .unwrap()
+        .stdout;
+    for _ in 0..10 {
+        let cycle = VolumeId::from_ulid(ulid::Ulid::generate());
+        store.create_volume(cycle, head).await.unwrap();
+        let sandbox = node.create(cycle).await;
+        let agent = sandbox.agent_id;
+        let pid_file = node
+            .root
+            .path()
+            .join(format!(".swarmy/node/bundles/{agent}/pasta.pid"));
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        node.destroy(sandbox).await;
+        assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+        assert!(
+            !Path::new("/run/netns")
+                .join(format!("swarmy-{}-{agent}", node.id))
+                .exists()
+        );
+    }
+    assert_eq!(
+        Command::new("ip")
+            .args(["-o", "link", "show"])
+            .output()
+            .unwrap()
+            .stdout,
+        links_before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_dev_stack_uses_sandbox_loopback() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
+        || std::env::var_os("SWARMY_TEST_DEV_IMAGE").is_none()
+    {
+        eprintln!("skipping dev stack acceptance: root and SWARMY_TEST_DEV_IMAGE are required");
+        return;
+    }
+    boot_network();
+    let image_spec = std::env::var("SWARMY_TEST_DEV_IMAGE").unwrap();
+    let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
+    let settings = swarmy_config::Settings::load().unwrap().settings;
+    let store = store(&settings).await;
+    let image = store
+        .get_image(image_name, &ImageTag(image_tag.into()))
+        .await
+        .unwrap()
+        .expect("build SWARMY_TEST_DEV_IMAGE before this test");
+    let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+    store.create_volume(volume, image).await.unwrap();
+    let mut node = Node::new(settings);
+    node.start();
+    node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
+    let sandbox = node.create(volume).await;
+    let command = "set -e; export PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:$PATH CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib; cd /home/agent/work; git clone --depth 1 https://github.com/pachuc/swarmy.git stack-test; cd stack-test; trap 'scripts/dev-stack.sh stop' EXIT; scripts/dev-stack.sh start; source .dev/env; cargo test -p swarmy-store --locked";
+    let (result, stdout, stderr) = node.exec(&sandbox, command, 1_800_000).await;
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    node.destroy(sandbox).await;
+    node.stop().await;
 }
 
 async fn registration(node: &Node, store: &Store) {
@@ -456,6 +578,12 @@ async fn pause_resume_timeout(node: &Node, sandbox: Sandbox) {
 
 async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     let sandbox = node.create(volume).await;
+    let network_name = format!("swarmy-{}-{}", node.id, sandbox.agent_id);
+    let old_pasta = std::fs::read_to_string(node.root.path().join(format!(
+        ".swarmy/node/bundles/{}/pasta.pid",
+        sandbox.agent_id
+    )))
+    .unwrap();
     let mut reader = connect(
         &node.socket(),
         exec(
@@ -478,6 +606,8 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     drop(reader);
     node.start();
     node.ready(store, before).await;
+    assert!(!Path::new("/run/netns").join(&network_name).exists());
+    assert!(!Path::new(&format!("/proc/{}", old_pasta.trim())).exists());
     let expiry = store
         .get_volume(volume)
         .await
@@ -535,13 +665,16 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
         .head_manifest;
     store.create_volume(priority_volume, head).await.unwrap();
     let priority_sandbox = node.create(priority_volume).await;
-    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = gate.local_addr().unwrap().port();
+    let gate = tokio::net::UnixListener::bind(node.root.path().join(format!(
+        ".swarmy/node/bundles/{}/guest/priority.sock",
+        priority_sandbox.agent_id
+    )))
+    .unwrap();
     let mut priority_tool = connect(
         &node.socket(),
         exec(
             &priority_sandbox,
-            &format!("read -r release </dev/tcp/127.0.0.1/{port}"),
+            "python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/swarmy/priority.sock'); s.recv(1)\"",
             60_000,
         ),
     )

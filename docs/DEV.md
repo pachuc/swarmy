@@ -250,6 +250,11 @@ existing `/usr/lib`, `/usr/local/lib`, and `/usr/lib/x86_64-linux-gnu` directori
 It emits the same rpath option on macOS, where the library is `libfdb_c.dylib`;
 the installer and process supervisor currently target Linux.
 
+Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
+`iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
+`sudo apt-get install runc passt iproute2 util-linux` before
+starting `swarmyd`.
+
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
 No shell profile changes or `LD_LIBRARY_PATH` exports are needed. To call a

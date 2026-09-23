@@ -49,6 +49,7 @@ fn remote(root: &Path) -> Result<()> {
         ],
     )?;
     git(&seed, &["push", "../remote.git", "master"])?;
+    std::fs::write(root.join("remote-ready"), b"")?;
     Ok(())
 }
 
@@ -57,9 +58,11 @@ fn tool(index: usize, name: &str, input: &Value) -> Value {
 }
 
 fn script(remote: &str, work: &str) -> Vec<Value> {
+    let ready = Path::new(remote).parent().unwrap().join("remote-ready");
     let commands = [
         format!(
-            "git clone {remote} {work} && cd {work} && git switch -c {BRANCH} && git config user.name 'Swarmy Test' && git config user.email test@example.invalid"
+            "until test -f {}; do sleep 0.1; done; git clone {remote} {work} && cd {work} && git switch -c {BRANCH} && git config user.name 'Swarmy Test' && git config user.email test@example.invalid",
+            ready.display()
         ),
         format!("cd {work} && sh test.sh"),
         format!("cd {work} && touch kill-ready && sleep 120"),
@@ -143,47 +146,13 @@ fn verify_remote(root: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn serve_remote(root: &Path) -> Result<(tokio::process::Child, u16)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    // The node uses the host network; this local daemon is never internet-facing.
-    let mut daemon = tokio::process::Command::new("git")
-        .args([
-            "daemon",
-            "--reuseaddr",
-            "--export-all",
-            "--enable=receive-pack",
-            "--listen=127.0.0.1",
-        ])
-        .arg(format!("--port={port}"))
-        .arg(format!("--base-path={}", root.display()))
-        .arg(root)
-        .kill_on_drop(true)
-        .spawn()?;
-    timeout(Duration::from_secs(5), async {
-        while tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_err()
-        {
-            ensure!(daemon.try_wait()?.is_none(), "git daemon exited");
-            sleep(Duration::from_millis(25)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
-    Ok((daemon, port))
-}
-
 pub async fn exercise(f: &mut Fixture) -> Result<()> {
     remote(f.files.path())?;
-    let (mut daemon, port) = serve_remote(f.files.path()).await?;
-    let responses: serde_json::Map<_, _> =
-        script(&format!("git://127.0.0.1:{port}/remote.git"), WORK)
-            .into_iter()
-            .enumerate()
-            .map(|(i, value)| (i.to_string(), value))
-            .collect();
+    let responses: serde_json::Map<_, _> = script("/home/agent/work/remote.git", WORK)
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| (i.to_string(), value))
+        .collect();
     std::fs::write(
         f.files.path().join("script.json"),
         serde_json::to_vec(&json!({"responses":responses}))?,
@@ -215,6 +184,7 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
     f.bus
         .nudge(session, head, Some(message.id), Duration::ZERO, true)
         .await?;
+    seed_sandbox_remote(f, agent.agent_id).await?;
     kill_at_marker(f, agent.agent_id).await?;
     let events = timeout(Duration::from_secs(240), async {
         loop {
@@ -237,13 +207,52 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
     .await
     .context("coding recovery timed out")??;
     verify_events(f, &events).await?;
-    verify_remote(f.files.path())?;
-    daemon.kill().await?;
+    verify_remote(&f.files.path().join(format!(
+        ".swarmy/node/bundles/{}/rootfs/home/agent/work",
+        agent.agent_id
+    )))?;
     tracing::info!(
         seconds = started.elapsed().as_secs_f64(),
         "coding proof passed: failing test repaired, README committed and pushed after one node kill"
     );
     Ok(())
+}
+
+async fn seed_sandbox_remote(f: &mut Fixture, agent: swarmy_core::AgentId) -> Result<()> {
+    let rootfs = f
+        .files
+        .path()
+        .join(format!(".swarmy/node/bundles/{agent}/rootfs"));
+    timeout(Duration::from_secs(180), async {
+        loop {
+            for process in &mut f.processes {
+                process.check()?;
+            }
+            if Command::new("mountpoint")
+                .args(["-q", "--"])
+                .arg(&rootfs)
+                .status()?
+                .success()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        let work = rootfs.join("home/agent/work");
+        ensure!(
+            Command::new("cp")
+                .arg("-R")
+                .arg(f.files.path().join("remote.git"))
+                .arg(work.join("remote.git"))
+                .status()?
+                .success(),
+            "copy coding remote into sandbox failed"
+        );
+        std::fs::write(work.join("remote-ready"), b"")?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("coding sandbox did not mount its disk")?
 }
 
 async fn kill_at_marker(f: &mut Fixture, agent: swarmy_core::AgentId) -> Result<()> {
