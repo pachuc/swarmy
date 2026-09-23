@@ -341,6 +341,41 @@
       "status": "deprecated",
       "tool_call": true
     },
+    "claude-opus-5-5@default": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-5-5@default",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "claude-opus-5@default": {
       "attachment": true,
       "compat": {},

@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-09-20T01:13:19+00:00",
+  "generated_at": "2026-09-23T05:34:15+00:00",
   "sources": {
     "models.dev": {
-      "sha256": "5f67f81c68d10a28905a6d299418854f6c8cb444f27538e1134975510c1e81fe",
+      "sha256": "d36bc2245db03b989d988cc27511f4271b68a3472e59b4f4587b399ed91d98e7",
       "url": "https://models.dev/api.json"
     },
     "openrouter": {
-      "sha256": "ec3c1ae13146edd3742274f92674650171e568971a306357c108b926e474015f",
+      "sha256": "d866defcb9bbcaba64ea82be9853da102bab597801cf1c0cac566cf44aacc5bc",
       "url": "https://openrouter.ai/api/v1/models"
     }
   }

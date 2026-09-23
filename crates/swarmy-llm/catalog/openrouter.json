@@ -567,43 +567,6 @@
       "status": null,
       "tool_call": true
     },
-    "anthropic/claude-opus-4": {
-      "api": "AnthropicMessages",
-      "attachment": true,
-      "base_url": "https://openrouter.ai/api",
-      "compat": {
-        "cache_control_format": "anthropic",
-        "force_adaptive_thinking": false,
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": true,
-        "supports_strict_mode": true,
-        "supports_temperature": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 1.5,
-        "cache_write": 18.75,
-        "input": 15.0,
-        "output": 75.0,
-        "tiers": []
-      },
-      "family": null,
-      "id": "anthropic/claude-opus-4",
-      "input_modalities": [
-        "image",
-        "text",
-        "file"
-      ],
-      "limit": {
-        "context": 200000,
-        "output": 32000
-      },
-      "name": "Anthropic: Claude Opus 4",
-      "reasoning": "toggle",
-      "release_date": "2025-05-22",
-      "status": null,
-      "tool_call": true
-    },
     "anthropic/claude-opus-4.1": {
       "api": "AnthropicMessages",
       "attachment": true,
@@ -1072,6 +1035,96 @@
       "status": null,
       "tool_call": true
     },
+    "anthropic/claude-opus-5.5": {
+      "api": "AnthropicMessages",
+      "attachment": true,
+      "base_url": "https://openrouter.ai/api",
+      "compat": {
+        "cache_control_format": "anthropic",
+        "force_adaptive_thinking": true,
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "supports_temperature": false,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 5.0,
+        "input": 4.0,
+        "output": 20.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "anthropic/claude-opus-5.5",
+      "input_modalities": [
+        "text",
+        "image",
+        "file"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Anthropic: Claude Opus 5.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "anthropic/claude-opus-5.5:batch": {
+      "api": "AnthropicMessages",
+      "attachment": true,
+      "base_url": "https://openrouter.ai/api",
+      "compat": {
+        "cache_control_format": "anthropic",
+        "force_adaptive_thinking": true,
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "supports_temperature": false,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 2.5,
+        "input": 2.0,
+        "output": 10.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "anthropic/claude-opus-5.5:batch",
+      "input_modalities": [
+        "text",
+        "image",
+        "file"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Anthropic: Claude Opus 5.5 (batch)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "anthropic/claude-opus-5:batch": {
       "api": "AnthropicMessages",
       "attachment": true,
@@ -1146,7 +1199,7 @@
         "file"
       ],
       "limit": {
-        "context": 1000000,
+        "context": 200000,
         "output": 64000
       },
       "name": "Anthropic: Claude Sonnet 4",
@@ -1663,6 +1716,37 @@
       "status": null,
       "tool_call": true
     },
+    "cohere/command-a-plus": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.15,
+        "cache_write": 0.0,
+        "input": 0.3,
+        "output": 1.5,
+        "tiers": []
+      },
+      "family": null,
+      "id": "cohere/command-a-plus",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 192000,
+        "output": 64000
+      },
+      "name": "Cohere: Command A+",
+      "reasoning": "toggle",
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "cohere/command-r-08-2024": {
       "attachment": false,
       "compat": {
@@ -2016,10 +2100,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.007448,
+        "cache_read": 0.0177212,
         "cache_write": 0.0,
-        "input": 0.03724,
-        "output": 0.07448,
+        "input": 0.088606,
+        "output": 0.177212,
         "tiers": []
       },
       "family": null,
@@ -2055,7 +2139,7 @@
         "cache_read": 0.016,
         "cache_write": 0.0,
         "input": 0.04,
-        "output": 0.08,
+        "output": 0.64,
         "tiers": []
       },
       "family": null,
@@ -2080,80 +2164,6 @@
       "status": null,
       "tool_call": true
     },
-    "deepseek/deepseek-v4-flash-0731:batch": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.0035,
-        "cache_write": 0.0,
-        "input": 0.11,
-        "output": 0.33,
-        "tiers": []
-      },
-      "family": null,
-      "id": "deepseek/deepseek-v4-flash-0731:batch",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 1048576,
-        "output": 943718
-      },
-      "name": "DeepSeek: DeepSeek V4 Flash 0731 (batch)",
-      "reasoning": {
-        "effort": [
-          "none",
-          "low",
-          "high",
-          "max"
-        ]
-      },
-      "release_date": "2026-07-31",
-      "status": null,
-      "tool_call": true
-    },
-    "deepseek/deepseek-v4-flash-0731:free": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.0,
-        "cache_write": 0.0,
-        "input": 0.0,
-        "output": 0.0,
-        "tiers": []
-      },
-      "family": null,
-      "id": "deepseek/deepseek-v4-flash-0731:free",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 1048576,
-        "output": 393216
-      },
-      "name": "DeepSeek: DeepSeek V4 Flash 0731 (free)",
-      "reasoning": {
-        "effort": [
-          "none",
-          "low",
-          "high",
-          "max"
-        ]
-      },
-      "release_date": "2026-07-31",
-      "status": null,
-      "tool_call": true
-    },
     "deepseek/deepseek-v4-flash-vision-exp": {
       "attachment": true,
       "compat": {
@@ -2163,10 +2173,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.00686,
+        "cache_read": 0.007,
         "cache_write": 0.0,
-        "input": 0.2156,
-        "output": 0.6468,
+        "input": 0.22,
+        "output": 0.66,
         "tiers": []
       },
       "family": null,
@@ -2177,47 +2187,9 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 262144
-      },
-      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp",
-      "reasoning": {
-        "effort": [
-          "none",
-          "low",
-          "high",
-          "max"
-        ]
-      },
-      "release_date": "2026-08-21",
-      "status": null,
-      "tool_call": true
-    },
-    "deepseek/deepseek-v4-flash-vision-exp:batch": {
-      "attachment": true,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.0035,
-        "cache_write": 0.0,
-        "input": 0.11,
-        "output": 0.33,
-        "tiers": []
-      },
-      "family": null,
-      "id": "deepseek/deepseek-v4-flash-vision-exp:batch",
-      "input_modalities": [
-        "text",
-        "image"
-      ],
-      "limit": {
-        "context": 1048576,
         "output": 943718
       },
-      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp (batch)",
+      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp",
       "reasoning": {
         "effort": [
           "none",
@@ -2239,10 +2211,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.0351915,
+        "cache_read": 0.079605,
         "cache_write": 0.0,
-        "input": 0.422298,
-        "output": 0.844596,
+        "input": 0.95526,
+        "output": 1.91052,
         "tiers": []
       },
       "family": null,
@@ -2275,10 +2247,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.018396,
+        "cache_read": 0.022,
         "cache_write": 0.0,
-        "input": 0.57816,
-        "output": 1.73448,
+        "input": 0.66,
+        "output": 1.98,
         "tiers": []
       },
       "family": null,
@@ -2288,46 +2260,9 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 393216
+        "output": 384000
       },
       "name": "DeepSeek: DeepSeek V4 Pro 0813",
-      "reasoning": {
-        "effort": [
-          "none",
-          "low",
-          "high",
-          "max"
-        ]
-      },
-      "release_date": "2026-08-12",
-      "status": null,
-      "tool_call": true
-    },
-    "deepseek/deepseek-v4-pro-0813:batch": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.022,
-        "cache_write": 0.0,
-        "input": 0.66,
-        "output": 1.98,
-        "tiers": []
-      },
-      "family": null,
-      "id": "deepseek/deepseek-v4-pro-0813:batch",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 1048576,
-        "output": 943718
-      },
-      "name": "DeepSeek: DeepSeek V4 Pro 0813 (batch)",
       "reasoning": {
         "effort": [
           "none",
@@ -2349,10 +2284,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.003,
+        "cache_read": 0.01,
         "cache_write": 0.0,
-        "input": 0.15,
-        "output": 0.6,
+        "input": 0.06,
+        "output": 0.32,
         "tiers": []
       },
       "family": null,
@@ -2363,9 +2298,47 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 384000
+        "output": 943718
       },
       "name": "DeepSeek: DeepSeek V4.1 Flash",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-10",
+      "status": null,
+      "tool_call": true
+    },
+    "deepseek/deepseek-v4.1-flash:batch": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.00336,
+        "cache_write": 0.0,
+        "input": 0.112,
+        "output": 0.336,
+        "tiers": []
+      },
+      "family": null,
+      "id": "deepseek/deepseek-v4.1-flash:batch",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "DeepSeek: DeepSeek V4.1 Flash (batch)",
       "reasoning": {
         "effort": [
           "none",
@@ -3925,36 +3898,6 @@
       "status": null,
       "tool_call": true
     },
-    "kwaipilot/kat-coder-pro-v2": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.06,
-        "cache_write": 0.0,
-        "input": 0.3,
-        "output": 1.2,
-        "tiers": []
-      },
-      "family": null,
-      "id": "kwaipilot/kat-coder-pro-v2",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 262144,
-        "output": 144000
-      },
-      "name": "Kwaipilot: KAT-Coder-Pro V2",
-      "reasoning": null,
-      "release_date": "2026-03-27",
-      "status": null,
-      "tool_call": true
-    },
     "kwaipilot/kat-coder-pro-v2.5": {
       "attachment": false,
       "compat": {
@@ -4215,8 +4158,8 @@
       "cost": {
         "cache_read": 0.04,
         "cache_write": 0.0,
-        "input": 0.35,
-        "output": 1.5,
+        "input": 0.3,
+        "output": 1.2,
         "tiers": []
       },
       "family": null,
@@ -4227,47 +4170,9 @@
       ],
       "limit": {
         "context": 131072,
-        "output": 117964
+        "output": 16384
       },
       "name": "Meta: Muse Glimmer 30B",
-      "reasoning": {
-        "effort": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      },
-      "release_date": "2026-08-09",
-      "status": null,
-      "tool_call": true
-    },
-    "meta/muse-glimmer-30b:batch": {
-      "attachment": true,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.02,
-        "cache_write": 0.0,
-        "input": 0.175,
-        "output": 0.75,
-        "tiers": []
-      },
-      "family": null,
-      "id": "meta/muse-glimmer-30b:batch",
-      "input_modalities": [
-        "text",
-        "image"
-      ],
-      "limit": {
-        "context": 131072,
-        "output": 117964
-      },
-      "name": "Meta: Muse Glimmer 30B (batch)",
       "reasoning": {
         "effort": [
           "low",
@@ -4697,38 +4602,6 @@
         "output": 512000
       },
       "name": "MiniMax: MiniMax M3",
-      "reasoning": "toggle",
-      "release_date": "2026-05-31",
-      "status": null,
-      "tool_call": true
-    },
-    "minimax/minimax-m3:batch": {
-      "attachment": true,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.06,
-        "cache_write": 0.0,
-        "input": 0.3,
-        "output": 1.2,
-        "tiers": []
-      },
-      "family": null,
-      "id": "minimax/minimax-m3:batch",
-      "input_modalities": [
-        "text",
-        "image",
-        "video"
-      ],
-      "limit": {
-        "context": 524288,
-        "output": 471859
-      },
-      "name": "MiniMax: MiniMax M3 (batch)",
       "reasoning": "toggle",
       "release_date": "2026-05-31",
       "status": null,
@@ -5348,6 +5221,37 @@
       "status": null,
       "tool_call": true
     },
+    "mistralai/mistral-small-3.1-24b-instruct": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "input": 0.351,
+        "output": 0.555,
+        "tiers": []
+      },
+      "family": null,
+      "id": "mistralai/mistral-small-3.1-24b-instruct",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 128000,
+        "output": 102400
+      },
+      "name": "Mistral: Mistral Small 3.1 24B",
+      "reasoning": null,
+      "release_date": "2025-03-17",
+      "status": null,
+      "tool_call": true
+    },
     "mistralai/mistral-small-3.2-24b-instruct": {
       "attachment": true,
       "compat": {
@@ -5613,7 +5517,7 @@
         "cache_read": 0.18,
         "cache_write": 0.0,
         "input": 0.7062,
-        "output": 3.21,
+        "output": 3.3,
         "tiers": []
       },
       "family": null,
@@ -5648,10 +5552,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.17,
+        "cache_read": 0.3,
         "cache_write": 0.0,
-        "input": 1.7,
-        "output": 8.5,
+        "input": 3.0,
+        "output": 15.0,
         "tiers": []
       },
       "family": null,
@@ -5687,10 +5591,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.3,
+        "cache_read": 0.228,
         "cache_write": 0.0,
-        "input": 3.0,
-        "output": 15.0,
+        "input": 2.28,
+        "output": 11.4,
         "tiers": []
       },
       "family": null,
@@ -5702,7 +5606,7 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 943718
+        "output": 16384
       },
       "name": "MoonshotAI: Kimi K3 (batch)",
       "reasoning": {
@@ -5743,6 +5647,43 @@
         "output": 235929
       },
       "name": "Nex AGI: Nex-N2.5-Mini (free)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "medium",
+          "high"
+        ]
+      },
+      "release_date": "2026-09-08",
+      "status": null,
+      "tool_call": true
+    },
+    "nex-agi/nex-n2.5-pro": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.015,
+        "cache_write": 0.0,
+        "input": 0.075,
+        "output": 0.25,
+        "tiers": []
+      },
+      "family": null,
+      "id": "nex-agi/nex-n2.5-pro",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 262144,
+        "output": 235929
+      },
+      "name": "Nex AGI: Nex-N2.5-Pro",
       "reasoning": {
         "effort": [
           "none",
@@ -5800,10 +5741,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.0,
+        "cache_read": 0.03,
         "cache_write": 0.0,
-        "input": 0.06,
-        "output": 0.24,
+        "input": 0.05,
+        "output": 0.2,
         "tiers": []
       },
       "family": null,
@@ -8605,6 +8546,334 @@
       "status": null,
       "tool_call": true
     },
+    "openai/gpt-6-luna": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "input": 0.1,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-luna",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Luna",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-luna-pro": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "input": 0.1,
+        "output": 0.5,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-luna-pro",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Luna Pro",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-luna-pro:batch": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.005,
+        "cache_write": 0.0625,
+        "input": 0.05,
+        "output": 0.25,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-luna-pro:batch",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Luna Pro (batch)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-luna:batch": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.005,
+        "cache_write": 0.0625,
+        "input": 0.05,
+        "output": 0.25,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-luna:batch",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Luna (batch)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-sol": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2.0,
+        "output": 10.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-sol",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Sol",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-sol-pro": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2.0,
+        "output": 10.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-sol-pro",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Sol Pro",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-sol-pro:batch": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1.0,
+        "output": 5.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-sol-pro:batch",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Sol Pro (batch)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "openai/gpt-6-sol:batch": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": true,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+        "input": 1.0,
+        "output": 5.0,
+        "tiers": []
+      },
+      "family": null,
+      "id": "openai/gpt-6-sol:batch",
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "OpenAI: GPT-6 Sol (batch)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "openai/gpt-audio": {
       "attachment": true,
       "compat": {
@@ -8735,7 +9004,7 @@
       "status": null,
       "tool_call": true
     },
-    "openai/gpt-oss-120b:batch": {
+    "openai/gpt-oss-20b": {
       "attachment": false,
       "compat": {
         "max_tokens_field": "max_completion_tokens",
@@ -8746,20 +9015,20 @@
       "cost": {
         "cache_read": 0.0,
         "cache_write": 0.0,
-        "input": 0.15,
-        "output": 0.6,
+        "input": 0.018,
+        "output": 0.09,
         "tiers": []
       },
       "family": null,
-      "id": "openai/gpt-oss-120b:batch",
+      "id": "openai/gpt-oss-20b",
       "input_modalities": [
         "text"
       ],
       "limit": {
         "context": 131072,
-        "output": 117964
+        "output": 32768
       },
-      "name": "OpenAI: gpt-oss-120b (batch)",
+      "name": "OpenAI: gpt-oss-20b",
       "reasoning": {
         "effort": [
           "low",
@@ -8771,7 +9040,7 @@
       "status": null,
       "tool_call": true
     },
-    "openai/gpt-oss-20b": {
+    "openai/gpt-oss-20b:batch": {
       "attachment": false,
       "compat": {
         "max_tokens_field": "max_completion_tokens",
@@ -8780,14 +9049,14 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.03,
+        "cache_read": 0.0,
         "cache_write": 0.0,
-        "input": 0.03,
-        "output": 0.13,
+        "input": 0.024,
+        "output": 0.112,
         "tiers": []
       },
       "family": null,
-      "id": "openai/gpt-oss-20b",
+      "id": "openai/gpt-oss-20b:batch",
       "input_modalities": [
         "text"
       ],
@@ -8795,7 +9064,7 @@
         "context": 131072,
         "output": 117964
       },
-      "name": "OpenAI: gpt-oss-20b",
+      "name": "OpenAI: gpt-oss-20b (batch)",
       "reasoning": {
         "effort": [
           "low",
@@ -10093,7 +10362,7 @@
       ],
       "limit": {
         "context": 262144,
-        "output": 32768
+        "output": 235929
       },
       "name": "Qwen: Qwen3 Next 80B A3B Thinking",
       "reasoning": {
@@ -10506,38 +10775,6 @@
       "status": null,
       "tool_call": true
     },
-    "qwen/qwen3.5-9b:batch": {
-      "attachment": true,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.0,
-        "cache_write": 0.0,
-        "input": 0.17,
-        "output": 0.25,
-        "tiers": []
-      },
-      "family": null,
-      "id": "qwen/qwen3.5-9b:batch",
-      "input_modalities": [
-        "text",
-        "image",
-        "video"
-      ],
-      "limit": {
-        "context": 262144,
-        "output": 235929
-      },
-      "name": "Qwen: Qwen3.5-9B (batch)",
-      "reasoning": "toggle",
-      "release_date": "2026-03-10",
-      "status": null,
-      "tool_call": true
-    },
     "qwen/qwen3.5-flash-02-23": {
       "attachment": true,
       "compat": {
@@ -10643,10 +10880,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.03,
+        "cache_read": 0.15,
         "cache_write": 0.0,
-        "input": 0.3,
-        "output": 2.0,
+        "input": 0.32,
+        "output": 2.7,
         "tiers": []
       },
       "family": null,
@@ -10658,7 +10895,7 @@
       ],
       "limit": {
         "context": 262144,
-        "output": 65536
+        "output": 262140
       },
       "name": "Qwen: Qwen3.6 27B",
       "reasoning": "toggle",
@@ -10677,8 +10914,8 @@
       "cost": {
         "cache_read": 0.05,
         "cache_write": 0.0,
-        "input": 0.1,
-        "output": 0.9,
+        "input": 0.15,
+        "output": 1.0,
         "tiers": []
       },
       "family": null,
@@ -10907,45 +11144,9 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 131072
+        "output": 262144
       },
       "name": "Qwen: Qwen3.8 2.4T A95B",
-      "reasoning": {
-        "effort": [
-          "low",
-          "medium",
-          "xhigh"
-        ]
-      },
-      "release_date": "2026-08-12",
-      "status": null,
-      "tool_call": true
-    },
-    "qwen/qwen3.8-2.4t-a95b:batch": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.25,
-        "cache_write": 0.0,
-        "input": 2.0,
-        "output": 6.0,
-        "tiers": []
-      },
-      "family": null,
-      "id": "qwen/qwen3.8-2.4t-a95b:batch",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 1010000,
-        "output": 909000
-      },
-      "name": "Qwen: Qwen3.8 2.4T A95B (batch)",
       "reasoning": {
         "effort": [
           "low",
@@ -11104,6 +11305,39 @@
         ]
       },
       "release_date": "2026-09-03",
+      "status": null,
+      "tool_call": true
+    },
+    "qwen/qwen3.8-omni-flash": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.016,
+        "cache_write": 0.0,
+        "input": 0.15,
+        "output": 0.47,
+        "tiers": []
+      },
+      "family": null,
+      "id": "qwen/qwen3.8-omni-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 131072
+      },
+      "name": "Qwen: Qwen3.8 Omni Flash",
+      "reasoning": "toggle",
+      "release_date": "2026-09-21",
       "status": null,
       "tool_call": true
     },
@@ -11655,47 +11889,6 @@
       "status": null,
       "tool_call": true
     },
-    "thinkingmachines/inkling:batch": {
-      "attachment": true,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.17,
-        "cache_write": 0.0,
-        "input": 1.0,
-        "output": 4.05,
-        "tiers": []
-      },
-      "family": null,
-      "id": "thinkingmachines/inkling:batch",
-      "input_modalities": [
-        "text",
-        "image",
-        "audio"
-      ],
-      "limit": {
-        "context": 524288,
-        "output": 471859
-      },
-      "name": "Thinking Machines: Inkling (batch)",
-      "reasoning": {
-        "effort": [
-          "none",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "max"
-        ]
-      },
-      "release_date": "2026-07-17",
-      "status": null,
-      "tool_call": true
-    },
     "thinkingmachines/inkling:free": {
       "attachment": true,
       "compat": {
@@ -12033,6 +12226,45 @@
       "status": null,
       "tool_call": true
     },
+    "x-ai/grok-4.7": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.4,
+        "cache_write": 0.0,
+        "input": 1.6,
+        "output": 4.8,
+        "tiers": []
+      },
+      "family": null,
+      "id": "x-ai/grok-4.7",
+      "input_modalities": [
+        "text",
+        "image",
+        "file"
+      ],
+      "limit": {
+        "context": 500000,
+        "output": 450000
+      },
+      "name": "SpaceXAI: Grok 4.7",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-09-21",
+      "status": null,
+      "tool_call": true
+    },
     "x-ai/grok-build-0.1": {
       "attachment": true,
       "compat": {
@@ -12132,6 +12364,105 @@
       "name": "Xiaomi: MiMo-V2.5-Pro",
       "reasoning": "toggle",
       "release_date": "2026-04-22",
+      "status": null,
+      "tool_call": true
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.0028,
+        "cache_write": 0.0,
+        "input": 0.14,
+        "output": 0.28,
+        "tiers": []
+      },
+      "family": null,
+      "id": "xiaomi/mimo-v2.6-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "Xiaomi: MiMo-V2.6-Flash",
+      "reasoning": "toggle",
+      "release_date": "2026-09-21",
+      "status": null,
+      "tool_call": true
+    },
+    "xiaomi/mimo-v2.6-pro": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.0036,
+        "cache_write": 0.0,
+        "input": 0.435,
+        "output": 0.87,
+        "tiers": []
+      },
+      "family": null,
+      "id": "xiaomi/mimo-v2.6-pro",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "Xiaomi: MiMo-V2.6-Pro",
+      "reasoning": "toggle",
+      "release_date": "2026-09-21",
+      "status": null,
+      "tool_call": true
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      "attachment": true,
+      "compat": {
+        "max_tokens_field": "max_completion_tokens",
+        "supports_developer_role": false,
+        "supports_strict_mode": true,
+        "thinking_format": "openrouter"
+      },
+      "cost": {
+        "cache_read": 0.036,
+        "cache_write": 0.0,
+        "input": 4.35,
+        "output": 8.7,
+        "tiers": []
+      },
+      "family": null,
+      "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "Xiaomi: MiMo-V2.6-Pro-UltraSpeed",
+      "reasoning": "toggle",
+      "release_date": "2026-09-21",
       "status": null,
       "tool_call": true
     },
@@ -12447,10 +12778,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.10296,
+        "cache_read": 0.12064,
         "cache_write": 0.0,
-        "input": 0.5544,
-        "output": 1.7424,
+        "input": 0.6496,
+        "output": 2.0416,
         "tiers": []
       },
       "family": null,
@@ -12474,42 +12805,6 @@
       "status": null,
       "tool_call": true
     },
-    "z-ai/glm-5.2:batch": {
-      "attachment": false,
-      "compat": {
-        "max_tokens_field": "max_completion_tokens",
-        "supports_developer_role": false,
-        "supports_strict_mode": true,
-        "thinking_format": "openrouter"
-      },
-      "cost": {
-        "cache_read": 0.07,
-        "cache_write": 0.0,
-        "input": 0.7,
-        "output": 2.2,
-        "tiers": []
-      },
-      "family": null,
-      "id": "z-ai/glm-5.2:batch",
-      "input_modalities": [
-        "text"
-      ],
-      "limit": {
-        "context": 1048576,
-        "output": 943718
-      },
-      "name": "Z.ai: GLM 5.2 (batch)",
-      "reasoning": {
-        "effort": [
-          "none",
-          "high",
-          "xhigh"
-        ]
-      },
-      "release_date": "2026-06-16",
-      "status": null,
-      "tool_call": true
-    },
     "z-ai/glm-5.3": {
       "attachment": false,
       "compat": {
@@ -12519,10 +12814,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.1664,
+        "cache_read": 0.156,
         "cache_write": 0.0,
-        "input": 0.896,
-        "output": 2.816,
+        "input": 0.84,
+        "output": 2.64,
         "tiers": []
       },
       "family": null,
@@ -12555,10 +12850,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.018,
+        "cache_read": 0.05,
         "cache_write": 0.0,
-        "input": 0.09,
-        "output": 0.3,
+        "input": 0.15,
+        "output": 0.5,
         "tiers": []
       },
       "family": null,
@@ -12570,7 +12865,7 @@
       ],
       "limit": {
         "context": 1310720,
-        "output": 131072
+        "output": 943718
       },
       "name": "Z.ai: GLM 5.3 Flash",
       "reasoning": {
@@ -12593,10 +12888,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.015,
+        "cache_read": 0.012,
         "cache_write": 0.0,
-        "input": 0.075,
-        "output": 0.25,
+        "input": 0.06,
+        "output": 0.2,
         "tiers": []
       },
       "family": null,
@@ -12608,7 +12903,7 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 943718
+        "output": 131072
       },
       "name": "Z.ai: GLM 5.3 Flash (batch)",
       "reasoning": {
@@ -12669,10 +12964,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.13,
+        "cache_read": 0.12,
         "cache_write": 0.0,
-        "input": 0.7,
-        "output": 2.2,
+        "input": 0.72,
+        "output": 2.4,
         "tiers": []
       },
       "family": null,
@@ -12682,7 +12977,7 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 943718
+        "output": 131072
       },
       "name": "Z.ai: GLM 5.3 (batch)",
       "reasoning": {
@@ -12809,10 +13104,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.5,
-        "cache_write": 6.25,
-        "input": 5.0,
-        "output": 25.0,
+        "cache_read": 0.2,
+        "cache_write": 5.0,
+        "input": 4.0,
+        "output": 20.0,
         "tiers": []
       },
       "family": null,
@@ -12829,7 +13124,6 @@
       "name": "Anthropic: Claude Opus Latest",
       "reasoning": {
         "effort": [
-          "none",
           "low",
           "medium",
           "high",
@@ -12891,10 +13185,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.0026,
+        "cache_read": 0.01,
         "cache_write": 0.0,
-        "input": 0.13,
-        "output": 0.52,
+        "input": 0.06,
+        "output": 0.32,
         "tiers": []
       },
       "family": null,
@@ -12929,10 +13223,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.018396,
+        "cache_read": 0.033,
         "cache_write": 0.0,
-        "input": 0.57816,
-        "output": 1.73448,
+        "input": 0.4,
+        "output": 4.3,
         "tiers": []
       },
       "family": null,
@@ -12942,7 +13236,7 @@
       ],
       "limit": {
         "context": 1048576,
-        "output": 393216
+        "output": 384000
       },
       "name": "DeepSeek: DeepSeek Pro Latest",
       "reasoning": {
@@ -12966,10 +13260,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.016,
+        "cache_read": 0.008,
         "cache_write": 0.0,
-        "input": 0.04,
-        "output": 0.08,
+        "input": 0.03,
+        "output": 0.8,
         "tiers": []
       },
       "family": null,
@@ -13083,10 +13377,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.17,
+        "cache_read": 0.3,
         "cache_write": 0.0,
-        "input": 1.7,
-        "output": 8.5,
+        "input": 1.4989,
+        "output": 10.758,
         "tiers": []
       },
       "family": null,
@@ -13162,10 +13456,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.02,
-        "cache_write": 0.25,
-        "input": 0.2,
-        "output": 1.2,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "input": 0.1,
+        "output": 0.5,
         "tiers": []
       },
       "family": null,
@@ -13325,10 +13619,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.5,
+        "cache_read": 0.4,
         "cache_write": 0.0,
-        "input": 2.0,
-        "output": 6.0,
+        "input": 1.6,
+        "output": 4.8,
         "tiers": []
       },
       "family": null,
@@ -13402,10 +13696,10 @@
         "thinking_format": "openrouter"
       },
       "cost": {
-        "cache_read": 0.15678,
+        "cache_read": 0.125,
         "cache_write": 0.0,
-        "input": 0.8442,
-        "output": 2.6532,
+        "input": 0.5625,
+        "output": 2.5,
         "tiers": []
       },
       "family": null,

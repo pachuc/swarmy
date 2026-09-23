@@ -224,6 +224,52 @@
       "status": null,
       "tool_call": true
     },
+    "grok-4.7": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": false,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.5,
+        "cache_write": 0,
+        "input": 2,
+        "output": 6,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 0,
+            "input": 4,
+            "input_tokens_above": 200000,
+            "output": 12
+          }
+        ]
+      },
+      "family": "grok",
+      "id": "grok-4.7",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 500000,
+        "output": 500000
+      },
+      "name": "Grok 4.7",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "release_date": "2026-09-21",
+      "status": null,
+      "tool_call": true
+    },
     "grok-build-0.1": {
       "attachment": true,
       "compat": {

@@ -460,6 +460,44 @@
       "status": null,
       "tool_call": true
     },
+    "anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "anthropic.claude-sonnet-4-5-20250929-v1:0": {
       "attachment": true,
       "compat": {
@@ -866,6 +904,44 @@
         ]
       },
       "release_date": "2026-07-24",
+      "status": null,
+      "tool_call": true
+    },
+    "au.anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.22,
+        "cache_write": 5.5,
+        "input": 4.4,
+        "output": 22,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "au.anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5 (AU)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
       "status": null,
       "tool_call": true
     },
@@ -1429,6 +1505,44 @@
       "status": null,
       "tool_call": true
     },
+    "eu.anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.22,
+        "cache_write": 5.5,
+        "input": 4.4,
+        "output": 22,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "eu.anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5 (EU)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "eu.anthropic.claude-sonnet-4-20250514-v1:0": {
       "attachment": true,
       "compat": {
@@ -1929,6 +2043,44 @@
       "status": null,
       "tool_call": true
     },
+    "global.anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "global.anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5 (Global)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "global.anthropic.claude-sonnet-4-20250514-v1:0": {
       "attachment": true,
       "compat": {
@@ -2071,6 +2223,32 @@
         ]
       },
       "release_date": "2026-06-30",
+      "status": null,
+      "tool_call": true
+    },
+    "global.moonshotai.kimi-k3": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+        "input": 3,
+        "output": 15,
+        "tiers": []
+      },
+      "family": "kimi-k3",
+      "id": "global.moonshotai.kimi-k3",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "Kimi K3 (Global)",
+      "reasoning": "toggle",
+      "release_date": "2026-07-16",
       "status": null,
       "tool_call": true
     },
@@ -2242,6 +2420,92 @@
         ]
       },
       "release_date": "2026-09-04",
+      "status": null,
+      "tool_call": true
+    },
+    "global.openai.gpt-6-luna": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "input": 0.1,
+        "output": 0.5,
+        "tiers": [
+          {
+            "cache_read": 0.02,
+            "cache_write": 0.25,
+            "input": 0.2,
+            "input_tokens_above": 272000,
+            "output": 0.75
+          }
+        ]
+      },
+      "family": "gpt-luna",
+      "id": "global.openai.gpt-6-luna",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Luna (Global)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "global.openai.gpt-6-sol": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 10,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 5,
+            "input": 4,
+            "input_tokens_above": 272000,
+            "output": 15
+          }
+        ]
+      },
+      "family": "gpt-sol",
+      "id": "global.openai.gpt-6-sol",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Sol (Global)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
       "status": null,
       "tool_call": true
     },
@@ -2640,6 +2904,44 @@
         ]
       },
       "release_date": "2026-07-24",
+      "status": null,
+      "tool_call": true
+    },
+    "jp.anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.22,
+        "cache_write": 5.5,
+        "input": 4.4,
+        "output": 22,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "jp.anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5 (JP)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
       "status": null,
       "tool_call": true
     },
@@ -4482,6 +4784,44 @@
       "status": null,
       "tool_call": true
     },
+    "us.anthropic.claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "force_adaptive_thinking": true,
+        "supports_temperature": false
+      },
+      "cost": {
+        "cache_read": 0.22,
+        "cache_write": 5.5,
+        "input": 4.4,
+        "output": 22,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "us.anthropic.claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5 (US)",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "us.anthropic.claude-sonnet-4-20250514-v1:0": {
       "attachment": true,
       "compat": {
@@ -4780,6 +5120,32 @@
       "status": null,
       "tool_call": true
     },
+    "us.moonshotai.kimi-k3": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.33,
+        "cache_write": 4.125,
+        "input": 3.3,
+        "output": 16.5,
+        "tiers": []
+      },
+      "family": "kimi-k3",
+      "id": "us.moonshotai.kimi-k3",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1048576,
+        "output": 131072
+      },
+      "name": "Kimi K3 (US)",
+      "reasoning": "toggle",
+      "release_date": "2026-07-16",
+      "status": null,
+      "tool_call": true
+    },
     "us.openai.gpt-5.6-luna": {
       "attachment": true,
       "compat": {},
@@ -4948,6 +5314,92 @@
         ]
       },
       "release_date": "2026-09-04",
+      "status": null,
+      "tool_call": true
+    },
+    "us.openai.gpt-6-luna": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.011,
+        "cache_write": 0.1375,
+        "input": 0.11,
+        "output": 0.55,
+        "tiers": [
+          {
+            "cache_read": 0.022,
+            "cache_write": 0.275,
+            "input": 0.22,
+            "input_tokens_above": 272000,
+            "output": 0.825
+          }
+        ]
+      },
+      "family": "gpt-luna",
+      "id": "us.openai.gpt-6-luna",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Luna (US)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "us.openai.gpt-6-sol": {
+      "attachment": true,
+      "compat": {},
+      "cost": {
+        "cache_read": 0.22,
+        "cache_write": 2.75,
+        "input": 2.2,
+        "output": 11,
+        "tiers": [
+          {
+            "cache_read": 0.44,
+            "cache_write": 5.5,
+            "input": 4.4,
+            "input_tokens_above": 272000,
+            "output": 16.5
+          }
+        ]
+      },
+      "family": "gpt-sol",
+      "id": "us.openai.gpt-6-sol",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Sol (US)",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
       "status": null,
       "tool_call": true
     },

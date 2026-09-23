@@ -410,6 +410,45 @@
       "status": null,
       "tool_call": true
     },
+    "claude-opus-5-5": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 5,
+        "input": 4,
+        "output": 20,
+        "tiers": []
+      },
+      "family": "claude-opus",
+      "id": "claude-opus-5-5",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1000000,
+        "output": 128000
+      },
+      "name": "Claude Opus 5.5",
+      "reasoning": {
+        "effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
     "claude-sonnet-4-5": {
       "attachment": true,
       "compat": {
@@ -2054,6 +2093,102 @@
         ]
       },
       "release_date": "2026-09-04",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-6-luna": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+        "input": 0.1,
+        "output": 0.5,
+        "tiers": [
+          {
+            "cache_read": 0.02,
+            "cache_write": 0.25,
+            "input": 0.2,
+            "input_tokens_above": 272000,
+            "output": 0.75
+          }
+        ]
+      },
+      "family": "gpt-luna",
+      "id": "gpt-6-luna",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Luna",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
+      "status": null,
+      "tool_call": true
+    },
+    "gpt-6-sol": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0.2,
+        "cache_write": 2.5,
+        "input": 2,
+        "output": 10,
+        "tiers": [
+          {
+            "cache_read": 0.4,
+            "cache_write": 5,
+            "input": 4,
+            "input_tokens_above": 272000,
+            "output": 15
+          }
+        ]
+      },
+      "family": "gpt-sol",
+      "id": "gpt-6-sol",
+      "input_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "limit": {
+        "context": 1050000,
+        "output": 128000
+      },
+      "name": "GPT-6 Sol",
+      "reasoning": {
+        "effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": "2026-09-22",
       "status": null,
       "tool_call": true
     },
