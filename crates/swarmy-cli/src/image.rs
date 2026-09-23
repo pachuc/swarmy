@@ -89,13 +89,17 @@ async fn build(
             .write(true)
             .create_new(true)
             .open(&output)?;
-        let status = std::process::Command::new("cp")
-            .args(["--sparse=always", "--"])
-            .arg(image.path())
-            .arg(&output)
-            .status()?;
         drop(destination);
-        anyhow::ensure!(status.success(), "copying ext4 image failed: {status}");
+        // A same-filesystem output can reuse the completed image without
+        // allocating a second copy of a large development cache.
+        if std::fs::rename(image.path(), &output).is_err() {
+            let status = std::process::Command::new("cp")
+                .args(["--sparse=always", "--"])
+                .arg(image.path())
+                .arg(&output)
+                .status()?;
+            anyhow::ensure!(status.success(), "copying ext4 image failed: {status}");
+        }
     }
     let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
     store.put_manifest(manifest_id, &built.header).await?;

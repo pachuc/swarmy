@@ -50,6 +50,8 @@ pub enum Source {
         packages: Vec<String>,
         mirror: String,
         components: Option<Vec<String>>,
+        /// Optional pinned checkout passed to the setup script.
+        source_commit: Option<String>,
         /// Optional setup script run inside the installed system.
         script: Option<PathBuf>,
     },
@@ -88,6 +90,16 @@ impl Recipe {
             .to_owned();
         validate_label(&name)?;
         let recipe: Self = toml::from_str(&fs::read_to_string(file)?)?;
+        if let Source::Debootstrap {
+            source_commit: Some(commit),
+            ..
+        } = &recipe.source
+            && (commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(ImageError::Invalid(
+                "source_commit must be a 40-digit Git commit hash".into(),
+            ));
+        }
         Manifest::empty(recipe.disk_size)?;
         if recipe.disk_size < 16 * 1024 * 1024 {
             return Err(ImageError::Invalid("ext4 requires at least 16 MiB".into()));
@@ -184,6 +196,10 @@ pub fn build_ext4(recipe: &Recipe, directory: &Path) -> Result<BuiltImage> {
         .arg("-d")
         .arg(&root)
         .arg(&image.path))?;
+    // The populated tree can be much larger than the sparse ext4 file. Free
+    // it before the caller uploads chunks so a warm development image fits
+    // on an ordinary build node.
+    run(privileged("rm").args(["-rf", "--"]).arg(&root))?;
     normalize_times(&image, recipe.source_date_epoch)?;
     Ok(image)
 }
@@ -195,14 +211,28 @@ fn populate(source: &Source, directory: &Path, root: &Path, scratch: &Path) -> R
             packages,
             mirror,
             components,
+            source_commit,
             script,
         } => {
             bootstrap_packages(suite, packages, mirror, components.as_deref(), root)?;
             if let Some(script) = script {
-                run(privileged("chroot")
+                let mut command = privileged("env");
+                if let Some(commit) = source_commit {
+                    command.arg(format!("SWARMY_SOURCE_COMMIT={commit}"));
+                }
+                // rustup and other installers inspect /proc/self/exe. Keep
+                // proc mounted only while the setup script runs.
+                let proc = root.join("proc");
+                let input = File::open(directory.join(script))?;
+                run(privileged("mount").args(["-t", "proc", "proc"]).arg(&proc))?;
+                let script_result = run(command
+                    .arg("chroot")
                     .arg(root)
                     .args(["/bin/sh", "-es"])
-                    .stdin(File::open(directory.join(script))?))?;
+                    .stdin(input));
+                let unmount_result = run(privileged("umount").arg(&proc));
+                script_result?;
+                unmount_result?;
             }
             // ldconfig's auxiliary cache contains host inode numbers, which
             // become invalid when files are copied into ext4.
