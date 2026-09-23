@@ -20,7 +20,8 @@ use swarmy_core::{
     InflightRecord, LeaseOwnerId, Part, RequestId, SessionId, SessionRecord, SessionState, encode,
 };
 use swarmy_llm::{
-    Delta, GenerationSettings, InferenceJob, Request, Response, StopReason, TokenUsage,
+    Delta, GenerationSettings, InferenceJob, InferenceJobRef, Request, Response, StopReason,
+    TokenUsage,
 };
 use swarmy_store::{
     CredentialKey, Store,
@@ -183,7 +184,37 @@ impl Fixture {
             .await
     }
 
+    async fn job_with_settings(&self, settings: GenerationSettings) -> InferenceJob {
+        self.job_for_agent_with_request(
+            AgentId::from_ulid(Ulid::generate()),
+            Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings,
+            },
+        )
+        .await
+    }
+
     async fn job_for_agent(&self, agent_id: AgentId) -> InferenceJob {
+        self.job_for_agent_with_request(
+            agent_id,
+            Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+            },
+        )
+        .await
+    }
+
+    async fn job_for_agent_with_request(
+        &self,
+        agent_id: AgentId,
+        request: Request,
+    ) -> InferenceJob {
         let session_id = SessionId::from_ulid(Ulid::generate());
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
@@ -226,55 +257,37 @@ impl Fixture {
             .await
             .unwrap();
         let request_id = RequestId::for_step(session_id, lease.seq);
+        let job = InferenceJob {
+            provider: "fake".into(),
+            session_id,
+            step: lease.seq,
+            request_id,
+            request,
+        };
         self.store
-            .append_events(
-                session_id,
+            .submit_inference_after_with_request(
                 0,
-                &[Event::InferenceRequested {
-                    seq: 0,
-                    request_id,
-                    step: lease.seq,
-                }],
-            )
-            .await
-            .unwrap();
-        self.store
-            .put_inflight(
-                request_id,
+                &lease,
                 &InflightRecord {
                     session_id,
                     seq: lease.seq,
                     provider: "fake".into(),
                     key_id: "fake".into(),
                 },
+                &job,
+                &job.request,
+                &[],
             )
             .await
             .unwrap();
-        self.store
-            .set_state(
-                session_id,
-                SessionState::WaitingInference,
-                Some(&lease),
-                now,
-            )
-            .await
-            .unwrap();
-        InferenceJob {
-            provider: "fake".into(),
-            session_id,
-            step: lease.seq,
-            request_id,
-            request: Request {
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: GenerationSettings::default(),
-            },
-        }
+        job
     }
 
     async fn publish(&self, job: &InferenceJob) {
-        self.bus.publish_work(&self.queue, job).await.unwrap();
+        self.bus
+            .publish_work(&self.queue, &InferenceJobRef::from(job))
+            .await
+            .unwrap();
     }
 
     async fn terminal(&self, job: &InferenceJob) -> Event {
@@ -442,10 +455,11 @@ async fn credential_changes_update_a_running_gateway() {
                 }
             }).await.unwrap();
             let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
-            let mut job = f.job().await;
+            let mut job = f.job_with_settings(GenerationSettings {
+                model: "openai/gpt-5.5".into(), ..Default::default()
+            }).await;
             job.provider = "openrouter".into();
-            job.request.settings.model = "openai/gpt-5.5".into();
-            f.bus.publish_work(&queue, &job).await.unwrap();
+            f.bus.publish_work(&queue, &InferenceJobRef::from(&job)).await.unwrap();
             assert!(matches!(f.terminal(&job).await, Event::InferenceCompleted { .. }));
             credentials.delete_credential(CredentialScope::Cluster, "openrouter").await.unwrap();
             timeout(Duration::from_secs(65), async {
@@ -453,10 +467,11 @@ async fn credential_changes_update_a_running_gateway() {
                     sleep(Duration::from_millis(100)).await;
                 }
             }).await.unwrap();
-            let mut rejected = f.job().await;
+            let mut rejected = f.job_with_settings(GenerationSettings {
+                model: "openai/gpt-5.5".into(), ..Default::default()
+            }).await;
             rejected.provider = "openrouter".into();
-            rejected.request.settings.model = "openai/gpt-5.5".into();
-            f.bus.publish_work(&queue, &rejected).await.unwrap();
+            f.bus.publish_work(&queue, &InferenceJobRef::from(&rejected)).await.unwrap();
             assert!(matches!(f.terminal(&rejected).await, Event::InferenceFailed { error, .. } if error.contains("provider is not served by this gateway")));
         }).catch_unwind().await;
         f.cleanup().await;
@@ -479,14 +494,24 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
         let expected = f.script(100, false, "hello");
         f.start(4);
         f.start(4);
-        let mut job = f.job().await;
-        job.request.messages.push(swarmy_core::Message {
+        let message = swarmy_core::Message {
             id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::User,
             parts: vec![Part::Text {
                 text: "preserve this history".into(),
             }],
-        });
+        };
+        let job = f
+            .job_for_agent_with_request(
+                AgentId::from_ulid(Ulid::generate()),
+                Request {
+                    system_prompt: String::new(),
+                    messages: vec![message],
+                    tools: Vec::new(),
+                    settings: GenerationSettings::default(),
+                },
+            )
+            .await;
         let result = AssertUnwindSafe(async {
             f.publish(&job).await;
             f.publish(&job).await;
@@ -494,6 +519,13 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
                 f.terminal(&job).await,
                 Event::InferenceCompleted { .. }
             ));
+            assert!(
+                f.store
+                    .get_inference_request::<Request>(job.request_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             f.drained().await;
             f.publish(&job).await;
             f.drained().await;
@@ -577,7 +609,7 @@ async fn exhausted_retries_append_failure_and_stop_delivery() {
             f.drained().await;
             sleep(ACK_WAIT * 3).await;
             assert_eq!(f.calls(), 3);
-            let mut work = f.bus.consume::<InferenceJob>(&f.queue).await.unwrap();
+            let mut work = f.bus.consume::<InferenceJobRef>(&f.queue).await.unwrap();
             assert!(timeout(ACK_WAIT * 2, work.next()).await.is_err());
         })
         .catch_unwind()
@@ -600,6 +632,7 @@ async fn rate_limit_opens_durable_breaker_and_keeps_provider_text() {
             let event = f.terminal(&job).await;
             assert!(matches!(event, Event::InferenceFailed { retryable: true, retry_at: Some(at), error, .. }
                 if at >= started.checked_add(Duration::from_secs(2)).unwrap() && error.contains("quota reached")));
+            assert!(f.store.get_inference_request::<Request>(job.request_id).await.unwrap().is_none());
             let key = CredentialKey("fake".into());
             assert!(f.store.provider_open_until(&key, Timestamp::now()).await.unwrap().is_some());
             assert_eq!(f.calls(), 1);
@@ -621,6 +654,7 @@ async fn authentication_failure_does_not_open_breaker() {
         let result = AssertUnwindSafe(async {
             f.publish(&job).await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. } if error.contains("invalid credentials")));
+            assert!(f.store.get_inference_request::<Request>(job.request_id).await.unwrap().is_none());
             assert!(f.store.provider_open_until(&CredentialKey("fake".into()), Timestamp::now()).await.unwrap().is_none());
             assert_eq!(f.calls(), 1);
         }).catch_unwind().await;
@@ -794,15 +828,22 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
             let queue = WorkQueue::Inference(SubjectToken::new("scripted").unwrap());
             f.bus.setup(std::slice::from_ref(&queue)).await.unwrap();
             let agent_id = AgentId::from_ulid(Ulid::generate());
-            let mut first = f.job_for_agent(agent_id).await;
+            let settings = GenerationSettings {
+                model: model.id.clone(),
+                reasoning_effort: Some(swarmy_core::ReasoningEffort::Max),
+                ..Default::default()
+            };
+            let mut first = f.job_for_agent_with_request(agent_id, Request {
+                system_prompt: String::new(), messages: Vec::new(), tools: Vec::new(),
+                settings: settings.clone(),
+            }).await;
             first.provider = "fake".into();
-            first.request.settings.model = model.id.clone();
-            first.request.settings.reasoning_effort = Some(swarmy_core::ReasoningEffort::Max);
-            let mut second = f.job_for_agent(agent_id).await;
+            let mut second = f.job_for_agent_with_request(agent_id, Request {
+                system_prompt: String::new(), messages: Vec::new(), tools: Vec::new(), settings,
+            }).await;
             second.provider = "scripted".into();
-            second.request.settings = first.request.settings.clone();
             f.publish(&first).await;
-            f.bus.publish_work(&queue, &second).await.unwrap();
+            f.bus.publish_work(&queue, &InferenceJobRef::from(&second)).await.unwrap();
             for job in [&first, &second] {
                 let event = f.terminal(job).await;
                 assert!(matches!(event, Event::InferenceCompleted { provider, model: used_model, effort_used: Some(swarmy_core::ReasoningEffort::Low), effort_requested: Some(swarmy_core::ReasoningEffort::Max), effort_clamped: true, cost_micros: 84, usage, .. } if provider == job.provider && used_model == model.id && usage.output_tokens == 42));
@@ -830,9 +871,10 @@ async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
     run(|mut f| async move {
         f.script(0, false, "unused");
         f.start(1);
-        let mut job = f.job().await;
+        let mut job = f.job_with_settings(GenerationSettings {
+            model: "unknown-model".into(), ..Default::default()
+        }).await;
         job.provider = "fake".into();
-        job.request.settings.model = "unknown-model".into();
         let result = AssertUnwindSafe(async {
             f.publish(&job).await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { error, .. } if error.contains("unknown catalog model: fake/unknown-model")));

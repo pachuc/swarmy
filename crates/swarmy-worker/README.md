@@ -56,24 +56,20 @@ checks. The process boots FoundationDB once, before creating its runtime.
 
 For a new inference request the worker performs these operations in order:
 
-1. Compute `step = head_seq + 1` and `RequestId::for_step(session_id, step)`.
-   Save the exact versioned `InferenceJob` with `Store::put_inference_input`
-   under the lease. Large inputs use the store's content-addressed blob path.
-2. Append `InferenceRequested` with that sequence and request ID.
-3. Write the corresponding `InflightRecord`, fenced by the lease.
-4. Use `Store::set_state` to enter `WaitingInference`. This atomically removes
-   the lease and keeps the session out of the runnable index.
-5. Publish the saved job to `WorkQueue::Inference` for the configured provider.
+1. Compute the step and its deterministic request ID. Commit the full
+   `InferenceJob`, its gateway `Request`, `InferenceRequested`, and the
+   `InflightRecord` together under the lease. Large values use the store's
+   content-addressed blob path. This also enters `WaitingInference`.
+2. Publish an `InferenceJobRef` to `WorkQueue::Inference` for the provider.
 
 A crash before the request event leaves no submitted request. The scheduler
 reaps the lease, and a new worker can save the input and append the event. A
-crash after the event leaves the exact input available for replay; the replacement
-worker reuses the event and request ID, writes inflight, and finishes submission.
-It never appends a second request for that step.
+crash after the event leaves the exact input, gateway request, and inflight
+record available for replay. The replacement worker republishes the same
+request ID and never appends a second request for that step.
 
-A crash after inflight but before state change still leaves a leased session for
-the scheduler to reap. A crash after state change but before queue publication
-leaves an inflight record. Every worker scans those records at startup and
+A crash after the atomic submission but before queue publication leaves an
+inflight record. Every worker scans those records at startup and
 periodically, in pages, and republishes jobs whose sessions are waiting for
 inference in its configured partitions. Repeated publications are safe because
 the gateway claims requests and records completion idempotently. Keep the provider
@@ -86,9 +82,12 @@ result; `get_time` may return a newer timestamp. Completed tool calls and folded
 messages are retained. A snapshot is written at turn end using the core versioned
 encoding and the blob store, with its sequence in `Store::write_snapshot`.
 Snapshots are derived from an immutable bounded log prefix. An orphaned snapshot
-or saved input can be collected by future blob garbage collection.
+or request upload can be collected after the blob collector's grace. The gateway
+request key is cleared with the terminal inference event; the saved job remains
+available to the worker's summarization step.
 
-Every worker-appended event is published on `LiveFeed::SessionEvents`. On each
+Every worker-appended event that fits the server payload limit is published on
+`LiveFeed::SessionEvents`. On each
 claim, the worker also publishes the loaded tail, which includes user and gateway
 events and retries publications interrupted by a worker crash. This live feed is
 ephemeral and can contain duplicates. Observers deduplicate by session/sequence

@@ -9,7 +9,7 @@ use swarmy_bus::{Bus, LiveFeed, WorkMessage, WorkQueue};
 use swarmy_core::{
     Event, IdempotencyState, LeaseOwnerId, Message, MessageId, MessageRole, RequestId,
 };
-use swarmy_llm::{Delta, InferenceJob, Response};
+use swarmy_llm::{Delta, InferenceJob, InferenceJobRef, Response};
 use swarmy_store::{
     CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, Store,
     blob::{BlobStore, ObjectBlobStore},
@@ -189,7 +189,10 @@ async fn advertise(store: &Store, served: &[String]) -> Result<()> {
 async fn refresh(
     gateway: &Gateway,
     messages: &mut futures::stream::SelectAll<
-        futures::stream::BoxStream<'static, Result<WorkMessage<InferenceJob>, swarmy_bus::Error>>,
+        futures::stream::BoxStream<
+            'static,
+            Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+        >,
     >,
     subscriptions: &mut BTreeSet<String>,
 ) -> Result<()> {
@@ -200,7 +203,7 @@ async fn refresh(
         }
         let queue = WorkQueue::Inference(swarmy_bus::SubjectToken::new(id)?);
         gateway.bus.setup(std::slice::from_ref(&queue)).await?;
-        let mut stream = gateway.bus.consume::<InferenceJob>(&queue).await?;
+        let mut stream = gateway.bus.consume::<InferenceJobRef>(&queue).await?;
         messages.push(Box::pin(async_stream::stream! {
             while let Some(message) = stream.next().await { yield message; }
         }));
@@ -258,7 +261,7 @@ impl Gateway {
             .is_some_and(|record| record.state == IdempotencyState::Completed))
     }
 
-    async fn handle(&self, message: &WorkMessage<InferenceJob>) -> Result<()> {
+    async fn handle(&self, message: &WorkMessage<InferenceJobRef>) -> Result<()> {
         let job = &message.value;
         if job.request_id != RequestId::for_step(job.session_id, job.step) {
             // Invalid jobs cannot identify legitimate work to fail in the session log.
@@ -283,7 +286,23 @@ impl Gateway {
             message.extend_deadline().await?;
             sleep(self.ack_wait / 3).await;
         }
-        let work = self.process(message, &claim);
+        let request: swarmy_llm::Request = self
+            .store
+            .get_inference_request(job.request_id)
+            .await?
+            .context("inference request missing from store")?;
+        anyhow::ensure!(
+            request.settings == job.selection,
+            "stored inference selection differs from delivery"
+        );
+        let stored = InferenceJob {
+            session_id: job.session_id,
+            step: job.step,
+            request_id: job.request_id,
+            provider: job.provider.clone(),
+            request,
+        };
+        let work = self.process(message, &claim, &stored);
         tokio::pin!(work);
         let period = self.ack_wait / 3;
         let mut heartbeat = interval_at(Instant::now() + period, period);
@@ -346,10 +365,10 @@ impl Gateway {
 
     async fn process(
         &self,
-        message: &WorkMessage<InferenceJob>,
+        message: &WorkMessage<InferenceJobRef>,
         claim: &InferenceClaim,
+        job: &InferenceJob,
     ) -> Result<()> {
-        let job = &message.value;
         let provider = if job.provider.is_empty() {
             &self.default_provider
         } else {

@@ -101,6 +101,28 @@ pub struct InferenceJob {
     pub provider: String,
 }
 
+/// Small bus delivery for a request saved in the store under `request_id`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InferenceJobRef {
+    pub session_id: SessionId,
+    pub step: u64,
+    pub request_id: RequestId,
+    pub provider: String,
+    pub selection: GenerationSettings,
+}
+
+impl From<&InferenceJob> for InferenceJobRef {
+    fn from(job: &InferenceJob) -> Self {
+        Self {
+            session_id: job.session_id,
+            step: job.step,
+            request_id: job.request_id,
+            provider: job.provider.clone(),
+            selection: job.request.settings.clone(),
+        }
+    }
+}
+
 /// Provider-neutral input built from durable core messages.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Request {
@@ -302,5 +324,11 @@ mod job_tests {
         };
         let encoded = swarmy_core::encode(&job).unwrap();
         assert_eq!(swarmy_core::decode::<InferenceJob>(&encoded).unwrap(), job);
+        let reference = InferenceJobRef::from(&job);
+        let encoded = swarmy_core::encode(&reference).unwrap();
+        assert_eq!(
+            swarmy_core::decode::<InferenceJobRef>(&encoded).unwrap(),
+            reference
+        );
     }
 }

@@ -188,9 +188,13 @@ start() {
 }
 JSON
 
+    cat > "$dev_dir/nats.conf" <<'NATS'
+max_payload: 8MB
+NATS
+
     launch fdb fdbserver -p "$advertise_address:$fdb_port" -l "$bind_address:$fdb_port" -C "$dev_dir/fdb.cluster" \
         -d "$dev_dir/fdb/data" -L "$dev_dir/fdb/logs"
-    launch nats nats-server -js -sd "$dev_dir/nats" -a "$bind_address" --client_advertise "$advertise_address:4222" -p 4222 -m 8222
+    launch nats nats-server -c "$dev_dir/nats.conf" -js -sd "$dev_dir/nats" -a "$bind_address" --client_advertise "$advertise_address:4222" -p 4222 -m 8222
     # Unix socket paths are limited to about 100 bytes, so they cannot live
     # under a deep repository path. Key a short directory by the repository.
     socket_dir="${TMPDIR:-/tmp}/swarmy-$(printf '%s' "$dev_dir" | sha256sum | cut -c1-12)"

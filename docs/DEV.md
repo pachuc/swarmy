@@ -268,6 +268,10 @@ Versions match `.daytona/Dockerfile` and the backing stack:
 | NATS | 2.14.6 | `nats-server` |
 | SeaweedFS | 4.47 | `weed` |
 
+The dev stack generates `.dev/nats.conf` with an 8 MB `max_payload` as a
+guard for large work messages. Inference requests are stored by reference, so
+their conversation history does not consume that bus limit.
+
 For machines with these dependencies installed system-wide, including CI's
 Ubuntu runner, the same `make install` needs no variable because the library
 is found in a system directory.
