@@ -37,10 +37,3 @@ be forgotten. Do them opportunistically alongside related work.
   the cancelled pause-and-resume slice worth doing on its own. Do it when
   someone is next in the placement code, most likely during the memory
   budget task of the graphical sandboxes goal.
-- **Shrink the swarmy-dev image.** Its warm cargo target directory is about
-  30 GiB of the 35.6 GiB image because the debug build keeps full debug info,
-  `--all-targets` links one binary per test file, and incremental caches are
-  on. Set `CARGO_INCREMENTAL=0` and line-tables-only debug info for the warm
-  build in `images/swarmy-dev/setup.sh`, and consider dropping
-  `--all-targets`. Do it once the fleet proof shows how the image behaves on
-  a node.

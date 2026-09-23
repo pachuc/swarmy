@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operate tasky tasks on a remote Swarmy fleet."""
+"""Operate tasky tasks on a pool of long-lived Swarmy worker agents."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path(__file__).with_name("fleet.toml")
 AGENTS = ROOT / "AGENTS.md"
 URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+")
+TARGET_LIMIT_GIB = 20
 
 
 def command(args, *, input=None):
@@ -45,6 +46,7 @@ def load():
     for key in ("remote", "github_token", "repo"):
         if not data.get(key):
             raise RuntimeError(f"{CONFIG}: missing {key}")
+    data.setdefault("workers", 4)
     return data
 
 
@@ -60,11 +62,11 @@ def save(path, value):
         file.write("\n")
 
 
-def task_name(task_id):
+def task_suffix(task_id):
     suffix = task_id.rsplit("-", 1)[-1].lower()
     if not re.fullmatch(r"[a-z0-9]+", suffix):
         raise RuntimeError("task id must end in an alphanumeric suffix")
-    return "task-" + suffix, "swarmy/" + suffix
+    return suffix
 
 
 def task_fields(task):
@@ -73,10 +75,16 @@ def task_fields(task):
             task.get("test_plan") or task.get("testPlan") or "")
 
 
-def prompt(task_id, task, config):
+def prompt(task_id, task, config, branch):
     title, body, tests = task_fields(task)
-    _, branch = task_name(task_id)
-    return f"""You are executing tasky {task_id}: {title}.
+    return f"""You are a long-lived swarmy development worker. Your computer persists between tasks, so keep it tidy: every task gets a fresh clone in its own directory, one new branch from master, and you leave nothing uncommitted behind.
+
+Before starting this task:
+1. mkdir -p ~/work. Remove every directory under ~/work except ~/work/{branch.split('/')[-1]}, if any exist.
+2. If `du -sb ~/.cargo-target` reports more than {TARGET_LIMIT_GIB} GiB, run `cargo clean` from any clone (the shared target directory lives outside the clones).
+3. Clone https://github.com/{config['repo']}.git into ~/work/{branch.split('/')[-1]}, and create branch {branch} from origin/master. Never reuse or force-push a branch.
+
+You are executing tasky {task_id}: {title}.
 
 Repository contract (AGENTS.md):
 {AGENTS.read_text()}
@@ -87,7 +95,7 @@ Task body:
 Test plan:
 {tests}
 
-Clone https://github.com/{config['repo']}.git into a fresh directory. Read the repository's AGENTS.md and docs/DESIGN.md before changing files. Create branch {branch} from master. Implement only this task. Run cargo fmt --all --check, cargo test --workspace --locked with the dev stack from scripts/dev-stack.sh start and .dev/env sourced, and cargo clippy --workspace --all-targets --locked -- -D warnings. Work through the test plan. Commit with an imperative subject and a body explaining why. Push {branch} to origin. Open one pull request against master with a title containing tasky {task_id}. Its description must say what was built, list exact validation commands and results, and list test plan items not verified and why. Do not include credentials in logs, commits, or the PR. Finish by reporting the pull request URL in your last message.
+Read the repository's AGENTS.md and docs/DESIGN.md before changing files. Implement only this task. Run cargo fmt --all --check, cargo test --workspace --locked with the dev stack from scripts/dev-stack.sh start and .dev/env sourced, and cargo clippy --workspace --all-targets --locked -- -D warnings. Work through the test plan, including the root-only suites AGENTS.md maps to the areas you changed. Commit with an imperative subject and a body explaining why. Push {branch} to origin. Open one pull request against master with a title containing tasky {task_id}. Its description must say what was built, list exact validation commands and results, and list test plan items not verified and why. Do not include credentials in logs, commits, or the PR. When you are done, stop the dev stack with scripts/dev-stack.sh stop, and finish by reporting the pull request URL in your last message.
 """
 
 
@@ -99,32 +107,69 @@ def tasky(*args, json_output=False):
     return ["tasky", *(["--json"] if json_output else []), "task", *args]
 
 
-def launch(args, config):
-    agent, branch = task_name(args.task_id)
-    path = state_path(config) / (agent + ".json")
-    if path.exists():
-        raise RuntimeError(f"{agent} already launched")
-    task = one(command(tasky("show", args.task_id, json_output=True)))
-    provider = args.provider or config.get("provider")
-    model = args.model or config.get("model")
-    effort = args.effort or config.get("effort")
+def workers_path(config):
+    return state_path(config) / "workers.json"
+
+
+def load_workers(config):
+    path = workers_path(config)
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def save_workers(config, workers):
+    save(workers_path(config), workers)
+
+
+def selection_args(args, config):
+    provider = getattr(args, "provider", None) or config.get("provider")
+    model = getattr(args, "model", None) or config.get("model")
+    effort = getattr(args, "effort", None) or config.get("effort")
     if not provider or not model:
         raise RuntimeError("provider and model must be supplied or configured")
     selection = ["--provider", provider, "--model", model]
     if effort:
         selection += ["--effort", effort]
-    image = args.image or config.get("image") or f"swarmy-dev:{config['remote']}"
-    if ":" not in image:
+    return provider, model, effort, selection
+
+
+def create_worker(name, config, selection, image):
+    extra = ["--image", image] if image else []
+    command(swarmy(config, "agent", "create", name, *extra, "--description", "fleet worker",
+                   *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
+
+
+def pick_worker(config, selection, image):
+    workers = load_workers(config)
+    for name, assigned in sorted(workers.items()):
+        if assigned is None:
+            return name, workers
+    if len(workers) >= int(config["workers"]):
+        raise RuntimeError(f"all {len(workers)} workers are busy; release a task or raise workers in {CONFIG}")
+    name = f"worker-{len(workers) + 1}"
+    create_worker(name, config, selection, image)
+    workers[name] = None
+    save_workers(config, workers)
+    return name, workers
+
+
+def launch(args, config):
+    suffix = task_suffix(args.task_id)
+    branch = "swarmy/" + suffix
+    path = state_path(config) / (suffix + ".json")
+    if path.exists():
+        raise RuntimeError(f"{args.task_id} already launched")
+    task = one(command(tasky("show", args.task_id, json_output=True)))
+    provider, model, effort, selection = selection_args(args, config)
+    image = args.image or config.get("image")
+    if image and ":" not in image:
         raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
-    command(swarmy(config, "agent", "create", agent, "--image", image,
-                   "--description", f"tasky {args.task_id}", *selection,
-                   "--github-token-stdin"), input=config["github_token"] + "\n")
-    log = state_path(config) / (agent + ".jsonl")
+    worker, workers = pick_worker(config, selection, image)
+    log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
         os.chmod(log, 0o600)
-        process = subprocess.Popen(swarmy(config, "run", "--agent", agent, *selection,
-                                          "--json", prompt(args.task_id, task, config)),
+        process = subprocess.Popen(swarmy(config, "run", "--agent", worker, *selection,
+                                          "--json", prompt(args.task_id, task, config, branch)),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
     session = None
@@ -139,16 +184,18 @@ def launch(args, config):
         time.sleep(0.1)
     if not session:
         raise RuntimeError(f"run did not report a session id; inspect {log}")
-    save(path, {"task_id": args.task_id, "agent": agent, "branch": branch,
+    workers[worker] = args.task_id
+    save_workers(config, workers)
+    save(path, {"task_id": args.task_id, "worker": worker, "branch": branch,
                 "session_id": session, "provider": provider, "model": model,
                 "effort": effort, "started_at": datetime.now(timezone.utc).isoformat()})
     command(tasky("start", args.task_id))
-    print(f"launched {args.task_id}: {agent} session={session}")
+    print(f"launched {args.task_id} on {worker} session={session}")
 
 
 def assignment(config, task_id):
-    agent, _ = task_name(task_id)
-    path = state_path(config) / (agent + ".json")
+    suffix = task_suffix(task_id)
+    path = state_path(config) / (suffix + ".json")
     if not path.exists():
         raise RuntimeError(f"no fleet launch for {task_id}")
     return path, json.loads(path.read_text())
@@ -168,31 +215,31 @@ def state_for(session, events, log):
     if state in ("idle", "completed"):
         return "idle"
     outcomes = [item for item in log if item.get("event") == "run_outcome"]
-    if state == "failed" or (outcomes and outcomes[-1].get("outcome") == "failed"):
+    if outcomes and outcomes[-1].get("outcome") == "failed":
         return "failed"
     return "running"
 
 
 def status(config):
-    agents = records(command(swarmy(config, "agent", "ls", "--json")))
-    for agent in agents:
-        name = agent.get("name", "")
-        if not name.startswith("task-"):
-            continue
+    workers = load_workers(config)
+    for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
         session_id = detail.get("main_session")
         events = session_events(config, session_id) if session_id else []
-        assignment_path = state_path(config) / (name + ".json")
-        assignment_data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
-        run_log = state_path(config) / (name + ".jsonl")
-        logged = records(run_log.read_text()) if run_log.exists() else []
         # session show prints the session record first; agent show does not list sessions in JSON.
         session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
-        state = state_for(session, events, logged)
-        started = assignment_data.get("started_at") or detail.get("created_at")
+        data = {}
+        logged = []
+        if task_id:
+            suffix = task_suffix(task_id)
+            assignment_path = state_path(config) / (suffix + ".json")
+            data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
+            run_log = state_path(config) / (suffix + ".jsonl")
+            logged = records(run_log.read_text()) if run_log.exists() else []
+        state = state_for(session, events, logged) if task_id else "idle"
+        started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
-        print(f"{name}\t{assignment_data.get('task_id', detail.get('description', '-'))}\t"
-              f"{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
+        print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
               f"{state}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
 
 
@@ -208,7 +255,7 @@ def last_message(events):
     return messages[-1] if messages else ""
 
 
-def verify_pr(url, assignment_data, config, *, merged=False):
+def verify_pr(url, data, config, *, merged=False):
     parsed = urlparse(url)
     if parsed.hostname != "github.com" or parsed.path.split("/")[1:3] != config["repo"].split("/"):
         raise RuntimeError("PR URL is outside the configured repository")
@@ -216,18 +263,18 @@ def verify_pr(url, assignment_data, config, *, merged=False):
                       "--json", "url,state,baseRefName,headRefName"]))
     required_state = "MERGED" if merged else "OPEN"
     if (pr.get("state") != required_state or pr.get("baseRefName") != "master" or
-            pr.get("headRefName") != assignment_data["branch"] or pr.get("url") != url):
-        raise RuntimeError(f"PR is not {required_state.lower()} against master from {assignment_data['branch']}")
+            pr.get("headRefName") != data["branch"] or pr.get("url") != url):
+        raise RuntimeError(f"PR is not {required_state.lower()} against master from {data['branch']}")
 
 
 def collect(task_id, config):
     path, data = assignment(config, task_id)
-    agent = one(command(swarmy(config, "agent", "show", data["agent"], "--json")))
+    agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
     session_id = agent.get("main_session") or data["session_id"]
     message = last_message(session_events(config, session_id))
     match = URL.search(message)
     if not match:
-        raise RuntimeError("agent's last message has no pull request URL")
+        raise RuntimeError("worker's last message has no pull request URL")
     url = match.group(0)
     verify_pr(url, data, config)
     command(tasky("pr", task_id, url))
@@ -239,46 +286,63 @@ def collect(task_id, config):
 
 def resume(task_id, message, config):
     _, data = assignment(config, task_id)
-    # A follow-up on a named agent reopens its main conversation.
-    args = swarmy(config, "run", "--agent", data["agent"], "--json", message)
+    # A follow-up on the worker's main conversation continues the task.
+    args = swarmy(config, "run", "--agent", data["worker"], "--json", message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
-    with (state_path(config) / (data["agent"] + ".jsonl")).open("a") as log:
+    with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)
     if result.returncode:
         raise RuntimeError(f"follow-up failed: {result.stderr.strip()}")
-    output = result.stdout
-    outcomes = [item for item in records(output) if item.get("event") == "run_outcome"]
+    outcomes = [item for item in records(result.stdout) if item.get("event") == "run_outcome"]
     if outcomes and outcomes[-1].get("outcome") == "failed":
         raise RuntimeError(outcomes[-1].get("reason", "turn failed"))
     print(f"resumed {task_id}")
 
 
-def remove(task_id, config):
+def release(task_id, config, *, force=False):
     path, data = assignment(config, task_id)
-    if not data.get("pr_url"):
-        raise RuntimeError("collect the pull request before removing the agent")
-    verify_pr(data["pr_url"], data, config, merged=True)
-    command(swarmy(config, "agent", "delete", data["agent"], "--yes"))
+    if not force:
+        if not data.get("pr_url"):
+            raise RuntimeError("collect the pull request before releasing the worker, or pass --force")
+        verify_pr(data["pr_url"], data, config, merged=True)
+    workers = load_workers(config)
+    if workers.get(data["worker"]) == task_id:
+        workers[data["worker"]] = None
+        save_workers(config, workers)
     path.unlink()
-    (state_path(config) / (data["agent"] + ".jsonl")).unlink(missing_ok=True)
-    print(f"removed {data['agent']}")
+    print(f"released {data['worker']} from {task_id}")
+
+
+def reset(worker, config):
+    workers = load_workers(config)
+    if worker not in workers:
+        raise RuntimeError(f"unknown worker {worker}")
+    if workers[worker]:
+        raise RuntimeError(f"{worker} still holds {workers[worker]}; release it first")
+    command(swarmy(config, "agent", "delete", worker, "--yes"))
+    del workers[worker]
+    save_workers(config, workers)
+    print(f"deleted {worker}; the next launch recreates it from the image")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    launch_parser = sub.add_parser("launch")
+    launch_parser = sub.add_parser("launch", help="run a tasky task on an idle worker, creating one if the pool has room")
     launch_parser.add_argument("task_id")
     launch_parser.add_argument("--provider")
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
-    launch_parser.add_argument("--image", help="registered image as NAME:TAG; default swarmy-dev:<remote>")
-    sub.add_parser("status")
-    for action in ("collect", "rm"):
-        sub.add_parser(action).add_argument("task_id")
-    resume_parser = sub.add_parser("resume")
+    launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
+    sub.add_parser("status", help="one line per worker: task, provider, model, state, elapsed, cost")
+    sub.add_parser("collect", help="record the worker's pull request in tasky").add_argument("task_id")
+    resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
     resume_parser.add_argument("task_id")
     resume_parser.add_argument("message")
+    release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once the task's pull request is merged")
+    release_parser.add_argument("task_id")
+    release_parser.add_argument("--force", action="store_true", help="free the worker even without a merged pull request")
+    sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
     args = parser.parse_args()
     try:
         config = load()
@@ -290,8 +354,10 @@ def main():
             collect(args.task_id, config)
         elif args.action == "resume":
             resume(args.task_id, args.message, config)
+        elif args.action in ("release", "rm"):
+            release(args.task_id, config, force=args.force)
         else:
-            remove(args.task_id, config)
+            reset(args.worker, config)
     except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"fleet: {error}", file=sys.stderr)
         return 1

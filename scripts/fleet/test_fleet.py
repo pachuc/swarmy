@@ -15,13 +15,11 @@ args = sys.argv[1:]
 root = Path(os.environ['STUB_STATE'])
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
-if args[0] == 'tasky':
-    pass
 if args[:3] == ['--json', 'task', 'show']:
     print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}}))
 elif args[:2] == ['pr', 'view']:
     print(json.dumps({'url':args[2], 'state':os.environ.get('PR_STATE','OPEN'),
-                      'baseRefName':'master', 'headRefName':'swarmy/ewr2hd'}))
+                      'baseRefName':'master', 'headRefName':os.environ.get('PR_BRANCH','swarmy/ewr2hd')}))
 elif args[:2] == ['--remote', 'dev']:
     rest = args[2:]
     if rest[:2] == ['agent', 'create']:
@@ -32,18 +30,16 @@ elif args[:2] == ['--remote', 'dev']:
         print('{}')
     elif rest[:2] == ['run', '--agent']:
         if 'Repair widget' in args[-1]:
-            (root / 'prompt').write_text(args[-1])
+            (root / ('prompt-' + rest[2])).write_text(args[-1])
         else:
             (root / 'followup').write_text(args[-1])
-        print(json.dumps({'event':'session_created', 'session_id':'01AAAA'}), flush=True)
+        print(json.dumps({'event':'session_opened', 'session_id':'01AAAA', 'agent_name': rest[2]}), flush=True)
         print(json.dumps({'event':'run_outcome', 'outcome':'completed'}), flush=True)
-    elif rest[:3] == ['agent', 'ls', '--json']:
-        print(json.dumps({'name':'task-ewr2hd'}))
-    elif rest[:3] == ['agent', 'show', 'task-ewr2hd']:
-        print(json.dumps({'main_session':'01AAAA','provider':'fake','model':'fake',
+    elif rest[:2] == ['agent', 'show']:
+        print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
             'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
     elif rest[:3] == ['session', 'show', '01AAAA']:
-        print(json.dumps({'session_id':'01AAAA','state':'sleeping','agent_name':'task-ewr2hd'}))
+        print(json.dumps({'session_id':'01AAAA','state':'sleeping','agent_name':'worker-1'}))
         print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
@@ -65,7 +61,7 @@ class FleetTests(unittest.TestCase):
             path.write_text(STUB)
             path.chmod(0o700)
         self.config = FLEET.with_name("fleet.toml")
-        self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
+        self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
         self.addCleanup(self.config.unlink)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
@@ -78,24 +74,30 @@ class FleetTests(unittest.TestCase):
     def calls(self):
         return [json.loads(line) for line in (self.root / "calls").read_text().splitlines()]
 
-    def test_launch_status_collect_resume_and_remove(self):
+    def creates(self):
+        return [call for call in self.calls() if call[2:4] == ["agent", "create"]]
+
+    def test_launch_status_collect_resume_and_release(self):
         launch = self.call("launch", "EWR2HD", "--provider", "fake", "--model", "fake", "--effort", "high")
         self.assertEqual(launch.returncode, 0, launch.stderr)
-        calls = self.calls()
-        self.assertIn("--image", calls[1])
-        self.assertIn("swarmy-dev:dev", calls[1])
-        self.assertIn("--github-token-stdin", calls[1])
-        self.assertIn("high", calls[1])
-        self.assertNotIn("private-token", json.dumps(calls))
+        self.assertIn("worker-1", launch.stdout)
+        create = self.creates()[0]
+        self.assertEqual(create[4], "worker-1")
+        self.assertNotIn("--image", create)
+        self.assertIn("--github-token-stdin", create)
+        self.assertIn("high", create)
+        self.assertNotIn("private-token", json.dumps(self.calls()))
         self.assertNotIn("private-token", (self.root / "process_args").read_text())
         self.assertEqual((self.root / "token_ok").read_text(), "True")
-        prompt = (self.root / "prompt").read_text()
-        for expected in ("AGENTS.md", "Repair widget", "Fix the widget", "Run widget test", "swarmy/ewr2hd"):
+        prompt = (self.root / "prompt-worker-1").read_text()
+        for expected in ("AGENTS.md", "Repair widget", "Fix the widget", "Run widget test",
+                         "swarmy/ewr2hd", "~/work/ewr2hd", "cargo clean", "from origin/master"):
             self.assertIn(expected, prompt)
-        self.assertIn(["task", "start", "EWR2HD"], calls)
-        self.assertNotIn("private-token", (self.root / "state" / "task-ewr2hd.jsonl").read_text())
+        self.assertIn(["task", "start", "EWR2HD"], self.calls())
+        self.assertNotIn("private-token", (self.root / "state" / "ewr2hd.jsonl").read_text())
         status = self.call("status")
         self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("worker-1\tEWR2HD", status.stdout)
         self.assertIn("waiting for inference: 429 rate limited", status.stdout)
         self.assertIn("$1.25", status.stdout)
         collect = self.call("collect", "EWR2HD")
@@ -105,9 +107,37 @@ class FleetTests(unittest.TestCase):
         resume = self.call("resume", "EWR2HD", "Please address review")
         self.assertEqual(resume.returncode, 0, resume.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Please address review")
+        open_env = dict(self.env, PR_STATE="OPEN")
+        self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")
-        self.assertEqual(self.call("rm", "EWR2HD", env=merged_env).returncode, 0)
-        self.assertIn("delete", self.calls()[-1])
+        release = self.call("release", "EWR2HD", env=merged_env)
+        self.assertEqual(release.returncode, 0, release.stderr)
+        self.assertFalse(any("delete" in call for call in self.calls()))
+        workers = json.loads((self.root / "state" / "workers.json").read_text())
+        self.assertEqual(workers, {"worker-1": None})
+
+    def test_pool_reuses_idle_workers_and_caps_creation(self):
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        second = self.call("launch", "AAAAA2")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("worker-2", second.stdout)
+        self.assertEqual([c[4] for c in self.creates()], ["worker-1", "worker-2"])
+        third = self.call("launch", "AAAAA3")
+        self.assertEqual(third.returncode, 1)
+        self.assertIn("busy", third.stderr)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        fourth = self.call("launch", "AAAAA3")
+        self.assertEqual(fourth.returncode, 0, fourth.stderr)
+        self.assertIn("worker-1", fourth.stdout)
+        self.assertEqual(len(self.creates()), 2)
+        busy = self.call("reset", "worker-1")
+        self.assertEqual(busy.returncode, 1)
+        self.assertEqual(self.call("release", "AAAAA3", "--force").returncode, 0)
+        reset = self.call("reset", "worker-1")
+        self.assertEqual(reset.returncode, 0, reset.stderr)
+        self.assertEqual(self.calls()[-1][2:5], ["agent", "delete", "worker-1"])
+        workers = json.loads((self.root / "state" / "workers.json").read_text())
+        self.assertNotIn("worker-1", workers)
 
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)

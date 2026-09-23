@@ -1,8 +1,9 @@
 # Copy to fleet.toml and run chmod 600 scripts/fleet/fleet.toml.
 remote = "dev"
 repo = "pachuc/swarmy"
-provider = "fake"
-model = "fake"
+provider = "openrouter"
+model = "openai/gpt-6-sol"
 effort = "medium"
-# image = "swarmy-dev:dev"  # defaults to swarmy-dev:<remote>
+workers = 4
+# image = "swarmy-dev:dev"  # for new workers; defaults to the remote's default image
 github_token = "replace-with-github-token"

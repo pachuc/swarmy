@@ -242,6 +242,27 @@ Say in the pull request which root suites you ran and their results, or that
 the change touches none of the areas above. A reviewer treats a change in one
 of those areas with no root-suite result as unverified.
 
+## Working as a fleet worker
+
+Development tasks run on long-lived swarmy agents named `worker-N`, driven
+by `scripts/fleet/fleet`. A worker's computer persists between tasks, which
+is what keeps its cargo cache warm, and it is also why the worker has to
+keep its own disk in order. The rules, which the task prompt repeats:
+
+- Every task is a fresh clone under `~/work/<task suffix>` and one new
+  branch `swarmy/<task suffix>` from `origin/master`. Never reuse a
+  directory or a branch, and never force-push.
+- Before starting a task, remove the other directories under `~/work` and
+  run `cargo clean` if `~/.cargo-target` is over 20 GiB. The target
+  directory is shared across clones and lives outside them.
+- Leave nothing uncommitted at the end, and stop the dev stack with
+  `scripts/dev-stack.sh stop` so its processes and ports are free for the
+  next task.
+- Memory files under `/home/agent/memory` are yours to keep across tasks:
+  record what you learn about this repository's tests, tools, and reviewers.
+- If the disk is in a state you cannot repair, say so in your last message;
+  the operator resets the worker with `scripts/fleet/fleet reset worker-N`.
+
 ## Code conventions
 
 - Rust 2024 edition. Add dependencies to `[workspace.dependencies]` in the root

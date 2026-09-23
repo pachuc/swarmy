@@ -2,32 +2,40 @@
 
 ## Task fleet
 
-The Python driver at `scripts/fleet/fleet` runs tasky work on a connected Swarmy
-remote. It uses the `swarmy` CLI and requires `tasky` and `gh` on `PATH`. Copy
-`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the remote,
-repository, provider defaults, and GitHub token, then run `chmod 600
-scripts/fleet/fleet.toml`. The driver refuses a config readable by other users.
-The token is piped to `swarmy agent create --github-token-stdin`; it does not
-appear in command arguments or the session log. The config file is ignored by
-Git. Swarmy stores the token privately for the named agent.
+The Python driver at `scripts/fleet/fleet` runs tasky work on a pool of
+long-lived worker agents in a connected Swarmy remote. It uses the `swarmy`
+CLI and needs `tasky` and `gh` on `PATH`. Copy
+`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the
+remote, repository, provider defaults, pool size, and GitHub token, then run
+`chmod 600 scripts/fleet/fleet.toml`. The driver refuses a config readable by
+other users. The token is piped to `swarmy agent create --github-token-stdin`;
+it never appears in command arguments or the session log. The config file is
+ignored by Git. Swarmy stores the token privately for each worker.
 
 ```sh
-scripts/fleet/fleet launch EWR2HD --provider fake --model fake --effort medium
+scripts/fleet/fleet launch EWR2HD --provider openrouter --model openai/gpt-6-sol
 scripts/fleet/fleet status
 scripts/fleet/fleet collect EWR2HD
 scripts/fleet/fleet resume EWR2HD "Address the review comments"
-scripts/fleet/fleet rm EWR2HD
+scripts/fleet/fleet release EWR2HD
+scripts/fleet/fleet reset worker-2
 ```
 
-`launch` creates `task-ewr2hd` from the `swarmy-dev:<remote>` image (or the
-`image` set in the config or `--image`), starts its main
-conversation in the background, and marks the task in progress. Each agent gets
-a `swarmy/ewr2hd` branch. State and JSON run output are stored under
-`.dev/fleet` with owner-only permissions. `status` reads live agent usage and
-session wait reasons. `collect` verifies that the URL in the agent's last
-message is an open PR against master from that branch before recording it in
-tasky and moving the task to testing. `rm` requires that collected PR to be
-merged, then deletes the named agent and its computer. Codex Daytona remains an
+`launch` picks an idle worker, or creates `worker-N` from the remote's
+default image (or the configured `image`) while the pool is below `workers`,
+sends the task on the worker's main conversation, and marks the task in
+progress in tasky. The prompt carries `AGENTS.md`, the task text, and the
+worker rules from `AGENTS.md`: a fresh clone under `~/work/<suffix>`, one
+branch `swarmy/<suffix>` from master, a `cargo clean` when the shared target
+directory passes 20 GiB, and the dev stack stopped at the end. State and JSON
+run output are stored under `.dev/fleet` with owner-only permissions.
+`status` prints one line per worker with its task, provider, model, state
+(including a breaker's waiting reason), elapsed time, and cost. `collect`
+verifies that the URL in the worker's last message is an open PR against
+master from that branch before recording it in tasky and moving the task to
+testing. `release` frees the worker once that PR is merged (`--force` skips
+the check); the worker keeps its disk and warm cache. `reset` deletes an idle
+worker and its disk; the next launch recreates it. Codex Daytona remains an
 available task launcher during the transition.
 
 ## Quick start

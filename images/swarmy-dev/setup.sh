@@ -32,5 +32,9 @@ export CARGO_TARGET_DIR="$HOME/.cargo-target"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 BASHRC
 
-su -s /bin/bash agent -c 'export HOME=/home/agent PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib; cd /tmp/swarmy-image-source; cargo fetch --locked && cargo build --workspace --all-targets --locked && cargo build --workspace --locked'
+# Fetch the dependency sources so a task never downloads from crates.io at
+# start. No build is warmed here: workers are long-lived agents whose shared
+# target directory under ~/.cargo-target stays warm across tasks on their
+# own disk, which keeps this image small.
+su -s /bin/bash agent -c 'export HOME=/home/agent PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin; cd /tmp/swarmy-image-source; cargo fetch --locked'
 rm -rf "$scratch"
