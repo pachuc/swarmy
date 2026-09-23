@@ -1,13 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use swarmy_config::Settings;
+use swarmy_core::CredentialScope;
 use swarmy_llm::{
     ClientAuth, Provider,
     auth::{ResolvedAuth, Resolver},
     catalog::{Api, Catalog, ProviderInfo},
 };
 use swarmy_store::Store;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{config::FileFake, credentials::ClusterCredentials};
 
@@ -15,11 +16,38 @@ type ClientKey = (String, String, [u8; 32]);
 
 pub struct Providers {
     pub catalog: Catalog,
-    pub served: Vec<String>,
-    pub skipped: BTreeMap<String, String>,
+    state: RwLock<ProviderState>,
+    selected: Option<Vec<String>>,
+    store: Store,
     resolver: Result<Resolver, &'static str>,
     scripted: Result<Arc<dyn Provider>, &'static str>,
     clients: Mutex<BTreeMap<ClientKey, Arc<dyn Provider>>>,
+}
+
+#[derive(Default)]
+struct ProviderState {
+    served: Vec<String>,
+    skipped: BTreeMap<String, String>,
+    fingerprints: BTreeMap<String, Option<[u8; 32]>>,
+}
+
+pub struct ProviderChanges {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub rotated: Vec<String>,
+    pub served: Vec<String>,
+    pub skipped: BTreeMap<String, String>,
+}
+
+fn changed_providers(
+    previous: &BTreeMap<String, Option<[u8; 32]>>,
+    current: &BTreeMap<String, Option<[u8; 32]>>,
+) -> Vec<String> {
+    current
+        .iter()
+        .filter(|(id, fingerprint)| previous.get(*id) != Some(*fingerprint))
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 /// Filter the catalog with the configured subset and resolver outcomes.
@@ -53,13 +81,12 @@ pub fn provider_set(
 }
 
 impl Providers {
-    /// Discover providers without constructing protocol clients or calling providers.
-    /// Unavailable credentials and scripts are recorded in `skipped`.
+    /// Build the catalog and resolver without constructing protocol clients.
     /// # Errors
     /// Returns an invalid custom provider or model configuration.
     pub async fn discover(store: Store, settings: &Settings) -> Result<Self, swarmy_config::Error> {
         let catalog = settings.catalog()?;
-        let resolver = match ClusterCredentials::new(store).await {
+        let resolver = match ClusterCredentials::new(store.clone()).await {
             Ok(credentials) => Resolver::new(Arc::new(credentials))
                 .map_err(|_| "credential resolver cannot configure its HTTP client"),
             Err(error) => {
@@ -74,38 +101,120 @@ impl Providers {
         } else {
             Err("fake script is absent")
         };
-        let mut result = Self {
+        let result = Self {
             catalog,
-            served: Vec::new(),
-            skipped: BTreeMap::new(),
+            state: RwLock::new(ProviderState::default()),
+            selected: settings.providers.clone(),
+            store,
             resolver,
             scripted,
             clients: Mutex::new(BTreeMap::new()),
         };
-        let mut resolutions = BTreeMap::new();
-        for provider in result.catalog.providers() {
-            if settings
-                .providers
+        Ok(result)
+    }
+
+    /// Recheck only records whose encrypted value changed since the last tick.
+    /// # Errors
+    /// Returns database errors without changing the current served set.
+    pub async fn refresh(&self) -> Result<ProviderChanges, swarmy_store::StoreError> {
+        let mut fingerprints = BTreeMap::new();
+        for provider in self.catalog.providers() {
+            if self
+                .selected
                 .as_ref()
                 .is_none_or(|ids| ids.contains(&provider.id))
             {
-                resolutions.insert(
-                    provider.id.clone(),
-                    result
-                        .auth(provider)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                );
+                let fingerprint = if provider.api == Api::Fake {
+                    None
+                } else {
+                    self.store
+                        .credential_fingerprint(CredentialScope::Cluster, &provider.id)
+                        .await?
+                };
+                fingerprints.insert(provider.id.clone(), fingerprint);
             }
         }
-        (result.served, result.skipped) =
-            provider_set(&result.catalog, settings.providers.as_deref(), |provider| {
-                resolutions
-                    .remove(&provider.id)
-                    .unwrap_or_else(|| Err("credential unavailable".into()))
-            });
-        Ok(result)
+        let (changed, old, mut skipped) = {
+            let state = self.state.read().await;
+            (
+                changed_providers(&state.fingerprints, &fingerprints),
+                state.served.clone(),
+                state.skipped.clone(),
+            )
+        };
+        let mut resolutions = BTreeMap::new();
+        for id in &changed {
+            let Some(provider) = self.catalog.provider(id) else {
+                continue;
+            };
+            resolutions.insert(
+                id.clone(),
+                self.auth(provider)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        let mut served = old.clone();
+        for id in &changed {
+            served.retain(|current| current != id);
+            if let Some(result) = resolutions.remove(id) {
+                match result {
+                    Ok(()) => {
+                        served.push(id.clone());
+                        skipped.remove(id);
+                    }
+                    Err(reason) => {
+                        skipped.insert(id.clone(), reason);
+                    }
+                }
+            }
+        }
+        served.sort();
+        for provider in self.catalog.providers() {
+            if self
+                .selected
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&provider.id))
+            {
+                skipped.insert(provider.id.clone(), "excluded by providers setting".into());
+            }
+        }
+        for id in self.selected.iter().flatten() {
+            if self.catalog.provider(id).is_none() {
+                skipped.insert(id.clone(), "unknown provider".into());
+            }
+        }
+        let added = served
+            .iter()
+            .filter(|id| !old.contains(id))
+            .cloned()
+            .collect();
+        let removed = old
+            .iter()
+            .filter(|id| !served.contains(id))
+            .cloned()
+            .collect();
+        let rotated = changed
+            .iter()
+            .filter(|id| old.contains(id) && served.contains(id))
+            .cloned()
+            .collect();
+        self.clients
+            .lock()
+            .await
+            .retain(|(id, _, _), _| !changed.contains(id));
+        let mut state = self.state.write().await;
+        state.served.clone_from(&served);
+        state.skipped.clone_from(&skipped);
+        state.fingerprints = fingerprints;
+        Ok(ProviderChanges {
+            added,
+            removed,
+            rotated,
+            served,
+            skipped,
+        })
     }
 
     async fn auth(&self, provider: &ProviderInfo) -> Result<ResolvedAuth, swarmy_llm::Error> {
@@ -134,13 +243,16 @@ impl Providers {
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
     ) -> Result<Arc<dyn Provider>, swarmy_llm::Error> {
-        let info = self
-            .catalog
-            .provider(provider)
-            .filter(|_| self.served.iter().any(|id| id == provider))
-            .ok_or(swarmy_llm::Error::Credentials(
-                "provider is not served by this gateway",
-            ))?;
+        let served = self
+            .state
+            .read()
+            .await
+            .served
+            .iter()
+            .any(|id| id == provider);
+        let info = self.catalog.provider(provider).filter(|_| served).ok_or(
+            swarmy_llm::Error::Credentials("provider is not served by this gateway"),
+        )?;
         let resolved = self.auth(info).await?;
         let key = (provider.to_owned(), model.id.clone(), resolved.version);
         let mut clients = self.clients.lock().await;
@@ -180,5 +292,19 @@ mod tests {
         assert_eq!(served, ["openai"]);
         assert_eq!(skipped["anthropic"], "excluded by providers setting");
         assert_eq!(skipped["missing"], "unknown provider");
+    }
+
+    #[test]
+    fn unchanged_fingerprints_skip_resolution_and_one_change_selects_one_provider() {
+        let first = BTreeMap::from([
+            ("openai".into(), Some([1; 32])),
+            ("openrouter".into(), None),
+        ]);
+        assert!(changed_providers(&first, &first).is_empty());
+        let second = BTreeMap::from([
+            ("openai".into(), Some([1; 32])),
+            ("openrouter".into(), Some([2; 32])),
+        ]);
+        assert_eq!(changed_providers(&first, &second), ["openrouter"]);
     }
 }

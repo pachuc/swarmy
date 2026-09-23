@@ -16,8 +16,8 @@ use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
-    AgentId, Event, IdempotencyState, InflightRecord, LeaseOwnerId, Part, RequestId, SessionId,
-    SessionRecord, SessionState, encode,
+    AgentId, CredentialKind, CredentialRecord, CredentialScope, Event, IdempotencyState,
+    InflightRecord, LeaseOwnerId, Part, RequestId, SessionId, SessionRecord, SessionState, encode,
 };
 use swarmy_llm::{
     Delta, GenerationSettings, InferenceJob, Request, Response, StopReason, TokenUsage,
@@ -32,6 +32,10 @@ use tokio::{
     time::{sleep, timeout},
 };
 use ulid::Ulid;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 const ACK_WAIT: Duration = Duration::from_millis(600);
 const WAIT: Duration = Duration::from_secs(20);
@@ -153,6 +157,7 @@ impl Fixture {
                 .env("SWARMY_GATEWAY_CONCURRENCY", concurrency.to_string())
                 .env("SWARMY_FAKE_SCRIPT", self.files.path().join("script.json"))
                 .env("SWARMY_FAKE_CALL_LOG", self.files.path().join("calls"))
+                .env("SWARMY_KEYRING", self.files.path().join("keyring"))
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap(),
@@ -396,6 +401,67 @@ impl Fixture {
                 .unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn credential_changes_update_a_running_gateway() {
+    run(|mut f| async move {
+        let keyring = swarmy_config::Keyring::generate_at(&f.files.path().join("keyring")).unwrap();
+        let credentials = f.store.credentials(keyring);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ready\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+        let providers = std::collections::BTreeMap::from([(
+            "openrouter".into(),
+            swarmy_config::CustomProvider {
+                api: None,
+                base_url: Some(format!("{}/api/v1/", server.uri())),
+            },
+        )]);
+        f.start_with(1, "openrouter", &providers, &[]);
+        let result = AssertUnwindSafe(async {
+            timeout(WAIT, async {
+                while f.store.gateway_provider("openrouter").await.unwrap().is_none() {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            }).await.unwrap();
+            assert!(!f.store.gateway_serves("openrouter").await.unwrap());
+            credentials.put_credential(CredentialScope::Cluster, "openrouter", &CredentialRecord {
+                kind: CredentialKind::ApiKey { key: "fixture-key".into(), extra: std::collections::BTreeMap::default() },
+                updated_at: Timestamp::now(),
+            }).await.unwrap();
+            timeout(Duration::from_secs(65), async {
+                while !f.store.gateway_serves("openrouter").await.unwrap() {
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }).await.unwrap();
+            let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
+            let mut job = f.job().await;
+            job.provider = "openrouter".into();
+            job.request.settings.model = "openai/gpt-5.5".into();
+            f.bus.publish_work(&queue, &job).await.unwrap();
+            assert!(matches!(f.terminal(&job).await, Event::InferenceCompleted { .. }));
+            credentials.delete_credential(CredentialScope::Cluster, "openrouter").await.unwrap();
+            timeout(Duration::from_secs(65), async {
+                while f.store.gateway_serves("openrouter").await.unwrap() {
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }).await.unwrap();
+            let mut rejected = f.job().await;
+            rejected.provider = "openrouter".into();
+            rejected.request.settings.model = "openai/gpt-5.5".into();
+            f.bus.publish_work(&queue, &rejected).await.unwrap();
+            assert!(matches!(f.terminal(&rejected).await, Event::InferenceFailed { error, .. } if error.contains("provider is not served by this gateway")));
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
 }
 
 async fn run<F>(test: impl FnOnce(Fixture) -> F)
