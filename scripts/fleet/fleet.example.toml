@@ -4,4 +4,5 @@ repo = "pachuc/swarmy"
 provider = "fake"
 model = "fake"
 effort = "medium"
+# image = "swarmy-dev:dev"  # defaults to swarmy-dev:<remote>
 github_token = "replace-with-github-token"

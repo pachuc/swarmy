@@ -19,7 +19,8 @@ scripts/fleet/fleet resume EWR2HD "Address the review comments"
 scripts/fleet/fleet rm EWR2HD
 ```
 
-`launch` creates `task-ewr2hd` from the `swarmy-dev` image, starts its main
+`launch` creates `task-ewr2hd` from the `swarmy-dev:<remote>` image (or the
+`image` set in the config or `--image`), starts its main
 conversation in the background, and marks the task in progress. Each agent gets
 a `swarmy/ewr2hd` branch. State and JSON run output are stored under
 `.dev/fleet` with owner-only permissions. `status` reads live agent usage and

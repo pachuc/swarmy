@@ -113,7 +113,10 @@ def launch(args, config):
     selection = ["--provider", provider, "--model", model]
     if effort:
         selection += ["--effort", effort]
-    command(swarmy(config, "agent", "create", agent, "--image", "swarmy-dev",
+    image = args.image or config.get("image") or f"swarmy-dev:{config['remote']}"
+    if ":" not in image:
+        raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
+    command(swarmy(config, "agent", "create", agent, "--image", image,
                    "--description", f"tasky {args.task_id}", *selection,
                    "--github-token-stdin"), input=config["github_token"] + "\n")
     log = state_path(config) / (agent + ".jsonl")
@@ -183,7 +186,8 @@ def status(config):
         assignment_data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
         run_log = state_path(config) / (name + ".jsonl")
         logged = records(run_log.read_text()) if run_log.exists() else []
-        session = next((item for item in detail.get("sessions", []) if item.get("session_id") == session_id), None)
+        # session show prints the session record first; agent show does not list sessions in JSON.
+        session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
         state = state_for(session, events, logged)
         started = assignment_data.get("started_at") or detail.get("created_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
@@ -268,6 +272,7 @@ def main():
     launch_parser.add_argument("--provider")
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
+    launch_parser.add_argument("--image", help="registered image as NAME:TAG; default swarmy-dev:<remote>")
     sub.add_parser("status")
     for action in ("collect", "rm"):
         sub.add_parser(action).add_argument("task_id")

@@ -41,9 +41,9 @@ elif args[:2] == ['--remote', 'dev']:
         print(json.dumps({'name':'task-ewr2hd'}))
     elif rest[:3] == ['agent', 'show', 'task-ewr2hd']:
         print(json.dumps({'main_session':'01AAAA','provider':'fake','model':'fake',
-            'sessions':[{'session_id':'01AAAA','state':'sleeping'}], 'cost_dollars':1.25,
-            'created_at':'2026-09-23T00:00:00Z'}))
+            'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
     elif rest[:3] == ['session', 'show', '01AAAA']:
+        print(json.dumps({'session_id':'01AAAA','state':'sleeping','agent_name':'task-ewr2hd'}))
         print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
@@ -83,7 +83,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(launch.returncode, 0, launch.stderr)
         calls = self.calls()
         self.assertIn("--image", calls[1])
-        self.assertIn("swarmy-dev", calls[1])
+        self.assertIn("swarmy-dev:dev", calls[1])
         self.assertIn("--github-token-stdin", calls[1])
         self.assertIn("high", calls[1])
         self.assertNotIn("private-token", json.dumps(calls))
