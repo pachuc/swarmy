@@ -72,8 +72,8 @@ impl Store {
     /// List all service instances, including stale ones and existing node records.
     /// Liveness is evaluated at `now`; a heartbeat is alive through 90 seconds
     /// after its last observation. Node records predate service metadata, so their
-    /// version and host are reported as unknown and their first observed time is
-    /// used as started-at.
+    /// version and host are reported as unknown and their latest heartbeat is
+    /// used as started-at because the original start time was not recorded.
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn list_services(&self) -> Result<Vec<ServiceHealth>> {
