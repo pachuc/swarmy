@@ -5,6 +5,13 @@ use jiff::Timestamp;
 use swarmy_core::{AgentId, SessionId, SessionKind, SessionState, VolumeId, decode};
 
 impl Store {
+    /// Whether this computer has been permanently deleted.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn is_computer_deleted(&self, agent: AgentId) -> Result<bool> {
+        self.transaction(|trx| async move { self.computer_deleted(&trx, agent).await })
+            .await
+    }
     pub(crate) async fn computer_deleted(&self, trx: &Transaction, agent: AgentId) -> Result<bool> {
         Ok(read(trx, &self.computer_deleted_key(agent))
             .await?

@@ -560,13 +560,14 @@ async fn show_selection(
     json: bool,
 ) -> Result<()> {
     let selection = crate::selection::resolved_session(store, session).await?;
+    let scratch = store.scratch(session.agent_id).await?;
     let marker = |overridden: bool| if overridden { "" } else { " (inherited)" };
     crate::vol::output(
         &serde_json::json!({ "event": "session_selection", "session_id": session.session_id,
             "state": session.state, "interrupt_requested": session.interrupt_requested,
-            "inference": session.inference, "resolved": selection }),
+            "inference": session.inference, "resolved": selection, "scratch": scratch }),
         &format!(
-            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{}",
+            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} scratch_node={} scratch_bytes={}",
             session.session_id,
             session.state,
             session.interrupt_requested,
@@ -575,7 +576,11 @@ async fn show_selection(
             selection.model,
             marker(session.inference.model.is_some()),
             selection.effort,
-            marker(session.inference.effort.is_some())
+            marker(session.inference.effort.is_some()),
+            scratch
+                .as_ref()
+                .map_or_else(|| "-".into(), |record| record.node_id.to_string()),
+            scratch.as_ref().map_or(0, |record| record.bytes)
         ),
         json,
     )?;

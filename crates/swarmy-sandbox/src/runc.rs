@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::File,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
 };
 use swarmy_core::AgentId;
+use swarmy_store::ScratchRecord;
 use swarmy_volume::server::{self, ServerConfig};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -45,10 +47,31 @@ impl Drop for ServerTask {
 /// One runtime per node state directory. An exclusive lock fences local daemons.
 pub struct RuncRuntime {
     root: PathBuf,
+    scratch_root: PathBuf,
+    scratch_policy: ScratchPolicy,
     config: ServerConfig,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
     _lock: File,
+}
+
+/// Bounds for disposable host-local scratch. Percentages refer to the entire
+/// local filesystem, which also holds the volume cache.
+#[derive(Clone, Copy)]
+pub struct ScratchPolicy {
+    pub idle_days: u64,
+    pub high_water: u8,
+    pub low_water: u8,
+}
+
+impl Default for ScratchPolicy {
+    fn default() -> Self {
+        Self {
+            idle_days: 7,
+            high_water: 80,
+            low_water: 70,
+        }
+    }
 }
 
 impl RuncRuntime {
@@ -59,6 +82,28 @@ impl RuncRuntime {
     /// # Errors
     /// Returns locking, filesystem, or stale-container cleanup errors.
     pub async fn open(root: PathBuf, config: ServerConfig) -> Result<Self> {
+        Self::open_with_scratch(root, config, ScratchPolicy::default()).await
+    }
+
+    /// Open with the node's scratch eviction thresholds.
+    /// # Errors
+    /// Returns invalid settings, locking, filesystem, or stale-container cleanup errors.
+    pub async fn open_with_scratch(
+        root: PathBuf,
+        config: ServerConfig,
+        scratch_policy: ScratchPolicy,
+    ) -> Result<Self> {
+        if scratch_policy.low_water >= scratch_policy.high_water || scratch_policy.high_water > 100
+        {
+            return Err(Error::Operation(
+                "scratch water marks must satisfy low < high <= 100".into(),
+            ));
+        }
+        std::fs::create_dir_all(&config.directory)?;
+        let local = config.directory.canonicalize()?;
+        let scratch_root = local.parent().ok_or(Error::State)?.join("scratch");
+        std::fs::create_dir_all(&scratch_root)?;
+        std::fs::set_permissions(&scratch_root, std::fs::Permissions::from_mode(0o700))?;
         std::fs::create_dir_all(&root)?;
         let root = std::fs::canonicalize(root)?;
         let lock = File::options()
@@ -71,6 +116,8 @@ impl RuncRuntime {
         std::fs::create_dir_all(root.join("bundles"))?;
         let runtime = Self {
             root,
+            scratch_root,
+            scratch_policy,
             config,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
@@ -94,6 +141,147 @@ impl RuncRuntime {
             std::fs::remove_dir_all(path)?;
         }
         Ok(runtime)
+    }
+
+    /// Sweep deleted, moved, idle, and pressure-evicted scratch. Active sandboxes
+    /// are excluded, so no bind mount loses its source while in use.
+    /// # Errors
+    /// Returns metadata, database, or filesystem failures.
+    pub async fn sweep_scratch(&self) -> Result<()> {
+        let active: std::collections::BTreeSet<_> =
+            self.sandboxes.lock().await.keys().copied().collect();
+        let mut candidates = Vec::new();
+        for entry in std::fs::read_dir(&self.scratch_root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Ok(ulid) = ulid::Ulid::from_string(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let id = AgentId::from_ulid(ulid);
+            if active.contains(&id) {
+                std::fs::write(entry.path().join(".hosted"), b"")?;
+                if !self.config.store.is_computer_deleted(id).await? {
+                    let bytes = directory_bytes(&entry.path())?;
+                    if let Err(error) = self
+                        .config
+                        .store
+                        .report_scratch(
+                            id,
+                            &ScratchRecord {
+                                node_id: self.config.node,
+                                bytes,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(%id, %error, "scratch size report failed");
+                    }
+                }
+                continue;
+            }
+            let marker = entry.path().join(".hosted");
+            let modified = std::fs::metadata(&marker)
+                .or_else(|_| entry.metadata())?
+                .modified()?;
+            let bytes = directory_bytes(&entry.path())?;
+            let deleted = self.config.store.is_computer_deleted(id).await?;
+            let moved = self
+                .config
+                .store
+                .get_by_agent(id)
+                .await?
+                .is_some_and(|placement| placement.node_id != self.config.node);
+            let idle = modified.elapsed().unwrap_or_default()
+                > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
+            if deleted || moved || idle {
+                self.evict_scratch(id, bytes)?;
+                self.config
+                    .store
+                    .clear_scratch(id, self.config.node)
+                    .await?;
+            } else {
+                self.config
+                    .store
+                    .report_scratch(
+                        id,
+                        &ScratchRecord {
+                            node_id: self.config.node,
+                            bytes,
+                        },
+                    )
+                    .await?;
+                candidates.push((modified, id, bytes));
+            }
+        }
+        let total = fs2::total_space(&self.scratch_root)?;
+        if total > 0
+            && fs2::available_space(&self.scratch_root)?
+                <= total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
+        {
+            candidates.sort_by_key(|item| item.0);
+            for (_, id, bytes) in candidates {
+                if fs2::available_space(&self.scratch_root)?
+                    > total.saturating_mul(u64::from(100 - self.scratch_policy.low_water)) / 100
+                {
+                    break;
+                }
+                self.evict_scratch(id, bytes)?;
+                self.config
+                    .store
+                    .clear_scratch(id, self.config.node)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn evict_scratch(&self, id: AgentId, bytes: u64) -> Result<()> {
+        std::fs::remove_dir_all(self.scratch_root.join(id.to_string()))?;
+        tracing::info!(computer = %id, bytes, "scratch evicted");
+        Ok(())
+    }
+
+    fn prepare_scratch(&self, id: AgentId, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let rootfs = self.bundle(id).join("rootfs");
+        let agent = std::fs::metadata(rootfs.join("home/agent"))?;
+        let computer = self.scratch_root.join(id.to_string());
+        std::fs::create_dir_all(&computer)?;
+        for (index, path) in paths.iter().enumerate() {
+            let relative = Path::new(path)
+                .strip_prefix("/")
+                .map_err(|_| Error::State)?;
+            if relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(Error::Operation("invalid scratch path".into()));
+            }
+            let mut target = rootfs.clone();
+            for part in relative.components() {
+                target.push(part);
+                if target
+                    .symlink_metadata()
+                    .is_ok_and(|meta| meta.file_type().is_symlink())
+                {
+                    return Err(Error::Operation("scratch path traverses symlink".into()));
+                }
+            }
+            std::fs::create_dir_all(&target)?;
+            let source = computer.join(index.to_string());
+            std::fs::create_dir_all(&source)?;
+            std::os::unix::fs::chown(&source, Some(agent.uid()), Some(agent.gid()))?;
+            if path == "/tmp" {
+                std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o1777))?;
+            }
+        }
+        std::fs::write(computer.join(".hosted"), b"")?;
+        Ok(())
     }
 
     fn bundle(&self, id: AgentId) -> PathBuf {
@@ -301,7 +489,7 @@ impl RuncRuntime {
         Ok(process)
     }
 
-    async fn start(&self, id: AgentId) -> Result<()> {
+    async fn start(&self, id: AgentId, scratch: &[String]) -> Result<()> {
         let bundle = self.bundle(id);
         checked(self.command().args(["spec", "--bundle"]).arg(&bundle)).await?;
         let path = bundle.join("config.json");
@@ -345,6 +533,9 @@ impl RuncRuntime {
         mounts.push(serde_json::json!({"destination": "/run/swarmy-gh", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=16m"]}));
         std::fs::write(bundle.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
         mounts.push(serde_json::json!({"destination": "/etc/resolv.conf", "type": "bind", "source": bundle.join("resolv.conf"), "options": ["bind", "ro", "nosuid", "nodev", "noexec"]}));
+        for (index, destination) in scratch.iter().enumerate() {
+            mounts.push(serde_json::json!({"destination": destination, "type": "bind", "source": self.scratch_root.join(id.to_string()).join(index.to_string()), "options": ["bind", "rw", "nosuid", "nodev"]}));
+        }
         std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
         // Init outlives runc create, so it must not inherit pipes that the
         // host command helper waits to drain before starting the container.
@@ -448,6 +639,10 @@ impl RuncRuntime {
             spec: running.journal.spec.clone(),
             disk: running.journal.disk,
         };
+        let marker = self.scratch_root.join(id.to_string()).join(".hosted");
+        if marker.exists() {
+            std::fs::write(marker, b"")?;
+        }
         std::fs::remove_dir_all(self.bundle(id))
             .map_err(|error| Error::Operation(format!("remove sandbox bundle {id}: {error}")))?;
         self.sandboxes.lock().await.remove(&id);
@@ -520,8 +715,16 @@ impl RuncRuntime {
 #[async_trait]
 impl SandboxRuntime for RuncRuntime {
     async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
+        let total = fs2::total_space(&self.scratch_root)?;
+        if total > 0
+            && fs2::available_space(&self.scratch_root)?
+                <= total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
+        {
+            self.sweep_scratch().await?;
+        }
         let _lifecycle = self.lifecycle.lock().await;
         let id = spec.agent_id;
+        let scratch = spec.scratch.clone();
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
@@ -591,7 +794,21 @@ impl SandboxRuntime for RuncRuntime {
                 id,
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
-            self.start(id).await
+            self.prepare_scratch(id, &scratch)?;
+            self.start(id, &scratch).await?;
+            if !scratch.is_empty() {
+                self.config
+                    .store
+                    .report_scratch(
+                        id,
+                        &ScratchRecord {
+                            node_id: self.config.node,
+                            bytes: directory_bytes(&self.scratch_root.join(id.to_string()))?,
+                        },
+                    )
+                    .await?;
+            }
+            Ok(())
         }
         .await;
         if let Err(error) = setup {
@@ -693,6 +910,28 @@ impl SandboxRuntime for RuncRuntime {
             kvm: false,
         }
     }
+}
+
+fn directory_bytes(path: &Path) -> Result<u64> {
+    let mut bytes = 0_u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = match entry.path().symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.is_dir() {
+            match directory_bytes(&entry.path()) {
+                Ok(size) => bytes = bytes.saturating_add(size),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        } else {
+            bytes = bytes.saturating_add(metadata.len());
+        }
+    }
+    Ok(bytes)
 }
 
 struct ExecGuard {

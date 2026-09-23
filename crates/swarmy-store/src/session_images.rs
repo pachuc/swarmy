@@ -6,6 +6,13 @@ pub(crate) type ImageCache =
     std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<SessionId, ManifestId>>>;
 
 impl Store {
+    /// Return the image selected when a session was created.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn pinned_image(&self, id: SessionId) -> Result<Option<ImageRecord>> {
+        self.transaction(|trx| async move { read(&trx, &self.session_image_key(id)).await })
+            .await
+    }
     pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("session_image", id.as_ulid().to_bytes().as_slice()))

@@ -484,6 +484,14 @@ lease. Base images are manifests. Creating an agent volume from a base image
 is writing a volume record that points at the image manifest. Cloning is the
 same operation against any manifest. Both are free.
 
+Each computer also has optional scratch directories on its current node's local
+disk. Image recipes declare fixed sandbox paths; the node bind-mounts those
+directories into the container. Scratch is outside the block device, so writes
+there never enter the dirty store, snapshots, manifests, or object storage.
+It survives container idle eviction and daemon restarts on that node. It can
+disappear after node loss, migration, computer deletion, seven days without
+hosting, or local disk pressure. Files elsewhere on the computer remain durable.
+
 Fixed-size chunking is correct for block devices because offsets are stable,
 so content-defined chunking buys nothing. Large manifests are stored as a
 two-level tree so a snapshot after a small write rewrites only the affected
@@ -776,6 +784,8 @@ or validate the smaller changed-data rows; the table remains a proposed budget.
    can join a root-owned runc namespace and removes the handle with the pasta
    process on teardown or restart. The placement's address metadata is
    published after networking starts and cleared when the placement ends.
+   Image-declared scratch paths are bind mounts from the node's local disk, one directory per
+   computer and path. The node preserves them across stops and daemon restarts.
 2. **gVisor.** Works on every host, has native checkpoint and restore for
    memory pause. Some syscall gaps and I/O overhead. Candidate for the
    default on hosts without KVM.
@@ -831,9 +841,16 @@ After thirty minutes with no tool activity or managed running processes,
 checkpoint, stop the computer, detach its volume, and release placement.
 Managed background processes count as activity and prevent idle eviction.
 The next tool request places it again and cold boots from its latest published
-manifest. Placement prefers nodes with the base image cached, then any node
-with capacity. After failure, wait for lease expiry and take over with a new
-epoch; all memory and running processes are lost.
+manifest. Placement first tries the node that last reported the computer's
+scratch, provided it has room, then another live node with capacity. After
+failure, wait for lease expiry and take over with a new epoch; memory and
+running processes are lost. Scratch on the failed node is not recoverable.
+
+The node sweeps scratch outside active containers. It deletes directories for
+deleted or moved computers and directories not hosted for the configured idle
+period (seven days by default). When the local filesystem passes 80 percent
+used, it removes least recently hosted scratch until usage falls below 70
+percent. The daemon logs each eviction with the computer id and byte count.
 
 Hosting claims and successful lease renewal times are stored transactionally in
 `placement_hosting`, separate from the existing binary placement record and

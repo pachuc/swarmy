@@ -19,6 +19,7 @@ pub enum Request {
     Pause(Sandbox),
     Resume(PauseHandle),
     Destroy(Sandbox),
+    Checkpoint(Sandbox),
     Capabilities,
 }
 
@@ -30,5 +31,6 @@ pub enum Response {
     Exited(ExecResult),
     Capabilities(RuntimeCaps),
     Destroyed,
+    Checkpointed(swarmy_core::ManifestId),
     Error(String),
 }

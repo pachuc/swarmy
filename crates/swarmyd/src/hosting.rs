@@ -73,6 +73,13 @@ pub struct Hosting {
 }
 
 impl Hosting {
+    async fn scratch_for_session(&self, session: SessionId) -> Result<Vec<String>> {
+        if let Some(image) = self.store.pinned_image(session).await? {
+            Ok(self.store.image_scratch(&image).await?)
+        } else {
+            Ok(Vec::new())
+        }
+    }
     pub async fn new(
         store: Store,
         runtime: Arc<RuncRuntime>,
@@ -217,9 +224,13 @@ impl Hosting {
                 .store
                 .agent_volume(first.job.session_id, &placement)
                 .await?;
+            let scratch = self.scratch_for_session(first.job.session_id).await?;
             self.runtime
                 .create(
-                    SandboxSpec { agent_id: agent },
+                    SandboxSpec {
+                        agent_id: agent,
+                        scratch,
+                    },
                     BlockDevice { volume_id: volume },
                 )
                 .await?;

@@ -196,17 +196,23 @@ fn confirm(name: &str) -> Result<()> {
 async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> Result<()> {
     let sessions = sessions(store, agent.agent_id).await?;
     let placement = store.get_by_agent(agent.agent_id).await?;
+    let scratch = store.scratch(agent.agent_id).await?;
     let node = placement.as_ref().map(|record| record.node_id);
     let mut value = serde_json::to_value(agent)?;
     value["node_id"] = serde_json::to_value(node)?;
+    value["scratch"] = serde_json::to_value(&scratch)?;
     value["session_count"] = sessions.len().into();
     let mut text = format!(
-        "{} {} image={}:{} node={} sessions={} created={} main_session={}",
+        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
         agent.name,
         agent.agent_id,
         agent.image.name,
         agent.image.tag.0,
         node.map_or_else(|| "-".into(), |id| id.to_string()),
+        scratch
+            .as_ref()
+            .map_or_else(|| "-".into(), |record| record.node_id.to_string()),
+        scratch.as_ref().map_or(0, |record| record.bytes),
         sessions.len(),
         agent.created_at,
         agent
@@ -232,18 +238,7 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         let volume = store
             .get_volume(VolumeId::from_ulid(agent.agent_id.as_ulid()))
             .await?;
-        // Manifest ULIDs supply the same snapshot timestamp used in recovery notices.
-        let snapshot_at = volume
-            .as_ref()
-            .map(|volume| {
-                Timestamp::from_millisecond(
-                    i64::try_from(volume.head_manifest.as_ulid().timestamp_ms())
-                        .context("snapshot timestamp overflow")?,
-                )
-                .map_err(anyhow::Error::from)
-            })
-            .transpose()?;
-        let age = snapshot_at.map(|time| Timestamp::now().duration_since(time).as_secs().max(0));
+        let (snapshot_at, age) = last_snapshot(volume.as_ref())?;
         let status = store.agent_call_status(agent.agent_id).await?;
         let state = call_status(&mut value, &mut text, status.as_ref())?;
         value["placement"] = serde_json::to_value(&placement)?;
@@ -288,6 +283,23 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         }
     }
     output(&value, &text, json)
+}
+
+/// Manifest ULIDs supply the same snapshot timestamp used in recovery notices.
+fn last_snapshot(
+    volume: Option<&swarmy_core::VolumeRecord>,
+) -> Result<(Option<Timestamp>, Option<i64>)> {
+    let snapshot_at = volume
+        .map(|volume| {
+            Timestamp::from_millisecond(
+                i64::try_from(volume.head_manifest.as_ulid().timestamp_ms())
+                    .context("snapshot timestamp overflow")?,
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .transpose()?;
+    let age = snapshot_at.map(|time| Timestamp::now().duration_since(time).as_secs().max(0));
+    Ok((snapshot_at, age))
 }
 
 fn call_status(

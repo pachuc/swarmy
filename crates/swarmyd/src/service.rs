@@ -26,6 +26,10 @@ pub async fn handle(
         Request::Pause(sandbox) => runtime.pause(&sandbox).await.map(Response::Paused),
         Request::Resume(handle) => runtime.resume(handle).await.map(Response::Sandbox),
         Request::Destroy(sandbox) => runtime.destroy(sandbox).await.map(|()| Response::Destroyed),
+        Request::Checkpoint(sandbox) => runtime
+            .checkpoint(&sandbox)
+            .await
+            .map(Response::Checkpointed),
         Request::Capabilities => Ok(Response::Capabilities(runtime.capabilities())),
         Request::Exec { sandbox, request } => {
             let (send, mut receive) = mpsc::channel(16);

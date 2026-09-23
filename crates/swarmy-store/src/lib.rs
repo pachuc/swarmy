@@ -24,6 +24,7 @@ mod leases;
 mod nodes;
 mod placed_tools;
 mod placements;
+pub use placements::ScratchRecord;
 mod plans;
 mod session_images;
 mod timers;

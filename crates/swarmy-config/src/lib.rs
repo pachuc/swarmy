@@ -129,6 +129,7 @@ pub struct Settings {
     pub volume_snapshots: VolumeSnapshots,
     pub ephemeral_retention_seconds: std::num::NonZeroU64,
     pub sandbox_idle_seconds: std::num::NonZeroU64,
+    pub sandbox: SandboxSettings,
     pub placement_lease_seconds: std::num::NonZeroU64,
     pub gc: GarbageCollection,
     pub inference: Inference,
@@ -175,6 +176,24 @@ pub struct Settings {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct SandboxSettings {
+    pub scratch_idle_days: u64,
+    pub scratch_high_water: u8,
+    pub scratch_low_water: u8,
+}
+
+impl Default for SandboxSettings {
+    fn default() -> Self {
+        Self {
+            scratch_idle_days: 7,
+            scratch_high_water: 80,
+            scratch_low_water: 70,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Fake {
     pub script: String,
     pub call_log: String,
@@ -195,6 +214,7 @@ impl Default for Settings {
             volume_snapshots: VolumeSnapshots::default(),
             ephemeral_retention_seconds: std::num::NonZeroU64::new(86400).unwrap(),
             sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
+            sandbox: SandboxSettings::default(),
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
             gc: GarbageCollection::default(),
             inference: Inference::default(),

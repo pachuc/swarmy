@@ -5,7 +5,49 @@ use swarmy_core::{
     NodeCapacity, NodeId, NodeRecord, NodeRole, PlacedToolClaim, PlacementChangeReason,
     PlacementRecord, ToolJob, ToolResult,
 };
+use swarmy_store::ScratchRecord;
 use swarmy_store::StoreError;
+
+#[tokio::test]
+async fn placement_prefers_scratch_node_then_falls_back_when_full() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let _session = f.session().await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: f.nodes[1],
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    let first = crate::placement::resolve(&f.store, f.agent, Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(first.node_id, f.nodes[1]);
+    f.store.release(&first).await.unwrap();
+    let occupied = f
+        .store
+        .place(
+            AgentId::from_ulid(Ulid::generate()),
+            f.nodes[1],
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let fallback = crate::placement::resolve(&f.store, f.agent, Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(fallback.node_id, f.nodes[0]);
+    f.store.release(&fallback).await.unwrap();
+    f.store.release(&occupied).await.unwrap();
+    f.cleanup().await;
+}
 
 struct Fixture {
     store: Store,
