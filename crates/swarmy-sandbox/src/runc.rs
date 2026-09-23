@@ -393,9 +393,7 @@ impl RuncRuntime {
         // A runc namespace belongs to the host user namespace. pasta needs
         // root to enter it; its default nobody account cannot call setns here.
         // The PID file lives under /run: Ubuntu's AppArmor profile for pasta
-        // refuses to write one under the sandbox bundle. The upstream
-        // resolvers are passed explicitly because pasta ignores a loopback
-        // stub such as systemd-resolved's 127.0.0.53 in /etc/resolv.conf.
+        // refuses to write one under the sandbox bundle.
         let pid_file = pasta_pid_file(id);
         if let Some(directory) = pid_file.parent() {
             std::fs::create_dir_all(directory)?;
@@ -467,6 +465,21 @@ impl RuncRuntime {
                 }
             }
         }
+        // The sandbox resolves names by talking to the host's upstream
+        // resolvers directly, which are usually inside a prohibited private
+        // range (a VPC resolver, for example), so each gets a narrow route
+        // through pasta's gateway. pasta's own DNS forwarder is not used: it
+        // ignores a loopback stub such as systemd-resolved's and needs the
+        // host-side target set in ways that differ between versions.
+        for server in upstream_resolvers() {
+            checked(
+                Command::new("nsenter")
+                    .args(["-t", &target, "-n", "ip", "route", "replace"])
+                    .arg(format!("{server}/32"))
+                    .args(["via", "10.0.2.1"]),
+            )
+            .await?;
+        }
         Ok(process)
     }
 
@@ -512,7 +525,7 @@ impl RuncRuntime {
         let mounts = config["mounts"].as_array_mut().ok_or(Error::State)?;
         mounts.push(serde_json::json!({"destination": "/run/swarmy", "type": "bind", "source": bundle.join("guest"), "options": ["bind", "nosuid", "nodev", "noexec"]}));
         mounts.push(serde_json::json!({"destination": "/run/swarmy-gh", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=16m"]}));
-        std::fs::write(bundle.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
+        std::fs::write(bundle.join("resolv.conf"), sandbox_resolv_conf())?;
         mounts.push(serde_json::json!({"destination": "/etc/resolv.conf", "type": "bind", "source": bundle.join("resolv.conf"), "options": ["bind", "ro", "nosuid", "nodev", "noexec"]}));
         for (index, destination) in scratch.iter().enumerate() {
             mounts.push(serde_json::json!({"destination": destination, "type": "bind", "source": self.scratch_root.join(id.to_string()).join(index.to_string()), "options": ["bind", "rw", "nosuid", "nodev"]}));
@@ -981,10 +994,6 @@ async fn pump(
 
 fn pasta_arguments(netns: &str, pid_file: &Path) -> Vec<String> {
     let mut arguments = Vec::new();
-    for server in upstream_resolvers() {
-        arguments.push("--dns".into());
-        arguments.push(server);
-    }
     arguments.extend(
         [
             "--foreground",
@@ -1001,8 +1010,6 @@ fn pasta_arguments(netns: &str, pid_file: &Path) -> Vec<String> {
             "24",
             "--gateway",
             "10.0.2.1",
-            "--dns-forward",
-            "10.0.2.3",
             "-t",
             "none",
             "-u",
@@ -1023,9 +1030,30 @@ fn pasta_pid_file(id: AgentId) -> PathBuf {
     Path::new("/run/swarmy/pasta").join(format!("{id}.pid"))
 }
 
-/// Nameservers pasta can forward to: the real upstreams behind a local stub
-/// resolver when systemd-resolved runs, otherwise any non-loopback entries in
-/// /etc/resolv.conf. An empty list leaves pasta to its own discovery.
+/// The sandbox's resolver file: the host's upstream resolvers, reached
+/// through per-server routes, with the host's search list.
+fn sandbox_resolv_conf() -> String {
+    let mut text = String::new();
+    for server in upstream_resolvers() {
+        text.push_str("nameserver ");
+        text.push_str(&server);
+        text.push('\n');
+    }
+    for path in ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"] {
+        if let Ok(host) = std::fs::read_to_string(path)
+            && let Some(search) = host.lines().find(|line| line.starts_with("search "))
+        {
+            text.push_str(search.trim());
+            text.push('\n');
+            break;
+        }
+    }
+    text
+}
+
+/// The real upstream resolvers: those behind a local stub when
+/// systemd-resolved runs, otherwise any non-loopback entries in
+/// /etc/resolv.conf.
 fn upstream_resolvers() -> Vec<String> {
     for path in ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"] {
         let Ok(text) = std::fs::read_to_string(path) else {
