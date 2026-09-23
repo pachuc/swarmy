@@ -1,14 +1,20 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "swarmy-api-types",
+    "title": "Swarmy API",
     "description": "",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
+  "servers": [
+    {
+      "url": "/v1",
+      "description": "Version 1 control plane"
+    }
+  ],
   "paths": {},
   "components": {
     "schemas": {

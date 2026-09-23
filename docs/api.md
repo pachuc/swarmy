@@ -1,10 +1,12 @@
 # Control plane API v1
 
 All client operations use HTTP JSON under `/v1`. The `swarmy-api-types` crate is
-its wire contract; `docs/openapi.json` is generated from that crate. IDs are
-opaque strings. An agent owns a persistent computer and can have multiple
-sessions. A session is an ordered append-only log; a turn groups inference and
-tool activity, and messages belong to sessions. Images select computer roots,
+its wire contract; `docs/openapi.json` is generated from that crate. The
+schema document has no paths yet: endpoint routing belongs to the server task,
+and this task freezes the common wire shapes first. IDs are opaque strings.
+An agent owns a persistent computer and can have multiple sessions. A session
+is an ordered append-only log; a turn groups inference and tool activity, and
+messages belong to sessions. Images select computer roots,
 models belong to providers, and credentials expose only metadata and validity.
 Nodes and service health report availability. Credential secrets are accepted
 only in create and update requests, never returned by read operations.

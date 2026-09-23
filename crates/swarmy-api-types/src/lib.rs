@@ -309,7 +309,10 @@ pub struct ApiError {
 
 /// The schema document is generated from the same types clients and servers serialize.
 #[derive(OpenApi)]
-#[openapi(components(schemas(
+#[openapi(
+    info(title = "Swarmy API", version = "1.0.0"),
+    servers((url = "/v1", description = "Version 1 control plane")),
+    components(schemas(
     LogId,
     Cursor,
     Subscription,
@@ -356,13 +359,13 @@ pub struct ApiDocument;
 mod tests {
     use super::*;
 
-    fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(value: T) {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(serde_json::from_str::<T>(&json).unwrap(), value);
+    fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        assert_eq!(&serde_json::from_str::<T>(&json).unwrap(), value);
     }
 
     #[test]
-    fn json_contract() {
+    fn resource_json_contract() {
         let log = LogId::Session("s".into());
         let health = HealthStatus::Healthy;
         let role = MessageRole::User;
@@ -394,30 +397,30 @@ mod tests {
             message: "failed".into(),
             provider_text: Some("original".into()),
         };
-        round_trip(log.clone());
-        round_trip(LogId::Channel("c".into()));
-        round_trip(Cursor {
+        round_trip(&log);
+        round_trip(&LogId::Channel("c".into()));
+        round_trip(&Cursor {
             log_id: log.clone(),
             sequence: 0,
         });
-        round_trip(Subscription {
+        round_trip(&Subscription {
             cursors: vec![Cursor {
                 log_id: log.clone(),
                 sequence: 1,
             }],
             token_deltas: false,
         });
-        round_trip(status.clone());
-        round_trip(TurnStatus::Finished);
-        round_trip(TurnStatus::Failed);
-        round_trip(health.clone());
-        round_trip(HealthStatus::Degraded);
-        round_trip(HealthStatus::Unavailable);
-        round_trip(role.clone());
-        round_trip(MessageRole::Assistant);
-        round_trip(MessageRole::Tool);
-        round_trip(MessageRole::System);
-        round_trip(Agent {
+        round_trip(&status);
+        round_trip(&TurnStatus::Finished);
+        round_trip(&TurnStatus::Failed);
+        round_trip(&health);
+        round_trip(&HealthStatus::Degraded);
+        round_trip(&HealthStatus::Unavailable);
+        round_trip(&role);
+        round_trip(&MessageRole::Assistant);
+        round_trip(&MessageRole::Tool);
+        round_trip(&MessageRole::System);
+        round_trip(&Agent {
             id: "a".into(),
             name: "agent".into(),
             image_id: "i".into(),
@@ -425,40 +428,47 @@ mod tests {
             model_id: "m".into(),
             prompt: "prompt".into(),
         });
-        round_trip(Session {
+        round_trip(&Session {
             id: "s".into(),
             agent_id: Some("a".into()),
-            log_id: log.clone(),
+            log_id: log,
             latest_sequence: 1,
         });
-        round_trip(turn.clone());
-        round_trip(message.clone());
-        round_trip(Image {
+        round_trip(&turn);
+        round_trip(&message);
+        round_trip(&Image {
             id: "i".into(),
             name: "base".into(),
             tag: "v1".into(),
         });
-        round_trip(Model {
+        round_trip(&Model {
             id: "m".into(),
             provider_id: "p".into(),
             context_window: 100,
         });
-        round_trip(Provider {
+        round_trip(&Provider {
             id: "p".into(),
             name: "provider".into(),
-            status: health.clone(),
+            status: health,
         });
-        round_trip(Credential {
+        round_trip(&Credential {
             id: "k".into(),
             provider_id: "p".into(),
             kind: "api_key".into(),
             valid: true,
             expires_at: None,
         });
-        round_trip(node.clone());
-        round_trip(service.clone());
-        round_trip(error.clone());
-        round_trip(CreateAgent {
+        round_trip(&node);
+        round_trip(&service);
+        round_trip(&error);
+    }
+
+    #[test]
+    fn mutation_json_contract() {
+        let status = TurnStatus::Running;
+        let role = MessageRole::User;
+        let health = HealthStatus::Healthy;
+        round_trip(&CreateAgent {
             idempotency_key: "k".into(),
             name: "a".into(),
             image_id: "i".into(),
@@ -466,94 +476,129 @@ mod tests {
             model_id: "m".into(),
             prompt: "p".into(),
         });
-        round_trip(UpdateAgent {
+        round_trip(&UpdateAgent {
             idempotency_key: "k".into(),
             prompt: None,
             provider_id: None,
             model_id: None,
         });
-        round_trip(CreateSession {
+        round_trip(&CreateSession {
             idempotency_key: "k".into(),
             agent_id: None,
             image_id: Some("i".into()),
         });
-        round_trip(UpdateSession {
+        round_trip(&UpdateSession {
             idempotency_key: "k".into(),
             agent_id: None,
         });
-        round_trip(CreateTurn {
+        round_trip(&CreateTurn {
             idempotency_key: "k".into(),
             session_id: "s".into(),
         });
-        round_trip(UpdateTurn {
+        round_trip(&UpdateTurn {
             idempotency_key: "k".into(),
             status,
         });
-        round_trip(CreateMessage {
+        round_trip(&CreateMessage {
             idempotency_key: "k".into(),
             session_id: "s".into(),
             role,
             text: "hi".into(),
         });
-        round_trip(UpdateMessage {
+        round_trip(&UpdateMessage {
             idempotency_key: "k".into(),
             text: "hi".into(),
         });
-        round_trip(CreateImage {
+        round_trip(&CreateImage {
             idempotency_key: "k".into(),
             name: "base".into(),
             tag: "v1".into(),
         });
-        round_trip(UpdateImage {
+        round_trip(&UpdateImage {
             idempotency_key: "k".into(),
             tag: "v2".into(),
         });
-        round_trip(CreateModel {
+        round_trip(&CreateModel {
             idempotency_key: "k".into(),
             provider_id: "p".into(),
             context_window: 100,
         });
-        round_trip(UpdateModel {
+        round_trip(&UpdateModel {
             idempotency_key: "k".into(),
             context_window: 100,
         });
-        round_trip(CreateProvider {
+        round_trip(&CreateProvider {
             idempotency_key: "k".into(),
             name: "p".into(),
         });
-        round_trip(UpdateProvider {
+        round_trip(&UpdateProvider {
             idempotency_key: "k".into(),
             status: health.clone(),
         });
-        round_trip(CreateCredential {
+        round_trip(&CreateCredential {
             idempotency_key: "k".into(),
             provider_id: "p".into(),
             kind: "api_key".into(),
             secret: "input-only".into(),
         });
-        round_trip(UpdateCredential {
+        round_trip(&UpdateCredential {
             idempotency_key: "k".into(),
             secret: None,
         });
-        round_trip(CreateNode {
+        round_trip(&CreateNode {
             idempotency_key: "k".into(),
             capacity: 2,
         });
-        round_trip(UpdateNode {
+        round_trip(&UpdateNode {
             idempotency_key: "k".into(),
             status: health.clone(),
         });
-        round_trip(CreateServiceHealth {
+        round_trip(&CreateServiceHealth {
             idempotency_key: "k".into(),
             service: "gateway".into(),
             status: health.clone(),
             detail: None,
         });
-        round_trip(UpdateServiceHealth {
+        round_trip(&UpdateServiceHealth {
             idempotency_key: "k".into(),
             status: health,
             detail: None,
         });
+    }
+
+    #[test]
+    fn event_json_contract() {
+        let log = LogId::Session("s".into());
+        let health = HealthStatus::Healthy;
+        let role = MessageRole::User;
+        let status = TurnStatus::Running;
+        let message = Message {
+            id: "m".into(),
+            session_id: "s".into(),
+            role,
+            text: "hi".into(),
+        };
+        let turn = Turn {
+            id: "t".into(),
+            session_id: "s".into(),
+            status,
+        };
+        let node = Node {
+            id: "n".into(),
+            status: health.clone(),
+            capacity: 2,
+            occupied: 1,
+        };
+        let service = ServiceHealth {
+            service: "gateway".into(),
+            status: health,
+            detail: None,
+        };
+        let error = ApiError {
+            code: "provider_error".into(),
+            message: "failed".into(),
+            provider_text: Some("original".into()),
+        };
         for payload in [
             EventPayload::MessageAppended { message },
             EventPayload::TurnStarted { turn: turn.clone() },
@@ -583,8 +628,8 @@ mod tests {
             EventPayload::ServiceStatusChanged { health: service },
             EventPayload::NodeStatusChanged { node },
         ] {
-            round_trip(payload.clone());
-            round_trip(Event {
+            round_trip(&payload.clone());
+            round_trip(&Event {
                 log_id: log.clone(),
                 sequence: 1,
                 payload,
