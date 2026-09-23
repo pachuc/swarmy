@@ -171,6 +171,7 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
     };
     let store = &test.store;
     let session = SessionRecord {
+        interrupt_requested: false,
         state: SessionState::Idle,
         ..session()
     };

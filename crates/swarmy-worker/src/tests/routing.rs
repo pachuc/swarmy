@@ -121,6 +121,7 @@ impl Fixture {
         self.store
             .create_session(
                 &SessionRecord {
+                    interrupt_requested: false,
                     session_id: id,
                     agent_id: self.agent,
                     state: SessionState::Idle,

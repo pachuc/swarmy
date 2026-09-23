@@ -21,6 +21,7 @@ fn message_id(value: u128) -> MessageId {
 
 fn session() -> SessionRecord {
     SessionRecord {
+        interrupt_requested: false,
         session_id: SessionId::from_ulid(Ulid::from(1_u128)),
         agent_id: AgentId::from_ulid(Ulid::from(2_u128)),
         state: SessionState::Leased,
@@ -290,6 +291,7 @@ fn bookkeeping_does_not_trigger_extra_work() {
     events.push(user_event());
     assert_eq!(step(&events), Action::Wait);
     let terminal = SessionRecord {
+        interrupt_requested: false,
         state: SessionState::Completed,
         ..session()
     };

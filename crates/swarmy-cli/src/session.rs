@@ -12,6 +12,36 @@ pub use crate::session_command::Command;
 pub async fn inspect(command: Command, json: bool) -> Result<()> {
     let store = store().await?;
     match command {
+        Command::Interrupt { session_id } => {
+            let id = SessionId::from_ulid(session_id);
+            let result = store.interrupt_session(id).await?;
+            if result == swarmy_store::InterruptResult::Finished {
+                let session = store
+                    .fetch_session(id)
+                    .await?
+                    .context("session not found")?;
+                if let Some(event) = store.read_events(id, session.head_seq - 1, 1).await?.pop()
+                    && let Ok(bus) = crate::conversation::bus().await
+                {
+                    let _ = bus
+                        .publish_live(swarmy_bus::LiveFeed::SessionEvents(id), &event)
+                        .await;
+                }
+            }
+            let (status, message) = match result {
+                swarmy_store::InterruptResult::Finished => {
+                    ("finished", format!("Interrupted session {id}"))
+                }
+                swarmy_store::InterruptResult::Requested => {
+                    ("requested", format!("Interrupt requested for session {id}"))
+                }
+            };
+            crate::vol::output(
+                &serde_json::json!({"event": "session_interrupt", "session_id": id, "result": status}),
+                &message,
+                json,
+            )?;
+        }
         Command::Close { session_id } => {
             let id = SessionId::from_ulid(session_id);
             store.close_session(id, jiff::Timestamp::now()).await?;
@@ -22,32 +52,7 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
             )?;
         }
         Command::Show { session_id } => {
-            let id = SessionId::from_ulid(session_id);
-            let session = store
-                .fetch_session(id)
-                .await?
-                .context("session not found")?;
-            show_selection(&store, &session, json).await?;
-            show_usage(&store.session_usage(id).await?, json);
-            show_inference_wait(&store, &session, json).await?;
-            let mut after = 0;
-            while after < session.head_seq {
-                let events = store.read_events(id, after, MAX_SCAN_LIMIT).await?;
-                if events.is_empty() {
-                    bail!("session log ended before its recorded head");
-                }
-                for event in events
-                    .iter()
-                    .take_while(|event| event.seq() <= session.head_seq)
-                {
-                    if json {
-                        println!("{}", serde_json::to_string(event)?);
-                    } else {
-                        println!("{} {}", event.seq(), serde_json::to_string(event)?);
-                    }
-                    after = event.seq();
-                }
-            }
+            show_session(&store, SessionId::from_ulid(session_id), json).await?;
         }
         Command::List => {
             let mut after = None;
@@ -98,6 +103,35 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                     after = Some(session.session_id);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) -> Result<()> {
+    let session = store
+        .fetch_session(id)
+        .await?
+        .context("session not found")?;
+    show_selection(store, &session, json).await?;
+    show_usage(&store.session_usage(id).await?, json);
+    show_inference_wait(store, &session, json).await?;
+    let mut after = 0;
+    while after < session.head_seq {
+        let events = store.read_events(id, after, MAX_SCAN_LIMIT).await?;
+        if events.is_empty() {
+            bail!("session log ended before its recorded head");
+        }
+        for event in events
+            .iter()
+            .take_while(|event| event.seq() <= session.head_seq)
+        {
+            if json {
+                println!("{}", serde_json::to_string(event)?);
+            } else {
+                println!("{} {}", event.seq(), serde_json::to_string(event)?);
+            }
+            after = event.seq();
         }
     }
     Ok(())
@@ -517,9 +551,14 @@ async fn show_selection(
     let selection = crate::selection::resolved_session(store, session).await?;
     let marker = |overridden: bool| if overridden { "" } else { " (inherited)" };
     crate::vol::output(
-        &serde_json::json!({ "event": "session_selection", "inference": session.inference, "resolved": selection }),
+        &serde_json::json!({ "event": "session_selection", "session_id": session.session_id,
+            "state": session.state, "interrupt_requested": session.interrupt_requested,
+            "inference": session.inference, "resolved": selection }),
         &format!(
-            "provider={}{} model={}{} effort={}{}",
+            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{}",
+            session.session_id,
+            session.state,
+            session.interrupt_requested,
             selection.provider,
             marker(session.inference.provider.is_some()),
             selection.model,

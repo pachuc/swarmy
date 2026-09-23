@@ -230,6 +230,7 @@ mod tests {
     fn final_check_rejects_wrong_answers_missing_steps_and_non_idle_sessions() {
         let id = SessionId::from_ulid(Ulid::generate());
         let mut session = SessionRecord {
+            interrupt_requested: false,
             session_id: id,
             agent_id: swarmy_core::AgentId::from_ulid(Ulid::generate()),
             state: SessionState::Idle,

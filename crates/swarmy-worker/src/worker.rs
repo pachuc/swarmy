@@ -244,22 +244,19 @@ impl Worker {
         mut events: Vec<Event>,
     ) -> Result<()> {
         let id = session.session_id;
-        let snapshot = self.load_history(&session, &mut events).await?;
-        // Replaying the tail also fans out events written by the gateway or a caller,
-        // and retries a publication interrupted by the previous worker's death.
-        self.publish_tail(id, &events).await?;
-        if self
-            .handle_inference_wait(&mut session, turn, lease, &snapshot, &mut events)
+        let Some(snapshot) = self
+            .prepare_step(&mut session, turn, lease, &mut events)
             .await?
-        {
+        else {
             return Ok(());
-        }
-        if self.summary_completed(&session, &events).await? {
-            return self
-                .finish(&mut session, lease, &snapshot, &mut events, turn)
-                .await;
-        }
+        };
         loop {
+            if self
+                .interrupt_if_requested(&mut session, lease, &snapshot, &mut events, turn)
+                .await?
+            {
+                return Ok(());
+            }
             let message_id = fold_id(
                 id,
                 session
@@ -343,6 +340,78 @@ impl Worker {
                 }
             }
         }
+    }
+
+    async fn prepare_step(
+        &self,
+        session: &mut SessionRecord,
+        turn: Option<MessageId>,
+        lease: &ActiveLease,
+        events: &mut Vec<Event>,
+    ) -> Result<Option<Snapshot>> {
+        let snapshot = self.load_history(session, events).await?;
+        // Replaying the tail also fans out events written by the gateway or a caller,
+        // and retries a publication interrupted by the previous worker's death.
+        self.publish_tail(session.session_id, events).await?;
+        if self
+            .interrupt_if_requested(session, lease, &snapshot, events, turn)
+            .await?
+            || self
+                .handle_inference_wait(session, turn, lease, &snapshot, events)
+                .await?
+        {
+            return Ok(None);
+        }
+        if self.summary_completed(session, events).await? {
+            self.finish(session, lease, &snapshot, events, turn).await?;
+            return Ok(None);
+        }
+        Ok(Some(snapshot))
+    }
+
+    async fn interrupt_if_requested(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+    ) -> Result<bool> {
+        if !self.store.interrupt_requested(session.session_id).await? {
+            return Ok(false);
+        }
+        let request_id = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. }
+                | Event::InferenceFailed { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap_or(RequestId::for_step(
+                session.session_id,
+                session
+                    .head_seq
+                    .checked_add(1)
+                    .context("sequence overflow")?,
+            ));
+        self.append(
+            session,
+            lease,
+            events,
+            &[Event::InferenceFailed {
+                seq: 0,
+                request_id,
+                error: "interrupted by operator".into(),
+                retryable: false,
+                retry_at: None,
+            }],
+        )
+        .await?;
+        session.interrupt_requested = true;
+        self.store.clear_inference_wait(session.session_id).await?;
+        self.finish(session, lease, snapshot, events, turn).await?;
+        Ok(true)
     }
 
     async fn handle_inference_wait(
@@ -987,39 +1056,72 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        if self.summarize(session, lease, snapshot, events).await? {
+        if !session.interrupt_requested && self.summarize(session, lease, snapshot, events).await? {
             return Ok(());
         }
-        let head = session
-            .head_seq
-            .checked_add(1)
-            .context("sequence overflow")?;
-        let idle = Event::StateChanged {
-            seq: head,
-            from: SessionState::Leased,
-            to: SessionState::Idle,
-        };
-        events.push(idle);
-        let bytes = encode(&snapshot.replay(events))?;
-        let reference = SnapshotRef {
-            object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
-            seq: head,
-        };
-        self.blobs.put(&reference.object_key, bytes.into()).await?;
-        self.kill("before_release");
-        let event = {
-            let mut token = lease.lock().await;
-            let event = self
-                .store
-                .finish_turn(
-                    session.session_id,
-                    session.head_seq,
-                    token.as_ref().context("lease released")?,
-                    &reference,
-                )
-                .await?;
-            *token = None;
-            event
+        let event = loop {
+            let head = session
+                .head_seq
+                .checked_add(1)
+                .context("sequence overflow")?;
+            events.push(Event::StateChanged {
+                seq: head,
+                from: SessionState::Leased,
+                to: SessionState::Idle,
+            });
+            let bytes = encode(&snapshot.replay(events))?;
+            let reference = SnapshotRef {
+                object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+                seq: head,
+            };
+            self.blobs.put(&reference.object_key, bytes.into()).await?;
+            self.kill("before_release");
+            let result = {
+                let mut token = lease.lock().await;
+                let result = self
+                    .store
+                    .finish_turn(
+                        session.session_id,
+                        session.head_seq,
+                        token.as_ref().context("lease released")?,
+                        &reference,
+                    )
+                    .await;
+                if result.is_ok() {
+                    *token = None;
+                }
+                result
+            };
+            match result {
+                Ok(event) => break event,
+                Err(StoreError::InterruptPending) => {
+                    events.pop();
+                    let request_id = events
+                        .iter()
+                        .rev()
+                        .find_map(|event| match event {
+                            Event::InferenceRequested { request_id, .. }
+                            | Event::InferenceFailed { request_id, .. } => Some(*request_id),
+                            _ => None,
+                        })
+                        .unwrap_or(RequestId::for_step(session.session_id, head));
+                    self.append(
+                        session,
+                        lease,
+                        events,
+                        &[Event::InferenceFailed {
+                            seq: 0,
+                            request_id,
+                            error: "interrupted by operator".into(),
+                            retryable: false,
+                            retry_at: None,
+                        }],
+                    )
+                    .await?;
+                    session.interrupt_requested = true;
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
         if let Some(turn) = turn {
             self.bus

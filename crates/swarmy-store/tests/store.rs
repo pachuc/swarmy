@@ -12,10 +12,83 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    CredentialKey, Store, StoreError,
+    CredentialKey, InterruptResult, Store, StoreError,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };
+
+#[tokio::test]
+async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    assert!(
+        f.store
+            .park_runnable_for_breaker(
+                id,
+                "quota reached",
+                timestamp(105),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        f.store.interrupt_session(id).await.unwrap(),
+        InterruptResult::Finished
+    );
+    assert!(f.store.inference_wait(id).await.unwrap().is_none());
+    assert!(
+        f.store
+            .scan_due_inference_waits(timestamp(105))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Idle);
+    let events = f
+        .store
+        .read_events(id, session.head_seq - 1, 1)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&events[0], Event::InferenceFailed { retryable: false, error, .. }
+        if error == "interrupted by operator")
+    );
+    assert!(matches!(
+        f.store.interrupt_session(id).await,
+        Err(StoreError::NothingToInterrupt)
+    ));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    assert_eq!(
+        f.store.interrupt_session(id).await.unwrap(),
+        InterruptResult::Requested
+    );
+    assert!(
+        f.store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .interrupt_requested
+    );
+    assert!(matches!(
+        f.store.claim_lease(id, owner(), timestamp(100)).await,
+        Err(StoreError::InvalidState)
+    ));
+    assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(!session.interrupt_requested);
+    f.cleanup().await;
+}
 
 #[tokio::test]
 async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
@@ -113,6 +186,7 @@ fn owner() -> LeaseOwnerId {
 }
 fn session() -> SessionRecord {
     SessionRecord {
+        interrupt_requested: false,
         session_id: SessionId::from_ulid(Ulid::generate()),
         agent_id: AgentId::from_ulid(Ulid::generate()),
         state: SessionState::Runnable,

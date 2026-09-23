@@ -37,12 +37,12 @@ impl Store {
         self.root.pack(&("inference_breaker", key.0.as_str()))
     }
 
-    fn wait_key(&self, id: SessionId) -> Vec<u8> {
+    pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("inference_wait", id.as_ulid().to_bytes().as_slice()))
     }
 
-    fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
+    pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
         self.root.pack(&(
             "inference_wait_due",
             (at.as_second(), at.subsec_nanosecond()),
@@ -195,6 +195,12 @@ impl Store {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
             if session.state != SessionState::Runnable {
+                return Ok(false);
+            }
+            if read::<bool>(&trx, &self.interrupt_key(id))
+                .await?
+                .unwrap_or(false)
+            {
                 return Ok(false);
             }
             let key = self.wait_key(id);

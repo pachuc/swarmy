@@ -164,6 +164,9 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             }
         }
     };
+    if store.interrupt_requested(claim.job.session_id).await? {
+        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
+    }
     // A single call usually remains at its request head. Concurrent calls and
     // rebuild notices return the actual head from the same fenced transaction.
     let mut head = claim.job.step;
@@ -175,6 +178,36 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
         }
     }
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
+    Ok(())
+}
+
+async fn stop_result_process(
+    runtime: &RuncRuntime,
+    sandbox: &Sandbox,
+    epoch: u64,
+    result: &ToolResult,
+) -> Result<()> {
+    let ToolResult::Completed { title, output, .. } = result else {
+        return Ok(());
+    };
+    if title != "bash" && title != "process_start" {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(output)?;
+    if value["backgrounded"] != true && title != "process_start" {
+        return Ok(());
+    }
+    let Some(process_id) = value["process_id"].as_str() else {
+        return Ok(());
+    };
+    let arguments = SandboxArguments::ProcessStop(serde_json::from_value(
+        serde_json::json!({"process_id": process_id}),
+    )?);
+    let (exit, _, stderr) = exec(runtime, sandbox, request(&arguments, epoch, "")).await?;
+    anyhow::ensure!(
+        exit.exit_code == 0 && !exit.timed_out,
+        "process stop failed: {stderr}"
+    );
     Ok(())
 }
 

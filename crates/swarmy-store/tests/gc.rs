@@ -804,6 +804,7 @@ async fn computer_session(
         .await
         .unwrap();
     let session = swarmy_core::SessionRecord {
+        interrupt_requested: false,
         session_id: SessionId::from_ulid(Ulid::generate()),
         agent_id: agent,
         kind: swarmy_core::SessionKind::Ephemeral,

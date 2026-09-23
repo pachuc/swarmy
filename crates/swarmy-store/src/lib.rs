@@ -13,6 +13,8 @@ mod computers;
 pub mod credentials;
 mod inference;
 mod inference_wait;
+mod interrupt;
+pub use interrupt::InterruptResult;
 mod selection;
 pub use selection::GatewayProvider;
 mod keys;
@@ -116,6 +118,10 @@ pub enum StoreError {
     SessionMissing,
     #[error("session already exists")]
     SessionExists,
+    #[error("session is idle or completed; there is nothing to interrupt")]
+    NothingToInterrupt,
+    #[error("session interruption was requested before the turn ended")]
+    InterruptPending,
     #[error("expected head {expected}, found {actual}")]
     StaleSequence { expected: u64, actual: u64 },
     #[error("invalid state transition or initial session record")]
@@ -174,6 +180,8 @@ struct StoredSession {
     plan: Vec<swarmy_core::PlanStep>,
     #[serde(skip)]
     inference: swarmy_core::InferenceSelection,
+    #[serde(skip)]
+    interrupt_requested: bool,
 }
 
 #[derive(Clone)]
@@ -344,6 +352,7 @@ impl Store {
             session.computer_deleted,
             session.plan,
             session.inference,
+            session.interrupt_requested,
         ) = futures::try_join!(
             self.session_kind(trx, session.session_id),
             self.computer_deleted(trx, session.agent_id),
@@ -361,6 +370,13 @@ impl Store {
                         .unwrap_or_default(),
                 )
             },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.interrupt_key(session.session_id))
+                        .await?
+                        .unwrap_or(false),
+                )
+            },
         )?;
         Ok(session)
     }
@@ -375,6 +391,7 @@ impl Store {
             None => None,
         };
         Ok(SessionRecord {
+            interrupt_requested: session.interrupt_requested,
             kind: session.kind,
             computer_deleted: session.computer_deleted,
             plan: session.plan,

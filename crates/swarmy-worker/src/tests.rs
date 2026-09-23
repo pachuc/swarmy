@@ -163,6 +163,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     store
         .create_session(
             &SessionRecord {
+                interrupt_requested: false,
                 session_id: id,
                 agent_id: AgentId::from_ulid(Ulid::generate()),
                 state: SessionState::Runnable,
@@ -287,6 +288,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     store
         .create_session(
             &SessionRecord {
+                interrupt_requested: false,
                 session_id: id,
                 agent_id: AgentId::from_ulid(Ulid::generate()),
                 state: SessionState::Runnable,

@@ -10,4 +10,6 @@ pub enum Command {
     List,
     /// Close a side session, or an ephemeral session and its computer
     Close { session_id: Ulid },
+    /// End the current turn, including a parked inference wait
+    Interrupt { session_id: Ulid },
 }

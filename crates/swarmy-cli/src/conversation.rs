@@ -616,7 +616,7 @@ pub async fn store() -> Result<Store> {
     .await?)
 }
 
-async fn bus() -> Result<Bus> {
+pub(crate) async fn bus() -> Result<Bus> {
     let settings = swarmy_config::Settings::load()?.settings;
     let url = settings.nats_url;
     let config = Config {

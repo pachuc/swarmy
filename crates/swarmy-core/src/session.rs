@@ -33,9 +33,10 @@ pub enum SessionKind {
 ///
 /// Wakeups and completed external work make a session runnable. Only a leased
 /// step can dispatch work, end a turn, sleep, or complete a session. The
-/// scheduler can also park a runnable session behind a provider breaker. An expired
-/// lease returns to runnable so another worker can retry the step. Sleeping
-/// sessions wake to runnable on a timer or message. Completed is terminal and
+/// scheduler can also park a runnable session behind a provider breaker or
+/// end a marked turn. An expired lease returns to runnable so another worker
+/// can retry the step. Sleeping sessions wake to runnable on a timer or
+/// message, or go idle when an inference wait is interrupted. Completed is terminal and
 /// moving to the same state is not a transition.
 ///
 /// Callers must separately check lease ownership and whether external work or
@@ -49,7 +50,8 @@ pub const fn can_transition(from: SessionState, to: SessionState) -> bool {
     matches!(
         (from, to),
         (Idle | WaitingInference | WaitingTools | Sleeping, Runnable)
-            | (Runnable, Leased | Sleeping)
+            | (Runnable, Leased | Sleeping | Idle)
+            | (Sleeping, Idle)
             | (
                 Leased,
                 Runnable | WaitingInference | WaitingTools | Idle | Sleeping | Completed
@@ -66,6 +68,8 @@ pub struct SnapshotRef {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
+    #[serde(default)]
+    pub interrupt_requested: bool,
     #[serde(default)]
     pub kind: SessionKind,
     #[serde(default)]
@@ -124,11 +128,11 @@ mod tests {
         // including every self-transition and every transition out of Completed.
         let allowed = [
             [false, true, false, false, false, false, false],
-            [false, false, true, false, false, true, false],
+            [true, false, true, false, false, true, false],
             [true, true, false, true, true, true, true],
             [false, true, false, false, false, false, false],
             [false, true, false, false, false, false, false],
-            [false, true, false, false, false, false, false],
+            [true, true, false, false, false, false, false],
             [false, false, false, false, false, false, false],
         ];
         for (row, from) in states.iter().enumerate() {
@@ -146,6 +150,7 @@ mod tests {
     #[test]
     fn records_round_trip() {
         let mut session = SessionRecord {
+            interrupt_requested: false,
             session_id: SessionId::from_ulid(Ulid::from_parts(1, 2)),
             agent_id: AgentId::from_ulid(Ulid::from_parts(1, 3)),
             state: SessionState::Idle,
@@ -159,6 +164,7 @@ mod tests {
         assert_round_trip(&session);
         let mut old = serde_json::to_value(&session).unwrap();
         old.as_object_mut().unwrap().remove("inference");
+        old.as_object_mut().unwrap().remove("interrupt_requested");
         assert_eq!(
             serde_json::from_value::<SessionRecord>(old).unwrap(),
             session

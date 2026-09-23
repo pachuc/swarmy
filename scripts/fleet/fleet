@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -343,6 +344,24 @@ def release(task_id, config, *, force=False):
     print(f"released {data['worker']} from {task_id}")
 
 
+def kill(task_id, config, timeout_seconds):
+    _, data = assignment(config, task_id)
+    agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
+    session_id = agent.get("main_session") or data["session_id"]
+    command(swarmy(config, "session", "interrupt", session_id))
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        sessions = records(command(swarmy(config, "session", "ls", "--json")))
+        session = next((item for item in sessions if item.get("session_id") == session_id and "state" in item), None)
+        if session and session["state"] == "idle":
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"session {session_id} did not reach Idle within {timeout_seconds} seconds; worker remains assigned")
+        time.sleep(0.1)
+    release(task_id, config, force=True)
+    print(f"tasky task {task_id} is still in progress; the operator can relaunch or cancel it")
+
+
 def reset(worker, config):
     workers = load_workers(config)
     if worker not in workers:
@@ -373,6 +392,9 @@ def main():
     release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once the task's pull request is merged")
     release_parser.add_argument("task_id")
     release_parser.add_argument("--force", action="store_true", help="free the worker even without a merged pull request")
+    kill_parser = sub.add_parser("kill", help="interrupt a task and free its worker after the session reaches Idle")
+    kill_parser.add_argument("task_id")
+    kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
     args = parser.parse_args()
     try:
@@ -387,6 +409,11 @@ def main():
             resume(args.task_id, args.message, config)
         elif args.action in ("release", "rm"):
             release(args.task_id, config, force=args.force)
+        elif args.action == "kill":
+            seconds = args.timeout_seconds if args.timeout_seconds is not None else float(config.get("kill_timeout_seconds", 60))
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise ValueError("kill timeout must be positive")
+            kill(args.task_id, config, seconds)
         else:
             reset(args.worker, config)
     except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:

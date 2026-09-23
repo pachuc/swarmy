@@ -44,6 +44,15 @@ computer alone was deleted can still retain and read conversation history.
 `close_session(id, now)` is for ephemeral sessions: it deletes the computer and
 sets the session to Completed. Named sessions cannot be closed by this API.
 
+`swarmy session interrupt SESSION_ID` ends the current turn without closing the
+session. A parked inference wait ends immediately with a non-retryable
+`InferenceFailed` event. A running turn ends at its next worker step boundary;
+an active provider request may have to return first. `session show` displays a
+pending interruption, including `interrupt_requested` in JSON output. Idle and
+Completed sessions have no turn to interrupt, so the command exits with an error.
+If a sandbox tool returns a managed process while interruption is pending, the
+node stops that process before committing the tool result.
+
 The scheduler runs `sweep_ephemeral_sessions` every sixty seconds, or every
 retention interval when that is shorter. `ephemeral_retention_seconds` defaults
 to 86400 and must be positive. The environment override is

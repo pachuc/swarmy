@@ -35,6 +35,7 @@ async fn dispatch_arguments(
     arguments: swarmy_core::SandboxArguments,
 ) -> ToolJob {
     let session = SessionRecord {
+        interrupt_requested: false,
         session_id: SessionId::from_ulid(ulid::Ulid::generate()),
         agent_id: agent,
         state: SessionState::Idle,
