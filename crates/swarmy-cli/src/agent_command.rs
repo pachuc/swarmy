@@ -36,6 +36,9 @@ pub enum Command {
         /// GitHub token, stored only in `FoundationDB`
         #[arg(long)]
         github_token: Option<String>,
+        /// Read the GitHub token from standard input, keeping it out of process arguments
+        #[arg(long, conflicts_with = "github_token")]
+        github_token_stdin: bool,
     },
     /// Change inference settings or rotate the GitHub token for an agent
     Set {
@@ -110,5 +113,27 @@ mod tests {
                 .is_err()
             );
         }
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "agent",
+                "create",
+                "tommy",
+                "--github-token-stdin"
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "agent",
+                "create",
+                "tommy",
+                "--github-token-stdin",
+                "--github-token",
+                "secret"
+            ])
+            .is_err()
+        );
     }
 }

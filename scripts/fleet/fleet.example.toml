@@ -1,0 +1,8 @@
+# Copy to fleet.toml and run chmod 600 scripts/fleet/fleet.toml.
+remote = "dev"
+repo = "pachuc/swarmy"
+provider = "fake"
+model = "fake"
+effort = "medium"
+# image = "swarmy-dev:dev"  # defaults to swarmy-dev:<remote>
+github_token = "replace-with-github-token"

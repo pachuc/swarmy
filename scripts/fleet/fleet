@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Operate tasky tasks on a remote Swarmy fleet."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import tomllib
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG = Path(__file__).with_name("fleet.toml")
+AGENTS = ROOT / "AGENTS.md"
+URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+")
+
+
+def command(args, *, input=None):
+    result = subprocess.run(args, input=input, text=True, capture_output=True, check=False)
+    if result.returncode:
+        raise RuntimeError(f"{' '.join(args[:3])} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def records(output):
+    return [json.loads(line) for line in output.splitlines() if line.strip()]
+
+
+def one(output):
+    values = records(output)
+    if len(values) != 1:
+        raise RuntimeError("expected one JSON record")
+    return values[0]
+
+
+def load():
+    if not CONFIG.exists():
+        raise RuntimeError(f"create {CONFIG} from fleet.example.toml")
+    if CONFIG.stat().st_mode & 0o077:
+        raise RuntimeError(f"{CONFIG} must have owner-only permissions (chmod 600)")
+    data = tomllib.loads(CONFIG.read_text())
+    for key in ("remote", "github_token", "repo"):
+        if not data.get(key):
+            raise RuntimeError(f"{CONFIG}: missing {key}")
+    return data
+
+
+def state_path(config):
+    return Path(config.get("state_dir", ROOT / ".dev" / "fleet"))
+
+
+def save(path, value):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as file:
+        json.dump(value, file)
+        file.write("\n")
+
+
+def task_name(task_id):
+    suffix = task_id.rsplit("-", 1)[-1].lower()
+    if not re.fullmatch(r"[a-z0-9]+", suffix):
+        raise RuntimeError("task id must end in an alphanumeric suffix")
+    return "task-" + suffix, "swarmy/" + suffix
+
+
+def task_fields(task):
+    task = task.get("task", task)
+    return (task.get("title") or "", task.get("body") or task.get("description") or "",
+            task.get("test_plan") or task.get("testPlan") or "")
+
+
+def prompt(task_id, task, config):
+    title, body, tests = task_fields(task)
+    _, branch = task_name(task_id)
+    return f"""You are executing tasky {task_id}: {title}.
+
+Repository contract (AGENTS.md):
+{AGENTS.read_text()}
+
+Task body:
+{body}
+
+Test plan:
+{tests}
+
+Clone https://github.com/{config['repo']}.git into a fresh directory. Read the repository's AGENTS.md and docs/DESIGN.md before changing files. Create branch {branch} from master. Implement only this task. Run cargo fmt --all --check, cargo test --workspace --locked with the dev stack from scripts/dev-stack.sh start and .dev/env sourced, and cargo clippy --workspace --all-targets --locked -- -D warnings. Work through the test plan. Commit with an imperative subject and a body explaining why. Push {branch} to origin. Open one pull request against master with a title containing tasky {task_id}. Its description must say what was built, list exact validation commands and results, and list test plan items not verified and why. Do not include credentials in logs, commits, or the PR. Finish by reporting the pull request URL in your last message.
+"""
+
+
+def swarmy(config, *args):
+    return ["swarmy", "--remote", config["remote"], *args]
+
+
+def tasky(*args, json_output=False):
+    return ["tasky", *(["--json"] if json_output else []), "task", *args]
+
+
+def launch(args, config):
+    agent, branch = task_name(args.task_id)
+    path = state_path(config) / (agent + ".json")
+    if path.exists():
+        raise RuntimeError(f"{agent} already launched")
+    task = one(command(tasky("show", args.task_id, json_output=True)))
+    provider = args.provider or config.get("provider")
+    model = args.model or config.get("model")
+    effort = args.effort or config.get("effort")
+    if not provider or not model:
+        raise RuntimeError("provider and model must be supplied or configured")
+    selection = ["--provider", provider, "--model", model]
+    if effort:
+        selection += ["--effort", effort]
+    image = args.image or config.get("image") or f"swarmy-dev:{config['remote']}"
+    if ":" not in image:
+        raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
+    command(swarmy(config, "agent", "create", agent, "--image", image,
+                   "--description", f"tasky {args.task_id}", *selection,
+                   "--github-token-stdin"), input=config["github_token"] + "\n")
+    log = state_path(config) / (agent + ".jsonl")
+    log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with log.open("w") as stream:
+        os.chmod(log, 0o600)
+        process = subprocess.Popen(swarmy(config, "run", "--agent", agent, *selection,
+                                          "--json", prompt(args.task_id, task, config)),
+                                   stdout=stream, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+    session = None
+    for _ in range(100):
+        if log.exists():
+            for event in records(log.read_text()):
+                if event.get("event") in ("session_created", "session_opened"):
+                    session = event.get("session_id")
+                    break
+        if session or process.poll() is not None:
+            break
+        time.sleep(0.1)
+    if not session:
+        raise RuntimeError(f"run did not report a session id; inspect {log}")
+    save(path, {"task_id": args.task_id, "agent": agent, "branch": branch,
+                "session_id": session, "provider": provider, "model": model,
+                "effort": effort, "started_at": datetime.now(timezone.utc).isoformat()})
+    command(tasky("start", args.task_id))
+    print(f"launched {args.task_id}: {agent} session={session}")
+
+
+def assignment(config, task_id):
+    agent, _ = task_name(task_id)
+    path = state_path(config) / (agent + ".json")
+    if not path.exists():
+        raise RuntimeError(f"no fleet launch for {task_id}")
+    return path, json.loads(path.read_text())
+
+
+def session_events(config, session_id):
+    return records(command(swarmy(config, "session", "show", session_id, "--json")))
+
+
+def state_for(session, events, log):
+    wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
+    if wait:
+        return "waiting for inference: " + "; ".join(wait.get("reasons", []))
+    state = session.get("state") if session else None
+    if state is None:
+        return "unknown"
+    if state in ("idle", "completed"):
+        return "idle"
+    outcomes = [item for item in log if item.get("event") == "run_outcome"]
+    if state == "failed" or (outcomes and outcomes[-1].get("outcome") == "failed"):
+        return "failed"
+    return "running"
+
+
+def status(config):
+    agents = records(command(swarmy(config, "agent", "ls", "--json")))
+    for agent in agents:
+        name = agent.get("name", "")
+        if not name.startswith("task-"):
+            continue
+        detail = one(command(swarmy(config, "agent", "show", name, "--json")))
+        session_id = detail.get("main_session")
+        events = session_events(config, session_id) if session_id else []
+        assignment_path = state_path(config) / (name + ".json")
+        assignment_data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
+        run_log = state_path(config) / (name + ".jsonl")
+        logged = records(run_log.read_text()) if run_log.exists() else []
+        # session show prints the session record first; agent show does not list sessions in JSON.
+        session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
+        state = state_for(session, events, logged)
+        started = assignment_data.get("started_at") or detail.get("created_at")
+        elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
+        print(f"{name}\t{assignment_data.get('task_id', detail.get('description', '-'))}\t"
+              f"{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
+              f"{state}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+
+
+def last_message(events):
+    messages = []
+    for event in events:
+        payload = event.get("message_appended") or event.get("inference_completed") or {}
+        message = payload.get("message", {})
+        if message.get("role") == "assistant":
+            content = "".join(part.get("text", {}).get("text", "") for part in message.get("parts", []))
+            if content:
+                messages.append(content)
+    return messages[-1] if messages else ""
+
+
+def verify_pr(url, assignment_data, config, *, merged=False):
+    parsed = urlparse(url)
+    if parsed.hostname != "github.com" or parsed.path.split("/")[1:3] != config["repo"].split("/"):
+        raise RuntimeError("PR URL is outside the configured repository")
+    pr = one(command(["gh", "pr", "view", url, "--repo", config["repo"],
+                      "--json", "url,state,baseRefName,headRefName"]))
+    required_state = "MERGED" if merged else "OPEN"
+    if (pr.get("state") != required_state or pr.get("baseRefName") != "master" or
+            pr.get("headRefName") != assignment_data["branch"] or pr.get("url") != url):
+        raise RuntimeError(f"PR is not {required_state.lower()} against master from {assignment_data['branch']}")
+
+
+def collect(task_id, config):
+    path, data = assignment(config, task_id)
+    agent = one(command(swarmy(config, "agent", "show", data["agent"], "--json")))
+    session_id = agent.get("main_session") or data["session_id"]
+    message = last_message(session_events(config, session_id))
+    match = URL.search(message)
+    if not match:
+        raise RuntimeError("agent's last message has no pull request URL")
+    url = match.group(0)
+    verify_pr(url, data, config)
+    command(tasky("pr", task_id, url))
+    command(tasky("test", task_id))
+    data["pr_url"] = url
+    save(path, data)
+    print(url)
+
+
+def resume(task_id, message, config):
+    _, data = assignment(config, task_id)
+    # A follow-up on a named agent reopens its main conversation.
+    args = swarmy(config, "run", "--agent", data["agent"], "--json", message)
+    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    with (state_path(config) / (data["agent"] + ".jsonl")).open("a") as log:
+        log.write(result.stdout)
+    if result.returncode:
+        raise RuntimeError(f"follow-up failed: {result.stderr.strip()}")
+    output = result.stdout
+    outcomes = [item for item in records(output) if item.get("event") == "run_outcome"]
+    if outcomes and outcomes[-1].get("outcome") == "failed":
+        raise RuntimeError(outcomes[-1].get("reason", "turn failed"))
+    print(f"resumed {task_id}")
+
+
+def remove(task_id, config):
+    path, data = assignment(config, task_id)
+    if not data.get("pr_url"):
+        raise RuntimeError("collect the pull request before removing the agent")
+    verify_pr(data["pr_url"], data, config, merged=True)
+    command(swarmy(config, "agent", "delete", data["agent"], "--yes"))
+    path.unlink()
+    (state_path(config) / (data["agent"] + ".jsonl")).unlink(missing_ok=True)
+    print(f"removed {data['agent']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    launch_parser = sub.add_parser("launch")
+    launch_parser.add_argument("task_id")
+    launch_parser.add_argument("--provider")
+    launch_parser.add_argument("--model")
+    launch_parser.add_argument("--effort")
+    launch_parser.add_argument("--image", help="registered image as NAME:TAG; default swarmy-dev:<remote>")
+    sub.add_parser("status")
+    for action in ("collect", "rm"):
+        sub.add_parser(action).add_argument("task_id")
+    resume_parser = sub.add_parser("resume")
+    resume_parser.add_argument("task_id")
+    resume_parser.add_argument("message")
+    args = parser.parse_args()
+    try:
+        config = load()
+        if args.action == "launch":
+            launch(args, config)
+        elif args.action == "status":
+            status(config)
+        elif args.action == "collect":
+            collect(args.task_id, config)
+        elif args.action == "resume":
+            resume(args.task_id, args.message, config)
+        else:
+            remove(args.task_id, config)
+    except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        print(f"fleet: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
