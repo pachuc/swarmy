@@ -16,7 +16,7 @@ root = Path(os.environ['STUB_STATE'])
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
-    print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}}))
+    print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}, 'status': os.environ.get('TASK_STATUS', 'todo')}))
 elif args[:2] == ['pr', 'view']:
     print(json.dumps({'url':args[2], 'state':os.environ.get('PR_STATE','OPEN'),
                       'baseRefName':'master', 'headRefName':os.environ.get('PR_BRANCH','swarmy/ewr2hd')}))
@@ -181,6 +181,12 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(chosen.returncode, 0, chosen.stderr)
         self.assertIn("worker-2", chosen.stdout)
         self.assertEqual(len(self.creates()), 2)
+
+    def test_relaunch_of_in_progress_task_skips_start(self):
+        env = dict(self.env, TASK_STATUS="in_progress")
+        result = self.call("launch", "EWR2HD", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call[:3] == ["task", "start", "EWR2HD"] for call in self.calls()))
 
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
