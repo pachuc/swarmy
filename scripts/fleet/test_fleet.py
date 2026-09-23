@@ -38,8 +38,9 @@ elif args[:2] == ['--remote', 'dev']:
     elif rest[:2] == ['agent', 'show']:
         print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
             'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
-    elif rest[:3] == ['session', 'show', '01AAAA']:
+    elif rest[:3] == ['session', 'ls', '--json']:
         print(json.dumps({'session_id':'01AAAA','state':'sleeping','agent_name':'worker-1'}))
+    elif rest[:3] == ['session', 'show', '01AAAA']:
         print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',

@@ -224,12 +224,16 @@ def state_for(session, events, log):
 
 def status(config):
     workers = load_workers(config)
+    # session ls carries each session's state; session show prints selection, usage,
+    # a waiting record when parked, and then the events, but not the record itself.
+    sessions = {item["session_id"]: item
+                for item in records(command(swarmy(config, "session", "ls", "--json")))
+                if "session_id" in item and "state" in item}
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
         session_id = detail.get("main_session")
         events = session_events(config, session_id) if session_id else []
-        # session show prints the session record first; agent show does not list sessions in JSON.
-        session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
+        session = sessions.get(session_id)
         data = {}
         logged = []
         if task_id:
