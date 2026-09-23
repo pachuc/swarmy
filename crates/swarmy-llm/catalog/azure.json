@@ -2394,11 +2394,19 @@
         "supports_strict_mode": false
       },
       "cost": {
-        "cache_read": 0,
+        "cache_read": 0.5,
         "cache_write": 0,
-        "input": 0,
-        "output": 0,
-        "tiers": []
+        "input": 2,
+        "output": 6,
+        "tiers": [
+          {
+            "cache_read": 1,
+            "cache_write": 0,
+            "input": 4,
+            "input_tokens_above": 200000,
+            "output": 12
+          }
+        ]
       },
       "family": "grok",
       "id": "grok-4.6",

@@ -53,10 +53,20 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
             let ready = summaries
                 .iter()
                 .all(|s| s.status == CredentialStatus::Ready);
+            let summaries_expired_bedrock = summaries
+                .iter()
+                .any(|s| s.provider == "amazon-bedrock" && s.status == CredentialStatus::Expired);
             for summary in summaries {
                 display(&summary, json, true)?;
             }
-            ensure!(ready, "one or more credentials are expired or need login");
+            ensure!(
+                ready,
+                if summaries_expired_bedrock {
+                    "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use"
+                } else {
+                    "one or more credentials are expired or need login"
+                }
+            );
         }
         Command::Import { file } => {
             let path = file
@@ -112,6 +122,7 @@ fn api_key(args: Set) -> Result<(String, CredentialRecord)> {
         args.provider != "chatgpt",
         "chatgpt requires OAuth; use auth login chatgpt"
     );
+    let from_env = args.source.api_key.is_none() && args.source.file.is_none();
     let key = if let Some(key) = args.source.api_key {
         key
     } else if let Some(path) = args.source.file {
@@ -123,13 +134,23 @@ fn api_key(args: Set) -> Result<(String, CredentialRecord)> {
         environment_key(&args.provider)?
     };
     ensure!(!key.trim().is_empty(), "API key must not be empty");
+    let mut extra: std::collections::BTreeMap<String, String> = args.extra.into_iter().collect();
+    if args.provider == "azure" && from_env {
+        for (env, name) in [
+            ("AZURE_OPENAI_BASE_URL", "base_url"),
+            ("AZURE_RESOURCE_NAME", "resource_name"),
+        ] {
+            if let Ok(value) = std::env::var(env)
+                && !value.is_empty()
+            {
+                extra.entry(name.into()).or_insert(value);
+            }
+        }
+    }
     Ok((
         args.provider,
         CredentialRecord {
-            kind: CredentialKind::ApiKey {
-                key,
-                extra: args.extra.into_iter().collect(),
-            },
+            kind: CredentialKind::ApiKey { key, extra },
             updated_at: Timestamp::now(),
         },
     ))

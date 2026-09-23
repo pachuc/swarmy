@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import fnmatch
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
@@ -207,6 +208,16 @@ def generate(models_dev, openrouter):
         azure_model = copy.deepcopy(model)
         azure_model["compat"] = compat("azure", model_id, "OpenAiResponses", model["compat"])
         result["azure"]["models"][model_id] = azure_model
+    overrides = json.loads((ROOT / "scripts/models/overrides.json").read_text())
+    for provider, patterns in overrides["exclude_models"].items():
+        result[provider]["models"] = {
+            model_id: model for model_id, model in result[provider]["models"].items()
+            if not any(fnmatch.fnmatchcase(model_id, pattern) for pattern in patterns)
+        }
+    for provider, prices in overrides["model_costs"].items():
+        for model_id, cost in prices.items():
+            if model_id in result[provider]["models"]:
+                result[provider]["models"][model_id]["cost"] = cost
     return result
 
 

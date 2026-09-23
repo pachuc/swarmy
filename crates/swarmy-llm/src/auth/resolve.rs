@@ -100,6 +100,13 @@ impl Resolver {
         if provider == "anthropic" && matches!(record.kind, CredentialKind::OAuth { .. }) {
             return Err(Error::Credentials("Anthropic requires an API key"));
         }
+        if provider == "amazon-bedrock"
+            && record.status(jiff::Timestamp::now()) == CredentialStatus::Expired
+        {
+            return Err(Error::Credentials(
+                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
+            ));
+        }
         if record.needs_refresh(jiff::Timestamp::now()) {
             let login: Box<dyn Login> = if provider == "chatgpt" {
                 Box::new(self.chatgpt.clone())
@@ -217,13 +224,19 @@ fn environment(
     if let Some(key) = key {
         let version = *blake3::hash(key.as_bytes()).as_bytes();
         let auth = if provider == "azure" {
-            let resource = get("AZURE_RESOURCE_NAME")
-                .filter(|s| !s.trim().is_empty())
-                .ok_or(Error::Credentials("Azure requires AZURE_RESOURCE_NAME"))?;
-            ClientAuth::ApiKeyWithExtra {
-                key,
-                extra: BTreeMap::from([("resource_name".into(), resource)]),
+            let mut extra = BTreeMap::new();
+            if let Some(resource) = get("AZURE_RESOURCE_NAME").filter(|s| !s.trim().is_empty()) {
+                extra.insert("resource_name".into(), resource);
             }
+            if let Some(endpoint) = get("AZURE_OPENAI_BASE_URL").filter(|s| !s.trim().is_empty()) {
+                extra.insert("base_url".into(), endpoint);
+            }
+            if extra.is_empty() {
+                return Err(Error::Credentials(
+                    "Azure requires AZURE_RESOURCE_NAME or AZURE_OPENAI_BASE_URL",
+                ));
+            }
+            ClientAuth::ApiKeyWithExtra { key, extra }
         } else if provider == "amazon-bedrock" {
             ClientAuth::Bearer(key)
         } else {
@@ -377,6 +390,27 @@ mod tests {
 
     fn resolver(record: Option<CredentialRecord>) -> Resolver {
         Resolver::new(Arc::new(Store { record })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn expired_bedrock_record_explains_iam_alternative() {
+        let record = CredentialRecord {
+            kind: CredentialKind::OAuth {
+                access: "expired".into(),
+                refresh: "unusable".into(),
+                expires_at: jiff::Timestamp::from_second(1).unwrap(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        };
+        let error = resolver(Some(record))
+            .resolve_using("amazon-bedrock", |_| {
+                panic!("stored records must not fall back")
+            })
+            .await;
+        assert!(
+            matches!(error, Err(Error::Credentials(message)) if message.contains("IAM identity"))
+        );
     }
 
     #[tokio::test]

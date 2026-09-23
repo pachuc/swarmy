@@ -24,8 +24,8 @@ models = [
     ("openrouter", "anthropic/claude-sonnet-4.6"),
     ("azure", "gpt-5.5"),
     ("amazon-bedrock", "anthropic.claude-sonnet-4-6"),
-    ("google", "gemini-2.5-flash"),
-    ("google-vertex", "gemini-2.5-flash"),
+    ("google", "gemini-3-flash-preview"),
+    ("google-vertex", "gemini-3-flash-preview"),
     ("google-vertex-anthropic", "claude-sonnet-4-6@default"),
 ]
 # An operator can explicitly include ambient instance credentials that doctor
