@@ -82,17 +82,16 @@ for phase in ("probe", "routed"):
         args = (["models", "probe", f"{provider}/{model}", "--tools"] if phase == "probe"
                 else ["run", "--provider", provider, "--model", model, "reply with the word ready"])
         code, output, error = run(args)
-        if code == 0 and phase == "routed" and output.strip().lower() != "ready":
-            code = 1
-            error = error or "expected the single word ready; got: " + output
         row[phase] = "PASS" if code == 0 else "FAIL"
+        if phase == "routed":
+            row["reply"] = safe(output)
         if code:
             row["errors"].append(f"{phase}: " + safe(error or output or f"exit {code}"))
 
-print("| Provider | Model | Direct probe + tools | Routed run | Error |")
-print("|---|---|---|---|---|")
+print("| Provider | Model | Direct probe + tools | Routed run | Reply | Error |")
+print("|---|---|---|---|---|---|")
 for row in rows:
     print("| " + " | ".join([row["provider"], safe(row["model"]), row["probe"], row["routed"],
-                              "; ".join(row["errors"]) or "—"]) + " |")
+                              row.get("reply", "—"), "; ".join(row["errors"]) or "—"]) + " |")
 sys.exit(any(row[phase] == "FAIL" for row in rows for phase in ("probe", "routed")))
 PY

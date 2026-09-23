@@ -1,7 +1,7 @@
-use std::{collections::HashSet, io::Write};
+use std::{collections::HashSet, io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState};
+use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState, ToolResult};
 use swarmy_llm::Delta;
 use swarmy_store::MAX_SCAN_LIMIT;
 
@@ -134,7 +134,23 @@ pub async fn run(
         Conversation::open(None, image.as_deref(), agent.as_deref(), new, selection).await?;
     announce(&conversation, json)?;
     conversation.send(prompt).await?;
-    until_idle(&mut conversation, json).await
+    let outcome = until_idle(&mut conversation, json, true).await?;
+    if json {
+        match &outcome {
+            RunOutcome::Completed => println!(
+                "{}",
+                serde_json::json!({"event": "run_outcome", "outcome": "completed"})
+            ),
+            RunOutcome::Failed(reason) => println!(
+                "{}",
+                serde_json::json!({"event": "run_outcome", "outcome": "failed", "reason": reason})
+            ),
+        }
+    }
+    match outcome {
+        RunOutcome::Completed => Ok(()),
+        RunOutcome::Failed(reason) => anyhow::bail!(reason.replace(['\r', '\n'], " ")),
+    }
 }
 
 fn announce(conversation: &Conversation, json: bool) -> Result<()> {
@@ -166,21 +182,102 @@ pub async fn chat_json(
     let mut conversation =
         Conversation::open(id, image.as_deref(), agent.as_deref(), new, selection).await?;
     announce(&conversation, true)?;
-    until_idle(&mut conversation, true).await?;
+    until_idle(&mut conversation, true, false).await?;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Some(prompt) = lines.next_line().await? {
         conversation.send(prompt).await?;
-        until_idle(&mut conversation, true).await?;
+        until_idle(&mut conversation, true, false).await?;
     }
     Ok(())
 }
 
-async fn until_idle(conversation: &mut Conversation, json: bool) -> Result<()> {
+const WORKER_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, PartialEq, Eq)]
+enum RunOutcome {
+    Completed,
+    Failed(String),
+}
+
+#[derive(Default)]
+struct TurnOutcome {
+    worker_started: bool,
+    assistant_reply: bool,
+    failure: Option<String>,
+}
+
+impl TurnOutcome {
+    fn record(&mut self, event: &Event) {
+        match event {
+            Event::MessageAppended { message, .. } if message.role == MessageRole::User => {
+                *self = Self::default();
+            }
+            Event::StateChanged {
+                to: SessionState::Leased,
+                ..
+            }
+            | Event::InferenceRequested { .. } => self.worker_started = true,
+            Event::InferenceFailed { error, .. } => self.failure = Some(error.clone()),
+            Event::ToolCallCompleted {
+                result: ToolResult::Error { error },
+                ..
+            } => {
+                self.failure = Some(format!("tool failed: {error}"));
+            }
+            Event::InferenceCompleted { message, .. } | Event::MessageAppended { message, .. }
+                if message.role == MessageRole::Assistant
+                    && !message
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, Part::ToolCall { .. })) =>
+            {
+                self.assistant_reply = true;
+                self.failure = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(self) -> RunOutcome {
+        if let Some(reason) = self.failure {
+            RunOutcome::Failed(reason)
+        } else if self.assistant_reply {
+            RunOutcome::Completed
+        } else {
+            RunOutcome::Failed("turn ended without a completed assistant reply".into())
+        }
+    }
+}
+
+async fn until_idle(
+    conversation: &mut Conversation,
+    json: bool,
+    run_mode: bool,
+) -> Result<RunOutcome> {
     let mut output = Output::new(json);
+    output.report_errors = !run_mode;
     let mut idle_event = false;
+    let mut outcome = TurnOutcome::default();
+    let worker_deadline = tokio::time::Instant::now() + WORKER_WAIT_TIMEOUT;
     loop {
-        match conversation.next().await? {
+        let notification = if run_mode && !outcome.worker_started {
+            if let Ok(result) = tokio::time::timeout_at(worker_deadline, conversation.next()).await
+            {
+                result?
+            } else {
+                output.finish_line();
+                return Ok(RunOutcome::Failed(format!(
+                    "worker did not pick up session {} within {} seconds",
+                    conversation.id,
+                    WORKER_WAIT_TIMEOUT.as_secs()
+                )));
+            }
+        } else {
+            conversation.next().await?
+        };
+        match notification {
             Notification::Log(event) => {
+                outcome.record(&event);
                 idle_event = matches!(
                     event,
                     Event::StateChanged {
@@ -232,11 +329,12 @@ async fn until_idle(conversation: &mut Conversation, json: bool) -> Result<()> {
         }
     }
     output.finish_line();
-    Ok(())
+    Ok(outcome.finish())
 }
 
 pub(crate) struct Output {
     json: bool,
+    report_errors: bool,
     streamed: String,
     messages: HashSet<MessageId>,
     mid_line: bool,
@@ -246,6 +344,7 @@ impl Output {
     pub(crate) fn new(json: bool) -> Self {
         Self {
             json,
+            report_errors: true,
             streamed: String::new(),
             messages: HashSet::new(),
             mid_line: false,
@@ -309,7 +408,9 @@ impl Output {
             match event {
                 Event::InferenceFailed { error, .. } => {
                     self.finish_line();
-                    eprintln!("Error: {error}");
+                    if self.report_errors {
+                        eprintln!("Error: {error}");
+                    }
                 }
                 Event::ToolCallRequested { call, .. } => {
                     self.finish_line();
@@ -389,4 +490,72 @@ async fn show_selection(
         json,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunOutcome, TurnOutcome};
+    use swarmy_core::{
+        Event, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionState,
+        ToolCallId, ToolResult,
+    };
+    use ulid::Ulid;
+
+    #[test]
+    fn inference_error_fails_the_turn() {
+        let mut turn = TurnOutcome::default();
+        turn.record(&Event::InferenceFailed {
+            seq: 1,
+            request_id: RequestId::for_step(SessionId::from_ulid(Ulid::generate()), 1),
+            error: "provider unavailable".into(),
+        });
+        turn.record(&Event::StateChanged {
+            seq: 2,
+            from: SessionState::Runnable,
+            to: SessionState::Idle,
+        });
+        assert_eq!(
+            turn.finish(),
+            RunOutcome::Failed("provider unavailable".into())
+        );
+    }
+
+    #[test]
+    fn idle_after_assistant_reply_completes_the_turn() {
+        let mut turn = TurnOutcome::default();
+        turn.record(&Event::MessageAppended {
+            seq: 1,
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::Assistant,
+                parts: vec![Part::Text {
+                    text: "ready".into(),
+                }],
+            },
+        });
+        turn.record(&Event::StateChanged {
+            seq: 2,
+            from: SessionState::Runnable,
+            to: SessionState::Idle,
+        });
+        assert_eq!(turn.finish(), RunOutcome::Completed);
+    }
+
+    #[test]
+    fn tool_error_without_followup_reply_fails_the_turn() {
+        let session = SessionId::from_ulid(Ulid::generate());
+        let mut turn = TurnOutcome::default();
+        turn.record(&Event::ToolCallCompleted {
+            seq: 1,
+            request_id: RequestId::for_step(session, 1),
+            call_id: ToolCallId("clock".into()),
+            result: ToolResult::Error {
+                error: "timeout".into(),
+            },
+        });
+        assert_eq!(
+            turn.finish(),
+            RunOutcome::Failed("tool failed: timeout".into())
+        );
+    }
 }
