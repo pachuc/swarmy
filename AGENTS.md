@@ -253,7 +253,7 @@ keep its own disk in order. The rules, which the task prompt repeats:
   branch `swarmy/<task suffix>` from `origin/master`. Never reuse a
   directory or a branch, and never force-push.
 - Before starting a task, remove the other directories under `~/work` and
-  run `cargo clean` if `~/.cargo-target` is over 20 GiB. The target
+  run `cargo clean` if `~/.cargo-target` is over 40 GiB. The target
   directory is shared across clones and lives outside them.
 - Leave nothing uncommitted at the end, and stop the dev stack with
   `scripts/dev-stack.sh stop` so its processes and ports are free for the

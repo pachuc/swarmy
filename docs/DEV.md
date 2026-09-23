@@ -28,7 +28,7 @@ sends the task on the worker's main conversation, and marks the task in
 progress in tasky. The prompt carries `AGENTS.md`, the task text, and the
 worker rules from `AGENTS.md`: a fresh clone under `~/work/<suffix>`, one
 branch `swarmy/<suffix>` from master, a `cargo clean` when the shared target
-directory passes 20 GiB, and the dev stack stopped at the end. State and JSON
+directory passes 40 GiB, and the dev stack stopped at the end. State and JSON
 run output are stored under `.dev/fleet` with owner-only permissions.
 `status` prints one line per worker with its task, provider, model, state
 (including a breaker's waiting reason), elapsed time, and cost. `collect`

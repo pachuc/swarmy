@@ -30,9 +30,9 @@ image at a few gigabytes instead of the tens of gigabytes a warmed target
 directory would add, and the cache tracks whatever the worker last built
 rather than a commit pinned in this recipe.
 
-The image has a 32 GiB virtual disk, enough for the toolchain and tools,
+The image has a 64 GiB virtual disk (sparse, so unused space costs nothing), enough for the toolchain and tools,
 several clones, and a target directory that the worker prunes when it passes
-20 GiB (see the fleet worker rules in `AGENTS.md`).
+40 GiB (see the fleet worker rules in `AGENTS.md`). A full workspace test build needs about 30 GiB, which is why 32 GiB was too small.
 
 ## Rebuilding from a new source commit
 
