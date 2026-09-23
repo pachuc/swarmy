@@ -234,6 +234,9 @@ impl Hosting {
                     BlockDevice { volume_id: volume },
                 )
                 .await?;
+            self.store
+                .set_placement_address(&placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+                .await?;
             self.execute(&placement, first).await?;
             loop {
                 if *shutdown.borrow() {

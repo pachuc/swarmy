@@ -113,6 +113,17 @@ async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) ->
         .fetch_session(id)
         .await?
         .context("session not found")?;
+    if let Some(placement) = store.get_by_agent(session.agent_id).await? {
+        let address = store.placement_address(&placement).await?;
+        crate::vol::output(
+            &serde_json::json!({"placement": placement, "sandbox_address": address}),
+            &format!(
+                "Sandbox address: {}",
+                address.map_or_else(|| "-".into(), |address| address.to_string())
+            ),
+            json,
+        )?;
+    }
     show_selection(store, &session, json).await?;
     show_usage(&store.session_usage(id).await?, json);
     show_inference_wait(store, &session, json).await?;

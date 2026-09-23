@@ -8,7 +8,7 @@ struct Fake {
     files: tempfile::TempDir,
 }
 impl Fake {
-    fn new(first: &str, second: &str) -> Self {
+    fn new(node: &Node, sandbox: &Sandbox, first: &str, second: &str) -> Self {
         let files = tempfile::tempdir().unwrap();
         assert!(
             Command::new("openssl")
@@ -35,7 +35,17 @@ impl Fake {
                 .unwrap()
                 .success()
         );
-        let mut child = Command::new("python3")
+        let state = Command::new("runc")
+            .arg("--root")
+            .arg(node.root.path().join(".swarmy/node/runc"))
+            .args(["state", &sandbox.agent_id.to_string()])
+            .output()
+            .unwrap();
+        assert!(state.status.success());
+        let state: serde_json::Value = serde_json::from_slice(&state.stdout).unwrap();
+        let pid = state["pid"].as_u64().unwrap();
+        let mut child = Command::new("nsenter")
+            .args(["-t", &pid.to_string(), "-n", "python3"])
             .args(["-c", include_str!("github_fake.py")])
             .arg(files.path().join("cert.pem"))
             .arg(files.path().join("key.pem"))
@@ -150,7 +160,7 @@ async fn exercise(
     first: &str,
     second: &str,
 ) {
-    let mut fake = Fake::new(first, second);
+    let mut fake = Fake::new(node, sandbox, first, second);
     let bundle = node
         .root
         .path()

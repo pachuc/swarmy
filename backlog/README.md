@@ -16,6 +16,7 @@ delete the file and say why in the commit.
 | [gvisor-runtime](gvisor-runtime.md) | Stronger isolation and process checkpointing by swapping runc for gVisor; sandbox pause and resume (former slice 6) lives here as something to explore |
 | [kubernetes-packaging](kubernetes-packaging.md) | Helm charts and operators as a second deployment target, and the path to GCP and Azure |
 | [control-plane-high-availability](control-plane-high-availability.md) | A swarm that survives the loss of its control instance |
+| [agent-disk-guidance](agent-disk-guidance.md) | Tell agents which paths are durable and which are scratch, generated from the image |
 | [agent-fork](agent-fork.md) | Fork an agent, including its computer, into a new agent |
 | [transcript-retrieval](transcript-retrieval.md) | Search over archived conversation history instead of only the summary chain |
 | [cost-view](cost-view.md) | Cost per agent across tokens, compute hours, and storage |

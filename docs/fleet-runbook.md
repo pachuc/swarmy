@@ -13,12 +13,16 @@ automate; every step here is a plain command.
 | Sandboxes per node | 4 (`SWARMY_NODE_SANDBOXES` in `scripts/remote-provision.sh`) | one worker per lane |
 | Control plane | on the node (`--services node`) | the laptop can disconnect |
 | Image | `images/swarmy-dev` registered as `base-ubuntu:dev`, the node's default | toolchain, dev stack, fetched crates; no warm build |
+| Snapshots and collection | retention 3, collector grace 30 min, interval 10 min (set by provisioning) | build caches churn; ten snapshots and six hours of grace filled a 100 GB root disk in an hour |
 | Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | about $0.48 an hour, about $350 a month, plus a few dollars of S3 and inference | one node; add a second when four lanes stay saturated |
 
-Observed with three workers building at once: 3 GiB used, load 4, 86 GiB
-free on the root disk, the NVMe volume cache almost empty. Update this table
-when a full four-lane run has been measured.
+Observed with three workers building at once: 3 GiB used, load 4. The root
+disk, which holds the node's object store, filled to 96 percent within an
+hour because every build cache chunk was uploaded and kept; scratch mounts
+(a dev-fleet task) move caches off the durable volume, and the retention and
+collection settings above bound what remains. Watch `df -h /` on the node
+until scratch lands.
 
 ## Bring-up
 

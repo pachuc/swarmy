@@ -80,6 +80,8 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
         memory_max_bytes: 32768,
         kill_point: None,
         max_inference_wait: Duration::from_secs(3600),
+        gateway_wait: Duration::from_secs(30),
+        allowed_providers: None,
     }
 }
 

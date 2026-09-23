@@ -253,6 +253,12 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         let status = store.agent_call_status(agent.agent_id).await?;
         let state = call_status(&mut value, &mut text, status.as_ref())?;
         value["placement"] = serde_json::to_value(&placement)?;
+        let network_address = if let Some(placement) = &placement {
+            store.placement_address(placement).await?
+        } else {
+            None
+        };
+        value["sandbox_address"] = serde_json::to_value(network_address)?;
         value["last_snapshot_at"] = serde_json::to_value(snapshot_at)?;
         value["last_snapshot_age_seconds"] = serde_json::to_value(age)?;
         let mut listed = Vec::new();
@@ -266,11 +272,12 @@ async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> R
         value["sessions"] = listed.into();
         write!(
             text,
-            "\ndescription={}\nplacement_epoch={}\nsandbox_state={state}\nlast_snapshot={} age_seconds={}",
+            "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={state}\nlast_snapshot={} age_seconds={}",
             agent.description,
             placement
                 .as_ref()
                 .map_or_else(|| "-".into(), |record| record.epoch.to_string()),
+            network_address.map_or_else(|| "-".into(), |address| address.to_string()),
             snapshot_at.map_or_else(|| "-".into(), |time| time.to_string()),
             age.map_or_else(|| "-".into(), |age| age.to_string())
         )?;

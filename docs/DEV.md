@@ -250,6 +250,11 @@ existing `/usr/lib`, `/usr/local/lib`, and `/usr/lib/x86_64-linux-gnu` directori
 It emits the same rpath option on macOS, where the library is `libfdb_c.dylib`;
 the installer and process supervisor currently target Linux.
 
+Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
+`iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
+`sudo apt-get install runc passt iproute2 util-linux` before
+starting `swarmyd`.
+
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
 No shell profile changes or `LD_LIBRARY_PATH` exports are needed. To call a
@@ -322,10 +327,13 @@ directory. Logs are in `.dev/logs/` and FoundationDB trace logs are in
 that `stop` does not signal an unrelated process after PID reuse. `status` reports
 process liveness; use the requests below to check service health.
 
-Services bind to `127.0.0.1`. Reserve ports 4500 for FoundationDB; 4222 and 8222
-for NATS; and 8080, 8333, 8888, 9333, 18080, 18333, 18888, and 19333 for
-SeaweedFS HTTP and gRPC APIs. Stop any system-installed service using these ports
-first. S3 uses the fixed local development credentials `swarmy-dev` and
+Services bind to `127.0.0.1`. FoundationDB prefers port 4500 and selects the
+next free port when it is occupied. Set `SWARMY_DEV_FDB_PORT` to request a
+specific port. The chosen port is recorded in `.dev/fdb.cluster` and `.dev/env`;
+`status` reports it. A later start reuses that port when it is free. Reserve
+4222 and 8222 for NATS; and 8080, 8333, 8888, 9333, 18080, 18333, 18888,
+and 19333 for SeaweedFS HTTP and gRPC APIs. Stop any system-installed service
+using those ports first. S3 uses the fixed local development credentials `swarmy-dev` and
 `swarmy-dev-secret`, with admin rights. These credentials are for this local stack.
 
 ```bash
@@ -365,6 +373,7 @@ the calling shell's environment.
 | Variable | Value |
 | --- | --- |
 | `SWARMY_FDB_CLUSTER_FILE` | Absolute path to `.dev/fdb.cluster` |
+| `SWARMY_DEV_FDB_PORT` | Chosen local FoundationDB port; also selects the port on a later `start` |
 | `SWARMY_NATS_URL` | `nats://127.0.0.1:4222` |
 | `SWARMY_S3_ENDPOINT` | `http://127.0.0.1:8333` |
 | `SWARMY_S3_ACCESS_KEY` | `swarmy-dev` |

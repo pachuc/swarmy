@@ -1,6 +1,7 @@
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::net::Ipv4Addr;
 use swarmy_core::{
     AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
 };
@@ -115,6 +116,41 @@ impl Store {
                 &self.placement_key("placement_hosting", expected.agent_id),
                 &hosting,
             )
+        })
+        .await
+    }
+
+    /// Record the address only after the sandbox network is ready. Keeping it
+    /// separate preserves the binary schema of existing placement records.
+    /// # Errors
+    /// Rejects stale placements and storage failures.
+    pub async fn set_placement_address(
+        &self,
+        expected: &PlacementRecord,
+        address: Ipv4Addr,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            self.check_live_placement(&trx, expected).await?;
+            write(
+                &trx,
+                &self.placement_key("placement_address", expected.agent_id),
+                &(expected.epoch, address),
+            )
+        })
+        .await
+    }
+
+    /// Return the address recorded for this placement epoch, if its sandbox started.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn placement_address(&self, placement: &PlacementRecord) -> Result<Option<Ipv4Addr>> {
+        self.transaction(|trx| async move {
+            Ok(read::<(u64, Ipv4Addr)>(
+                &trx,
+                &self.placement_key("placement_address", placement.agent_id),
+            )
+            .await?
+            .and_then(|(epoch, address)| (epoch == placement.epoch).then_some(address)))
         })
         .await
     }
@@ -313,6 +349,7 @@ impl Store {
             self.free_computer(&trx, current.node_id).await?;
             trx.clear(&self.placement_key("placement", current.agent_id));
             trx.clear(&self.placement_key("placement_hosting", current.agent_id));
+            trx.clear(&self.placement_key("placement_address", current.agent_id));
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             Ok(())
         })
@@ -363,6 +400,7 @@ impl Store {
                 ..current
             };
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
+            trx.clear(&self.placement_key("placement_address", current.agent_id));
             self.write_placement(&trx, &record)?;
             write(
                 &trx,
