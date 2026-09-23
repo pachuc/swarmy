@@ -143,6 +143,49 @@ async fn placement_lifecycle_fences_holders() {
 }
 
 #[tokio::test]
+async fn placement_address_follows_its_epoch() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let first_node = node(&test.store, 1).await.node_id;
+    let next_node = node(&test.store, 1).await.node_id;
+    let agent = session().agent_id;
+    let first = test
+        .store
+        .place(agent, first_node, future(60))
+        .await
+        .unwrap();
+    let address = std::net::Ipv4Addr::new(10, 0, 2, 2);
+    test.store
+        .set_placement_address(&first, address)
+        .await
+        .unwrap();
+    let renewed = test.store.renew(&first, future(120)).await.unwrap();
+    assert_eq!(
+        test.store.placement_address(&renewed).await.unwrap(),
+        Some(address)
+    );
+    let expired = expire(&test, &renewed).await;
+    let next = test
+        .store
+        .take_over(&expired, next_node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(test.store.placement_address(&next).await.unwrap(), None);
+    assert!(matches!(
+        test.store.set_placement_address(&first, address).await,
+        Err(StoreError::LeaseMismatch)
+    ));
+    test.store
+        .set_placement_address(&next, address)
+        .await
+        .unwrap();
+    test.store.release(&next).await.unwrap();
+    assert_eq!(test.store.placement_address(&next).await.unwrap(), None);
+    test.cleanup().await;
+}
+
+#[tokio::test]
 async fn placement_release_preserves_epoch_and_rejects_old_tokens() {
     let Some(test) = TestStore::memory() else {
         return;

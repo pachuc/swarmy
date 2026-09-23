@@ -767,7 +767,15 @@ or validate the smaller changed-data rows; the table remains a proposed budget.
 
 1. **OCI container via runc.** Works on every host, no KVM. First slice.
    Rootfs is the mounted volume block device. Memory pause is not supported,
-   so pause equals stop, and resume equals cold boot from disk.
+   so pause equals stop, and resume equals cold boot from disk. Each sandbox
+   has its own network namespace. `pasta` supplies outbound TCP, UDP, and DNS
+   forwarding without forwarding ports in either direction. The node's own
+   addresses are prohibited inside the namespace; loopback remains private to
+   the sandbox. The namespace has address 10.0.2.2, which can be reused across
+   independent namespaces. `swarmyd` keeps a named namespace handle so `pasta`
+   can join a root-owned runc namespace and removes the handle with the pasta
+   process on teardown or restart. The placement's address metadata is
+   published after networking starts and cleared when the placement ends.
 2. **gVisor.** Works on every host, has native checkpoint and restore for
    memory pause. Some syscall gaps and I/O overhead. Candidate for the
    default on hosts without KVM.

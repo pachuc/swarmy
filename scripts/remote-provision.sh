@@ -21,7 +21,7 @@ export DEBIAN_FRONTEND=noninteractive
 sudo cloud-init status --wait
 sudo apt-get update
 sudo -E apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev curl rsync \
-    runc e2fsprogs debootstrap
+    runc passt iproute2 util-linux e2fsprogs debootstrap
 printf 'nbd\nublk_drv\n' | sudo tee /etc/modules-load.d/swarmy.conf >/dev/null
 # Some Ubuntu AWS kernels include these modules in the base package.
 if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then

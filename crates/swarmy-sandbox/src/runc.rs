@@ -32,6 +32,7 @@ struct Running {
     server: Option<ServerTask>,
     cancellations: Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>,
     credentials: Option<crate::credentials::Credentials>,
+    network: Option<tokio::process::Child>,
 }
 
 struct ServerTask(JoinHandle<server::Result<()>>);
@@ -51,6 +52,8 @@ pub struct RuncRuntime {
 }
 
 impl RuncRuntime {
+    /// Address reused in each sandbox's independent network namespace.
+    pub const NETWORK_ADDRESS: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 0, 2, 2);
     /// Clean up this node's containers and mounts from an earlier incarnation.
     /// Old writer leases are left to expire; recovery never steals a live lease.
     /// # Errors
@@ -95,6 +98,11 @@ impl RuncRuntime {
 
     fn bundle(&self, id: AgentId) -> PathBuf {
         self.root.join("bundles").join(id.to_string())
+    }
+
+    fn network_name(&self, id: AgentId) -> String {
+        // A recovering agent can briefly occupy two nodes on one host.
+        format!("swarmy-{}-{id}", self.config.node)
     }
 
     /// Fingerprint regular memory files without a sandbox exec. The published
@@ -165,7 +173,132 @@ impl RuncRuntime {
         if self.root.join("runc").join(id.to_string()).exists() {
             checked(self.command().args(["delete", "--force", &id.to_string()])).await?;
         }
+        // The named handle keeps the namespace alive after runc exits, so
+        // stop pasta explicitly even when an earlier daemon was killed.
+        let pid_file = self.bundle(id).join("pasta.pid");
+        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = pid.trim().parse::<u32>() {
+                let command = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
+                    && command
+                        .windows(pid_file.as_os_str().as_encoded_bytes().len())
+                        .any(|window| window == pid_file.as_os_str().as_encoded_bytes())
+                {
+                    let _ = Command::new("kill").arg(pid.to_string()).status().await;
+                }
+            }
+            let _ = std::fs::remove_file(pid_file);
+        }
+        let name = self.network_name(id);
+        if Path::new("/run/netns").join(&name).exists() {
+            checked(Command::new("ip").args(["netns", "delete", &name])).await?;
+        }
         Ok(())
+    }
+
+    async fn network(&self, id: AgentId) -> Result<tokio::process::Child> {
+        let state = output(self.command().args(["state", &id.to_string()])).await?;
+        let state: serde_json::Value = serde_json::from_slice(&state)?;
+        let pid = state["pid"].as_u64().ok_or(Error::State)?;
+        let bundle = self.bundle(id);
+        let name = self.network_name(id);
+        checked(Command::new("ip").args(["netns", "attach", &name, &pid.to_string()])).await?;
+        // A runc namespace belongs to the host user namespace. pasta needs
+        // root to enter it; its default nobody account cannot call setns here.
+        let mut process = Command::new("pasta")
+            .args([
+                "--foreground",
+                "--runas",
+                "0",
+                "--netns",
+                &name,
+                "--config-net",
+                "--no-map-gw",
+                "--ipv4-only",
+                "--address",
+                "10.0.2.2",
+                "--netmask",
+                "24",
+                "--gateway",
+                "10.0.2.1",
+                "--dns-forward",
+                "10.0.2.3",
+                "-t",
+                "none",
+                "-u",
+                "none",
+                "-T",
+                "none",
+                "-U",
+                "none",
+                "--pid",
+            ])
+            .arg(bundle.join("pasta.pid"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let target = pid.to_string();
+        let mut ready = false;
+        for _ in 0..100 {
+            if let Some(status) = process.try_wait()? {
+                return Err(Error::Operation(format!(
+                    "pasta exited during setup: {status}"
+                )));
+            }
+            let address = Command::new("nsenter")
+                .args(["-t", &target, "-n", "ip", "-4", "addr", "show"])
+                .output()
+                .await;
+            ready = address.is_ok_and(|result| {
+                result.status.success()
+                    && result.stdout.windows(8).any(|bytes| bytes == b"10.0.2.2")
+            });
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !ready {
+            return Err(Error::Operation(
+                "pasta did not configure the namespace".into(),
+            ));
+        }
+        checked(
+            Command::new("nsenter").args(["-t", &target, "-n", "ip", "link", "set", "lo", "up"]),
+        )
+        .await?;
+        // The connected 10.0.2.0/24 route keeps pasta's gateway and DNS
+        // reachable. Other private and link-local destinations are outside
+        // the sandbox's outbound internet access.
+        for range in [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+        ] {
+            checked(Command::new("nsenter").args([
+                "-t", &target, "-n", "ip", "route", "replace", "prohibit", range,
+            ]))
+            .await?;
+        }
+        let addresses = output(Command::new("ip").args(["-j", "-4", "addr", "show"])).await?;
+        let addresses: serde_json::Value = serde_json::from_slice(&addresses)?;
+        for interface in addresses.as_array().ok_or(Error::State)? {
+            for address in interface["addr_info"].as_array().ok_or(Error::State)? {
+                if address["scope"] == "global" {
+                    let ip = address["local"].as_str().ok_or(Error::State)?;
+                    checked(
+                        Command::new("nsenter")
+                            .args(["-t", &target, "-n", "ip", "route", "replace", "prohibit"])
+                            .arg(format!("{ip}/32")),
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(process)
     }
 
     async fn start(&self, id: AgentId) -> Result<()> {
@@ -205,15 +338,13 @@ impl RuncRuntime {
             .push(serde_json::json!({"type": "RLIMIT_CORE", "hard": 0, "soft": 0}));
         config["process"]["cwd"] = "/home/agent/work".into();
         config["hostname"] = "swarmy".into();
-        // This slice uses the host network for outbound package downloads.
-        config["linux"]["namespaces"]
-            .as_array_mut()
-            .ok_or(Error::State)?
-            .retain(|ns| ns["type"] != "network");
+        // runc creates a private network namespace; pasta supplies outbound
+        // TCP, UDP, and DNS without exposing host listeners or guest ports.
         let mounts = config["mounts"].as_array_mut().ok_or(Error::State)?;
         mounts.push(serde_json::json!({"destination": "/run/swarmy", "type": "bind", "source": bundle.join("guest"), "options": ["bind", "nosuid", "nodev", "noexec"]}));
         mounts.push(serde_json::json!({"destination": "/run/swarmy-gh", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=16m"]}));
-        mounts.push(serde_json::json!({"destination": "/etc/resolv.conf", "type": "bind", "source": "/etc/resolv.conf", "options": ["bind", "ro", "nosuid", "nodev", "noexec"]}));
+        std::fs::write(bundle.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
+        mounts.push(serde_json::json!({"destination": "/etc/resolv.conf", "type": "bind", "source": bundle.join("resolv.conf"), "options": ["bind", "ro", "nosuid", "nodev", "noexec"]}));
         std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
         // Init outlives runc create, so it must not inherit pipes that the
         // host command helper waits to drain before starting the container.
@@ -233,6 +364,8 @@ impl RuncRuntime {
                 bundle.join("runc.log"),
             )?));
         }
+        let network = self.network(id).await?;
+        self.running(id).await?.lock().await.network = Some(network);
         checked(self.command().args(["start", &id.to_string()])).await
     }
 
@@ -250,6 +383,9 @@ impl RuncRuntime {
         let _lifecycle = self.lifecycle.lock().await;
         let entry = self.running(id).await?;
         let mut running = entry.lock().await;
+        if let Some(mut network) = running.network.take() {
+            let _ = network.kill().await;
+        }
         // A delayed cancellation signal must finish before this id can be reused.
         while running
             .cancellations
@@ -432,6 +568,7 @@ impl SandboxRuntime for RuncRuntime {
                 server: Some(server),
                 cancellations: Arc::default(),
                 credentials: None,
+                network: None,
             })),
         );
         let setup = async {
@@ -623,13 +760,17 @@ async fn pump(
 }
 
 async fn checked(command: &mut Command) -> Result<()> {
+    output(command).await.map(|_| ())
+}
+
+async fn output(command: &mut Command) -> Result<Vec<u8>> {
     let output = command
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output()
         .await?;
     if output.status.success() {
-        Ok(())
+        Ok(output.stdout)
     } else {
         Err(Error::Operation(format!(
             "{command:?}: {}",
