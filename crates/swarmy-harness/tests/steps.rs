@@ -503,6 +503,8 @@ fn exhausted_inference_ends_the_turn_instead_of_retrying() {
             seq: 3,
             request_id,
             error: "provider failed".into(),
+            retryable: false,
+            retry_at: None,
         },
     ];
     assert_eq!(step(&events), Action::EndTurn);
@@ -515,6 +517,8 @@ fn exhausted_inference_ends_the_turn_instead_of_retrying() {
             seq: 3,
             request_id: other,
             error: "stale".into(),
+            retryable: false,
+            retry_at: None,
         },
     ];
     assert_eq!(step(&unrelated), Action::Wait);

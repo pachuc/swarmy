@@ -11,7 +11,7 @@ use swarmy_core::{
 };
 use swarmy_llm::{Delta, InferenceJob, Response};
 use swarmy_store::{
-    GatewayProvider, InferenceClaim, InferenceCompletion, Store,
+    CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, Store,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tokio::{
@@ -31,6 +31,63 @@ struct Gateway {
     ack_wait: Duration,
     max_deliver: i64,
     resend_interval: Duration,
+    max_backoff: Duration,
+}
+
+fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
+    use swarmy_llm::Error;
+    match error {
+        Error::Retryable {
+            status,
+            retry_after,
+        } => (
+            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error()
+                || matches!(status.as_u16(), 408 | 409),
+            *retry_after,
+        ),
+        Error::ProviderResponse {
+            status,
+            message,
+            retry_after,
+        } => {
+            let text = message.to_ascii_lowercase();
+            (
+                *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error()
+                    || matches!(status.as_u16(), 408 | 409)
+                    || text.contains("usage_limit")
+                    || text.contains("usage limit")
+                    || text.contains("rate_limit")
+                    || text.contains("rate limit"),
+                *retry_after,
+            )
+        }
+        Error::Status(status) => (
+            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error()
+                || matches!(status.as_u16(), 408 | 409),
+            None,
+        ),
+        Error::Http(error) => (error.is_connect() || error.is_timeout(), None),
+        _ => (false, None),
+    }
+}
+
+fn permanent_error(error: &swarmy_llm::Error) -> bool {
+    use swarmy_llm::Error;
+    if retryable_error(error).0 {
+        return false;
+    }
+    matches!(
+        error,
+        Error::UnknownModel { .. }
+            | Error::Unsupported(_)
+            | Error::ContextOverflow(_)
+            | Error::Credentials(_)
+            | Error::NeedsLogin(_)
+    ) || matches!(error, Error::ProviderResponse { status, .. } | Error::Status(status)
+            if matches!(status.as_u16(), 401 | 403 | 404))
 }
 
 // Boot before the runtime so the network guard outlives all database tasks.
@@ -100,6 +157,7 @@ async fn run(config: config::Config) -> Result<()> {
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
+        max_backoff: Duration::from_secs(config.settings.inference.max_backoff_seconds.get()),
     });
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
     let mut tasks = JoinSet::new();
@@ -290,7 +348,7 @@ impl Gateway {
                 ))
                 .await;
         }
-        let result = self.infer(job, provider, effort_used).await;
+        let (result, blocked) = self.attempt_provider(job, provider, effort_used).await?;
         if let Some(turn) = turn {
             self.bus
                 .record_turn(&Bus::turn_event(
@@ -304,10 +362,10 @@ impl Gateway {
         let result = match result {
             Ok(response) => Ok(response),
             Err(error)
-                if !matches!(
-                    error,
-                    swarmy_llm::Error::UnknownModel { .. } | swarmy_llm::Error::Unsupported(_)
-                ) && message.delivery_count()? < self.max_deliver =>
+                if !blocked
+                    && !permanent_error(&error)
+                    && !retryable_error(&error).0
+                    && message.delivery_count()? < self.max_deliver =>
             {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
                 self.store.release_inference(claim).await?;
@@ -317,8 +375,9 @@ impl Gateway {
                     .await?;
                 return Ok(());
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(error),
         };
+        let (retryable, retry_at) = self.record_breaker(provider, job, &result, blocked).await?;
         let event = match &result {
             Ok(response) => Event::InferenceCompleted {
                 provider: provider.clone(),
@@ -339,13 +398,84 @@ impl Gateway {
             Err(error) => Event::InferenceFailed {
                 seq: 0,
                 request_id: job.request_id,
-                error: error.clone(),
+                error: error.to_string(),
+                retryable,
+                retry_at,
             },
         };
-        self.persist_response(job, claim, event, &result, turn)
+        let stored_result = result.map_err(|error| error.to_string());
+        self.persist_response(job, claim, event, &stored_result, turn)
             .await?;
+        if stored_result.is_ok() {
+            self.store.clear_inference_wait(job.session_id).await?;
+        }
         message.acknowledge().await?;
         Ok(())
+    }
+
+    async fn attempt_provider(
+        &self,
+        job: &InferenceJob,
+        provider: &str,
+        effort: Option<swarmy_core::ReasoningEffort>,
+    ) -> Result<(std::result::Result<Response, swarmy_llm::Error>, bool)> {
+        let key = CredentialKey(provider.to_owned());
+        if let Some(until) = self.store.claim_provider(&key, Timestamp::now()).await? {
+            let reason = self
+                .store
+                .provider_reason(&key)
+                .await?
+                .unwrap_or_else(|| "provider temporarily unavailable".into());
+            return Ok((
+                Err(swarmy_llm::Error::ProviderResponse {
+                    status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                    message: reason,
+                    retry_after: Some(
+                        std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
+                    ),
+                }),
+                true,
+            ));
+        }
+        Ok((self.infer(job, provider, effort).await, false))
+    }
+
+    async fn record_breaker(
+        &self,
+        provider: &str,
+        job: &InferenceJob,
+        result: &std::result::Result<Response, swarmy_llm::Error>,
+        blocked: bool,
+    ) -> Result<(bool, Option<Timestamp>)> {
+        let key = CredentialKey(provider.to_owned());
+        let Some(error) = result.as_ref().err() else {
+            if !blocked {
+                self.store.provider_success(&key).await?;
+            }
+            return Ok((false, None));
+        };
+        let (retryable, retry_after) = retryable_error(error);
+        if !retryable {
+            if !blocked {
+                self.store.provider_success(&key).await?;
+            }
+            return Ok((false, None));
+        }
+        let failures = self.store.provider_failures(&key).await?;
+        let delay = retry_after.unwrap_or_else(|| {
+            let exponent = failures.min(8);
+            let base = Duration::from_secs(1_u64 << exponent).min(self.max_backoff);
+            let jitter = u64::from(job.request_id.as_bytes()[0]) * 1000 / 255;
+            base.saturating_add(Duration::from_millis(jitter))
+                .min(self.max_backoff)
+        });
+        let until = Timestamp::now().checked_add(delay)?;
+        if !blocked {
+            self.store
+                .provider_failure(&key, until, &error.to_string())
+                .await?;
+        }
+        Ok((true, Some(until)))
     }
 
     async fn persist_response(
@@ -499,5 +629,42 @@ impl Gateway {
         {
             warn!(%error, "completion nudge failed; scheduler will recover");
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn rate_limits_outages_and_permanent_errors_are_distinct() {
+        let rate_limit = swarmy_llm::Error::ProviderResponse {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            message: "quota exceeded".into(),
+            retry_after: Some(Duration::from_secs(2)),
+        };
+        assert_eq!(
+            retryable_error(&rate_limit),
+            (true, Some(Duration::from_secs(2)))
+        );
+        let usage_limit = swarmy_llm::Error::ProviderResponse {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "usage_limit_reached".into(),
+            retry_after: None,
+        };
+        assert!(retryable_error(&usage_limit).0);
+        assert!(!permanent_error(&usage_limit));
+        let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
+        assert!(retryable_error(&outage).0);
+        let auth = swarmy_llm::Error::ProviderResponse {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            message: "invalid token".into(),
+            retry_after: None,
+        };
+        assert!(!retryable_error(&auth).0);
+        assert!(permanent_error(&auth));
+        assert!(permanent_error(&swarmy_llm::Error::ContextOverflow(
+            "too long".into()
+        )));
     }
 }

@@ -56,11 +56,15 @@ enum HumanEvent {
         seq: u64,
         snapshot: SnapshotRef,
     },
-    /// Provider retries were exhausted; the next step can handle the failure.
+    /// The gateway records an exhausted provider attempt for the next step.
     InferenceFailed {
         seq: u64,
         request_id: RequestId,
         error: String,
+        #[serde(default)]
+        retryable: bool,
+        #[serde(default)]
+        retry_at: Option<jiff::Timestamp>,
     },
 }
 
@@ -101,7 +105,7 @@ enum BinaryEvent {
         seq: u64,
         snapshot: SnapshotRef,
     },
-    /// Provider retries were exhausted; the next step can handle the failure.
+    /// The gateway records an exhausted provider attempt for the next step.
     InferenceFailed {
         seq: u64,
         request_id: RequestId,
@@ -125,6 +129,13 @@ enum BinaryEvent {
         effort_requested: Option<crate::ReasoningEffort>,
         #[serde(default)]
         effort_clamped: bool,
+    },
+    RetryableInferenceFailed {
+        seq: u64,
+        request_id: RequestId,
+        error: String,
+        retryable: bool,
+        retry_at: Option<jiff::Timestamp>,
     },
 }
 
@@ -208,10 +219,25 @@ impl From<Event> for BinaryEvent {
                 seq,
                 request_id,
                 error,
+                retryable: false,
+                retry_at: None,
             } => Self::InferenceFailed {
                 seq,
                 request_id,
                 error,
+            },
+            Event::InferenceFailed {
+                seq,
+                request_id,
+                error,
+                retryable,
+                retry_at,
+            } => Self::RetryableInferenceFailed {
+                seq,
+                request_id,
+                error,
+                retryable,
+                retry_at,
             },
         }
     }
@@ -277,6 +303,21 @@ impl From<BinaryEvent> for Event {
                 seq,
                 request_id,
                 error,
+                retryable: false,
+                retry_at: None,
+            },
+            BinaryEvent::RetryableInferenceFailed {
+                seq,
+                request_id,
+                error,
+                retryable,
+                retry_at,
+            } => Self::InferenceFailed {
+                seq,
+                request_id,
+                error,
+                retryable,
+                retry_at,
             },
             BinaryEvent::MeteredInferenceCompleted {
                 seq,

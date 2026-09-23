@@ -72,6 +72,22 @@ pub struct GarbageCollection {
     pub batch_size: std::num::NonZeroUsize,
     pub delete_concurrency: std::num::NonZeroUsize,
 }
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Inference {
+    pub max_wait_seconds: std::num::NonZeroU64,
+    pub max_backoff_seconds: std::num::NonZeroU64,
+}
+
+impl Default for Inference {
+    fn default() -> Self {
+        Self {
+            max_wait_seconds: std::num::NonZeroU64::new(3600).unwrap(),
+            max_backoff_seconds: std::num::NonZeroU64::new(300).unwrap(),
+        }
+    }
+}
 impl Default for GarbageCollection {
     fn default() -> Self {
         Self {
@@ -113,6 +129,7 @@ pub struct Settings {
     pub sandbox_idle_seconds: std::num::NonZeroU64,
     pub placement_lease_seconds: std::num::NonZeroU64,
     pub gc: GarbageCollection,
+    pub inference: Inference,
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
@@ -178,6 +195,7 @@ impl Default for Settings {
             sandbox_idle_seconds: std::num::NonZeroU64::new(1800).unwrap(),
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
             gc: GarbageCollection::default(),
+            inference: Inference::default(),
             node_id: None,
             node_roles: vec![
                 swarmy_core::NodeRole::Sandbox,
@@ -429,6 +447,14 @@ impl Settings {
             (
                 "SWARMY_PLACEMENT_LEASE_SECONDS",
                 &mut self.placement_lease_seconds,
+            ),
+            (
+                "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
+                &mut self.inference.max_wait_seconds,
+            ),
+            (
+                "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
+                &mut self.inference.max_backoff_seconds,
             ),
         ] {
             if let Some(value) = environment.get(name) {

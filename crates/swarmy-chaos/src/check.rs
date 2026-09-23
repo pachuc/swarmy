@@ -12,6 +12,7 @@ pub fn log(id: SessionId, events: &[Event]) -> Result<usize> {
     let mut requests = HashSet::new();
     let mut steps = HashSet::new();
     let mut pending = None;
+    let mut retryable_failures = 0;
     for (index, event) in events.iter().enumerate() {
         ensure!(
             event.seq() == u64::try_from(index)? + 1,
@@ -37,13 +38,26 @@ pub fn log(id: SessionId, events: &[Event]) -> Result<usize> {
                     "session {id}: completion without its unique request at {event:?}"
                 );
             }
-            Event::InferenceFailed { .. } => {
+            Event::InferenceFailed {
+                request_id,
+                retryable: true,
+                ..
+            } => {
+                ensure!(
+                    pending.take() == Some(*request_id),
+                    "session {id}: retryable failure without its request at {event:?}"
+                );
+                retryable_failures += 1;
+            }
+            Event::InferenceFailed {
+                retryable: false, ..
+            } => {
                 anyhow::bail!("session {id}: inference failed: {event:?}")
             }
             _ => {}
         }
     }
-    Ok(requests.len())
+    Ok(requests.len() - retryable_failures)
 }
 
 pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize) -> Result<()> {
@@ -199,6 +213,17 @@ mod tests {
         );
         assert!(log(id, &[request(2, 2)]).is_err());
         assert!(log(id, &[request(1, 1), request(1, 1)]).is_err());
+        let failure = Event::InferenceFailed {
+            seq: 2,
+            request_id: RequestId::for_step(id, 1),
+            error: "rate limited".into(),
+            retryable: true,
+            retry_at: None,
+        };
+        assert_eq!(
+            log(id, &[request(1, 1), failure, request(3, 3)]).unwrap(),
+            1
+        );
     }
 
     #[test]

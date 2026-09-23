@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use crate::{Error, Result};
 use futures::StreamExt;
@@ -6,7 +14,8 @@ use serde::Deserialize;
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_core::{MessageRole, Part, ToolCallId};
 use swarmy_llm::{
-    Provider, ProviderStream, Request, Response, StopReason, TokenUsage, fake::FakeProvider,
+    Provider, ProviderStream, Request, Response, StopReason, TokenUsage,
+    fake::{FakeFailure, FakeProvider},
 };
 use tokio::io::AsyncWriteExt;
 
@@ -63,6 +72,8 @@ struct Script {
     latency_ms: u64,
     #[serde(default)]
     responses: BTreeMap<usize, Response>,
+    #[serde(default)]
+    failures: BTreeMap<usize, FakeFailure>,
     #[serde(default)]
     fail: bool,
     #[serde(default)]
@@ -145,6 +156,8 @@ pub struct FileFake {
     latency: Duration,
     request_based: Option<RequestScript>,
     request_by_prompt: BTreeMap<String, RequestScript>,
+    failures: BTreeMap<usize, FakeFailure>,
+    calls: AtomicUsize,
 }
 
 impl FileFake {
@@ -170,6 +183,7 @@ impl FileFake {
         )?;
         let mut provider = FakeProvider::default();
         provider.responses = script.responses;
+        provider.failures = script.failures.clone();
         // Delay each emitted delta in the wrapper so tests can kill a partial stream.
         Ok(Self {
             provider: Arc::new(provider),
@@ -177,6 +191,8 @@ impl FileFake {
             fail: script.fail,
             request_based: script.request_based,
             request_by_prompt: script.request_by_prompt,
+            failures: script.failures,
+            calls: AtomicUsize::new(0),
             latency: Duration::from_millis(script.latency_ms),
         })
     }
@@ -188,6 +204,7 @@ impl Provider for FileFake {
         let log = self.log.clone();
         let fail = self.fail;
         let latency = self.latency;
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let prompt = request
             .messages
             .iter()
@@ -208,10 +225,17 @@ impl Provider for FileFake {
             .and_then(|prompt| self.request_by_prompt.get(prompt))
             .cloned()
             .or_else(|| self.request_based.clone());
+        let failure = request_based
+            .as_ref()
+            .and_then(|_| self.failures.get(&call))
+            .cloned();
         Box::pin(async_stream::try_stream! {
             let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(log).await?;
             file.write_all(b"call\n").await?;
             file.sync_data().await?;
+            if let Some(failure) = failure {
+                Err(failure.error())?;
+            }
             if fail {
                 if !latency.is_zero() {
                     tokio::time::sleep(latency).await;
@@ -263,6 +287,8 @@ mod tests {
             latency: Duration::ZERO,
             request_based: script.request_based.clone(),
             request_by_prompt: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            calls: AtomicUsize::new(0),
         };
         let mut provider = make_provider();
         for step in [0, 1, 0, 2, 1, 2] {

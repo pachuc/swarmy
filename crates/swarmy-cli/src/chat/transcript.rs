@@ -32,6 +32,7 @@ enum Entry {
         result: Option<ToolResult>,
     },
     Error(String),
+    Waiting(String),
 }
 
 impl Transcript {
@@ -92,6 +93,11 @@ impl Transcript {
                 self.ready = true;
             }
             TranscriptEvent::Error(error) => self.entries.push(Entry::Error(error)),
+            TranscriptEvent::Waiting(reason) => {
+                self.entries.push(Entry::Waiting(reason));
+                self.partial.clear();
+                self.state = Some(SessionState::Sleeping);
+            }
         }
     }
 
@@ -108,6 +114,9 @@ impl Transcript {
                 Entry::User(text) => append_lines(&mut lines, "You", text, Color::Cyan),
                 Entry::Assistant(text) => append_lines(&mut lines, "Agent", text, Color::Reset),
                 Entry::Error(text) => append_lines(&mut lines, "Error", text, Color::Reset),
+                Entry::Waiting(text) => {
+                    append_lines(&mut lines, "Waiting for inference", text, Color::Yellow);
+                }
                 Entry::Tool {
                     call,
                     name,

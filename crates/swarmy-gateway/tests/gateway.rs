@@ -23,7 +23,7 @@ use swarmy_llm::{
     Delta, GenerationSettings, InferenceJob, Request, Response, StopReason, TokenUsage,
 };
 use swarmy_store::{
-    Store,
+    CredentialKey, Store,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tempfile::TempDir;
@@ -109,6 +109,21 @@ impl Fixture {
         )
         .unwrap();
         response
+    }
+
+    fn failure_script(&self, status: u16, retry_after_seconds: Option<u64>) {
+        std::fs::write(
+            self.files.path().join("script.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "failures": {"0": {
+                    "status": status,
+                    "message": if status == 429 { "quota reached" } else { "invalid credentials" },
+                    "retry_after_seconds": retry_after_seconds,
+                }}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     fn start(&mut self, concurrency: usize) {
@@ -504,6 +519,47 @@ async fn exhausted_retries_append_failure_and_stop_delivery() {
         result.unwrap();
     })
     .await;
+}
+
+#[tokio::test]
+async fn rate_limit_opens_durable_breaker_and_keeps_provider_text() {
+    run(|mut f| async move {
+        f.failure_script(429, Some(2));
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            let started = Timestamp::now();
+            f.publish(&job).await;
+            let event = f.terminal(&job).await;
+            assert!(matches!(event, Event::InferenceFailed { retryable: true, retry_at: Some(at), error, .. }
+                if at >= started.checked_add(Duration::from_secs(2)).unwrap() && error.contains("quota reached")));
+            let key = CredentialKey("fake".into());
+            assert!(f.store.provider_open_until(&key, Timestamp::now()).await.unwrap().is_some());
+            assert_eq!(f.calls(), 1);
+            f.kill().await;
+            f.start(4);
+            assert!(f.store.provider_open_until(&key, Timestamp::now()).await.unwrap().is_some());
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
+}
+
+#[tokio::test]
+async fn authentication_failure_does_not_open_breaker() {
+    run(|mut f| async move {
+        f.failure_script(401, None);
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. } if error.contains("invalid credentials")));
+            assert!(f.store.provider_open_until(&CredentialKey("fake".into()), Timestamp::now()).await.unwrap().is_none());
+            assert_eq!(f.calls(), 1);
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
 }
 
 #[tokio::test]

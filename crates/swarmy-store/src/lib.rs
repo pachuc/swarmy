@@ -12,6 +12,7 @@ pub mod blob;
 mod computers;
 pub mod credentials;
 mod inference;
+mod inference_wait;
 mod selection;
 pub use selection::GatewayProvider;
 mod keys;
@@ -29,6 +30,7 @@ mod tools;
 mod turns;
 mod volumes;
 
+pub use inference_wait::{CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
 
 use std::{future::Future, sync::Arc};

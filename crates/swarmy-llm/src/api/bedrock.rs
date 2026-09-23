@@ -150,7 +150,11 @@ fn request_error(
 ) -> Error {
     use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError as E;
     let Some(error) = error else {
-        return protocol("request failed");
+        return Error::ProviderResponse {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            message: "Bedrock request transport failed".into(),
+            retry_after: None,
+        };
     };
     let (code, message) = match error {
         E::ThrottlingException(error) => ("ThrottlingException", error.message()),
@@ -167,7 +171,11 @@ fn request_error(
 fn stream_error(error: Option<&sdk::error::ConverseStreamOutputError>) -> Error {
     use sdk::error::ConverseStreamOutputError as E;
     let Some(error) = error else {
-        return protocol("event stream failed");
+        return Error::ProviderResponse {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            message: "Bedrock event stream transport failed".into(),
+            retry_after: None,
+        };
     };
     let (code, message) = match error {
         E::ThrottlingException(error) => ("ThrottlingException", error.message()),
@@ -186,13 +194,15 @@ fn service_error(code: &str, message: Option<&str>) -> Error {
         {
             Error::ContextOverflow(message.unwrap_or_default().into())
         }
-        "ThrottlingException" | "ModelNotReadyException" => Error::Retryable {
+        "ThrottlingException" | "ModelNotReadyException" => Error::ProviderResponse {
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            message: format!("Bedrock {code}: {}", message.unwrap_or("service error")),
             retry_after: None,
         },
         "ServiceUnavailableException" | "InternalServerException" | "ModelTimeoutException" => {
-            Error::Retryable {
+            Error::ProviderResponse {
                 status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                message: format!("Bedrock {code}: {}", message.unwrap_or("service error")),
                 retry_after: None,
             }
         }
@@ -1387,7 +1397,7 @@ mod tests {
                 std::future::ready(Err(request_error(Some(&error))))
             })
             .await;
-            assert!(matches!(result, Err(Error::Retryable { .. })));
+            assert!(matches!(result, Err(Error::ProviderResponse { .. })));
             assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 3);
         }
         let error = ConverseStreamError::ValidationException(
@@ -1435,7 +1445,7 @@ mod tests {
                 std::future::ready(Err(stream_error(Some(&error))))
             })
             .await;
-            assert!(matches!(result, Err(Error::Retryable { .. })));
+            assert!(matches!(result, Err(Error::ProviderResponse { .. })));
             assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 3);
         }
         let error = E::ValidationException(

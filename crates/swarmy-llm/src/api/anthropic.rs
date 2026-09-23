@@ -166,8 +166,9 @@ impl AnthropicProvider {
             return Err(Error::ContextOverflow(body));
         }
         if retryable(status) {
-            return Err(Error::Retryable {
+            return Err(Error::ProviderResponse {
                 status,
+                message: body,
                 retry_after,
             });
         }

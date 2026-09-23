@@ -36,6 +36,7 @@ struct Fixture {
     bus: Bus,
     prefix: String,
     summarize_at_tokens: u64,
+    max_wait_seconds: u64,
     files: TempDir,
     children: Vec<Child>,
     snapshots: Mutex<HashSet<String>>,
@@ -78,6 +79,7 @@ impl Fixture {
             bus,
             prefix,
             summarize_at_tokens: 300_000,
+            max_wait_seconds: 3600,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
@@ -115,6 +117,26 @@ impl Fixture {
         .unwrap();
     }
 
+    fn rate_limit_script(&self, failures: usize, retry_after_seconds: u64) {
+        let answer = Response {
+            parts: vec![Part::Text {
+                text: "Recovered.".into(),
+            }],
+            stop_reason: StopReason::EndTurn,
+            usage: TokenUsage::default(),
+        };
+        let responses: BTreeMap<_, _> = (failures..100).map(|index| (index, &answer)).collect();
+        let failures: BTreeMap<_, _> = (0..failures).map(|index| (index, serde_json::json!({
+            "status": 429, "message": "quota reached", "retry_after_seconds": retry_after_seconds
+        }))).collect();
+        std::fs::write(
+            self.files.path().join("script.json"),
+            serde_json::to_vec(&serde_json::json!({"responses": responses, "failures": failures}))
+                .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
         let executable =
             std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name(service);
@@ -142,6 +164,11 @@ impl Fixture {
             .env("SWARMY_WORKER_RECOVERY_INTERVAL_MS", "200")
             .env("SWARMY_FAKE_SCRIPT", self.files.path().join("script.json"))
             .env("SWARMY_FAKE_CALL_LOG", self.files.path().join("calls"))
+            .env(
+                "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
+                self.max_wait_seconds.to_string(),
+            )
+            .env("SWARMY_GATEWAY_CONCURRENCY", "1")
             .env("RUST_LOG", "info")
             .env_remove("SWARMY_WORKER_KILL_POINT")
             .stdout(log.try_clone().unwrap())
@@ -415,6 +442,115 @@ async fn tool_turn_live_events_and_snapshot_survive_worker_restart() {
             let job: swarmy_llm::InferenceJob =
                 f.store.get_inference_input(request).await.unwrap().unwrap();
             assert_eq!(job.request.messages.len(), 5);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
+    run(|f| Box::pin(async move {
+        f.rate_limit_script(1, 2);
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-gateway", None);
+        f.start("swarmy-worker", None);
+        let id = f.create().await;
+        f.wake(id).await;
+        let started = std::time::Instant::now();
+        timeout(WAIT, async {
+            loop {
+                if f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Sleeping {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        }).await.unwrap();
+        assert!(f.store.inference_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
+        let leases = f.store.scan_expired_leases(
+            Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(), None, 64
+        ).await.unwrap();
+        assert!(!leases.iter().any(|(session, _)| *session == id));
+        let events = f.idle(id).await;
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert_eq!(f.calls(), 2);
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceFailed { retryable: true, .. })));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { .. })));
+        assert!(!events.iter().any(|event| matches!(event, Event::MessageAppended { message, .. }
+            if message.role == MessageRole::System && message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("quota reached"))))));
+    })).await;
+}
+
+#[tokio::test]
+async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
+    run(|f| {
+        Box::pin(async move {
+            f.max_wait_seconds = 3;
+            f.rate_limit_script(100, 1);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            let started = std::time::Instant::now();
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert!(started.elapsed() >= Duration::from_secs(3));
+            assert!(events.iter().any(
+                |event| matches!(event, Event::InferenceFailed { retryable: false, error, .. }
+            if error.contains("inference wait exceeded") && error.contains("quota reached"))
+            ));
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn twenty_sessions_share_one_open_breaker() {
+    run(|f| {
+        Box::pin(async move {
+            f.rate_limit_script(1, 5);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let mut ids = Vec::new();
+            for _ in 0..20 {
+                let id = f.create().await;
+                f.wake(id).await;
+                ids.push(id);
+            }
+            timeout(WAIT, async {
+                loop {
+                    if f.store
+                        .provider_open_until(
+                            &swarmy_store::CredentialKey("fake".into()),
+                            Timestamp::now(),
+                        )
+                        .await
+                        .unwrap()
+                        .is_some()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let calls = f.calls();
+            sleep(Duration::from_secs(1)).await;
+            assert_eq!(
+                f.calls(),
+                calls,
+                "provider was called while breaker was open"
+            );
+            for id in ids {
+                let events = f.idle(id).await;
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+                );
+            }
+            assert_eq!(f.calls(), 21);
         })
     })
     .await;

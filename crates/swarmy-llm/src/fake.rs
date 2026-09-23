@@ -7,11 +7,32 @@ use std::{
 };
 use swarmy_core::Part;
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FakeFailure {
+    pub status: u16,
+    pub message: String,
+    #[serde(default)]
+    pub retry_after_seconds: Option<u64>,
+}
+
+impl FakeFailure {
+    #[must_use]
+    pub fn error(&self) -> Error {
+        Error::ProviderResponse {
+            status: reqwest::StatusCode::from_u16(self.status)
+                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            message: self.message.clone(),
+            retry_after: self.retry_after_seconds.map(Duration::from_secs),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct FakeProvider {
     pub latency: Duration,
     /// Turns are zero based and assigned when `request` is called.
     pub responses: BTreeMap<usize, Response>,
+    pub failures: BTreeMap<usize, FakeFailure>,
     /// Tool calls take precedence over a response for the same turn.
     pub tool_calls: Option<BTreeMap<usize, Vec<Part>>>,
     calls: AtomicUsize,
@@ -37,14 +58,58 @@ impl Provider for FakeProvider {
                 usage: TokenUsage::default(),
             })
             .or_else(|| self.responses.get(&turn).cloned());
+        let failure = self.failures.get(&turn).cloned();
         let latency = self.latency;
         Box::pin(async_stream::try_stream! {
             tokio::time::sleep(latency).await;
+            if let Some(failure) = failure { Err(failure.error())?; }
             let response = response.ok_or(Error::UnscriptedTurn(turn))?;
             for (output_index, part) in response.parts.iter().enumerate() {
                 yield Delta::PartDone { output_index, part: part.clone() };
             }
             yield Delta::Completed(response);
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn scripted_failure_precedes_a_successful_second_call() {
+        let mut fake = FakeProvider::default();
+        fake.failures.insert(
+            0,
+            FakeFailure {
+                status: 429,
+                message: "quota reached".into(),
+                retry_after_seconds: Some(2),
+            },
+        );
+        fake.responses.insert(
+            1,
+            Response {
+                parts: vec![Part::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            },
+        );
+        let request = Request {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            settings: crate::GenerationSettings::default(),
+        };
+        let first = fake.request(request.clone()).next().await.unwrap();
+        assert!(
+            matches!(first, Err(Error::ProviderResponse { status, retry_after: Some(delay), .. })
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS && delay == Duration::from_secs(2))
+        );
+        assert!(fake.request(request).next().await.unwrap().is_ok());
+        assert_eq!(fake.call_count(), 2);
     }
 }

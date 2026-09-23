@@ -22,6 +22,7 @@ pub struct Config {
     pub memory_dir: String,
     pub memory_max_bytes: usize,
     pub kill_point: Option<String>,
+    pub max_inference_wait: Duration,
 }
 
 impl Config {
@@ -93,6 +94,7 @@ impl Config {
             memory_dir: settings.memory_dir,
             memory_max_bytes: settings.memory_max_bytes.get(),
             kill_point,
+            max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
         })
     }
 }
