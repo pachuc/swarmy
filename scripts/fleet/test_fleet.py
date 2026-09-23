@@ -159,10 +159,14 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(self.calls()[-1][2:5], ["agent", "delete", "worker-1"])
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertNotIn("worker-1", workers)
-        # With worker-2 still in the pool, the next launch recreates worker-1, not a second worker-2.
+        # Idle worker-2 is reused first; the launch after it recreates worker-1
+        # rather than colliding with the live worker-2.
         again = self.call("launch", "AAAAA5")
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertIn("worker-1", again.stdout)
+        self.assertIn("worker-2", again.stdout)
+        recreated = self.call("launch", "AAAAA6")
+        self.assertEqual(recreated.returncode, 0, recreated.stderr)
+        self.assertIn("worker-1", recreated.stdout)
         self.assertEqual(self.creates()[-1][4], "worker-1")
 
     def test_kill_interrupts_waits_and_releases_without_completing_task(self):
