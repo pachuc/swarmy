@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub agent_id: AgentId,
+    #[serde(default)]
+    pub scratch: Vec<String>,
 }
 
 /// A volume to attach through the node's block device service.

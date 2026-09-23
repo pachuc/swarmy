@@ -68,6 +68,24 @@ impl Manifest {
         &self.leaves
     }
 
+    /// Count nonzero data chunks without fetching their payloads.
+    /// # Errors
+    /// Returns corrupt or missing manifest leaves and object-store failures.
+    pub async fn data_chunk_count(&self, store: &dyn ObjectStore) -> Result<u64> {
+        let mut count = 0_u64;
+        for index in 0..self.leaves.len() {
+            if self.leaves[index] != ContentHash::ZERO {
+                count += self
+                    .leaf(store, index)
+                    .await?
+                    .into_iter()
+                    .filter(|hash| *hash != ContentHash::ZERO)
+                    .count() as u64;
+            }
+        }
+        Ok(count)
+    }
+
     /// Resolve a block without fetching any chunk data.
     /// # Errors
     /// Rejects invalid indices, corrupt leaves, and storage failures.

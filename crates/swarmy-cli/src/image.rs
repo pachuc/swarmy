@@ -47,6 +47,13 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 .get_image(name, &ImageTag(tag.into()))
                 .await?
                 .context("image not found")?;
+            let scratch = store
+                .image_scratch(&swarmy_core::ImageRecord {
+                    name: name.into(),
+                    tag: ImageTag(tag.into()),
+                    manifest_id,
+                })
+                .await?;
             let header = store
                 .get_manifest(manifest_id)
                 .await?
@@ -54,12 +61,15 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"name": name, "tag": tag, "manifest_id": manifest_id, "header": header})
+                    serde_json::json!({"name": name, "tag": tag, "manifest_id": manifest_id, "header": header, "scratch": scratch})
                 );
             } else {
                 println!(
-                    "{image} {manifest_id}\nsize={} chunk_size={} root_hash={}",
-                    header.size, header.chunk_size, header.root_hash
+                    "{image} {manifest_id}\nsize={} chunk_size={} root_hash={} scratch={}",
+                    header.size,
+                    header.chunk_size,
+                    header.root_hash,
+                    scratch.join(",")
                 );
             }
         }
@@ -76,6 +86,7 @@ async fn build(
 ) -> Result<()> {
     validate_label(&tag)?;
     let (recipe, directory, directory_name) = Recipe::load(&path)?;
+    let scratch = recipe.sandbox.scratch.clone();
     let name = name.unwrap_or(directory_name);
     validate_label(&name)?;
     let store = store().await?;
@@ -104,7 +115,7 @@ async fn build(
     let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
     store.put_manifest(manifest_id, &built.header).await?;
     store
-        .put_image(&name, &ImageTag(tag.clone()), manifest_id)
+        .put_image_with_scratch(&name, &ImageTag(tag.clone()), manifest_id, &scratch)
         .await?;
     if json {
         println!(

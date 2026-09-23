@@ -40,6 +40,15 @@ pub struct Recipe {
     /// Stable filesystem creation time, in seconds since the Unix epoch.
     pub source_date_epoch: u32,
     pub source: Source,
+    #[serde(default)]
+    pub sandbox: SandboxRecipe,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxRecipe {
+    #[serde(default)]
+    pub scratch: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +112,25 @@ impl Recipe {
         Manifest::empty(recipe.disk_size)?;
         if recipe.disk_size < 16 * 1024 * 1024 {
             return Err(ImageError::Invalid("ext4 requires at least 16 MiB".into()));
+        }
+        for (index, path) in recipe.sandbox.scratch.iter().enumerate() {
+            let path = Path::new(path);
+            if !path.is_absolute()
+                || path.components().any(|part| {
+                    !matches!(
+                        part,
+                        std::path::Component::RootDir | std::path::Component::Normal(_)
+                    )
+                })
+                || path == Path::new("/")
+                || recipe.sandbox.scratch[..index].iter().any(|earlier| {
+                    path.starts_with(earlier) || Path::new(earlier).starts_with(path)
+                })
+            {
+                return Err(ImageError::Invalid(
+                    "scratch paths must be distinct, absolute, and non-overlapping".into(),
+                ));
+            }
         }
         Ok((recipe, directory, name))
     }

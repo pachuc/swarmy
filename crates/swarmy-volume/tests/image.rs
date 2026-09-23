@@ -10,7 +10,7 @@ use object_store::memory::InMemory;
 use swarmy_core::{CHUNK_SIZE, ContentHash};
 use swarmy_volume::{
     ChunkStore, Manifest,
-    image::{Recipe, Source, build_ext4, upload_image},
+    image::{Recipe, SandboxRecipe, Source, build_ext4, upload_image},
 };
 
 #[tokio::test]
@@ -61,6 +61,8 @@ fn recipes_reject_typos_and_invalid_dimensions() {
         "disk_size = 67108864\nsource_date_epoch = 1\n[source]\nkind = 'directory'\npath = 'root'\ntypo = true",
         "disk_size = 67108865\nsource_date_epoch = 1\n[source]\nkind = 'directory'\npath = 'root'",
         "disk_size = 67108864\nsource_date_epoch = 1\n[source]\nkind = 'debootstrap'\nsuite = 'noble'\nmirror = 'http://archive.ubuntu.com/ubuntu'\npackages = ['bash']\nsource_commit = 'not-a-commit'",
+        "disk_size = 67108864\nsource_date_epoch = 1\n[sandbox]\nscratch = ['/home/agent', '/home/agent/.cache']\n[source]\nkind = 'directory'\npath = 'root'",
+        "disk_size = 67108864\nsource_date_epoch = 1\n[sandbox]\nscratch = ['relative']\n[source]\nkind = 'directory'\npath = 'root'",
     ] {
         fs::write(&path, text).unwrap();
         assert!(Recipe::load(&path).is_err());
@@ -69,9 +71,14 @@ fn recipes_reject_typos_and_invalid_dimensions() {
     let (recipe, _, name) = Recipe::load(&base).unwrap();
     assert_eq!(name, "base-ubuntu");
     assert_eq!(recipe.disk_size, 8 * 1024 * 1024 * 1024);
+    assert_eq!(recipe.sandbox.scratch, vec!["/tmp".to_string()]);
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/swarmy-dev");
     let (recipe, _, name) = Recipe::load(&dev).unwrap();
     assert_eq!(name, "swarmy-dev");
+    assert_eq!(
+        recipe.sandbox.scratch,
+        vec!["/home/agent/.cargo-target".to_string(), "/tmp".to_string()]
+    );
     assert!(matches!(
         recipe.source,
         Source::Debootstrap {
@@ -109,6 +116,7 @@ async fn root_ext4_mount_round_trip_and_independent_rebuild() {
         disk_size: 64 * 1024 * 1024,
         source_date_epoch: 1_714_003_200,
         source: Source::Directory { path: root.clone() },
+        sandbox: SandboxRecipe::default(),
     };
     let first = build_ext4(&recipe, directory.path()).unwrap();
     let objects = Arc::new(InMemory::new());
@@ -191,6 +199,7 @@ fn root_shell_recipe_runs_inside_copied_seed() {
             rootfs: "seed".into(),
             script: "build.sh".into(),
         },
+        sandbox: SandboxRecipe::default(),
     };
     let image = build_ext4(&recipe, directory.path()).unwrap();
     assert!(!seed.join("created").exists());
@@ -254,6 +263,7 @@ fn root_oci_recipe_applies_layer_deletions() {
         source: Source::Oci {
             reference: format!("oci:{reference}"),
         },
+        sandbox: SandboxRecipe::default(),
     };
     let image = build_ext4(&recipe, directory.path()).unwrap();
     let mounted = directory.path().join("mounted");

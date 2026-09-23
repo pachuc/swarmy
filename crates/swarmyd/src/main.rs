@@ -6,7 +6,7 @@ mod tools;
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::NodeRecord;
-use swarmy_sandbox::RuncRuntime;
+use swarmy_sandbox::{RuncRuntime, ScratchPolicy};
 use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmy_volume::server::ServerConfig;
 use tokio::{net::UnixListener, task::JoinSet};
@@ -49,18 +49,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     let root = loaded.root.join(".swarmy/node");
     std::fs::create_dir_all(&root)?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
-    let runtime = Arc::new(
-        RuncRuntime::open(
-            root.clone(),
-            ServerConfig {
-                directory: loaded.root.join(".swarmy/volumes"),
-                node,
-                store: store.clone(),
-                objects,
-            },
-        )
-        .await?,
-    );
+    let runtime = open_runtime(&loaded, root.clone(), node, store.clone(), objects).await?;
     let hosting = hosting::Hosting::new(store.clone(), runtime.clone(), node, settings).await?;
     let socket = root.join("control.sock");
     if socket.exists() {
@@ -80,6 +69,8 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     let mut heartbeat =
         tokio::time::interval(Duration::from_millis(settings.node_heartbeat_interval_ms));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
+    scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut clients = JoinSet::new();
     let (shutdown, _) = tokio::sync::watch::channel(false);
@@ -103,6 +94,9 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                     store.put_node(&record).await?;
                     hosting.report_status(Duration::from_millis(settings.node_heartbeat_interval_ms).saturating_mul(3)).await?;
                 }
+                _ = scratch_sweep.tick() => {
+                    if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(%error, "scratch sweep failed"); }
+                }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
                 result = tokio::signal::ctrl_c() => { result?; break; }
                 _ = terminate.recv() => break,
@@ -122,6 +116,33 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     std::fs::remove_file(socket)?;
     cleanup?;
     serving
+}
+
+async fn open_runtime(
+    loaded: &swarmy_config::Loaded,
+    root: std::path::PathBuf,
+    node: swarmy_core::NodeId,
+    store: Store,
+    objects: Arc<dyn object_store::ObjectStore>,
+) -> Result<Arc<RuncRuntime>> {
+    let settings = &loaded.settings;
+    Ok(Arc::new(
+        RuncRuntime::open_with_scratch(
+            root,
+            ServerConfig {
+                directory: loaded.root.join(".swarmy/volumes"),
+                node,
+                store,
+                objects,
+            },
+            ScratchPolicy {
+                idle_days: settings.sandbox.scratch_idle_days,
+                high_water: settings.sandbox.scratch_high_water,
+                low_water: settings.sandbox.scratch_low_water,
+            },
+        )
+        .await?,
+    ))
 }
 
 async fn storage(

@@ -106,6 +106,7 @@ impl Node {
             .request(Request::Create {
                 spec: SandboxSpec {
                     agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+                    scratch: Vec::new(),
                 },
                 disk: BlockDevice { volume_id },
             })
@@ -303,6 +304,345 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
+        || std::env::var_os("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || std::env::var_os("SWARMY_S3_ENDPOINT").is_none()
+    {
+        eprintln!("skipping scratch acceptance: root and dev stack are required");
+        return;
+    }
+    boot_network();
+    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let images = store(&settings).await;
+    let base = base_image(&settings, &images).await;
+    settings.store_directory = format!("swarmy-scratch-test-{}", ulid::Ulid::generate());
+    let store = store(&settings).await;
+    store
+        .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
+        .await
+        .unwrap();
+    store
+        .put_image_with_scratch(
+            "scratch",
+            &ImageTag("test".into()),
+            base,
+            &["/home/agent/.cargo-target".into(), "/tmp".into()],
+        )
+        .await
+        .unwrap();
+    let mut node = Node::new(settings);
+    node.start();
+    node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
+    let (agent, sandbox, scratch_root) = scratch_mounts(&node, &store, base).await;
+    scratch_snapshots(&node, &store, &sandbox).await;
+    scratch_pause(&node, &store, agent, sandbox).await;
+    scratch_restart_and_delete(&mut node, &store, agent, &scratch_root).await;
+    scratch_delete_cycles(&mut node, &store, base).await;
+    scratch_pressure(&mut node, &store, base).await;
+    scratch_idle(&mut node, &store).await;
+}
+async fn scratch_mounts(
+    node: &Node,
+    store: &Store,
+    base: ManifestId,
+) -> (AgentId, Sandbox, PathBuf) {
+    let agent = store
+        .create_agent("scratch-owner", "scratch:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
+    store.create_volume(volume, base).await.unwrap();
+    let spec = SandboxSpec {
+        agent_id: agent.agent_id,
+        scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
+    };
+    let sandbox = match node
+        .request(Request::Create {
+            spec,
+            disk: BlockDevice { volume_id: volume },
+        })
+        .await
+    {
+        Response::Sandbox(sandbox) => sandbox,
+        response => panic!("scratch create: {response:?}"),
+    };
+    let (result, stdout, stderr) = node.exec(&sandbox, "findmnt -n --mountpoint /tmp; findmnt -n --mountpoint /home/agent/.cargo-target; echo cargo > /home/agent/.cargo-target/cache; echo temp > /tmp/scratch-test", 10_000).await;
+    assert_eq!(result.exit_code, 0, "{}", String::from_utf8_lossy(&stderr));
+    assert_eq!(String::from_utf8_lossy(&stdout).lines().count(), 2);
+    let scratch_root = node
+        .root
+        .path()
+        .join(".swarmy/scratch")
+        .join(agent.agent_id.to_string());
+    assert_eq!(
+        std::fs::read_to_string(scratch_root.join("0/cache")).unwrap(),
+        "cargo\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch_root.join("1/scratch-test")).unwrap(),
+        "temp\n"
+    );
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while !store
+            .scratch(agent.agent_id)
+            .await
+            .unwrap()
+            .is_some_and(|record| record.node_id == node.id && record.bytes >= 11)
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("node did not report scratch size");
+    (agent.agent_id, sandbox, scratch_root)
+}
+
+async fn scratch_snapshots(node: &Node, store: &Store, sandbox: &Sandbox) {
+    let first = match node.request(Request::Checkpoint((*sandbox).clone())).await {
+        Response::Checkpointed(manifest) => manifest,
+        response => panic!("checkpoint: {response:?}"),
+    };
+    let (result, _, _) = node
+        .exec(
+            sandbox,
+            "echo more >> /home/agent/.cargo-target/cache; echo more >> /tmp/scratch-test",
+            10_000,
+        )
+        .await;
+    assert_eq!(result.exit_code, 0);
+    let second = match node.request(Request::Checkpoint((*sandbox).clone())).await {
+        Response::Checkpointed(manifest) => manifest,
+        response => panic!("checkpoint: {response:?}"),
+    };
+    let objects = node.settings.object_store().unwrap();
+    let first_manifest =
+        swarmy_volume::Manifest::load(&*objects, store.get_manifest(first).await.unwrap().unwrap())
+            .await
+            .unwrap();
+    let second_manifest = swarmy_volume::Manifest::load(
+        &*objects,
+        store.get_manifest(second).await.unwrap().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        first_manifest.header().root_hash,
+        second_manifest.header().root_hash
+    );
+    assert_eq!(
+        first_manifest.data_chunk_count(&*objects).await.unwrap(),
+        second_manifest.data_chunk_count(&*objects).await.unwrap()
+    );
+    let (result, _, _) = node
+        .exec(sandbox, "echo durable > /home/agent/durable-test", 10_000)
+        .await;
+    assert_eq!(result.exit_code, 0);
+    let third = match node.request(Request::Checkpoint((*sandbox).clone())).await {
+        Response::Checkpointed(manifest) => manifest,
+        response => panic!("checkpoint: {response:?}"),
+    };
+    assert_ne!(
+        second_manifest.header().root_hash,
+        store.get_manifest(third).await.unwrap().unwrap().root_hash
+    );
+}
+
+async fn scratch_pause(node: &Node, store: &Store, agent: AgentId, sandbox: Sandbox) {
+    let _pause = match node.request(Request::Pause(sandbox)).await {
+        Response::Paused(handle) => handle,
+        response => panic!("pause: {response:?}"),
+    };
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    assert!(
+        store
+            .get_volume(volume)
+            .await
+            .unwrap()
+            .unwrap()
+            .writer_lease
+            .is_none()
+    );
+}
+
+async fn scratch_restart_and_delete(
+    node: &mut Node,
+    store: &Store,
+    agent: AgentId,
+    scratch_root: &Path,
+) {
+    node.stop().await;
+    node.start();
+    node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
+    assert_eq!(
+        std::fs::read_to_string(scratch_root.join("0/cache")).unwrap(),
+        "cargo\nmore\n"
+    );
+    store.delete_agent(agent).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while scratch_root.exists() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("deleted computer retained scratch");
+}
+
+async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId) {
+    for cycle in 0..10 {
+        let name = format!("scratch-cycle-{cycle}");
+        let agent = store
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now())
+            .await
+            .unwrap();
+        let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
+        store.create_volume(volume, base).await.unwrap();
+        let sandbox = match node
+            .request(Request::Create {
+                spec: SandboxSpec {
+                    agent_id: agent.agent_id,
+                    scratch: vec!["/tmp".into()],
+                },
+                disk: BlockDevice { volume_id: volume },
+            })
+            .await
+        {
+            Response::Sandbox(sandbox) => sandbox,
+            response => panic!("cycle create: {response:?}"),
+        };
+        node.destroy(sandbox).await;
+        store.delete_agent(agent.agent_id).await.unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while std::fs::read_dir(node.root.path().join(".swarmy/scratch"))
+            .unwrap()
+            .next()
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("scratch directories remained after ten create/delete cycles");
+    node.stop().await;
+}
+
+async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
+    // Force pressure on the test filesystem and check eviction order in the log.
+    let mut candidates = Vec::new();
+    for age_days in [2_u64, 1] {
+        let name = format!("pressure-{age_days}");
+        let agent = store
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now())
+            .await
+            .unwrap();
+        let path = node
+            .root
+            .path()
+            .join(".swarmy/scratch")
+            .join(agent.agent_id.to_string());
+        std::fs::create_dir_all(path.join("0")).unwrap();
+        std::fs::write(path.join("0/cache"), vec![42; 4096]).unwrap();
+        let marker = path.join(".hosted");
+        std::fs::write(&marker, b"").unwrap();
+        std::fs::File::open(&marker)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() - Duration::from_secs(age_days * 86_400),
+            ))
+            .unwrap();
+        candidates.push((agent.agent_id, path));
+    }
+    node.settings.sandbox.scratch_high_water = 1;
+    node.settings.sandbox.scratch_low_water = 0;
+    std::fs::write(
+        node.root.path().join(".swarmy/config.toml"),
+        node.settings.to_toml().unwrap(),
+    )
+    .unwrap();
+    node.start();
+    node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
+    let third = store
+        .create_agent("pressure-third", "scratch:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let third_volume = VolumeId::from_ulid(third.agent_id.as_ulid());
+    store.create_volume(third_volume, base).await.unwrap();
+    let third_sandbox = match node
+        .request(Request::Create {
+            spec: SandboxSpec {
+                agent_id: third.agent_id,
+                scratch: vec!["/tmp".into()],
+            },
+            disk: BlockDevice {
+                volume_id: third_volume,
+            },
+        })
+        .await
+    {
+        Response::Sandbox(sandbox) => sandbox,
+        response => panic!("third sandbox: {response:?}"),
+    };
+    node.destroy(third_sandbox).await;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while candidates.iter().any(|(_, path)| path.exists()) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("pressure sweep retained scratch");
+    let log = std::fs::read_to_string(node.root.path().join("node.log")).unwrap();
+    let oldest = log.find(&format!("computer={}", candidates[0].0)).unwrap();
+    let newer = log.find(&format!("computer={}", candidates[1].0)).unwrap();
+    assert!(
+        oldest < newer,
+        "pressure sweep must evict least recently hosted first"
+    );
+    assert!(log[oldest..].contains("bytes=4096"));
+    node.stop().await;
+}
+
+async fn scratch_idle(node: &mut Node, store: &Store) {
+    let stale = store
+        .create_agent("idle-scratch", "scratch:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let path = node
+        .root
+        .path()
+        .join(".swarmy/scratch")
+        .join(stale.agent_id.to_string());
+    std::fs::create_dir_all(&path).unwrap();
+    let marker = path.join(".hosted");
+    std::fs::write(&marker, b"").unwrap();
+    std::fs::File::open(&marker)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - Duration::from_hours(48)),
+        )
+        .unwrap();
+    node.settings.sandbox.scratch_high_water = 99;
+    node.settings.sandbox.scratch_low_water = 98;
+    node.settings.sandbox.scratch_idle_days = 1;
+    std::fs::write(
+        node.root.path().join(".swarmy/config.toml"),
+        node.settings.to_toml().unwrap(),
+    )
+    .unwrap();
+    node.start();
+    node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while path.exists() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("idle sweep retained old scratch");
+    node.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_registration_runc_persistence_and_crash_recovery() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
         eprintln!("skipping node acceptance: run the built executable with sudo");
@@ -344,7 +684,8 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     assert!(matches!(
         node.request(Request::Create {
             spec: SandboxSpec {
-                agent_id: AgentId::from_ulid(ulid::Ulid::generate())
+                agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+                scratch: Vec::new(),
             },
             disk: BlockDevice { volume_id: missing },
         })

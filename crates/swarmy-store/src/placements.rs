@@ -7,6 +7,13 @@ use swarmy_core::{
 
 use crate::{Result, Store, StoreError, check_limit, read, scan, write};
 
+/// Last node reporting local scratch for a computer. Bytes are an estimate.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScratchRecord {
+    pub node_id: NodeId,
+    pub bytes: u64,
+}
+
 // Keep new metadata separate so existing postcard placement records and nested
 // dispatch fences remain readable without changing their binary schema.
 #[derive(Default, Serialize, Deserialize)]
@@ -17,6 +24,50 @@ pub(crate) struct PlacementHosting {
 }
 
 impl Store {
+    fn scratch_key(&self, agent: AgentId) -> Vec<u8> {
+        self.placement_key("scratch", agent)
+    }
+
+    /// Read the last reported local scratch location.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn scratch(&self, agent: AgentId) -> Result<Option<ScratchRecord>> {
+        self.transaction(|trx| async move { read(&trx, &self.scratch_key(agent)).await })
+            .await
+    }
+
+    /// Report scratch after a node has created or measured it.
+    /// # Errors
+    /// Rejects deleted computers and storage failures.
+    pub async fn report_scratch(&self, agent: AgentId, record: &ScratchRecord) -> Result<()> {
+        self.transaction(|trx| async move {
+            self.check_computer(&trx, agent).await?;
+            if read::<PlacementRecord>(&trx, &self.placement_key("placement", agent))
+                .await?
+                .is_some_and(|placement| placement.node_id != record.node_id)
+            {
+                return Err(StoreError::LeaseMismatch);
+            }
+            write(&trx, &self.scratch_key(agent), record)
+        })
+        .await
+    }
+
+    /// Clear a report only if it still names the deleting node.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn clear_scratch(&self, agent: AgentId, node: NodeId) -> Result<()> {
+        self.transaction(|trx| async move {
+            if read::<ScratchRecord>(&trx, &self.scratch_key(agent))
+                .await?
+                .is_some_and(|record| record.node_id == node)
+            {
+                trx.clear(&self.scratch_key(agent));
+            }
+            Ok(())
+        })
+        .await
+    }
     pub(crate) async fn read_placement_hosting(
         &self,
         trx: &Transaction,

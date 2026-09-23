@@ -94,6 +94,19 @@ impl Store {
     /// # Errors
     /// Rejects missing manifests, oversized keys, and transaction failures.
     pub async fn put_image(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Result<()> {
+        self.put_image_with_scratch(name, tag, manifest, &[]).await
+    }
+
+    /// Register an immutable image and its node-local scratch mount paths.
+    /// # Errors
+    /// Rejects missing manifests, oversized keys, and transaction failures.
+    pub async fn put_image_with_scratch(
+        &self,
+        name: &str,
+        tag: &ImageTag,
+        manifest: ManifestId,
+        scratch: &[String],
+    ) -> Result<()> {
         let key = self.image_key(name, tag);
         if key.len() > 10_000 {
             return Err(StoreError::TooLarge);
@@ -102,8 +115,37 @@ impl Store {
             let key = &key;
             async move {
                 self.require_manifest(&trx, manifest).await?;
-                write(&trx, key, &manifest)
+                write(&trx, key, &manifest)?;
+                write(
+                    &trx,
+                    &self.image_scratch_key(name, tag, manifest),
+                    &scratch.to_vec(),
+                )
             }
+        })
+        .await
+    }
+
+    fn image_scratch_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
+        self.root.pack(&(
+            "image_scratch",
+            name,
+            tag.0.as_str(),
+            manifest.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    /// Read mount paths pinned to an image manifest. Legacy images have none.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn image_scratch(&self, image: &ImageRecord) -> Result<Vec<String>> {
+        self.transaction(|trx| async move {
+            Ok(read(
+                &trx,
+                &self.image_scratch_key(&image.name, &image.tag, image.manifest_id),
+            )
+            .await?
+            .unwrap_or_default())
         })
         .await
     }

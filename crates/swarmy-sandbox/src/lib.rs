@@ -2,7 +2,7 @@
 mod credentials;
 mod runc;
 use async_trait::async_trait;
-pub use runc::RuncRuntime;
+pub use runc::{RuncRuntime, ScratchPolicy};
 pub use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
     SandboxSpec,
@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Store(#[from] swarmy_store::StoreError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

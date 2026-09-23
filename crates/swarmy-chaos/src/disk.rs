@@ -97,6 +97,7 @@ pub async fn verify(
             .create(
                 SandboxSpec {
                     agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+                    scratch: Vec::new(),
                 },
                 BlockDevice { volume_id },
             )

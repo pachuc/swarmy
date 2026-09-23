@@ -196,17 +196,23 @@ fn confirm(name: &str) -> Result<()> {
 async fn show(store: &Store, agent: &AgentRecord, detail: bool, json: bool) -> Result<()> {
     let sessions = sessions(store, agent.agent_id).await?;
     let placement = store.get_by_agent(agent.agent_id).await?;
+    let scratch = store.scratch(agent.agent_id).await?;
     let node = placement.as_ref().map(|record| record.node_id);
     let mut value = serde_json::to_value(agent)?;
     value["node_id"] = serde_json::to_value(node)?;
+    value["scratch"] = serde_json::to_value(&scratch)?;
     value["session_count"] = sessions.len().into();
     let mut text = format!(
-        "{} {} image={}:{} node={} sessions={} created={} main_session={}",
+        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
         agent.name,
         agent.agent_id,
         agent.image.name,
         agent.image.tag.0,
         node.map_or_else(|| "-".into(), |id| id.to_string()),
+        scratch
+            .as_ref()
+            .map_or_else(|| "-".into(), |record| record.node_id.to_string()),
+        scratch.as_ref().map_or(0, |record| record.bytes),
         sessions.len(),
         agent.created_at,
         agent

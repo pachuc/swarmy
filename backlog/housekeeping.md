@@ -31,9 +31,3 @@ be forgotten. Do them opportunistically alongside related work.
   before it is trusted. Do it one provider at a time when someone asks for
   that provider, and record each in the live-verification table in
   `docs/providers.md`.
-- **Placement affinity to the last node.** Prefer the node that last hosted a
-  computer, because its chunk cache is warm and rehydration is faster than a
-  cold start. Small, independent of any runtime change, and the one piece of
-  the cancelled pause-and-resume slice worth doing on its own. Do it when
-  someone is next in the placement code, most likely during the memory
-  budget task of the graphical sandboxes goal.

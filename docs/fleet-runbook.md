@@ -13,6 +13,7 @@ automate; every step here is a plain command.
 | Sandboxes per node | 4 (`SWARMY_NODE_SANDBOXES` in `scripts/remote-provision.sh`) | one worker per lane |
 | Control plane | on the node (`--services node`) | the laptop can disconnect |
 | Image | `images/swarmy-dev` registered as `base-ubuntu:dev`, the node's default | toolchain, dev stack, fetched crates; no warm build |
+| Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | about $0.48 an hour, about $350 a month, plus a few dollars of S3 and inference | one node; add a second when four lanes stay saturated |
 
 Observed with three workers building at once: 3 GiB used, load 4, 86 GiB

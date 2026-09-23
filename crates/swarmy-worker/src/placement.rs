@@ -76,7 +76,8 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
             }
             cursor = next;
         }
-        order_candidates(&mut nodes, old.as_ref());
+        let scratch_node = store.scratch(agent).await?.map(|record| record.node_id);
+        order_candidates(&mut nodes, scratch_node, old.as_ref());
         for node in nodes {
             let expiry = Timestamp::now().checked_add(lease)?;
             let result = if let Some(old) = &old {
@@ -95,12 +96,16 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
     bail!("no live sandbox node has available computer capacity")
 }
 
-fn order_candidates(nodes: &mut Vec<NodeRecord>, old: Option<&PlacementRecord>) {
+fn order_candidates(
+    nodes: &mut Vec<NodeRecord>,
+    scratch_node: Option<swarmy_core::NodeId>,
+    old: Option<&PlacementRecord>,
+) {
     nodes.retain(|node| node.roles.contains(&NodeRole::Sandbox) && node.capacity.sandboxes > 0);
-    // Prefer another host after expiry; the store checks actual occupancy when
-    // claiming capacity, including simultaneous placements by other workers.
+    // Capacity admission remains transactional; affinity is only an ordering hint.
     nodes.sort_by_key(|node| {
         (
+            scratch_node != Some(node.node_id),
             old.is_some_and(|old| old.node_id == node.node_id),
             node.node_id,
         )
