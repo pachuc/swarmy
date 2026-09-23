@@ -1335,8 +1335,14 @@ impl Worker {
 
     async fn fail_unserved(&self, job: &InferenceJob) -> Result<bool> {
         let provider = self.job_provider(job);
+        let retryable = self.config.catalog.provider(provider).is_some()
+            && self
+                .config
+                .allowed_providers
+                .as_ref()
+                .is_none_or(|allowed| allowed.iter().any(|id| id == provider));
         // The scripted provider needs no credentials; the gateway task advertises real providers.
-        if provider == "fake" || self.store.gateway_serves(provider).await? {
+        if retryable && (provider == "fake" || self.store.gateway_serves(provider).await?) {
             return Ok(false);
         }
         let now = Timestamp::now();
@@ -1361,8 +1367,10 @@ impl Worker {
                 error: format!(
                     "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
                 ),
-                retryable: false,
-                retry_at: None,
+                retryable,
+                retry_at: retryable
+                    .then(|| now.checked_add(self.config.gateway_wait))
+                    .transpose()?,
             };
             let committed = self
                 .store

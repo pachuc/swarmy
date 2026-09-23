@@ -37,6 +37,8 @@ struct Fixture {
     prefix: String,
     summarize_at_tokens: u64,
     max_wait_seconds: u64,
+    gateway_wait_seconds: u64,
+    provider: String,
     files: TempDir,
     children: Vec<Child>,
     snapshots: Mutex<HashSet<String>>,
@@ -80,6 +82,8 @@ impl Fixture {
             prefix,
             summarize_at_tokens: 300_000,
             max_wait_seconds: 3600,
+            gateway_wait_seconds: 1,
+            provider: "fake".into(),
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
@@ -166,7 +170,17 @@ impl Fixture {
             std::fs::File::create(self.files.path().join(format!("service-{index}.log"))).unwrap();
         let mut command = Command::new(executable);
         command
-            .env("SWARMY_PROVIDER", "fake")
+            .env("SWARMY_PROVIDER", &self.provider)
+            .env(
+                "SWARMY_MODEL",
+                if self.provider == "fake" {
+                    "fake-model"
+                } else {
+                    "gpt-5.5"
+                },
+            )
+            .env("SWARMY_CUSTOM_PROVIDERS", r#"{"openai":{"api":"Fake"}}"#)
+            .env("SWARMY_PROVIDERS", &self.provider)
             .env(
                 "SWARMY_SUMMARIZE_AT_TOKENS",
                 self.summarize_at_tokens.to_string(),
@@ -185,6 +199,10 @@ impl Fixture {
                 "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
                 self.max_wait_seconds.to_string(),
             )
+            .env(
+                "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
+                self.gateway_wait_seconds.to_string(),
+            )
             .env("SWARMY_GATEWAY_CONCURRENCY", "1")
             .env("RUST_LOG", "info")
             .env_remove("SWARMY_WORKER_KILL_POINT")
@@ -199,6 +217,10 @@ impl Fixture {
     }
 
     async fn create(&self) -> SessionId {
+        self.create_with_provider(None).await
+    }
+
+    async fn create_with_provider(&self, provider: Option<&str>) -> SessionId {
         let id = loop {
             let id = SessionId::from_ulid(Ulid::generate());
             if runnable_partition(id) == 7 {
@@ -214,7 +236,10 @@ impl Fixture {
                     state: SessionState::Idle,
                     head_seq: 0,
                     snapshot_ref: None,
-                    inference: swarmy_core::InferenceSelection::default(),
+                    inference: swarmy_core::InferenceSelection {
+                        provider: provider.map(str::to_owned),
+                        ..Default::default()
+                    },
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -620,6 +645,74 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
         })
     })
     .await;
+}
+
+#[tokio::test]
+async fn missing_gateway_parks_until_it_returns() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.script(false, "get_time");
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        let id = f.create().await;
+        f.wake(id).await;
+        timeout(WAIT, async {
+            while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Sleeping {
+                sleep(Duration::from_millis(20)).await;
+            }
+        }).await.unwrap();
+        let events = f.store.read_events(id, 0, 64).await.unwrap();
+        assert!(events.iter().any(|event| matches!(event,
+            Event::InferenceFailed { retryable: true, retry_at: Some(_), error, .. }
+            if error.contains("no gateway serves provider openai"))));
+        assert!(f.store.inference_wait(id).await.unwrap().is_some());
+        f.start("swarmy-gateway", None);
+            let events = f.idle(id).await;
+            assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { .. })));
+            assert!(!events.iter().any(|event| matches!(event,
+                Event::InferenceFailed { retryable: false, .. })));
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::MessageAppended { message, .. } if message.role == MessageRole::System
+                && message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("no gateway serves"))))));
+    })).await;
+}
+
+#[tokio::test]
+async fn unknown_provider_fails_without_waiting() {
+    run(|f| {
+        Box::pin(async move {
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            for provider in ["unknown-provider", "openai"] {
+                let id = f.create_with_provider(Some(provider)).await;
+                f.wake(id).await;
+                let events = f.idle(id).await;
+                assert!(events.iter().any(|event| matches!(event,
+                Event::InferenceFailed { retryable: false, retry_at: None, error, .. }
+                if error.contains(&format!("no gateway serves provider {provider}")))));
+                assert!(f.store.inference_wait(id).await.unwrap().is_none());
+            }
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn missing_gateway_exhausts_wait_budget() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.max_wait_seconds = 2;
+        f.script(false, "get_time");
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        let id = f.create().await;
+        f.wake(id).await;
+        let events = f.idle(id).await;
+        assert!(events.iter().any(|event| matches!(event,
+            Event::InferenceFailed { retryable: false, error, .. }
+            if error.contains("inference wait exceeded") && error.contains("no gateway serves provider openai"))));
+    })).await;
 }
 
 #[tokio::test]
