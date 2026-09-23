@@ -155,6 +155,14 @@ fn assistant() -> Event {
     }
 }
 
+fn successful_tool_result() -> ToolResult {
+    ToolResult::Completed {
+        output: "one\ntwo".into(),
+        title: "clock".into(),
+        metadata: std::collections::BTreeMap::default(),
+    }
+}
+
 async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
     let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(session.state, SessionState::Runnable);
@@ -218,9 +226,7 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
             seq: 0,
             request_id,
             call_id,
-            result: ToolResult::Error {
-                error: "one\ntwo".into(),
-            },
+            result: successful_tool_result(),
         },
     ];
     if live {
@@ -431,7 +437,11 @@ async fn run_json_emits_only_machine_readable_records() {
             rows.iter()
                 .any(|row| row["delta"]["Text"]["text"] == "scripted ")
         );
-        assert_eq!(rows.last().unwrap()["value"]["state_changed"]["to"], "idle");
+        assert!(
+            rows.iter()
+                .any(|row| row["value"]["state_changed"]["to"] == "idle")
+        );
+        assert_eq!(rows.last().unwrap()["outcome"], "completed");
     })
     .await;
 }
