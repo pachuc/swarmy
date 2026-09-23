@@ -102,6 +102,11 @@ SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
 SWARMY_NODE_MEMORY_BYTES=$(awk '/MemTotal/ {printf "%.0f", $2 * 1024}' /proc/meminfo)
 SWARMY_NODE_DISK_BYTES=$(df -B1 --output=size "$local_mount" | tail -1 | tr -d ' ')
 SWARMY_NODE_SANDBOXES=4
+# Long-lived workers rewrite build caches constantly; keep few snapshots and
+# reclaim unreferenced chunks quickly so the node's object store stays small.
+SWARMY_VOLUME_SNAPSHOT_RETENTION=3
+SWARMY_GC_GRACE_SECONDS=1800
+SWARMY_GC_INTERVAL_SECONDS=600
 LD_LIBRARY_PATH=/home/ubuntu/.local/lib
 ENV
 if [[ $mode == stack ]]; then
