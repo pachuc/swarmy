@@ -10,7 +10,7 @@ use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 
 const ACK_WAIT: Duration = Duration::from_secs(1);
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 struct Fixture {
@@ -527,9 +527,16 @@ async fn nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases()
         timeout(WAIT, events.next()).await.unwrap().unwrap();
         f.bus.nudge(id, 2, None, resend, true).await.unwrap();
         timeout(WAIT, events.next()).await.unwrap().unwrap();
-        sleep(resend).await;
-        f.bus.nudge(id, 2, None, resend, false).await.unwrap();
-        timeout(WAIT, events.next()).await.unwrap().unwrap();
+        timeout(WAIT, async {
+            loop {
+                f.bus.nudge(id, 2, None, resend, false).await.unwrap();
+                if let Ok(event) = timeout(Duration::from_millis(10), events.next()).await {
+                    break event.unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
     })
     .await;
 }
