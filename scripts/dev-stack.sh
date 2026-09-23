@@ -51,7 +51,26 @@ stop_service() {
         done
     fi
     rm -f -- "$dev_dir/$service.pid"
-    printf '%s: down\n' "$service"
+    if [[ $service == fdb && -f $dev_dir/fdb.cluster ]]; then
+        read_fdb_port
+        printf 'fdb: down (port %s)\n' "$fdb_port"
+    else
+        printf '%s: down\n' "$service"
+    fi
+}
+
+read_fdb_port() {
+    local cluster
+    [[ -f $dev_dir/fdb.cluster ]] || fail 'Missing .dev/fdb.cluster.'
+    cluster=$(tr -d '\n\r' < "$dev_dir/fdb.cluster")
+    [[ $cluster =~ ^dev:dev@([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):([0-9]+)$ ]] \
+        || fail 'Invalid .dev/fdb.cluster.'
+    fdb_address=${BASH_REMATCH[1]}
+    fdb_port=${BASH_REMATCH[2]}
+}
+
+port_in_use() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
 cleanup() {
@@ -110,7 +129,7 @@ s3_request() {
 }
 
 start() {
-    local binary service port
+    local binary service port requested_port
     local -a ports
     for binary in fdbserver fdbcli nats-server weed curl; do
         command -v "$binary" >/dev/null || fail "Missing $binary; see docs/DEV.md for installation."
@@ -118,27 +137,47 @@ start() {
     [[ $(curl --help all) == *'--aws-sigv4'* ]] || fail 'curl 7.75 or newer is required for S3 authentication.'
     mkdir -p -- "$dev_dir/fdb/data" "$dev_dir/fdb/logs" "$dev_dir/nats" "$dev_dir/seaweed" "$dev_dir/logs"
 
+    if [[ -f $dev_dir/fdb.cluster ]]; then
+        read_fdb_port
+        [[ $fdb_address == "$advertise_address" ]] \
+            || fail 'The cluster file advertises another address; use the original advertise-address.'
+    else
+        fdb_port=4500
+    fi
+    requested_port=${SWARMY_DEV_FDB_PORT:-}
+    if [[ -n $requested_port ]]; then
+        [[ $requested_port =~ ^[1-9][0-9]{0,4}$ ]] && (( requested_port <= 65535 )) \
+            || fail 'SWARMY_DEV_FDB_PORT must be a port from 1 to 65535.'
+        if running fdb && [[ $fdb_port != "$requested_port" ]]; then
+            fail "FoundationDB is already running on port $fdb_port."
+        fi
+        fdb_port=$requested_port
+    elif ! running fdb && port_in_use "$fdb_port"; then
+        for ((port = 4500; port <= 65535; port++)); do
+            if ! port_in_use "$port"; then
+                fdb_port=$port
+                break
+            fi
+        done
+        (( port <= 65535 )) || fail 'No free FoundationDB port is available.'
+    fi
+
     # Refuse occupied ports before launching, including SeaweedFS internal APIs.
     for service in "${services[@]}"; do
         running "$service" && continue
         case $service in
-            fdb) ports=(4500) ;;
+            fdb) ports=("$fdb_port") ;;
             nats) ports=(4222 8222) ;;
             seaweed) ports=(8080 8333 8888 9333 18080 18333 18888 19333) ;;
         esac
         for port in "${ports[@]}"; do
-            if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            if port_in_use "$port"; then
                 fail "Port $port is already in use by an unmanaged process; stop it before starting the stack."
             fi
         done
     done
 
-    if [[ ! -f $dev_dir/fdb.cluster ]]; then
-        printf 'dev:dev@%s:4500\n' "$advertise_address" > "$dev_dir/fdb.cluster"
-    fi
-    if [[ $(tr -d '\n\r' < "$dev_dir/fdb.cluster") != "dev:dev@$advertise_address:4500" ]]; then
-        fail 'The cluster file advertises another address; use the original advertise-address.'
-    fi
+    printf 'dev:dev@%s:%s\n' "$advertise_address" "$fdb_port" > "$dev_dir/fdb.cluster"
     cat > "$dev_dir/s3.json" <<'JSON'
 {
   "identities": [{
@@ -149,7 +188,7 @@ start() {
 }
 JSON
 
-    launch fdb fdbserver -p "$advertise_address:4500" -l "$bind_address:4500" -C "$dev_dir/fdb.cluster" \
+    launch fdb fdbserver -p "$advertise_address:$fdb_port" -l "$bind_address:$fdb_port" -C "$dev_dir/fdb.cluster" \
         -d "$dev_dir/fdb/data" -L "$dev_dir/fdb/logs"
     launch nats nats-server -js -sd "$dev_dir/nats" -a "$bind_address" --client_advertise "$advertise_address:4222" -p 4222 -m 8222
     # Unix socket paths are limited to about 100 bytes, so they cannot live
@@ -180,6 +219,7 @@ JSON
 
     {
         printf 'export SWARMY_FDB_CLUSTER_FILE=%q\n' "$dev_dir/fdb.cluster"
+        printf 'export SWARMY_DEV_FDB_PORT=%q\n' "$fdb_port"
         printf 'export SWARMY_NATS_URL=nats://127.0.0.1:4222\n'
         printf 'export SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n'
         printf 'export SWARMY_S3_ACCESS_KEY=swarmy-dev\n'
@@ -203,9 +243,19 @@ esac
 if [[ $1 == status ]]; then
     for service in "${services[@]}"; do
         if running "$service"; then
-            printf '%s: up (pid %s)\n' "$service" "$pid"
+            if [[ $service == fdb ]]; then
+                read_fdb_port
+                printf 'fdb: up (pid %s, port %s)\n' "$pid" "$fdb_port"
+            else
+                printf '%s: up (pid %s)\n' "$service" "$pid"
+            fi
         else
-            printf '%s: down\n' "$service"
+            if [[ $service == fdb && -f $dev_dir/fdb.cluster ]]; then
+                read_fdb_port
+                printf 'fdb: down (port %s)\n' "$fdb_port"
+            else
+                printf '%s: down\n' "$service"
+            fi
         fi
     done
     exit 0
