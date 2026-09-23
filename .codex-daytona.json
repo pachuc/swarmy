@@ -1,9 +1,9 @@
 {
   "branch": "master",
   "snapshot": "swarmy-dev-5f0d252174e9",
-  "codexVersion": "0.153.4",
-  "model": "gpt-6-astra",
-  "effort": "high",
+  "codexVersion": "0.156.0",
+  "model": "gpt-6-sol",
+  "effort": "medium",
   "setup": [
     "rustup show",
     "cargo fetch"

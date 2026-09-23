@@ -274,4 +274,4 @@ not a new grant of vendor permission:
 | Azure CLI Entra tokens | Built through the installed Azure CLI; no embedded Azure client identity. |
 
 Key pools, admission, affinity, failover, image inputs, and expanding the
-models.dev provider allowlist remain future work; see the root `TODO.md`.
+models.dev provider allowlist remain future work; see the `provider-breadth-quota` goal in tasky.
