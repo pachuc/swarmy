@@ -14,7 +14,7 @@ import tomllib
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG = Path(__file__).with_name("fleet.toml")
+CONFIG = Path(os.environ.get("FLEET_CONFIG") or Path(__file__).with_name("fleet.toml"))
 AGENTS = ROOT / "AGENTS.md"
 URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+")
 TARGET_LIMIT_GIB = 20
@@ -139,18 +139,42 @@ def create_worker(name, config, selection, image):
                    *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
 
 
-def pick_worker(config, selection, image):
+def worker_meta_path(config, name):
+    return state_path(config) / (name + ".meta.json")
+
+
+def worker_meta(config, name):
+    path = worker_meta_path(config, name)
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def pick_worker(config, selection, image, provider, model):
+    """Prefer an idle worker created with the requested provider and model.
+
+    A worker's selection is fixed when it is created (run --agent takes no
+    overrides), so a task that asks for ChatGPT must not land on an
+    OpenRouter worker. Any idle worker is used only when none matches and
+    the pool is full."""
     workers = load_workers(config)
-    for name, assigned in sorted(workers.items()):
-        if assigned is None:
+    idle = [name for name, assigned in sorted(workers.items()) if assigned is None]
+    for name in idle:
+        meta = worker_meta(config, name)
+        if meta.get("provider") == provider and meta.get("model") == model:
             return name, workers
-    if len(workers) >= int(config["workers"]):
-        raise RuntimeError(f"all {len(workers)} workers are busy; release a task or raise workers in {CONFIG}")
-    name = f"worker-{len(workers) + 1}"
-    create_worker(name, config, selection, image)
-    workers[name] = None
-    save_workers(config, workers)
-    return name, workers
+    if len(workers) < int(config["workers"]):
+        name = f"worker-{len(workers) + 1}"
+        create_worker(name, config, selection, image)
+        workers[name] = None
+        save_workers(config, workers)
+        save(worker_meta_path(config, name), {"provider": provider, "model": model, "image": image})
+        return name, workers
+    if idle:
+        name = idle[0]
+        meta = worker_meta(config, name)
+        print(f"note: {name} runs {meta.get('provider') or '?'}/{meta.get('model') or '?'}, not the requested "
+              f"{provider}/{model}; pool is full", file=sys.stderr)
+        return name, workers
+    raise RuntimeError(f"all {len(workers)} workers are busy; release a task or raise workers in {CONFIG}")
 
 
 def launch(args, config):
@@ -164,12 +188,14 @@ def launch(args, config):
     image = args.image or config.get("image")
     if image and ":" not in image:
         raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
-    worker, workers = pick_worker(config, selection, image)
+    worker, workers = pick_worker(config, selection, image, provider, model)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
         os.chmod(log, 0o600)
-        process = subprocess.Popen(swarmy(config, "run", "--agent", worker, *selection,
+        # run --agent takes the agent's own provider, model, and effort and
+        # rejects overrides, so selection only applies at worker creation.
+        process = subprocess.Popen(swarmy(config, "run", "--agent", worker,
                                           "--json", prompt(args.task_id, task, config, branch)),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
@@ -223,12 +249,16 @@ def state_for(session, events, log):
 
 def status(config):
     workers = load_workers(config)
+    # session ls carries each session's state; session show prints selection, usage,
+    # a waiting record when parked, and then the events, but not the record itself.
+    sessions = {item["session_id"]: item
+                for item in records(command(swarmy(config, "session", "ls", "--json")))
+                if "session_id" in item and "state" in item}
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
         session_id = detail.get("main_session")
         events = session_events(config, session_id) if session_id else []
-        # session show prints the session record first; agent show does not list sessions in JSON.
-        session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
+        session = sessions.get(session_id)
         data = {}
         logged = []
         if task_id:
@@ -321,8 +351,8 @@ def kill(task_id, config, timeout_seconds):
     command(swarmy(config, "session", "interrupt", session_id))
     deadline = time.monotonic() + timeout_seconds
     while True:
-        events = session_events(config, session_id)
-        session = next((item for item in events if item.get("session_id") == session_id and "state" in item), None)
+        sessions = records(command(swarmy(config, "session", "ls", "--json")))
+        session = next((item for item in sessions if item.get("session_id") == session_id and "state" in item), None)
         if session and session["state"] == "idle":
             break
         if time.monotonic() >= deadline:
@@ -341,6 +371,7 @@ def reset(worker, config):
     command(swarmy(config, "agent", "delete", worker, "--yes"))
     del workers[worker]
     save_workers(config, workers)
+    worker_meta_path(config, worker).unlink(missing_ok=True)
     print(f"deleted {worker}; the next launch recreates it from the image")
 
 

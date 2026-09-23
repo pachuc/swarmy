@@ -38,15 +38,16 @@ elif args[:2] == ['--remote', 'dev']:
     elif rest[:2] == ['agent', 'show']:
         print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
             'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
-    elif rest[:3] == ['session', 'show', '01AAAA']:
+    elif rest[:3] == ['session', 'ls', '--json']:
         if (root / 'interrupted').exists():
-            count = int((root / 'show_count').read_text()) if (root / 'show_count').exists() else 0
-            (root / 'show_count').write_text(str(count + 1))
+            count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
+            (root / 'ls_count').write_text(str(count + 1))
             state = 'idle' if count else 'sleeping'
         else:
             state = 'sleeping'
         print(json.dumps({'session_id':'01AAAA','state':state,'agent_name':'worker-1'}))
-        if state == 'sleeping':
+    elif rest[:3] == ['session', 'show', '01AAAA']:
+        if not (root / 'interrupted').exists():
             print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
@@ -69,12 +70,12 @@ class FleetTests(unittest.TestCase):
             path = self.bin / name
             path.write_text(STUB)
             path.chmod(0o700)
-        self.config = FLEET.with_name("fleet.toml")
+        # Never touch the real fleet.toml next to the driver; tests use their own.
+        self.config = self.root / "fleet.toml"
         self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
-        self.addCleanup(self.config.unlink)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        STUB_STATE=str(self.root))
+                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config))
 
     def call(self, *args, env=None):
         return subprocess.run([sys.executable, str(FLEET), *args], env=env or self.env,
@@ -98,6 +99,9 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn("private-token", json.dumps(self.calls()))
         self.assertNotIn("private-token", (self.root / "process_args").read_text())
         self.assertEqual((self.root / "token_ok").read_text(), "True")
+        run_call = next(call for call in self.calls() if call[2:4] == ["run", "--agent"])
+        for flag in ("--provider", "--model", "--effort"):
+            self.assertNotIn(flag, run_call)
         prompt = (self.root / "prompt-worker-1").read_text()
         for expected in ("AGENTS.md", "Repair widget", "Fix the widget", "Run widget test",
                          "swarmy/ewr2hd", "~/work/ewr2hd", "cargo clean", "from origin/master"):
@@ -139,6 +143,14 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(fourth.returncode, 0, fourth.stderr)
         self.assertIn("worker-1", fourth.stdout)
         self.assertEqual(len(self.creates()), 2)
+        # A different provider on a full pool falls back to an idle worker with a note.
+        self.assertEqual(self.call("release", "AAAAA2", "--force").returncode, 0)
+        other = self.call("launch", "AAAAA4", "--provider", "chatgpt", "--model", "gpt-6-sol")
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertIn("worker-2", other.stdout)
+        self.assertIn("not the requested chatgpt/gpt-6-sol", other.stderr)
+        self.assertEqual(len(self.creates()), 2)
+        self.assertEqual(self.call("release", "AAAAA4", "--force").returncode, 0)
         busy = self.call("reset", "worker-1")
         self.assertEqual(busy.returncode, 1)
         self.assertEqual(self.call("release", "AAAAA3", "--force").returncode, 0)
@@ -154,11 +166,21 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("still in progress", result.stdout)
         self.assertIn(["--remote", "dev", "session", "interrupt", "01AAAA"], self.calls())
-        shows = [call for call in self.calls() if call[2:5] == ["session", "show", "01AAAA"]]
+        shows = [call for call in self.calls() if call[2:5] == ["session", "ls", "--json"]]
         self.assertGreaterEqual(len(shows), 2)
         self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()), {"worker-1": None})
         self.assertFalse((self.root / "state" / "ewr2hd.json").exists())
         self.assertFalse(any(call[:3] == ["task", "done", "EWR2HD"] for call in self.calls()))
+
+    def test_provider_match_prefers_matching_idle_worker(self):
+        self.assertEqual(self.call("launch", "AAAAA1", "--provider", "openrouter", "--model", "m").returncode, 0)
+        self.assertEqual(self.call("launch", "AAAAA2", "--provider", "chatgpt", "--model", "n").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA2", "--force").returncode, 0)
+        chosen = self.call("launch", "AAAAA3", "--provider", "chatgpt", "--model", "n")
+        self.assertEqual(chosen.returncode, 0, chosen.stderr)
+        self.assertIn("worker-2", chosen.stdout)
+        self.assertEqual(len(self.creates()), 2)
 
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
