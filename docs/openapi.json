@@ -1,0 +1,1054 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "swarmy-api-types",
+    "description": "",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Agent": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "image_id",
+          "provider_id",
+          "model_id",
+          "prompt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "description": "`provider_text` preserves the original provider error without rewriting it.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "provider_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateAgent": {
+        "type": "object",
+        "description": "Idempotency keys are unique to a mutation intent, not to a retry attempt.",
+        "required": [
+          "idempotency_key",
+          "name",
+          "image_id",
+          "provider_id",
+          "model_id",
+          "prompt"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateCredential": {
+        "type": "object",
+        "description": "Secret material is accepted only on input, and is never echoed in a response.",
+        "required": [
+          "idempotency_key",
+          "provider_id",
+          "kind",
+          "secret"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateImage": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "name",
+          "tag"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateMessage": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "session_id",
+          "role",
+          "text"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateModel": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "provider_id",
+          "context_window"
+        ],
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateNode": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "capacity"
+        ],
+        "properties": {
+          "capacity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateProvider": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "name"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateSession": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateTurn": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "session_id"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "description": "Only metadata is returned; no credential response includes secret material.",
+        "required": [
+          "id",
+          "provider_id",
+          "kind",
+          "valid"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Cursor": {
+        "type": "object",
+        "description": "A sequence is local to one log, starts at one, and increases without gaps.",
+        "required": [
+          "log_id",
+          "sequence"
+        ],
+        "properties": {
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "description": "A durable event has a cursor even when delivered on a multiplexed connection.",
+        "required": [
+          "log_id",
+          "sequence",
+          "payload"
+        ],
+        "properties": {
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/EventPayload"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EventPayload": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "$ref": "#/components/schemas/Message"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "message_appended"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn"
+                ],
+                "properties": {
+                  "turn": {
+                    "$ref": "#/components/schemas/Turn"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn"
+                ],
+                "properties": {
+                  "turn": {
+                    "$ref": "#/components/schemas/Turn"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "turn_finished"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "call_id",
+                  "name",
+                  "arguments"
+                ],
+                "properties": {
+                  "arguments": {},
+                  "call_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_call"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "call_id",
+                  "result"
+                ],
+                "properties": {
+                  "call_id": {
+                    "type": "string"
+                  },
+                  "result": {},
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_result"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "error"
+                ],
+                "properties": {
+                  "error": {
+                    "$ref": "#/components/schemas/ApiError"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "inference_error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "session_id"
+                ],
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "idle"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "turn_id",
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "token_delta"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "health"
+                ],
+                "properties": {
+                  "health": {
+                    "$ref": "#/components/schemas/ServiceHealth"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "service_status_changed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "type"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "node"
+                ],
+                "properties": {
+                  "node": {
+                    "$ref": "#/components/schemas/Node"
+                  }
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "node_status_changed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "HealthStatus": {
+        "type": "string",
+        "enum": [
+          "healthy",
+          "degraded",
+          "unavailable"
+        ]
+      },
+      "Image": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "tag"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "LogId": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "session"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A log namespace. The tagged representation reserves channels without changing session cursors."
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "role",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "MessageRole": {
+        "type": "string",
+        "enum": [
+          "user",
+          "assistant",
+          "tool",
+          "system"
+        ]
+      },
+      "Model": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider_id",
+          "context_window"
+        ],
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Node": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "capacity",
+          "occupied"
+        ],
+        "properties": {
+          "capacity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "occupied": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "Provider": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "ServiceHealth": {
+        "type": "object",
+        "required": [
+          "service",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "log_id",
+          "latest_sequence"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "latest_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "log_id": {
+            "$ref": "#/components/schemas/LogId"
+          }
+        }
+      },
+      "Subscription": {
+        "type": "object",
+        "description": "One connection may replay and follow several logs at once.",
+        "required": [
+          "cursors",
+          "token_deltas"
+        ],
+        "properties": {
+          "cursors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cursor"
+            }
+          },
+          "token_deltas": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Turn": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatus"
+          }
+        }
+      },
+      "TurnStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "finished",
+          "failed"
+        ]
+      },
+      "UpdateAgent": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateCredential": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateImage": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "tag"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateMessage": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "text"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateModel": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "context_window"
+        ],
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateNode": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "status"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "UpdateProvider": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "status"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "UpdateServiceHealth": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "UpdateSession": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateTurn": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "status"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatus"
+          }
+        }
+      }
+    }
+  }
+}
