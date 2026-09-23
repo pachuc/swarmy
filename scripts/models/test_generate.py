@@ -99,7 +99,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(set(azure["models"]), {"gpt-test"})
             self.assertFalse(azure["models"]["gpt-test"]["compat"]["supports_strict_mode"])
             self.assertEqual(json.loads(first["openrouter.json"])["models"], {})
-            self.assertEqual(len(json.loads(first["chatgpt.json"])["models"]), 6)
+            self.assertEqual(len(json.loads(first["chatgpt.json"])["models"]), 7)
             for model in json.loads(first["chatgpt.json"])["models"].values():
                 self.assertEqual(model["cost"]["input"], 0)
                 self.assertEqual(model["cost"]["output"], 0)

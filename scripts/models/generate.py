@@ -166,12 +166,13 @@ def from_openrouter(model):
 
 
 def codex_models():
-    # Pi's six explicit Codex models and limits. Subscription prices do not
+    # The Codex models the ChatGPT backend serves, with their limits. Subscription prices do not
     # represent per-token API charges, so all costs here are zero.
     names = {
         "gpt-5.5": "GPT-5.5", "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
         "gpt-5.6-sol": "GPT-5.6 Sol", "gpt-5.6-terra": "GPT-5.6 Terra",
         "gpt-5.6-luna": "GPT-5.6 Luna", "gpt-6-astra": "GPT-6 Astra",
+        "gpt-6-sol": "GPT-6 Sol",
     }
     models = {}
     for model_id, name in names.items():

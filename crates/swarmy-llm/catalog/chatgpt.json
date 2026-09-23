@@ -243,6 +243,46 @@
       "release_date": null,
       "status": null,
       "tool_call": true
+    },
+    "gpt-6-sol": {
+      "attachment": true,
+      "compat": {
+        "supports_developer_role": true,
+        "supports_long_cache_retention": true,
+        "supports_strict_mode": false
+      },
+      "cost": {
+        "cache_read": 0,
+        "cache_write": 0,
+        "input": 0,
+        "output": 0,
+        "tiers": []
+      },
+      "family": "gpt",
+      "id": "gpt-6-sol",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "limit": {
+        "context": 272000,
+        "output": 128000
+      },
+      "name": "GPT-6 Sol",
+      "reasoning": {
+        "effort": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "release_date": null,
+      "status": null,
+      "tool_call": true
     }
   },
   "name": "ChatGPT"

@@ -89,6 +89,9 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn("private-token", json.dumps(self.calls()))
         self.assertNotIn("private-token", (self.root / "process_args").read_text())
         self.assertEqual((self.root / "token_ok").read_text(), "True")
+        run_call = next(call for call in self.calls() if call[2:4] == ["run", "--agent"])
+        for flag in ("--provider", "--model", "--effort"):
+            self.assertNotIn(flag, run_call)
         prompt = (self.root / "prompt-worker-1").read_text()
         for expected in ("AGENTS.md", "Repair widget", "Fix the widget", "Run widget test",
                          "swarmy/ewr2hd", "~/work/ewr2hd", "cargo clean", "from origin/master"):

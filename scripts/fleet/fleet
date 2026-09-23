@@ -168,7 +168,9 @@ def launch(args, config):
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
         os.chmod(log, 0o600)
-        process = subprocess.Popen(swarmy(config, "run", "--agent", worker, *selection,
+        # run --agent takes the agent's own provider, model, and effort and
+        # rejects overrides, so selection only applies at worker creation.
+        process = subprocess.Popen(swarmy(config, "run", "--agent", worker,
                                           "--json", prompt(args.task_id, task, config, branch)),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
