@@ -23,6 +23,8 @@ pub struct Config {
     pub memory_max_bytes: usize,
     pub kill_point: Option<String>,
     pub max_inference_wait: Duration,
+    pub gateway_wait: Duration,
+    pub allowed_providers: Option<Vec<String>>,
 }
 
 impl Config {
@@ -95,6 +97,8 @@ impl Config {
             memory_max_bytes: settings.memory_max_bytes.get(),
             kill_point,
             max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
+            gateway_wait: Duration::from_secs(settings.inference.gateway_wait_seconds.get()),
+            allowed_providers: settings.providers,
         })
     }
 }

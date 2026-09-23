@@ -78,6 +78,7 @@ pub struct GarbageCollection {
 pub struct Inference {
     pub max_wait_seconds: std::num::NonZeroU64,
     pub max_backoff_seconds: std::num::NonZeroU64,
+    pub gateway_wait_seconds: std::num::NonZeroU64,
 }
 
 impl Default for Inference {
@@ -85,6 +86,7 @@ impl Default for Inference {
         Self {
             max_wait_seconds: std::num::NonZeroU64::new(3600).unwrap(),
             max_backoff_seconds: std::num::NonZeroU64::new(300).unwrap(),
+            gateway_wait_seconds: std::num::NonZeroU64::new(30).unwrap(),
         }
     }
 }
@@ -456,6 +458,10 @@ impl Settings {
                 "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
                 &mut self.inference.max_backoff_seconds,
             ),
+            (
+                "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
+                &mut self.inference.gateway_wait_seconds,
+            ),
         ] {
             if let Some(value) = environment.get(name) {
                 *target = value.parse().map_err(|_| Error::Environment(name.into()))?;
@@ -819,6 +825,10 @@ impl Settings {
         environment.insert(
             "SWARMY_PLACEMENT_LEASE_SECONDS".into(),
             self.placement_lease_seconds.to_string(),
+        );
+        environment.insert(
+            "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
+            self.inference.gateway_wait_seconds.to_string(),
         );
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),

@@ -239,7 +239,7 @@ async fn assert_default_settings(f: &Fixture) {
 }
 
 #[tokio::test]
-async fn session_selection_routes_and_missing_gateway_fails_immediately() {
+async fn session_selection_routes_and_missing_gateway_waits() {
     let Some(f) = Fixture::new().await else {
         return;
     };
@@ -268,13 +268,8 @@ async fn session_selection_routes_and_missing_gateway_fails_immediately() {
                 assert_eq!(failure, Some("no gateway serves provider openai; run swarmy auth set openai or start a gateway with it"));
                 assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Runnable);
                 f.work(id).await;
-                assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Idle);
-                f.infer(id).await;
-                let events = f.store.read_events(id, 0, 64).await.unwrap();
-                let notices = events.iter().filter(|event| matches!(event,
-                    Event::MessageAppended { message, .. } if message.role == MessageRole::System
-                        && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("Reasoning effort clamped from "))))).count();
-                assert_eq!(notices, 1);
+                assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Sleeping);
+                assert!(f.store.inference_wait(id).await.unwrap().is_some());
 
             }
         }
