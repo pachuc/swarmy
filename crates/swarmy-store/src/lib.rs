@@ -16,7 +16,12 @@ mod inference_wait;
 mod interrupt;
 pub use interrupt::InterruptResult;
 mod selection;
+mod services;
 pub use selection::GatewayProvider;
+pub use services::{
+    SERVICE_EXPIRE_SECONDS, SERVICE_STALE_SECONDS, ServiceDetail, ServiceHealth, ServiceHeartbeat,
+    ServiceRole,
+};
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;

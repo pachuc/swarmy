@@ -18,6 +18,50 @@ use swarmy_store::{
 };
 
 #[tokio::test]
+async fn service_health_becomes_stale_then_expires() {
+    use swarmy_store::{
+        SERVICE_EXPIRE_SECONDS, SERVICE_STALE_SECONDS, ServiceDetail, ServiceHeartbeat, ServiceRole,
+    };
+    let Some(f) = TestStore::memory() else { return };
+    let record = ServiceHeartbeat {
+        role: ServiceRole::Api,
+        instance_id: "api-test".into(),
+        version: "test".into(),
+        host: "localhost".into(),
+        started_at: timestamp(1000),
+        last_seen: timestamp(1000),
+        detail: ServiceDetail::None,
+    };
+    f.store.put_service_heartbeat(&record).await.unwrap();
+    let entries = f.store.list_services_at(timestamp(1000)).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].alive);
+    assert_eq!(entries[0].heartbeat.version, "test");
+    assert!(
+        !f.store
+            .list_services_at(timestamp(1000 + SERVICE_STALE_SECONDS + 1))
+            .await
+            .unwrap()[0]
+            .alive
+    );
+    assert_eq!(
+        f.store
+            .expire_services_at(timestamp(1000 + SERVICE_EXPIRE_SECONDS + 1))
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        f.store
+            .list_services_at(timestamp(1000))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
 async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
     let Some(f) = TestStore::memory() else { return };
     let id = f.create().await;

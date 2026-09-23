@@ -5,9 +5,11 @@ mod worker;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
+use jiff::Timestamp;
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::Nudge;
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::ObjectBlobStore};
+use tokio::time::{Duration, interval};
 use tokio::{sync::mpsc, task::JoinSet};
 
 fn main() -> Result<()> {
@@ -49,7 +51,28 @@ async fn run(config: config::Config) -> Result<()> {
         });
     }
     drop(send);
+    let partitions: Vec<_> = config.partitions.iter().copied().collect();
+    let heartbeat_store = store.clone();
     let worker = worker::Worker::new(store, bus, blobs, config);
+    let started = Timestamp::now();
+    let health = async {
+        let mut ticks = interval(Duration::from_secs(30));
+        loop {
+            ticks.tick().await;
+            let record = ServiceHeartbeat {
+                role: ServiceRole::Worker,
+                instance_id: worker.owner.to_string(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                host: hostname(),
+                started_at: started,
+                last_seen: Timestamp::now(),
+                detail: ServiceDetail::Partitions(partitions.clone()),
+            };
+            if let Err(error) = heartbeat_store.put_service_heartbeat(&record).await {
+                tracing::warn!(%error, "worker health heartbeat failed");
+            }
+        }
+    };
     tracing::info!(owner = %worker.owner, "worker ready");
     let consume = async {
         while let Some(delivery) = receive.recv().await {
@@ -66,6 +89,7 @@ async fn run(config: config::Config) -> Result<()> {
     };
     tokio::select! {
         result = consume => result,
+        () = health => bail!("health loop ended"),
         () = worker.recovery_loop() => bail!("recovery loop ended"),
         _ = consumers.join_next() => bail!("runnable consumer ended"),
         result = tokio::signal::ctrl_c() => Ok(result?),
@@ -74,3 +98,7 @@ async fn run(config: config::Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+fn hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
+}

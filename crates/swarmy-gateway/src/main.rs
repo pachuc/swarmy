@@ -11,7 +11,8 @@ use swarmy_core::{
 };
 use swarmy_llm::{Delta, InferenceJob, Response};
 use swarmy_store::{
-    CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, Store,
+    CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, ServiceDetail,
+    ServiceHeartbeat, ServiceRole, Store,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tokio::{
@@ -32,6 +33,8 @@ struct Gateway {
     max_deliver: i64,
     resend_interval: Duration,
     max_backoff: Duration,
+    health_id: String,
+    started_at: Timestamp,
 }
 
 fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
@@ -130,6 +133,8 @@ async fn run(config: config::Config) -> Result<()> {
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
         max_backoff: Duration::from_secs(config.settings.inference.max_backoff_seconds.get()),
+        health_id: Ulid::generate().to_string(),
+        started_at: Timestamp::now(),
     });
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
     let mut tasks = JoinSet::new();
@@ -246,7 +251,20 @@ async fn refresh(
             )
             .await?;
     }
-    advertise(&gateway.store, &changes.served).await
+    advertise(&gateway.store, &changes.served).await?;
+    gateway
+        .store
+        .put_service_heartbeat(&ServiceHeartbeat {
+            role: ServiceRole::Gateway,
+            instance_id: gateway.health_id.clone(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            host: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()),
+            started_at: gateway.started_at,
+            last_seen: Timestamp::now(),
+            detail: ServiceDetail::Providers(changes.served),
+        })
+        .await?;
+    Ok(())
 }
 
 impl Gateway {
