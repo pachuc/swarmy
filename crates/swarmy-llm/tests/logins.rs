@@ -131,6 +131,16 @@ async fn azure_process_helper() {
         swarmy_core::CredentialStatus::Ready
     );
     assert!(login.refresh(&kind).await.unwrap() == Some(kind));
+    let foundry = AzureLogin::new(
+        "https://foundry.services.ai.azure.com",
+        Some("https://custom/.default"),
+    );
+    let foundry_kind = foundry.login(&ui).await.unwrap();
+    let CredentialKind::OAuth { extra, .. } = &foundry_kind else {
+        panic!("expected OAuth");
+    };
+    assert_eq!(extra["base_url"], "https://foundry.services.ai.azure.com");
+    assert!(foundry.refresh(&foundry_kind).await.unwrap() == Some(foundry_kind));
 }
 
 #[test]

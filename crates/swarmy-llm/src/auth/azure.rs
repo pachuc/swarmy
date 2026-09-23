@@ -53,15 +53,19 @@ impl AzureLogin {
             .filter(|s| !s.is_empty())
             .ok_or(Error::Credentials("Azure CLI returned no access token"))?;
         let expires_at = expiry(&value)?;
+        let mut extra = BTreeMap::from([
+            ("resource_name".into(), resource.into()),
+            ("scope".into(), scope.into()),
+            ("token_source".into(), "azure_cli".into()),
+        ]);
+        if resource.starts_with("https://") {
+            extra.insert("base_url".into(), resource.into());
+        }
         Ok(CredentialKind::OAuth {
             access: access.into(),
             refresh: String::new(),
             expires_at,
-            extra: BTreeMap::from([
-                ("resource_name".into(), resource.into()),
-                ("scope".into(), scope.into()),
-                ("token_source".into(), "azure_cli".into()),
-            ]),
+            extra,
         })
     }
 }

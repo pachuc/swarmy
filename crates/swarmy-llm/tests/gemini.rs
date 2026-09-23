@@ -16,7 +16,18 @@ use wiremock::{
 };
 
 fn model(id: &str) -> ModelInfo {
-    Catalog::get().model("google", id).unwrap().clone()
+    if let Some(model) = Catalog::get().model("google", id) {
+        return model.clone();
+    }
+    // The catalog omits 2.5 for new keys, but the protocol must still parse
+    // historical responses and preserve replay semantics for existing sessions.
+    assert!(id.starts_with("gemini-2.5-"));
+    let mut legacy = Catalog::get()
+        .model("google", "gemini-3-flash-preview")
+        .unwrap()
+        .clone();
+    legacy.id = id.into();
+    legacy
 }
 fn message(role: MessageRole, parts: Vec<Part>) -> Message {
     Message {

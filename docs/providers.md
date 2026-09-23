@@ -15,7 +15,7 @@ cluster store or resolve from the gateway host. Builds never fetch model data.
 | `xai` | OpenAI Responses | API key | `XAI_API_KEY` |
 | `meta` | OpenAI Responses | API key | `META_MODEL_API_KEY` |
 | `openrouter` | Chat Completions; Anthropic Messages for `anthropic/*` | API key or public PKCE login that mints a key | `OPENROUTER_API_KEY` |
-| `azure` | OpenAI Responses | API key or Azure CLI Entra token | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY`; `AZURE_RESOURCE_NAME`. Model ids name deployments. |
+| `azure` | OpenAI Responses | API key or Azure CLI Entra token | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY`; `AZURE_RESOURCE_NAME` or `AZURE_OPENAI_BASE_URL`. Model ids name deployments. |
 | `amazon-bedrock` | Bedrock Converse stream | AWS SDK credential chain or bearer token | `AWS_BEARER_TOKEN_BEDROCK`; otherwise `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, profiles and instance/container roles. `AWS_REGION` selects the region. |
 | `google` | Gemini generateContent | API key | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` |
 | `google-vertex` | Gemini generateContent on Vertex | Application Default Credentials (ADC), service account key, or stored access token | `GOOGLE_APPLICATION_CREDENTIALS` or gcloud ADC; `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
@@ -61,7 +61,11 @@ arguments. `--extra name=value` is repeatable; its values are encrypted too.
 `GOOGLE_CLOUD_API_KEY`; this does not replace configuring ADC and project/location
 for inference. Stored Vertex extras accept `project`, `location`,
 `service_account_json`, or `access_token`. For Azure, stored credentials need
-`resource_name`; an environment API key needs `AZURE_RESOURCE_NAME`.
+`resource_name` (classic) or `base_url` (Foundry endpoint); an environment
+API key needs `AZURE_RESOURCE_NAME` or `AZURE_OPENAI_BASE_URL`.
+`auth login azure --resource` accepts either a classic resource name or the full
+Foundry endpoint URL. Credential `base_url` takes precedence over the classic
+resource name; no `[custom_providers.azure]` entry is needed.
 
 `auth ls` and `auth check` expose metadata, never secrets. Check verifies local
 decryption and status, not provider acceptance. Status is `ready`, `expired`, or
@@ -75,7 +79,9 @@ flow, with a browser callback on an ephemeral loopback port or a pasted code;
 the result is an API key. Azure shells out to
 `az account get-access-token --scope https://cognitiveservices.azure.com/.default --output json`.
 `--scope` can override that scope. Azure refresh requires an installed, signed-in
-Azure CLI on the host using the credential.
+Azure CLI on the host using the credential. For key credentials use
+`swarmy auth set azure --from-env --extra base_url=https://RESOURCE.services.ai.azure.com`
+for a Foundry resource; the URL is stored with the key.
 
 All logins write the cluster store directly. `auth import` copies an existing
 ChatGPT file without changing it; without `--file`, it reads `credential_file`
@@ -93,6 +99,12 @@ Resolution uses `swarmy_llm::auth::resolve` with an explicit `Resolver`:
 3. Bedrock uses the official AWS Rust SDK chain. Vertex builds shared Google
    authentication from stored extras or host ADC and project/location settings.
    Fake requests need no credentials.
+
+Bedrock console-issued bearer API keys expire after twelve hours and are for
+development only. Long-lived gateways need an IAM identity (for example, an
+instance role when the gateway runs in the cloud); SDK credentials can be
+rotated without storing a short-lived console key. An expired console key
+requires replacement, not refresh.
 
 ## Choosing and inspecting models
 
@@ -181,6 +193,17 @@ instance credentials without a local hint, set the comma-separated
 The script captures command output, redacts recognizable secrets, and prints
 only results and failure diagnostics; it does not read credential files.
 
+## Live verification (2026-09-21)
+
+| Provider / route | Result | Follow-up |
+|---|---|---|
+| Azure Foundry and classic | Classic verified; Foundry required a custom provider entry during the original live run. | Probe both with the credential endpoint fix and no custom entry. |
+| Google Gemini | The original Gemini 2.5 default was refused by a new key. | Run the smoke script with its new `gemini-3-flash-preview` default and a fresh key. |
+| Azure Grok 4.6 | Live inference worked, but the original catalog showed zero cost. | Confirm `swarmy session show` cost on a billed turn. |
+| Bedrock console key | Expires after twelve hours; development only. | Use IAM for long-lived gateways. |
+| Claude on Vertex (`google-vertex-anthropic`) | Unverified: project quota was zero. | Obtain nonzero Claude quota, then probe and run the smoke script. |
+| Grok tool calls | Occasionally returned tool calls as text rather than structured calls. | Monitor rate; change the client only if more than one in ten smoke turns reproduce it. |
+
 ## Custom providers and models
 
 ```toml
@@ -236,8 +259,10 @@ python3 -m unittest discover -s scripts/models -v
 The Python standard-library generator fetches models.dev and OpenRouter's live
 list, retains tool-capable models from the provider allowlist, applies protocol
 quirks, and writes `crates/swarmy-llm/catalog/<provider>.json`. OpenRouter uses its
-live list; Azure also inherits OpenAI model metadata. ChatGPT models are explicitly
-listed with zero token cost because subscription billing is not per-token.
+live list; Azure also inherits OpenAI model metadata. The checked-in
+`scripts/models/overrides.json` drops Gemini 2.5 models from Google catalogs
+because new keys cannot use them and prices Azure's Grok 4.6 at its published
+per-million-token rate. ChatGPT models are explicitly listed with zero token cost because subscription billing is not per-token.
 Fake fixture models come from configuration.
 
 Commit reviewed JSON changes with the generator. The manifest records source

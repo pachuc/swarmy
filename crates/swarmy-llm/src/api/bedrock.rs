@@ -206,6 +206,13 @@ fn service_error(code: &str, message: Option<&str>) -> Error {
                 retry_after: None,
             }
         }
+        _ if code.contains("Expired")
+            || message.is_some_and(|m| m.to_ascii_lowercase().contains("expired")) =>
+        {
+            Error::Credentials(
+                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
+            )
+        }
         _ => Error::Protocol(format!(
             "Bedrock {code}: {}",
             message.unwrap_or("service error")
@@ -1365,6 +1372,17 @@ mod tests {
             crate::client_for(provider, &model("model"), ClientAuth::None),
             Err(Error::Credentials(_))
         ));
+    }
+
+    #[test]
+    fn expired_console_key_points_to_iam() {
+        let error = service_error(
+            "UnrecognizedClientException",
+            Some("The security token has expired"),
+        );
+        assert!(
+            matches!(error, Error::Credentials(message) if message.contains("IAM identity") && message.contains("development only"))
+        );
     }
 
     #[tokio::test]

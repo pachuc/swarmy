@@ -45,22 +45,49 @@ impl ResponsesEndpoint {
         let base = if provider.id == "azure" && base.is_empty() {
             let extra = match &auth {
                 ClientAuth::ApiKeyWithExtra { extra, .. }
-                | ClientAuth::BearerWithExtra { extra, .. } => extra.get("resource_name").cloned(),
+                | ClientAuth::BearerWithExtra { extra, .. } => Some(extra),
                 _ => None,
             };
-            let resource = extra
-                .or_else(|| std::env::var("AZURE_RESOURCE_NAME").ok())
-                .ok_or(Error::Credentials(
-                    "Azure requires resource_name or AZURE_RESOURCE_NAME",
-                ))?;
-            if resource.is_empty()
-                || !resource
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            {
-                return Err(Error::Credentials("invalid Azure resource name"));
+            let endpoint = extra
+                .and_then(|extra| extra.get("base_url"))
+                .cloned()
+                .or_else(|| {
+                    if extra.is_none() {
+                        std::env::var("AZURE_OPENAI_BASE_URL").ok()
+                    } else {
+                        None
+                    }
+                });
+            if let Some(endpoint) = endpoint.filter(|url| !url.is_empty()) {
+                let parsed = reqwest::Url::parse(&endpoint)
+                    .map_err(|_| Error::Credentials("invalid Azure base URL"))?;
+                if parsed.scheme() != "https"
+                    || parsed.host_str().is_none()
+                    || parsed.username() != ""
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return Err(Error::Credentials("invalid Azure base URL"));
+                }
+                format!("{}/openai/v1", endpoint.trim_end_matches('/'))
+            } else {
+                let resource = extra
+                    .and_then(|extra| extra.get("resource_name"))
+                    .cloned()
+                    .or_else(|| std::env::var("AZURE_RESOURCE_NAME").ok())
+                    .ok_or(Error::Credentials(
+                        "Azure requires resource_name or AZURE_RESOURCE_NAME",
+                    ))?;
+                if resource.is_empty()
+                    || !resource
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err(Error::Credentials("invalid Azure resource name"));
+                }
+                format!("https://{resource}.openai.azure.com/openai/v1")
             }
-            format!("https://{resource}.openai.azure.com/openai/v1")
         } else {
             base.to_owned()
         };

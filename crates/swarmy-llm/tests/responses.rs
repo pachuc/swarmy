@@ -173,6 +173,44 @@ async fn azure_resource_endpoint_and_deployment_use_api_key() {
     );
 }
 
+#[test]
+fn azure_grok_catalog_has_nonzero_prices() {
+    let model = catalog_model("azure", "grok-4.6");
+    assert!(model.cost.input > 0.0);
+    assert!(model.cost.output > 0.0);
+}
+
+#[test]
+fn azure_foundry_endpoint_from_credential_precedes_classic_resource() {
+    let info = Catalog::get().provider("azure").unwrap();
+    let model = catalog_model("azure", "gpt-5.5");
+    for auth in [
+        ClientAuth::ApiKeyWithExtra {
+            key: "key".into(),
+            extra: BTreeMap::from([
+                ("resource_name".into(), "classic".into()),
+                (
+                    "base_url".into(),
+                    "https://foundry.services.ai.azure.com".into(),
+                ),
+            ]),
+        },
+        ClientAuth::BearerWithExtra {
+            token: "token".into(),
+            extra: BTreeMap::from([(
+                "base_url".into(),
+                "https://foundry.services.ai.azure.com".into(),
+            )]),
+        },
+    ] {
+        let endpoint = ResponsesEndpoint::from_catalog(info, &model, auth).unwrap();
+        assert_eq!(
+            endpoint.url,
+            "https://foundry.services.ai.azure.com/openai/v1/responses"
+        );
+    }
+}
+
 #[tokio::test]
 async fn reasoning_replay_requires_the_same_provider_and_model() {
     let server = MockServer::start().await;

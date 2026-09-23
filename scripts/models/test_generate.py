@@ -73,6 +73,17 @@ class GeneratorTests(unittest.TestCase):
         cost = generate.cost_from_models_dev({"input": 3, "output": 15, "tiers": [{"tier": {"type": "context", "size": 200000}, "input": 6}]})
         self.assertEqual(cost["tiers"][0], {"input_tokens_above": 200000, "input": 6, "output": 15, "cache_read": 0, "cache_write": 0})
 
+    def test_provider_overrides_remove_legacy_gemini_and_price_azure_grok(self):
+        source = {provider: {"name": provider, "models": {}} for provider in generate.PROVIDERS}
+        model = {"id": "gemini-2.5-flash", "name": "Old", "tool_call": True, "limit": {"context": 1000}}
+        source["google"]["models"][model["id"]] = model
+        source["google-vertex"]["models"][model["id"]] = model
+        source["azure"]["models"]["grok-4.6"] = {**model, "id": "grok-4.6"}
+        result = generate.generate(source, {"data": []})
+        self.assertNotIn("gemini-2.5-flash", result["google"]["models"])
+        self.assertNotIn("gemini-2.5-flash", result["google-vertex"]["models"])
+        self.assertEqual(result["azure"]["models"]["grok-4.6"]["cost"]["output"], 6)
+
     def test_generation_filters_copies_and_check_detects_drift(self):
         models_dev = {provider: {"name": provider, "models": {}} for provider in generate.PROVIDERS}
         models_dev["openai"]["models"] = {
