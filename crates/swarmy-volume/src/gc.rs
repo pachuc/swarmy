@@ -31,6 +31,7 @@ use crate::{Manifest, Result, VolumeError, chunk_path};
 const LEASE_SECONDS: i64 = 120;
 const RENEW_SECONDS: u64 = 30;
 const PREFIX_CONCURRENCY: usize = 16;
+const MAX_GC_BATCH_SIZE: usize = 512;
 
 /// Collect unreferenced, old chunks. A busy lease returns `LeaseMismatch`.
 /// The caller must dedicate this object namespace to this metadata store.
@@ -70,7 +71,7 @@ pub async fn collect(
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut lease = store.acquire_gc_lease(&run, expiry()?).await?;
     let result = {
-        let work = sweep(store, &*objects, &mut references, cutoff, &mut run);
+        let work = sweep(store, &*objects, &mut references, cutoff, policy, &mut run);
         tokio::pin!(work);
         let mut renewal = tokio::time::interval(Duration::from_secs(RENEW_SECONDS));
         renewal.tick().await;
@@ -133,6 +134,7 @@ async fn sweep(
     objects: &dyn ObjectStore,
     references: &mut References,
     cutoff: Timestamp,
+    policy: GarbageCollection,
     run: &mut GcRun,
 ) -> Result<()> {
     let mut after = None;
@@ -180,13 +182,15 @@ async fn sweep(
             after = Some(agent.agent_id);
         }
     }
-    // Each list is streamed, and at most sixteen prefixes have a page in memory.
+    // Listings from at most sixteen prefixes can be active at once.
     let mut listed = stream::iter(0_u16..256)
         .map(|prefix| {
             let path = Path::from(format!("chunks/{prefix:02x}"));
             objects.list(Some(&path))
         })
         .flatten_unordered(PREFIX_CONCURRENCY);
+    let batch_size = policy.batch_size.get().min(MAX_GC_BATCH_SIZE);
+    let mut candidates = Vec::with_capacity(batch_size);
     while let Some(meta) = listed.try_next().await? {
         run.scanned += 1;
         let Some(hash) = parse_chunk(&meta.location) else {
@@ -198,21 +202,61 @@ async fn sweep(
         {
             continue;
         }
-        if !store
-            .claim_gc_chunk(run.owner, hash, cutoff, run.dry_run)
-            .await?
-        {
-            continue;
-        }
-        run.candidates += 1;
-        run.candidate_bytes += meta.size;
-        if !run.dry_run {
-            objects.delete(&meta.location).await?;
-            run.deleted += 1;
-            run.bytes_freed += meta.size;
-            store.finish_gc_chunk(run.owner, hash).await?;
+        candidates.push((hash, meta.size));
+        if candidates.len() == batch_size {
+            sweep_page(store, objects, &candidates, cutoff, policy, run).await?;
+            candidates.clear();
         }
     }
+    if !candidates.is_empty() {
+        sweep_page(store, objects, &candidates, cutoff, policy, run).await?;
+    }
+    Ok(())
+}
+
+async fn sweep_page(
+    store: &Store,
+    objects: &dyn ObjectStore,
+    candidates: &[(ContentHash, u64)],
+    cutoff: Timestamp,
+    policy: GarbageCollection,
+    run: &mut GcRun,
+) -> Result<()> {
+    let hashes: Vec<_> = candidates.iter().map(|&(hash, _)| hash).collect();
+    let claimed = store
+        .claim_gc_chunks(run.owner, &hashes, cutoff, run.dry_run)
+        .await?;
+    let eligible: Vec<_> = candidates
+        .iter()
+        .filter(|(hash, _)| claimed.contains(hash))
+        .copied()
+        .collect();
+    run.candidates += eligible.len() as u64;
+    run.candidate_bytes += eligible.iter().map(|(_, size)| size).sum::<u64>();
+    if run.dry_run {
+        return Ok(());
+    }
+    let deleted: Vec<_> = stream::iter(eligible)
+        .map(|(hash, size)| async move {
+            let result = objects.delete(&chunk_path(hash)).await;
+            (hash, size, result)
+        })
+        .buffer_unordered(policy.delete_concurrency.get())
+        .filter_map(|(hash, size, result)| async move {
+            match result {
+                Ok(()) => Some((hash, size)),
+                Err(error) => {
+                    tracing::warn!(%hash, %error, "chunk collection delete failed");
+                    None
+                }
+            }
+        })
+        .collect()
+        .await;
+    let finished: Vec<_> = deleted.iter().map(|&(hash, _)| hash).collect();
+    store.finish_gc_chunks(run.owner, &finished).await?;
+    run.deleted += deleted.len() as u64;
+    run.bytes_freed += deleted.iter().map(|(_, size)| size).sum::<u64>();
     Ok(())
 }
 

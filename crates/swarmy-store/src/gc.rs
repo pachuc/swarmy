@@ -1,7 +1,8 @@
 //! Collector leases use the same complete token and retained sequence fencing
 //! as volume writer leases. Clock checks happen on every transaction retry.
+use futures::future::try_join_all;
 use jiff::Timestamp;
-use swarmy_core::{GcRun, Lease, LeaseOwnerId};
+use swarmy_core::{ContentHash, GcRun, Lease, LeaseOwnerId};
 
 use crate::{Result, Store, StoreError, read, write};
 
@@ -126,13 +127,13 @@ impl Store {
     /// Dry runs only read eligibility and never reserve a deletion.
     /// # Errors
     /// Rejects expired/replaced collectors and returns transaction errors.
-    pub async fn claim_gc_chunk(
+    pub async fn claim_gc_chunks(
         &self,
         owner: LeaseOwnerId,
-        hash: swarmy_core::ContentHash,
+        hashes: &[ContentHash],
         cutoff: Timestamp,
         dry_run: bool,
-    ) -> Result<bool> {
+    ) -> Result<Vec<ContentHash>> {
         self.transaction(|trx| async move {
             if !read::<Lease>(&trx, &self.root.pack(&("gc_lease",)))
                 .await?
@@ -140,20 +141,26 @@ impl Store {
             {
                 return Err(StoreError::LeaseMismatch);
             }
-            if read::<Timestamp>(&trx, &self.root.pack(&("chunk_reused", hash.0.as_slice())))
-                .await?
-                .is_some_and(|touched| touched >= cutoff)
-            {
-                return Ok(false);
+            let reuse = try_join_all(hashes.iter().map(|hash| async {
+                let key = self.root.pack(&("chunk_reused", hash.0.as_slice()));
+                read::<Timestamp>(&trx, &key).await
+            }))
+            .await?;
+            let mut claimed = Vec::with_capacity(hashes.len());
+            for (&hash, touched) in hashes.iter().zip(reuse) {
+                if touched.is_some_and(|touched| touched >= cutoff) {
+                    continue;
+                }
+                if !dry_run {
+                    write(
+                        &trx,
+                        &self.root.pack(&("gc_deleting", hash.0.as_slice())),
+                        &owner,
+                    )?;
+                }
+                claimed.push(hash);
             }
-            if !dry_run {
-                write(
-                    &trx,
-                    &self.root.pack(&("gc_deleting", hash.0.as_slice())),
-                    &owner,
-                )?;
-            }
-            Ok(true)
+            Ok(claimed)
         })
         .await
     }
@@ -161,18 +168,25 @@ impl Store {
     /// Release a completed deletion so waiting uploaders can recreate the chunk.
     /// # Errors
     /// Rejects a replaced deletion reservation and returns transaction errors.
-    pub async fn finish_gc_chunk(
+    pub async fn finish_gc_chunks(
         &self,
         owner: LeaseOwnerId,
-        hash: swarmy_core::ContentHash,
+        hashes: &[ContentHash],
     ) -> Result<()> {
         self.transaction(|trx| async move {
-            let key = self.root.pack(&("gc_deleting", hash.0.as_slice()));
-            if read::<LeaseOwnerId>(&trx, &key).await? != Some(owner) {
-                return Err(StoreError::LeaseMismatch);
+            let reservations = try_join_all(hashes.iter().map(|hash| async {
+                let key = self.root.pack(&("gc_deleting", hash.0.as_slice()));
+                read::<LeaseOwnerId>(&trx, &key).await
+            }))
+            .await?;
+            for (&hash, reservation) in hashes.iter().zip(reservations) {
+                if reservation != Some(owner) {
+                    return Err(StoreError::LeaseMismatch);
+                }
+                let key = self.root.pack(&("gc_deleting", hash.0.as_slice()));
+                trx.clear(&key);
+                trx.clear(&self.root.pack(&("chunk_reused", hash.0.as_slice())));
             }
-            trx.clear(&key);
-            trx.clear(&self.root.pack(&("chunk_reused", hash.0.as_slice())));
             Ok(())
         })
         .await
