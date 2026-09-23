@@ -38,7 +38,7 @@ if sys.argv[1:4] == ['models', 'probe', 'openai/custom']:
     sys.exit(1)
 if sys.argv[1:4] == ['run', '--provider', 'openai']:
     print('Error: routed fixture rejection', file=sys.stderr)
-    sys.exit(0)  # run can finish idle after reporting an inference failure.
+    sys.exit(1)  # run exits non-zero when the turn ends without a reply.
 print('ready')
 """)
             stub.chmod(0o700)
