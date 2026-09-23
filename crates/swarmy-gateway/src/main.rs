@@ -1,6 +1,6 @@
 use swarmy_gateway::{config, cost::cost_micros, providers::Providers};
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
@@ -117,37 +117,9 @@ async fn run(config: config::Config) -> Result<()> {
     )
     .await?;
     let providers = Providers::discover(store.clone(), &config.settings).await?;
-    for (provider, reason) in &providers.skipped {
-        info!(%provider, %reason, "provider skipped");
-        // Keep another gateway's live advertisement; only record the reason otherwise.
-        if !store.gateway_serves(provider).await? {
-            let record = GatewayProvider {
-                expires_at: Timestamp::now(),
-                reason: reason.clone(),
-            };
-            store.put_gateway_provider(provider, &record).await?;
-        }
-    }
-    for provider in &providers.served {
-        info!(%provider, "serving provider");
-    }
-    anyhow::ensure!(!providers.served.is_empty(), "no available providers");
-    advertise(&store, &providers.served).await?;
-    tokio::spawn(heartbeat(store.clone(), providers.served.clone()));
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
-    let queues: Vec<_> = providers
-        .served
-        .iter()
-        .map(|id| swarmy_bus::SubjectToken::new(id).map(WorkQueue::Inference))
-        .collect::<Result<_, _>>()?;
-    bus.setup(&queues).await?;
     let mut messages = futures::stream::SelectAll::new();
-    for queue in queues {
-        let mut stream = bus.consume::<InferenceJob>(&queue).await?;
-        messages.push(Box::pin(async_stream::stream! {
-            while let Some(message) = stream.next().await { yield message; }
-        }) as futures::stream::BoxStream<'static, _>);
-    }
+    let mut subscriptions = BTreeSet::new();
     let gateway = Arc::new(Gateway {
         store,
         blobs,
@@ -161,13 +133,24 @@ async fn run(config: config::Config) -> Result<()> {
     });
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
     let mut tasks = JoinSet::new();
+    let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
+    refresh(&gateway, &mut messages, &mut subscriptions).await?;
+    ticks.tick().await;
     info!(concurrency = config.concurrency, "gateway ready");
     loop {
         while let Some(result) = tasks.try_join_next() {
             result?;
         }
-        let permit = semaphore.clone().acquire_owned().await?;
-        let Some(delivery) = messages.next().await else {
+        let delivery = tokio::select! {
+            _ = ticks.tick() => {
+                if let Err(error) = refresh(&gateway, &mut messages, &mut subscriptions).await {
+                    warn!(%error, "provider refresh failed; retaining the previous advertisement");
+                }
+                continue;
+            }
+            delivery = messages.next(), if !subscriptions.is_empty() => delivery,
+        };
+        let Some(delivery) = delivery else {
             bail!("work stream ended");
         };
         let message = match delivery {
@@ -178,6 +161,7 @@ async fn run(config: config::Config) -> Result<()> {
             }
         };
         let gateway = gateway.clone();
+        let permit = semaphore.clone().acquire_owned().await?;
         tasks.spawn(async move {
             let _permit = permit;
             if let Err(error) = gateway.handle(&message).await {
@@ -202,15 +186,67 @@ async fn advertise(store: &Store, served: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn heartbeat(store: Store, served: Vec<String>) {
-    let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
-    ticks.tick().await;
-    loop {
-        ticks.tick().await;
-        if let Err(error) = advertise(&store, &served).await {
-            warn!(%error, "provider advertisement failed; workers may fail new requests");
+async fn refresh(
+    gateway: &Gateway,
+    messages: &mut futures::stream::SelectAll<
+        futures::stream::BoxStream<'static, Result<WorkMessage<InferenceJob>, swarmy_bus::Error>>,
+    >,
+    subscriptions: &mut BTreeSet<String>,
+) -> Result<()> {
+    let changes = gateway.providers.refresh().await?;
+    for id in &changes.served {
+        if subscriptions.contains(id) {
+            continue;
+        }
+        let queue = WorkQueue::Inference(swarmy_bus::SubjectToken::new(id)?);
+        gateway.bus.setup(std::slice::from_ref(&queue)).await?;
+        let mut stream = gateway.bus.consume::<InferenceJob>(&queue).await?;
+        messages.push(Box::pin(async_stream::stream! {
+            while let Some(message) = stream.next().await { yield message; }
+        }));
+        subscriptions.insert(id.clone());
+    }
+    for id in &changes.added {
+        info!(provider = %id, "serving provider");
+    }
+    for id in &changes.removed {
+        info!(provider = %id, "provider no longer served");
+    }
+    for id in &changes.rotated {
+        info!(provider = %id, "provider credential changed");
+    }
+    for (provider, reason) in &changes.skipped {
+        if !gateway.store.gateway_serves(provider).await? {
+            gateway
+                .store
+                .put_gateway_provider(
+                    provider,
+                    &GatewayProvider {
+                        expires_at: Timestamp::now(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
         }
     }
+    for id in &changes.removed {
+        let reason = changes
+            .skipped
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| "provider unavailable".into());
+        gateway
+            .store
+            .put_gateway_provider(
+                id,
+                &GatewayProvider {
+                    expires_at: Timestamp::now(),
+                    reason,
+                },
+            )
+            .await?;
+    }
+    advertise(&gateway.store, &changes.served).await
 }
 
 impl Gateway {

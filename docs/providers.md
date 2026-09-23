@@ -66,6 +66,9 @@ for inference. Stored Vertex extras accept `project`, `location`,
 `auth ls` and `auth check` expose metadata, never secrets. Check verifies local
 decryption and status, not provider acceptance. Status is `ready`, `expired`, or
 `needs_login`. Use a probe below to verify the actual credential and protocol.
+Credentials added, replaced, or removed with `auth set`, `auth import`, or
+`auth rm` take effect on running gateways within one heartbeat interval
+(30 seconds). No gateway restart is needed.
 
 ChatGPT login prints a device URL and code. OpenRouter uses its public PKCE
 flow, with a browser callback on an ephemeral loopback port or a pasted code;
@@ -167,7 +170,7 @@ configured provider. It continues after failures, prints a Markdown table with
 errors, and exits nonzero if any attempted check fails. Providers with no local
 credential and no stored record report `SKIP (no credential)`. Routed checks
 need the stack, a gateway, and a default image just like ordinary `swarmy run`.
-Restart the gateway after adding credentials so it discovers the new provider.
+Running gateways discover newly added credentials on their next heartbeat.
 
 Use `SWARMY_BIN=/path/to/swarmy` to choose a build and `SWARMY_SMOKE_TIMEOUT=180`
 to set each command's timeout in seconds. Deployment ids or account-specific

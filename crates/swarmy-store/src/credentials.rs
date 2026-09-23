@@ -72,6 +72,26 @@ impl Store {
         })
         .await
     }
+
+    /// Fingerprint the encrypted record without exposing or decrypting its contents.
+    /// # Errors
+    /// Returns database errors.
+    pub async fn credential_fingerprint(
+        &self,
+        scope: CredentialScope,
+        provider: &str,
+    ) -> Result<Option<[u8; 32]>> {
+        self.transaction(|trx| async move {
+            Ok(trx
+                .get(
+                    &self.root.pack(&("credential", scope.to_string(), provider)),
+                    false,
+                )
+                .await?
+                .map(|bytes| *blake3::hash(&bytes).as_bytes()))
+        })
+        .await
+    }
 }
 
 impl CredentialStore {
