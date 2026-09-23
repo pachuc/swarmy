@@ -13,7 +13,7 @@ import tomllib
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG = Path(__file__).with_name("fleet.toml")
+CONFIG = Path(os.environ.get("FLEET_CONFIG") or Path(__file__).with_name("fleet.toml"))
 AGENTS = ROOT / "AGENTS.md"
 URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+")
 TARGET_LIMIT_GIB = 20

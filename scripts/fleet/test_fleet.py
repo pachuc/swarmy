@@ -60,12 +60,12 @@ class FleetTests(unittest.TestCase):
             path = self.bin / name
             path.write_text(STUB)
             path.chmod(0o700)
-        self.config = FLEET.with_name("fleet.toml")
+        # Never touch the real fleet.toml next to the driver; tests use their own.
+        self.config = self.root / "fleet.toml"
         self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
-        self.addCleanup(self.config.unlink)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        STUB_STATE=str(self.root))
+                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config))
 
     def call(self, *args, env=None):
         return subprocess.run([sys.executable, str(FLEET), *args], env=env or self.env,
