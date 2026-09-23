@@ -236,6 +236,13 @@ pub struct UpdateNode {
     pub status: HealthStatus,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CreateServiceHealth {
+    pub idempotency_key: String,
+    pub service: String,
+    pub status: HealthStatus,
+    pub detail: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateServiceHealth {
     pub idempotency_key: String,
     pub status: HealthStatus,
@@ -337,6 +344,7 @@ pub struct ApiError {
     UpdateCredential,
     CreateNode,
     UpdateNode,
+    CreateServiceHealth,
     UpdateServiceHealth,
     Event,
     EventPayload,
@@ -534,6 +542,12 @@ mod tests {
         round_trip(UpdateNode {
             idempotency_key: "k".into(),
             status: health.clone(),
+        });
+        round_trip(CreateServiceHealth {
+            idempotency_key: "k".into(),
+            service: "gateway".into(),
+            status: health.clone(),
+            detail: None,
         });
         round_trip(UpdateServiceHealth {
             idempotency_key: "k".into(),

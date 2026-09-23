@@ -216,6 +216,31 @@
           }
         }
       },
+      "CreateServiceHealth": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "service",
+          "status"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
       "CreateSession": {
         "type": "object",
         "required": [
