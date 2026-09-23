@@ -5,7 +5,7 @@ pub enum Command {
     /// Build a recipe directory (or recipe.toml) and register its directory name
     Build {
         recipe: PathBuf,
-        #[arg(long)]
+        #[arg(long, default_value = "dev")]
         tag: String,
         /// Override the registered name (defaults to the recipe directory name)
         #[arg(long)]

@@ -47,7 +47,12 @@ packages without recommendations so virtual dependencies resolve correctly. Opti
 `components = ["main", "universe"]` selects additional archive components. An optional `script = "setup.sh"` in the source table runs through
 `/bin/sh -es` inside the installed system before cleanup. See
 [the developer image](base-ubuntu/README.md) for its tools and credential setup. The
-builder removes apt caches and package lists, clears logs, and resets the
+optional `source_commit = "..."` must be a full 40-digit Git hash and is passed
+to that script as `SWARMY_SOURCE_COMMIT`; the swarmy-dev recipe uses it to pin
+the checkout that warms Cargo.
+The builder temporarily mounts `/proc` during debootstrap setup so rustup can
+inspect its own executable, then unmounts it before creating the filesystem.
+The builder removes apt caches and package lists, clears logs, and resets the
 machine identity. It also removes the ldconfig auxiliary cache, whose host
 inode numbers become invalid when files are copied into ext4, and removes Python
 bytecode caches whose headers contain installation times. The package names are fixed; versions follow the configured

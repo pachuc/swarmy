@@ -60,6 +60,7 @@ fn recipes_reject_typos_and_invalid_dimensions() {
         "disk_size = 0\nsource_date_epoch = 1\n[source]\nkind = 'directory'\npath = 'root'",
         "disk_size = 67108864\nsource_date_epoch = 1\n[source]\nkind = 'directory'\npath = 'root'\ntypo = true",
         "disk_size = 67108865\nsource_date_epoch = 1\n[source]\nkind = 'directory'\npath = 'root'",
+        "disk_size = 67108864\nsource_date_epoch = 1\n[source]\nkind = 'debootstrap'\nsuite = 'noble'\nmirror = 'http://archive.ubuntu.com/ubuntu'\npackages = ['bash']\nsource_commit = 'not-a-commit'",
     ] {
         fs::write(&path, text).unwrap();
         assert!(Recipe::load(&path).is_err());
@@ -68,6 +69,16 @@ fn recipes_reject_typos_and_invalid_dimensions() {
     let (recipe, _, name) = Recipe::load(&base).unwrap();
     assert_eq!(name, "base-ubuntu");
     assert_eq!(recipe.disk_size, 8 * 1024 * 1024 * 1024);
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/swarmy-dev");
+    let (recipe, _, name) = Recipe::load(&dev).unwrap();
+    assert_eq!(name, "swarmy-dev");
+    assert!(matches!(
+        recipe.source,
+        Source::Debootstrap {
+            source_commit: Some(_),
+            ..
+        }
+    ));
 }
 
 struct Mount<'a>(&'a Path);
