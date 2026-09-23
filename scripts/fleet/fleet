@@ -216,7 +216,11 @@ def launch(args, config):
     save(path, {"task_id": args.task_id, "worker": worker, "branch": branch,
                 "session_id": session, "provider": provider, "model": model,
                 "effort": effort, "started_at": datetime.now(timezone.utc).isoformat()})
-    command(tasky("start", args.task_id))
+    status = one(command(tasky("show", args.task_id, json_output=True))).get("status")
+    if status == "todo":
+        command(tasky("start", args.task_id))
+    elif status != "in_progress":
+        print(f"note: tasky task {args.task_id} is {status}; not changing it", file=sys.stderr)
     print(f"launched {args.task_id} on {worker} session={session}")
 
 

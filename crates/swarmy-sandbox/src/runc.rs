@@ -363,7 +363,7 @@ impl RuncRuntime {
         }
         // The named handle keeps the namespace alive after runc exits, so
         // stop pasta explicitly even when an earlier daemon was killed.
-        let pid_file = self.bundle(id).join("pasta.pid");
+        let pid_file = pasta_pid_file(id);
         if let Ok(pid) = std::fs::read_to_string(&pid_file) {
             if let Ok(pid) = pid.trim().parse::<u32>() {
                 let command = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
@@ -388,40 +388,21 @@ impl RuncRuntime {
         let state = output(self.command().args(["state", &id.to_string()])).await?;
         let state: serde_json::Value = serde_json::from_slice(&state)?;
         let pid = state["pid"].as_u64().ok_or(Error::State)?;
-        let bundle = self.bundle(id);
         let name = self.network_name(id);
         checked(Command::new("ip").args(["netns", "attach", &name, &pid.to_string()])).await?;
         // A runc namespace belongs to the host user namespace. pasta needs
         // root to enter it; its default nobody account cannot call setns here.
+        // The PID file lives under /run: Ubuntu's AppArmor profile for pasta
+        // refuses to write one under the sandbox bundle. The upstream
+        // resolvers are passed explicitly because pasta ignores a loopback
+        // stub such as systemd-resolved's 127.0.0.53 in /etc/resolv.conf.
+        let pid_file = pasta_pid_file(id);
+        if let Some(directory) = pid_file.parent() {
+            std::fs::create_dir_all(directory)?;
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+        }
         let mut process = Command::new("pasta")
-            .args([
-                "--foreground",
-                "--runas",
-                "0",
-                "--netns",
-                &name,
-                "--config-net",
-                "--no-map-gw",
-                "--ipv4-only",
-                "--address",
-                "10.0.2.2",
-                "--netmask",
-                "24",
-                "--gateway",
-                "10.0.2.1",
-                "--dns-forward",
-                "10.0.2.3",
-                "-t",
-                "none",
-                "-u",
-                "none",
-                "-T",
-                "none",
-                "-U",
-                "none",
-                "--pid",
-            ])
-            .arg(bundle.join("pasta.pid"))
+            .args(pasta_arguments(&name, &pid_file))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -996,6 +977,75 @@ async fn pump(
             .await
             .map_err(|_| Error::Operation("exec output receiver closed".into()))?;
     }
+}
+
+fn pasta_arguments(netns: &str, pid_file: &Path) -> Vec<String> {
+    let mut arguments = Vec::new();
+    for server in upstream_resolvers() {
+        arguments.push("--dns".into());
+        arguments.push(server);
+    }
+    arguments.extend(
+        [
+            "--foreground",
+            "--runas",
+            "0",
+            "--netns",
+            netns,
+            "--config-net",
+            "--no-map-gw",
+            "--ipv4-only",
+            "--address",
+            "10.0.2.2",
+            "--netmask",
+            "24",
+            "--gateway",
+            "10.0.2.1",
+            "--dns-forward",
+            "10.0.2.3",
+            "-t",
+            "none",
+            "-u",
+            "none",
+            "-T",
+            "none",
+            "-U",
+            "none",
+            "--pid",
+        ]
+        .map(String::from),
+    );
+    arguments.push(pid_file.to_string_lossy().into_owned());
+    arguments
+}
+
+fn pasta_pid_file(id: AgentId) -> PathBuf {
+    Path::new("/run/swarmy/pasta").join(format!("{id}.pid"))
+}
+
+/// Nameservers pasta can forward to: the real upstreams behind a local stub
+/// resolver when systemd-resolved runs, otherwise any non-loopback entries in
+/// /etc/resolv.conf. An empty list leaves pasta to its own discovery.
+fn upstream_resolvers() -> Vec<String> {
+    for path in ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let servers: Vec<String> = text
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("nameserver "))
+            .map(|server| server.trim().to_owned())
+            .filter(|server| {
+                server
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| !address.is_loopback())
+            })
+            .collect();
+        if !servers.is_empty() {
+            return servers;
+        }
+    }
+    Vec::new()
 }
 
 async fn checked(command: &mut Command) -> Result<()> {
