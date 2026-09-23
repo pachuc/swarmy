@@ -548,6 +548,8 @@ mod tests {
             seq: 1,
             request_id: RequestId::for_step(SessionId::from_ulid(Ulid::generate()), 1),
             error: "provider unavailable".into(),
+            retryable: false,
+            retry_at: None,
         });
         turn.record(&Event::StateChanged {
             seq: 2,
