@@ -257,6 +257,7 @@ impl Store {
             } else {
                 let id = SessionId::from_ulid(ulid::Ulid::generate());
                 let session = swarmy_core::SessionRecord {
+                    interrupt_requested: false,
                     session_id: id,
                     agent_id: agent.agent_id,
                     kind: swarmy_core::SessionKind::Named {

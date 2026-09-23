@@ -45,6 +45,16 @@ impl Scheduler {
                 .await?
                 .ok_or(StoreError::SessionMissing)?;
             if session.state == SessionState::Runnable {
+                if session.interrupt_requested {
+                    if self.store.finish_runnable_interrupt(session_id).await? {
+                        let head = self.store.fetch_session(session_id).await?
+                            .ok_or(StoreError::SessionMissing)?.head_seq;
+                        if let Some(event) = self.store.read_events(session_id, head - 1, 1).await?.pop() {
+                            self.bus.publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event).await?;
+                        }
+                    }
+                    return Ok(());
+                }
                 let provider = session
                     .inference
                     .provider

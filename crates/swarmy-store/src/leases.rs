@@ -153,6 +153,12 @@ impl Store {
         if session.state != SessionState::Runnable {
             return Err(StoreError::InvalidState);
         }
+        if read::<bool>(trx, &self.interrupt_key(id))
+            .await?
+            .unwrap_or(false)
+        {
+            return Err(StoreError::InvalidState);
+        }
         let lease = Lease {
             owner,
             expires_at,

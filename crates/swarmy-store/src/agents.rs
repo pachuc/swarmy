@@ -286,6 +286,7 @@ impl Store {
         inference: &swarmy_core::InferenceSelection,
     ) -> Result<SessionRecord> {
         let session = SessionRecord {
+            interrupt_requested: false,
             session_id: id,
             agent_id: agent.unwrap_or_else(|| AgentId::from_ulid(ulid::Ulid::generate())),
             kind: agent.map_or(SessionKind::Ephemeral, |agent_id| SessionKind::Named {
@@ -311,6 +312,7 @@ impl Store {
         if session.head_seq != 0
             || session.snapshot_ref.is_some()
             || session.computer_deleted
+            || session.interrupt_requested
             || !matches!(session.state, SessionState::Idle | SessionState::Runnable)
         {
             return Err(StoreError::InvalidState);
@@ -390,6 +392,7 @@ impl Store {
                 kind: session.kind,
                 computer_deleted: false,
                 plan: Vec::new(),
+                interrupt_requested: false,
             },
         )?;
         if session.state == SessionState::Runnable {
@@ -445,6 +448,7 @@ impl Store {
                 return Ok((main, false));
             }
             let session = SessionRecord {
+                interrupt_requested: false,
                 session_id: id,
                 agent_id: agent,
                 kind: SessionKind::Named { agent_id: agent },
@@ -535,6 +539,7 @@ impl Store {
                     return Err(StoreError::InvalidMainSession);
                 }
                 let session = SessionRecord {
+                    interrupt_requested: false,
                     session_id: id,
                     agent_id: agent.agent_id,
                     kind: SessionKind::Named {

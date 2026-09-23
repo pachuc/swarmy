@@ -273,7 +273,12 @@ impl Store {
             trx.clear(&self.inference_key("inflight", claim.request_id));
             trx.clear(&claim_key);
             session.head_seq = head;
-            let state = if let (Some(snapshot), Some((event, reference))) = (snapshot, idle) {
+            let interrupt_requested = read::<bool>(&trx, &self.interrupt_key(claim.session_id))
+                .await?
+                .unwrap_or(false);
+            let state = if let (false, Some(snapshot), Some((event, reference))) =
+                (interrupt_requested, snapshot, idle)
+            {
                 trx.set(
                     &self.event_space(claim.session_id).pack(&(snapshot.seq,)),
                     event,

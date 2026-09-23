@@ -143,10 +143,20 @@ impl Store {
                         actual: session.head_seq,
                     });
                 }
+                if read::<bool>(&trx, &self.interrupt_key(id))
+                    .await?
+                    .unwrap_or(false)
+                    && !self
+                        .last_event_is_operator_interrupt(&trx, id, expected_head)
+                        .await?
+                {
+                    return Err(StoreError::InterruptPending);
+                }
                 trx.set(&self.event_space(id).pack(&(head,)), value);
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
+                trx.clear(&self.interrupt_key(id));
                 self.transition(&trx, session, SessionState::Idle, now)
                     .await
             }

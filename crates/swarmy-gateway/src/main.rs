@@ -515,7 +515,14 @@ impl Gateway {
                 Ok(false) => break,
                 Ok(true) => {
                     event.set_seq(expected_head + 1);
-                    self.notify_completion(job.session_id, &event, turn, snapshot.as_ref())
+                    let session = self.store.fetch_session(job.session_id).await?;
+                    let committed_snapshot = snapshot.as_ref().filter(|reference| {
+                        session.as_ref().is_some_and(|session| {
+                            session.state == swarmy_core::SessionState::Idle
+                                && session.snapshot_ref.as_ref() == Some(reference)
+                        })
+                    });
+                    self.notify_completion(job.session_id, &event, turn, committed_snapshot)
                         .await;
                     break;
                 }

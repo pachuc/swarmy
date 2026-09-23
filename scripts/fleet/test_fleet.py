@@ -39,11 +39,20 @@ elif args[:2] == ['--remote', 'dev']:
         print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
             'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
     elif rest[:3] == ['session', 'show', '01AAAA']:
-        print(json.dumps({'session_id':'01AAAA','state':'sleeping','agent_name':'worker-1'}))
-        print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
+        if (root / 'interrupted').exists():
+            count = int((root / 'show_count').read_text()) if (root / 'show_count').exists() else 0
+            (root / 'show_count').write_text(str(count + 1))
+            state = 'idle' if count else 'sleeping'
+        else:
+            state = 'sleeping'
+        print(json.dumps({'session_id':'01AAAA','state':state,'agent_name':'worker-1'}))
+        if state == 'sleeping':
+            print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
             'Done https://github.com/pachuc/swarmy/pull/42')}}]}}}))
+    elif rest[:3] == ['session', 'interrupt', '01AAAA']:
+        (root / 'interrupted').write_text('yes')
     else:
         print('{}')
 '''
@@ -138,6 +147,18 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(self.calls()[-1][2:5], ["agent", "delete", "worker-1"])
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertNotIn("worker-1", workers)
+
+    def test_kill_interrupts_waits_and_releases_without_completing_task(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        result = self.call("kill", "EWR2HD", "--timeout-seconds", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("still in progress", result.stdout)
+        self.assertIn(["--remote", "dev", "session", "interrupt", "01AAAA"], self.calls())
+        shows = [call for call in self.calls() if call[2:5] == ["session", "show", "01AAAA"]]
+        self.assertGreaterEqual(len(shows), 2)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()), {"worker-1": None})
+        self.assertFalse((self.root / "state" / "ewr2hd.json").exists())
+        self.assertFalse(any(call[:3] == ["task", "done", "EWR2HD"] for call in self.calls()))
 
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)

@@ -18,6 +18,7 @@ scripts/fleet/fleet status
 scripts/fleet/fleet collect EWR2HD
 scripts/fleet/fleet resume EWR2HD "Address the review comments"
 scripts/fleet/fleet release EWR2HD
+scripts/fleet/fleet kill EWR2HD --timeout-seconds 60
 scripts/fleet/fleet reset worker-2
 ```
 
@@ -37,6 +38,10 @@ testing. `release` frees the worker once that PR is merged (`--force` skips
 the check); the worker keeps its disk and warm cache. `reset` deletes an idle
 worker and its disk; the next launch recreates it. Codex Daytona remains an
 available task launcher during the transition.
+`kill` interrupts the worker's main session, waits for Idle, then frees the
+worker as `release --force` would. The tasky task stays in progress for an
+operator to relaunch or cancel. The wait defaults to `kill_timeout_seconds`
+in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
 ## Quick start
 

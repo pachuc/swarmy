@@ -155,6 +155,67 @@ fn assistant() -> Event {
     }
 }
 
+#[tokio::test]
+async fn interrupt_idle_session_exits_with_clear_error() {
+    run(|fixture| async move {
+        let id = SessionId::from_ulid(Ulid::generate());
+        fixture
+            .store
+            .create_session_with_inference(
+                id,
+                None,
+                Some("fixture:test"),
+                Timestamp::now(),
+                &swarmy_core::InferenceSelection::default(),
+            )
+            .await
+            .unwrap();
+        let output = fixture
+            .output(&["session", "interrupt", &id.to_string()])
+            .await;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("nothing to interrupt"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn session_show_json_includes_pending_interrupt() {
+    run(|fixture| async move {
+        let id = SessionId::from_ulid(Ulid::generate());
+        fixture
+            .store
+            .create_session_with_inference(
+                id,
+                None,
+                Some("fixture:test"),
+                Timestamp::now(),
+                &swarmy_core::InferenceSelection::default(),
+            )
+            .await
+            .unwrap();
+        fixture
+            .store
+            .wake_session(id, Timestamp::now())
+            .await
+            .unwrap();
+        fixture.store.interrupt_session(id).await.unwrap();
+        let output = fixture
+            .output(&["session", "show", &id.to_string(), "--json"])
+            .await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let first: serde_json::Value =
+            serde_json::from_slice(output.stdout.split(|byte| *byte == b'\n').next().unwrap())
+                .unwrap();
+        assert_eq!(first["interrupt_requested"], true);
+    })
+    .await;
+}
+
 fn successful_tool_result() -> ToolResult {
     ToolResult::Completed {
         output: "one\ntwo".into(),

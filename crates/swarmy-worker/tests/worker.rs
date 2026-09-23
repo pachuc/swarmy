@@ -137,6 +137,23 @@ impl Fixture {
         .unwrap();
     }
 
+    async fn interrupt_from_cli(&self, id: SessionId) {
+        let executable =
+            std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name("swarmy");
+        let output = Command::new(executable)
+            .args(["session", "interrupt", &id.to_string()])
+            .env("SWARMY_STORE_DIRECTORY", &self.prefix)
+            .env("SWARMY_BUS_PREFIX", &self.prefix)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
         let executable =
             std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name(service);
@@ -191,6 +208,7 @@ impl Fixture {
         self.store
             .create_session(
                 &SessionRecord {
+                    interrupt_requested: false,
                     session_id: id,
                     agent_id: AgentId::from_ulid(Ulid::generate()),
                     state: SessionState::Idle,
@@ -478,6 +496,130 @@ async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
         assert!(!events.iter().any(|event| matches!(event, Event::MessageAppended { message, .. }
             if message.role == MessageRole::System && message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("quota reached"))))));
     })).await;
+}
+
+#[tokio::test]
+async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
+    run(|f| {
+        Box::pin(async move {
+            f.rate_limit_script(1, 3600);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            f.wake(id).await;
+            timeout(WAIT, async {
+                while f.store.fetch_session(id).await.unwrap().unwrap().state
+                    != SessionState::Sleeping
+                {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let start = std::time::Instant::now();
+            f.interrupt_from_cli(id).await;
+            timeout(Duration::from_secs(1), async {
+                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
+                {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert!(f.store.inference_wait(id).await.unwrap().is_none());
+            let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
+            let last = f.store.read_events(id, head - 1, 1).await.unwrap();
+            assert!(
+                matches!(&last[0], Event::InferenceFailed { retryable: false, error, .. }
+            if error == "interrupted by operator")
+            );
+            let key = swarmy_store::CredentialKey("fake".into());
+            f.store
+                .claim_provider(
+                    &key,
+                    Timestamp::now()
+                        .checked_add(Duration::from_secs(3601))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            f.store.provider_success(&key).await.unwrap();
+            f.user_message(id).await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            );
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn inflight_inference_interrupt_ends_at_next_boundary() {
+    run(|f| {
+        Box::pin(async move {
+            f.script(false, "get_time");
+            let script = f.files.path().join("script.json");
+            let mut data: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&script).unwrap()).unwrap();
+            data["latency_ms"] = 1500.into();
+            std::fs::write(&script, serde_json::to_vec(&data).unwrap()).unwrap();
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            f.wake(id).await;
+            timeout(WAIT, async {
+                while f.store.fetch_session(id).await.unwrap().unwrap().state
+                    != SessionState::WaitingInference
+                {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            f.interrupt_from_cli(id).await;
+            assert!(
+                f.store
+                    .fetch_session(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .interrupt_requested
+            );
+            timeout(WAIT, async {
+                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
+                {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let events = f.store.read_events(id, 0, 64).await.unwrap();
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, Event::InferenceFailed { retryable: false, error, .. }
+            if error == "interrupted by operator")
+                ),
+                "events after interruption: {events:?}"
+            );
+            assert!(
+                !f.store
+                    .fetch_session(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .interrupt_requested
+            );
+            assert_eq!(f.calls(), 1);
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
