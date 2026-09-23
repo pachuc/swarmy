@@ -1,0 +1,117 @@
+name: Nightly root suites
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-root-suites
+  cancel-in-progress: false
+
+jobs:
+  root-suites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.SWARMY_NIGHTLY_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SWARMY_NIGHTLY_AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.SWARMY_NIGHTLY_AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: ${{ vars.SWARMY_NIGHTLY_AWS_REGION }}
+      SUBNET: ${{ secrets.SWARMY_NIGHTLY_SUBNET }}
+      SECURITY_GROUP: ${{ secrets.SWARMY_NIGHTLY_SECURITY_GROUP }}
+      REMOTE_NAME: nightly-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-root
+      - name: Install local client dependencies
+        run: scripts/install-dev-tools.sh
+      - name: Build remote CLI
+        run: SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --locked -p swarmy-cli
+      - name: Configure remote
+        run: |
+          set -euo pipefail
+          : "${AWS_ACCESS_KEY_ID:?missing AWS access key}"
+          : "${AWS_SECRET_ACCESS_KEY:?missing AWS secret key}"
+          : "${AWS_DEFAULT_REGION:?missing AWS region}"
+          : "${SUBNET:?missing subnet}"
+          : "${SECURITY_GROUP:?missing security group}"
+          mkdir -p .swarmy
+          chmod 700 .swarmy
+          umask 077
+          printf '[remote]\nregion = "%s"\nsubnet = "%s"\nsecurity_group = "%s"\ninstance_type = "m6id.xlarge"\ndisk_gb = 100\nmanaged_by_tag = "swarmy-nightly"\n' \
+            "$AWS_DEFAULT_REGION" "$SUBNET" "$SECURITY_GROUP" > .swarmy/config.toml
+      - name: Provision real node
+        id: provision
+        timeout-minutes: 120
+        run: target/debug/swarmy remote up "$REMOTE_NAME"
+      - name: Run node suites
+        id: suites
+        timeout-minutes: 180
+        if: steps.provision.outcome == 'success'
+        run: |
+          set -uo pipefail
+          state=".swarmy/remote/${REMOTE_NAME}.json"
+          key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_path"])' "$state")
+          address=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["public_ip"])' "$state")
+          known_hosts="${key%.*}.known_hosts"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i "$key" \
+            "ubuntu@$address" "bash /home/ubuntu/swarmy/scripts/nightly-root-suites.sh '$REMOTE_NAME'" \
+            2>&1 | tee "$RUNNER_TEMP/nightly-root.log"
+          status=${PIPESTATUS[0]}
+          failures=$(sed -n 's/^NIGHTLY_FAILED_SUITES=//p' "$RUNNER_TEMP/nightly-root.log" | tail -1)
+          if [[ $status -ne 0 && -z $failures ]]; then failures=remote-execution; fi
+          printf 'failures=%s\n' "$failures" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Terminate real node
+        id: cleanup
+        timeout-minutes: 30
+        if: always()
+        run: |
+          if [[ -f ".swarmy/remote/${REMOTE_NAME}.json" ]]; then
+            target/debug/swarmy remote down "$REMOTE_NAME"
+          fi
+      - name: Report nightly result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVISION_OUTCOME: ${{ steps.provision.outcome }}
+          SUITES_OUTCOME: ${{ steps.suites.outcome }}
+          SUITE_FAILURES: ${{ steps.suites.outputs.failures }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          failures="$SUITE_FAILURES"
+          if [[ $PROVISION_OUTCOME != success ]]; then failures="${failures:+$failures,}provisioning"; fi
+          if [[ $SUITES_OUTCOME == failure && -z $failures ]]; then failures=remote-execution; fi
+          if [[ $CLEANUP_OUTCOME != success ]]; then failures="${failures:+$failures,}cleanup"; fi
+          gh label create nightly-root-suites --repo "$GITHUB_REPOSITORY" --color D93F0B --description "Nightly real-node root suite failures" --force
+          issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label nightly-root-suites --json number --jq '.[].number')
+          if [[ -z $failures ]]; then
+            for issue in $issues; do
+              gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "The nightly root suites passed in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            done
+          else
+            first=${failures%%,*}
+            title="$(date -u +%F): nightly root suite failed: $first"
+            body=$(printf 'Failing suites: %s\n\nRun: %s/%s/actions/runs/%s\n' "$failures" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            if [[ -n $issues ]]; then
+              issue=${issues%%$'\n'*}
+              gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+              while read -r duplicate; do
+                if [[ -n $duplicate && $duplicate != "$issue" ]]; then
+                  gh issue close "$duplicate" --repo "$GITHUB_REPOSITORY" --comment "Tracking this failure in #$issue."
+                fi
+              done <<< "$issues"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" --label nightly-root-suites
+            fi
+          fi

@@ -429,6 +429,53 @@ To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
 count and environment at startup. Restart and health checks remain shared.
 
+## Nightly root suites
+
+[The nightly workflow](../.github/workflows/nightly-root.yml) runs at 03:17 UTC
+and supports `workflow_dispatch` after the workflow reaches the default
+branch. It uses `swarmy remote up` to create one
+Ubuntu EC2 `m6id.xlarge` node with a 100 GiB encrypted gp3 root volume. The
+workflow runs the NBD, volume image, CLI image and volume, node container, and
+CLI session, and root chaos test binaries with sudo on that node. It also runs the reduced
+chaos suite and the persistent, continuity, coding, and mid-command node-kill
+scenarios. It records failed suite names and opens or updates one issue labeled
+`nightly-root-suites`; a passing run closes the open issue. An `always()` step
+runs `swarmy remote down` after either success or failure. The first run may
+spend several minutes installing tools and building binaries on the fresh node.
+
+Configure these repository secrets before dispatching:
+
+- `SWARMY_NIGHTLY_AWS_ACCESS_KEY_ID` and
+  `SWARMY_NIGHTLY_AWS_SECRET_ACCESS_KEY`: AWS credentials for a dedicated
+  identity. Set `SWARMY_NIGHTLY_AWS_SESSION_TOKEN` too if the credentials are
+  temporary. Grant EC2 `DescribeImages`, `DescribeInstances`,
+  `DescribeKeyPairs`, `RunInstances`, `ImportKeyPair`, `CreateTags`,
+  `TerminateInstances`, and `DeleteKeyPair`, plus SSM `GetParameter` for the
+  default Ubuntu AMI, as described in [REMOTE.md](REMOTE.md). Restrict the
+  identity to the configured subnet and security group where possible.
+- `SWARMY_NIGHTLY_SUBNET` and `SWARMY_NIGHTLY_SECURITY_GROUP`: IDs for a
+  subnet with outbound internet access and a group that permits SSH from
+  GitHub hosted runner addresses. Arrange that inbound access in AWS before
+  scheduling the workflow; the provisioner does not change firewall rules.
+
+Set repository variable `SWARMY_NIGHTLY_AWS_REGION` to the region containing
+those resources, such as `us-east-1`. The workflow uses the ownership tag
+`swarmy-nightly`. Its token needs repository Issues write permission so it can
+open, update, and close the nightly issue.
+
+One run costs the EC2 on-demand time for a `m6id.xlarge`, the prorated 100 GiB
+gp3 root volume, one public IPv4 address, and any applicable data transfer. For
+planning, a two-hour run in `us-east-1` is roughly **$0.60 to $0.80**; the
+actual total depends on run duration and current [EC2](https://aws.amazon.com/ec2/pricing/on-demand/),
+[EBS](https://aws.amazon.com/ebs/pricing/), and
+[IPv4](https://aws.amazon.com/vpc/pricing/) rates. The instance
+store is included in the instance rate. Teardown deletes the root volume and
+imported SSH key, and the run leaves no managed S3 bucket. After the first
+manual run, verify the instance is terminated and the tagged volume and key
+pair are gone using the AWS console or the queries in the teardown section
+below. If cleanup fails, the issue names `cleanup`; preserve the workflow logs
+and manually remove the tagged resources.
+
 ## Remote node workflow
 
 The laptop runs the CLI, scheduler, worker, and inference gateway as your normal
