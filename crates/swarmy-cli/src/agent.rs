@@ -1,6 +1,6 @@
 use std::{
     fmt::Write as _,
-    io::{IsTerminal, Write as _},
+    io::{IsTerminal, Read as _, Write as _},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -52,7 +52,15 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             description,
             inference,
             github_token,
+            github_token_stdin,
         } => {
+            let github_token = if github_token_stdin {
+                let mut token = String::new();
+                std::io::stdin().read_to_string(&mut token)?;
+                Some(token.trim_end_matches(['\r', '\n']).to_owned())
+            } else {
+                github_token
+            };
             let (overrides, _) = inference_settings(inference, false)?;
             let settings = swarmy_config::Settings::load()?.settings;
             crate::selection::validate(

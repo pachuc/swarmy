@@ -1,3 +1,5 @@
 /target/
 /.dev/
+/scripts/fleet/fleet.toml
+/scripts/fleet/__pycache__/
 .swarmy/

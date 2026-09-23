@@ -1,5 +1,34 @@
 # Development
 
+## Task fleet
+
+The Python driver at `scripts/fleet/fleet` runs tasky work on a connected Swarmy
+remote. It uses the `swarmy` CLI and requires `tasky` and `gh` on `PATH`. Copy
+`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the remote,
+repository, provider defaults, and GitHub token, then run `chmod 600
+scripts/fleet/fleet.toml`. The driver refuses a config readable by other users.
+The token is piped to `swarmy agent create --github-token-stdin`; it does not
+appear in command arguments or the session log. The config file is ignored by
+Git. Swarmy stores the token privately for the named agent.
+
+```sh
+scripts/fleet/fleet launch EWR2HD --provider fake --model fake --effort medium
+scripts/fleet/fleet status
+scripts/fleet/fleet collect EWR2HD
+scripts/fleet/fleet resume EWR2HD "Address the review comments"
+scripts/fleet/fleet rm EWR2HD
+```
+
+`launch` creates `task-ewr2hd` from the `swarmy-dev` image, starts its main
+conversation in the background, and marks the task in progress. Each agent gets
+a `swarmy/ewr2hd` branch. State and JSON run output are stored under
+`.dev/fleet` with owner-only permissions. `status` reads live agent usage and
+session wait reasons. `collect` verifies that the URL in the agent's last
+message is an open PR against master from that branch before recording it in
+tasky and moving the task to testing. `rm` requires that collected PR to be
+merged, then deletes the named agent and its computer. Codex Daytona remains an
+available task launcher during the transition.
+
 ## Quick start
 
 Install the pinned backing services using the instructions below. With Rust and
