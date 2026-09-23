@@ -162,7 +162,9 @@ def pick_worker(config, selection, image, provider, model):
         if meta.get("provider") == provider and meta.get("model") == model:
             return name, workers
     if len(workers) < int(config["workers"]):
-        name = f"worker-{len(workers) + 1}"
+        # The first free number, so a reset worker's name is reused rather
+        # than colliding with a live one when the pool has gaps.
+        name = next(f"worker-{n}" for n in range(1, int(config["workers"]) + 1) if f"worker-{n}" not in workers)
         create_worker(name, config, selection, image)
         workers[name] = None
         save_workers(config, workers)
