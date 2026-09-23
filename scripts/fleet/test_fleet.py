@@ -134,6 +134,14 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(fourth.returncode, 0, fourth.stderr)
         self.assertIn("worker-1", fourth.stdout)
         self.assertEqual(len(self.creates()), 2)
+        # A different provider on a full pool falls back to an idle worker with a note.
+        self.assertEqual(self.call("release", "AAAAA2", "--force").returncode, 0)
+        other = self.call("launch", "AAAAA4", "--provider", "chatgpt", "--model", "gpt-6-sol")
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertIn("worker-2", other.stdout)
+        self.assertIn("not the requested chatgpt/gpt-6-sol", other.stderr)
+        self.assertEqual(len(self.creates()), 2)
+        self.assertEqual(self.call("release", "AAAAA4", "--force").returncode, 0)
         busy = self.call("reset", "worker-1")
         self.assertEqual(busy.returncode, 1)
         self.assertEqual(self.call("release", "AAAAA3", "--force").returncode, 0)
@@ -142,6 +150,16 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(self.calls()[-1][2:5], ["agent", "delete", "worker-1"])
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertNotIn("worker-1", workers)
+
+    def test_provider_match_prefers_matching_idle_worker(self):
+        self.assertEqual(self.call("launch", "AAAAA1", "--provider", "openrouter", "--model", "m").returncode, 0)
+        self.assertEqual(self.call("launch", "AAAAA2", "--provider", "chatgpt", "--model", "n").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA2", "--force").returncode, 0)
+        chosen = self.call("launch", "AAAAA3", "--provider", "chatgpt", "--model", "n")
+        self.assertEqual(chosen.returncode, 0, chosen.stderr)
+        self.assertIn("worker-2", chosen.stdout)
+        self.assertEqual(len(self.creates()), 2)
 
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
