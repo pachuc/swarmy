@@ -49,24 +49,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     loop {
         let event = stream.next().await?;
-        if let EventPayload::StoreRecord { record } = event.payload
-            && let Some(message) = record
-                .get("InferenceCompleted")
-                .and_then(|value| value.get("message"))
-        {
-            if let Some(parts) = message.get("parts").and_then(serde_json::Value::as_array) {
-                for part in parts {
-                    if let Some(text) = part
-                        .get("text")
-                        .and_then(|part| part.get("text"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        print!("{text}");
-                    }
-                }
-                println!();
+        if let EventPayload::StoreRecord { record } = event.payload {
+            if let Some(failure) = record.get("inference_failed") {
+                return Err(format!("inference failed: {failure}").into());
             }
-            break;
+            if let Some(message) = record
+                .get("inference_completed")
+                .and_then(|value| value.get("message"))
+            {
+                if let Some(parts) = message.get("parts").and_then(serde_json::Value::as_array) {
+                    for part in parts {
+                        if let Some(text) = part
+                            .get("text")
+                            .and_then(|part| part.get("text"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            print!("{text}");
+                        }
+                    }
+                    println!();
+                }
+                break;
+            }
         }
     }
     Ok(())

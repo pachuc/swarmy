@@ -13,6 +13,7 @@ swarmy-api-types.workspace = true
 reqwest.workspace = true
 url.workspace = true
 bytes.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

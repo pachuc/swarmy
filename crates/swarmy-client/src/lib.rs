@@ -22,14 +22,8 @@ pub enum Error {
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("invalid base URL: {0}")]
     Url(#[from] url::ParseError),
-    #[error("unexpected response status: {0}")]
-    Status(StatusCode),
-    #[error("stream ended with a gap at {log:?}, expected {expected}, got {actual}")]
-    Gap {
-        log: api::LogId,
-        expected: u64,
-        actual: u64,
-    },
+    #[error("unexpected response status {status}: {body}")]
+    Status { status: StatusCode, body: String },
 }
 
 #[derive(Clone)]
@@ -118,7 +112,7 @@ impl Client {
     /// # Errors
     /// Returns an API, transport, or response decoding error.
     pub async fn agent(&self, id: &str) -> Result<api::Agent, Error> {
-        self.get(&format!("agents/{id}"), &[]).await
+        self.get(&format!("agents/{}", segment(id)), &[]).await
     }
     /// Calls the corresponding API route.
     ///
@@ -136,7 +130,7 @@ impl Client {
         id: &str,
         body: &api::UpdateAgent,
     ) -> Result<api::Agent, Error> {
-        self.send(Method::PATCH, &format!("agents/{id}"), body)
+        self.send(Method::PATCH, &format!("agents/{}", segment(id)), body)
             .await
     }
     /// Calls the corresponding API route.
@@ -146,7 +140,7 @@ impl Client {
     pub async fn delete_agent(&self, id: &str, key: &str) -> Result<serde_json::Value, Error> {
         self.send(
             Method::DELETE,
-            &format!("agents/{id}"),
+            &format!("agents/{}", segment(id)),
             &serde_json::json!({"idempotency_key":key}),
         )
         .await
@@ -251,15 +245,20 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn images(&self) -> Result<Vec<api::Image>, Error> {
-        self.get("images", &[]).await
+    pub async fn images(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<api::Image>, Error> {
+        self.get("images", &page(after, limit)).await
     }
     /// Calls the corresponding API route.
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
     pub async fn image(&self, name: &str, tag: &str) -> Result<api::Image, Error> {
-        self.get(&format!("images/{name}/{tag}"), &[]).await
+        self.get(&format!("images/{}/{}", segment(name), segment(tag)), &[])
+            .await
     }
     /// Calls the corresponding API route.
     ///
@@ -301,7 +300,8 @@ impl Client {
     /// # Errors
     /// Returns an API, transport, or response decoding error.
     pub async fn credential(&self, provider: &str) -> Result<api::Credential, Error> {
-        self.get(&format!("credentials/{provider}"), &[]).await
+        self.get(&format!("credentials/{}", segment(provider)), &[])
+            .await
     }
     /// Calls the corresponding API route.
     ///
@@ -324,7 +324,7 @@ impl Client {
     ) -> Result<serde_json::Value, Error> {
         self.send(
             Method::DELETE,
-            &format!("credentials/{provider}"),
+            &format!("credentials/{}", segment(provider)),
             &serde_json::json!({"idempotency_key":key}),
         )
         .await
@@ -340,8 +340,16 @@ impl Client {
             buffer: Vec::new(),
             connection_id: None,
             delay: Duration::from_millis(100),
+            retry_floor: Duration::ZERO,
         }
     }
+}
+fn segment(value: &str) -> String {
+    let mut url = url::Url::parse("http://unused/").expect("static origin");
+    url.path_segments_mut()
+        .expect("hierarchical URL")
+        .push(value);
+    url.path().trim_start_matches('/').to_owned()
 }
 fn page(after: Option<&str>, limit: usize) -> Vec<(&'static str, String)> {
     let mut result = vec![("limit", limit.to_string())];
@@ -356,7 +364,10 @@ async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
     if !status.is_success() {
         return Err(match serde_json::from_slice(&bytes) {
             Ok(body) => Error::Api { status, body },
-            Err(_) => Error::Status(status),
+            Err(_) => Error::Status {
+                status,
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+            },
         });
     }
     Ok(serde_json::from_slice(&bytes)?)
@@ -367,6 +378,8 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>
 #[derive(Clone)]
 pub struct SubscriptionHandle(watch::Sender<api::Subscription>);
 impl SubscriptionHandle {
+    /// Request a change on the open stream. Invalid changes are reported once
+    /// by `next` or `next_item`; set a valid subscription to try again.
     pub fn set(&self, subscription: api::Subscription) {
         self.0.send_replace(subscription);
     }
@@ -390,6 +403,7 @@ pub struct EventStream {
     buffer: Vec<u8>,
     connection_id: Option<String>,
     delay: Duration,
+    retry_floor: Duration,
 }
 impl EventStream {
     #[must_use]
@@ -448,16 +462,19 @@ impl EventStream {
                 .await?;
             if !response.status().is_success() {
                 let failure = decode::<serde_json::Value>(response).await.unwrap_err();
-                // The server may have queued events we have not received yet.
-                // Reopen from delivered cursors rather than skip those events.
-                if matches!(&failure, Error::Api { body, .. } if body.code == "cursor_rewind" || body.code == "connection_not_found")
-                {
+                // A rejected change must not be sent again on the next poll.
+                if retryable(&failure) {
+                    // A transient rejection may have happened after the update was
+                    // applied. Reconnect with delivered cursors and the new selection.
                     self.response = None;
                     self.connection_id = None;
                     self.buffer.clear();
-                } else {
-                    return Err(failure);
+                    self.subscription = next;
+                    self.backoff().await;
+                    return Ok(());
                 }
+                self.changes.send_replace(self.subscription.clone());
+                return Err(failure);
             }
         }
         self.subscription = next;
@@ -467,7 +484,7 @@ impl EventStream {
     /// protocol and API errors are returned. Cursor advancement happens only on delivery.
     ///
     /// # Errors
-    /// Returns an API, decoding, or sequence gap error.
+    /// Returns an API or decoding error.
     pub async fn next(&mut self) -> Result<api::Event, Error> {
         loop {
             if let StreamItem::Event(event) = self.next_item().await? {
@@ -478,10 +495,10 @@ impl EventStream {
     /// Receive durable events or opt-in live token deltas.
     ///
     /// # Errors
-    /// Returns an API, decoding, or sequence gap error.
+    /// Returns an API or decoding error.
     pub async fn next_item(&mut self) -> Result<StreamItem, Error> {
         let mut changes = self.changes.subscribe();
-        loop {
+        'receive: loop {
             if subscription_changed(&changes.borrow(), &self.subscription) {
                 changes.borrow_and_update();
                 self.update().await?;
@@ -489,7 +506,7 @@ impl EventStream {
             if self.response.is_none()
                 && let Err(error) = self.connect().await
             {
-                if matches!(error, Error::Api { .. } | Error::Status(_)) {
+                if !retryable(&error) {
                     return Err(error);
                 }
                 self.backoff().await;
@@ -499,7 +516,11 @@ impl EventStream {
             while let Some(end) = self.buffer.windows(2).position(|part| part == b"\n\n") {
                 let frame = self.buffer.drain(..end + 2).collect::<Vec<_>>();
                 let frame = String::from_utf8(frame)?;
-                if let Some(item) = parse_frame(&frame)? {
+                let parsed = parse_frame(&frame)?;
+                if let Some(retry) = parsed.retry {
+                    self.retry_floor = retry;
+                }
+                if let Some(item) = parsed.item {
                     let StreamItem::Event(event) = item else {
                         return Ok(item);
                     };
@@ -513,11 +534,12 @@ impl EventStream {
                             continue;
                         }
                         if event.sequence != cursor.sequence + 1 {
-                            return Err(Error::Gap {
-                                log: event.log_id,
-                                expected: cursor.sequence + 1,
-                                actual: event.sequence,
-                            });
+                            // Discard queued data and request replay from the delivered cursor.
+                            self.response = None;
+                            self.connection_id = None;
+                            self.buffer.clear();
+                            self.backoff().await;
+                            continue 'receive;
                         }
                         cursor.sequence = event.sequence;
                         self.delay = Duration::from_millis(100);
@@ -536,9 +558,27 @@ impl EventStream {
             }
         }
     }
+    /// Reopen after a caller-visible error, retaining delivered cursors.
+    pub async fn restart(&mut self) {
+        self.response = None;
+        self.connection_id = None;
+        self.buffer.clear();
+        self.backoff().await;
+    }
     async fn backoff(&mut self) {
-        tokio::time::sleep(self.delay).await;
+        let base = self.delay.max(self.retry_floor);
+        let jitter =
+            Duration::from_millis(rand::random_range(0..=base.as_millis().min(1000) as u64));
+        tokio::time::sleep(base + jitter).await;
         self.delay = (self.delay * 2).min(Duration::from_secs(5));
+    }
+}
+fn retryable(error: &Error) -> bool {
+    match error {
+        Error::Api { status, .. } | Error::Status { status, .. } => {
+            status.is_server_error() || *status == StatusCode::TOO_MANY_REQUESTS
+        }
+        _ => true,
     }
 }
 fn subscription_changed(requested: &api::Subscription, current: &api::Subscription) -> bool {
@@ -553,13 +593,21 @@ fn subscription_changed(requested: &api::Subscription, current: &api::Subscripti
 fn log_key(log: &api::LogId) -> String {
     format!("{log:?}")
 }
-fn parse_frame(frame: &str) -> Result<Option<StreamItem>, Error> {
+struct ParsedFrame {
+    item: Option<StreamItem>,
+    retry: Option<Duration>,
+}
+fn parse_frame(frame: &str) -> Result<ParsedFrame, Error> {
     let mut kind = "";
     let mut data = String::new();
+    let mut retry = None;
     for line in frame.lines() {
         let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(value) = line.strip_prefix("event:") {
             kind = value.trim();
+        }
+        if let Some(value) = line.strip_prefix("retry:") {
+            retry = value.trim().parse::<u64>().ok().map(Duration::from_millis);
         }
         if let Some(value) = line.strip_prefix("data:") {
             if !data.is_empty() {
@@ -568,8 +616,8 @@ fn parse_frame(frame: &str) -> Result<Option<StreamItem>, Error> {
             data.push_str(value.trim_start());
         }
     }
-    match kind {
-        "event" => Ok(Some(StreamItem::Event(serde_json::from_str(&data)?))),
+    let item = match kind {
+        "event" => Some(StreamItem::Event(serde_json::from_str(&data)?)),
         "token_delta" => {
             #[derive(serde::Deserialize)]
             struct Delta {
@@ -577,13 +625,14 @@ fn parse_frame(frame: &str) -> Result<Option<StreamItem>, Error> {
                 payload: api::EventPayload,
             }
             let delta: Delta = serde_json::from_str(&data)?;
-            Ok(Some(StreamItem::TokenDelta {
+            Some(StreamItem::TokenDelta {
                 log_id: delta.log_id,
                 payload: delta.payload,
-            }))
+            })
         }
-        _ => Ok(None),
-    }
+        _ => None,
+    };
+    Ok(ParsedFrame { item, retry })
 }
 
 #[cfg(test)]
@@ -593,6 +642,7 @@ mod tests {
         Json, Router,
         extract::{Query, State},
         http::StatusCode as HttpStatus,
+        response::IntoResponse,
         response::sse::{Event as SseEvent, Sse},
         routing::get,
     };
@@ -680,7 +730,7 @@ mod tests {
     fn parses_token_delta_without_advancing_cursor() {
         let item = parse_frame("event: token_delta\ndata: {\"log_id\":{\"kind\":\"session\",\"id\":\"s\"},\"payload\":{\"type\":\"token_delta\",\"data\":{\"turn_id\":\"t\",\"position\":0,\"text\":\"hi\"}}}\n\n").unwrap();
         assert!(
-            matches!(item, Some(StreamItem::TokenDelta { log_id: api::LogId::Session(id), payload: api::EventPayload::TokenDelta { text, .. } }) if id == "s" && text == "hi")
+            matches!(item.item, Some(StreamItem::TokenDelta { log_id: api::LogId::Session(id), payload: api::EventPayload::TokenDelta { text, .. } }) if id == "s" && text == "hi")
         );
     }
     #[tokio::test]
@@ -749,6 +799,145 @@ mod tests {
                 .unwrap(),
             updated
         );
+    }
+
+    #[tokio::test]
+    async fn gap_reconnects_from_delivered_cursor() {
+        let attempts = Arc::new(AtomicU64::new(0));
+        let app = Router::new().route(
+            "/v1/events",
+            get({
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        let numbers = if attempt == 0 { vec![2] } else { vec![1, 2] };
+                        let events = numbers.into_iter().map(|sequence| {
+                            let event = api::Event {
+                                log_id: api::LogId::Session("s".into()),
+                                sequence,
+                                payload: api::EventPayload::Idle {
+                                    session_id: "s".into(),
+                                },
+                            };
+                            Ok::<_, Infallible>(
+                                SseEvent::default()
+                                    .event("event")
+                                    .data(serde_json::to_string(&event).unwrap()),
+                            )
+                        });
+                        Sse::new(futures_util::stream::iter(events))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("s".into()),
+                sequence: 0,
+            }],
+            token_deltas: false,
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert_eq!(stream.next().await.unwrap().sequence, 2);
+        assert!(attempts.load(Ordering::SeqCst) >= 2);
+    }
+    #[test]
+    fn path_segments_are_encoded() {
+        assert_eq!(segment("a/b ?"), "a%2Fb%20%3F");
+    }
+    #[tokio::test]
+    async fn non_json_four_xx_keeps_body() {
+        let app = Router::new().route(
+            "/v1/agents/missing",
+            get(|| async { (HttpStatus::BAD_REQUEST, "malformed path") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let Err(Error::Status { status, body }) = client.agent("missing").await else {
+            panic!("expected status")
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "malformed path");
+    }
+    #[tokio::test]
+    async fn stream_retries_transient_status_and_obeys_retry_floor() {
+        let attempts = Arc::new(AtomicU64::new(0));
+        let app = Router::new().route(
+            "/v1/events",
+            get({
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return (HttpStatus::SERVICE_UNAVAILABLE, "unavailable")
+                                .into_response();
+                        }
+                        let event = api::Event {
+                            log_id: api::LogId::Session("s".into()),
+                            sequence: 1,
+                            payload: api::EventPayload::Idle {
+                                session_id: "s".into(),
+                            },
+                        };
+                        let events = futures_util::stream::iter([
+                            Ok::<_, Infallible>(
+                                SseEvent::default()
+                                    .event("connected")
+                                    .retry(Duration::from_millis(200))
+                                    .data("{}"),
+                            ),
+                            Ok(SseEvent::default()
+                                .event("event")
+                                .data(serde_json::to_string(&event).unwrap())),
+                        ]);
+                        Sse::new(events).into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("s".into()),
+                sequence: 0,
+            }],
+            token_deltas: false,
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(stream.retry_floor, Duration::from_millis(200));
     }
 
     #[tokio::test]
