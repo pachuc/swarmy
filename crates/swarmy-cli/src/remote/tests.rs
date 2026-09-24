@@ -945,7 +945,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     down::run(&cloud, &state, &node, Duration::ZERO)
         .await
         .unwrap();
-    assert_eq!(&*cloud.profiles_deleted.borrow(), &["swarmy-bucket-test"]);
+    // The role and profile stay with the bucket; a later up reuses them.
+    assert!(cloud.profiles_deleted.borrow().is_empty());
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
     observe_running(&cloud);
     up::run(
@@ -961,8 +962,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     .unwrap();
     assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 2);
-    assert_eq!(cloud.profile_creates.borrow().len(), 2);
+    assert_eq!(cloud.role_creates.borrow().len(), 1);
+    assert_eq!(cloud.profile_creates.borrow().len(), 1);
 }
 
 #[tokio::test]
