@@ -5,6 +5,12 @@ pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
     Up {
         name: String,
+        /// Override the first node's EC2 instance type
+        #[arg(long)]
+        instance_type: Option<String>,
+        /// Override the first node's EBS root disk size in GiB
+        #[arg(long)]
+        disk_gb: Option<u32>,
         #[arg(long)]
         bucket: Option<String>,
         /// Maximum sandboxes on this node (zero for a control-only node)
@@ -29,6 +35,12 @@ pub enum Command {
         /// Maximum sandboxes on the joining node
         #[arg(long)]
         sandboxes: Option<u32>,
+        /// Override this node's EC2 instance type
+        #[arg(long)]
+        instance_type: Option<String>,
+        /// Override this node's EBS root disk size in GiB
+        #[arg(long)]
+        disk_gb: Option<u32>,
         /// Copy the `ChatGPT` credential and keyring and run a gateway on this node
         #[arg(long)]
         copy_credential: bool,
@@ -82,6 +94,50 @@ mod tests {
             panic!("expected up");
         };
         assert_eq!(bucket.as_deref(), Some("example-bucket"));
+    }
+
+    #[test]
+    fn node_shape_flags_parse_for_both_commands() {
+        let Command::Up {
+            instance_type,
+            disk_gb,
+            ..
+        } = Cli::try_parse_from([
+            "remote",
+            "up",
+            "demo",
+            "--instance-type",
+            "m6i.large",
+            "--disk-gb",
+            "40",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected up")
+        };
+        assert_eq!(instance_type.as_deref(), Some("m6i.large"));
+        assert_eq!(disk_gb, Some(40));
+        let Command::AddNode {
+            instance_type,
+            disk_gb,
+            ..
+        } = Cli::try_parse_from([
+            "remote",
+            "add-node",
+            "demo",
+            "--instance-type",
+            "m6id.4xlarge",
+            "--disk-gb",
+            "100",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected add-node")
+        };
+        assert_eq!(instance_type.as_deref(), Some("m6id.4xlarge"));
+        assert_eq!(disk_gb, Some(100));
     }
 
     #[test]

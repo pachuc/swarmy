@@ -41,18 +41,15 @@ Ubuntu 24.04, the `ubuntu` SSH user, cloud-init, and passwordless sudo.
 Sandbox nodes need an instance type with local NVMe instance storage. A
 control-only first node (`--sandboxes 0`) can start on an m6i.large without
 local NVMe; its volume server and scratch directories remain on its EBS root
-disk. Joining nodes currently reuse the first node's saved instance type, so
-keep an NVMe-backed type in the configuration when using `add-node` until a
-per-node type option is available. Provisioning mounts an unused instance-store
+disk. Provisioning mounts an unused instance-store
 disk at `/mnt/swarmy-local` for sandbox nodes and puts their volume caches and
 dirty data there. EBS holds the repository, backing databases, and node identity.
 The script refuses to format EBS disks or reuse unrecognized filesystems.
 
 ```sh
-swarmy remote up demo --services node --sandboxes 0
-# Add one or more NVMe-backed sandbox nodes after the control node is ready.
-swarmy remote add-node demo
+swarmy remote up demo --instance-type m6i.large --disk-gb 40 --sandboxes 0
 # up prints image build time, total elapsed time, and an SSH command
+swarmy remote add-node demo --instance-type m6id.4xlarge --disk-gb 100
 swarmy remote connect demo
 # connect reports total, address probing, and tunnel startup seconds
 swarmy doctor --remote demo
@@ -77,6 +74,12 @@ absolute paths must also be inside the checkout. The recipe must contain
 `target`. It still registers as `base-ubuntu:NAME`. Use `--no-image` to skip the
 build; this does not set a remote default. These options cannot be combined.
 `add-node` reuses the stack's registry and does not rebuild the image.
+Both commands accept `--instance-type` and `--disk-gb` overrides; absent flags
+use `[remote]` defaults for the first node and its saved settings for joining
+nodes. Each node's resolved settings remain in its state record. The example
+uses a 40 GiB `m6i.large` control node with no sandboxes and a 100 GiB
+`m6id.4xlarge` sandbox node with local NVMe. Without `--sandboxes 0`, a node
+hosting sandboxes must have local NVMe.
 
 After a successful build, the node record stores `default_image`.
 `connect` copies it into `<state directory>/remote/<name>.profile.json` alongside

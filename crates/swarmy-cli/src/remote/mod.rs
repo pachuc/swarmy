@@ -29,6 +29,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             bucket,
             sandboxes,
+            instance_type,
+            disk_gb,
             no_image,
             image_recipe,
             services,
@@ -49,6 +51,11 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             if let Some(bucket) = bucket {
                 settings.remote.bucket = Some(bucket);
             }
+            NodeShape {
+                instance_type,
+                disk_gb,
+            }
+            .apply(&mut settings.remote)?;
             let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
             let cloud = aws::Aws::new(&settings.remote.region).await;
             tokio::select! {
@@ -62,6 +69,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::AddNode {
             name,
             sandboxes,
+            instance_type,
+            disk_gb,
             copy_credential,
         } => {
             let mut settings = loaded.settings;
@@ -76,7 +85,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let host = ssh::Ssh::discover()?;
             let cloud = aws::Aws::new(&node.region).await;
             tokio::select! {
-                result = Box::pin(add_node::run(&cloud, &host, &state, &name, sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), Duration::from_secs(5), options.as_ref())) => result,
+                result = Box::pin(add_node::run(&cloud, &host, &state, &name, sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), NodeShape { instance_type, disk_gb }, Duration::from_secs(5), options.as_ref())) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
@@ -96,6 +105,29 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
         Command::Logs { name } => logs::run(&state, &name).await,
         Command::Status => unreachable!("status runs in swarmy-session"),
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct NodeShape {
+    instance_type: Option<String>,
+    disk_gb: Option<u32>,
+}
+
+impl NodeShape {
+    fn apply(self, settings: &mut RemoteSettings) -> Result<()> {
+        if let Some(instance_type) = self.instance_type {
+            settings.instance_type = instance_type;
+        }
+        if let Some(disk_gb) = self.disk_gb {
+            settings.disk_gb = disk_gb;
+        }
+        anyhow::ensure!(
+            !settings.instance_type.is_empty(),
+            "instance type must not be empty"
+        );
+        anyhow::ensure!(settings.disk_gb > 0, "root disk size must be positive");
+        Ok(())
     }
 }
 

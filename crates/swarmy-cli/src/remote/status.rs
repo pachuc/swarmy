@@ -21,6 +21,7 @@ struct Status {
     instance_id: String,
     instance_state: String,
     sandboxes: u32,
+    instance_type: Option<String>,
     tunnel: bool,
     registrations: Vec<Registration>,
     registration_error: Option<String>,
@@ -35,6 +36,7 @@ struct NodeStatus {
     name: String,
     instance_id: String,
     instance_state: String,
+    instance_type: Option<String>,
     private_ip: String,
     sandboxes: u32,
 }
@@ -88,6 +90,10 @@ pub async fn run(json: bool) -> Result<()> {
             status.nodes.push(NodeStatus {
                 name: child.name.clone(),
                 instance_id: child.instance_id.clone(),
+                instance_type: child
+                    .launch_settings
+                    .as_ref()
+                    .map(|settings| settings.instance_type.clone()),
                 private_ip: child.private_ip.clone(),
                 sandboxes: child.sandboxes,
                 instance_state: instance_state(reachable(child).await),
@@ -101,18 +107,20 @@ pub async fn run(json: bool) -> Result<()> {
     } else {
         for status in statuses {
             println!(
-                "{} instance={} state={} sandboxes={} tunnel={}",
+                "{} instance={} type={} state={} sandboxes={} tunnel={}",
                 status.name,
                 status.instance_id,
+                status.instance_type.as_deref().unwrap_or("unknown"),
                 status.instance_state,
                 status.sandboxes,
                 if status.tunnel { "up" } else { "down" }
             );
             for node in status.nodes {
                 println!(
-                    "  {} instance={} state={} private_ip={} sandboxes={}",
+                    "  {} instance={} type={} state={} private_ip={} sandboxes={}",
                     node.name,
                     node.instance_id,
+                    node.instance_type.as_deref().unwrap_or("unknown"),
                     node.instance_state,
                     node.private_ip,
                     node.sandboxes
@@ -170,6 +178,10 @@ where
         instance_id: node.instance_id.clone(),
         instance_state: instance_state(reachable),
         sandboxes: node.sandboxes,
+        instance_type: node
+            .launch_settings
+            .as_ref()
+            .map(|settings| settings.instance_type.clone()),
         nodes: Vec::new(),
         images: Vec::new(),
         services: Vec::new(),
@@ -286,6 +298,12 @@ mod tests {
             .unwrap(),
             cached_images: vec![],
         };
+        let mut node = node;
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            instance_type: "m6i.large".into(),
+            disk_gb: 40,
+            ..Default::default()
+        });
         let status = inspect(&node, true, true, || async {
             Ok((
                 vec![record(1), record(90)],
@@ -312,6 +330,7 @@ mod tests {
         assert_eq!(status.images[0].name, "base-ubuntu");
         assert_eq!(status.images[0].tag.0, "test");
         assert!(status.image_error.is_none());
+        assert_eq!(status.instance_type.as_deref(), Some("m6i.large"));
         assert!(status.registrations[0].heartbeating);
         assert!(!status.registrations[1].heartbeating);
         let absent = inspect(&node, true, true, || async {

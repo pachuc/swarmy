@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use swarmy_config::RemoteNode;
 
-use super::{Cloud, Host, Launch, key_name, state::State, wait_running};
+use super::{Cloud, Host, Launch, NodeShape, key_name, state::State, wait_running};
 
 pub async fn run(
     cloud: &impl Cloud,
@@ -11,13 +11,15 @@ pub async fn run(
     state: &State,
     name: &str,
     sandboxes: u32,
+    shape: NodeShape,
     delay: Duration,
     options: Option<&super::services::Options<'_>>,
 ) -> Result<()> {
     let mut primary = state.require(name)?;
-    let settings = primary.launch_settings.clone().context(
+    let mut settings = primary.launch_settings.clone().context(
         "remote has no saved launch configuration; recreate it with remote up before adding nodes",
     )?;
+    shape.apply(&mut settings)?;
     ensure!(
         !primary.instance_id.is_empty(),
         "first node has not launched"
