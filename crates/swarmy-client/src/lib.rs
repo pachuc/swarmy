@@ -329,6 +329,120 @@ impl Client {
         )
         .await
     }
+    /// Read a CLI compatibility projection without linking the store.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_sessions(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<api::CliSession>, Error> {
+        self.get("cli/sessions", &page(after, limit)).await
+    }
+    /// Read a CLI compatibility projection.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_session(&self, id: &str) -> Result<api::CliSessionDetail, Error> {
+        self.get(&format!("cli/sessions/{}", segment(id)), &[])
+            .await
+    }
+    /// Read a CLI compatibility projection.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_agents(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<api::CliAgent>, Error> {
+        self.get("cli/agents", &page(after, limit)).await
+    }
+    /// Read a CLI compatibility projection.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_agent(&self, name: &str) -> Result<api::CliAgent, Error> {
+        self.get(&format!("cli/agents/{}", segment(name)), &[])
+            .await
+    }
+    /// Read image metadata used by the CLI.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_image(&self, name: &str, tag: &str) -> Result<api::CliImage, Error> {
+        self.get(
+            &format!("cli/images/{}/{}", segment(name), segment(tag)),
+            &[],
+        )
+        .await
+    }
+    /// Read full catalog model rows for CLI rendering.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_models(
+        &self,
+        q: Option<&str>,
+        provider: Option<&str>,
+        reasoning: bool,
+    ) -> Result<Vec<api::Model>, Error> {
+        let mut query = vec![("reasoning", reasoning.to_string())];
+        if let Some(q) = q {
+            query.push(("q", q.into()));
+        }
+        if let Some(provider) = provider {
+            query.push(("provider", provider.into()));
+        }
+        self.get("models", &query).await
+    }
+    /// Read full provider rows for CLI rendering.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_providers(&self) -> Result<Vec<api::Provider>, Error> {
+        self.get("providers", &[]).await
+    }
+    /// Submit a CLI management mutation.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_create_agent(
+        &self,
+        body: &api::CliAgentChoice,
+    ) -> Result<api::CliAgent, Error> {
+        self.send(Method::POST, "cli/agents", body).await
+    }
+    /// Submit a CLI management mutation.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_update_agent(
+        &self,
+        name: &str,
+        body: &api::CliAgentChoice,
+    ) -> Result<api::CliAgent, Error> {
+        self.send(
+            Method::PATCH,
+            &format!("cli/agents/{}/settings", segment(name)),
+            body,
+        )
+        .await
+    }
+    /// Read credential metadata in the legacy CLI format.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_credentials(&self) -> Result<Vec<api::CliCredential>, Error> {
+        self.get("cli/credentials", &[]).await
+    }
+    /// Read credential metadata in the legacy CLI format.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_credential(&self, provider: &str) -> Result<api::CliCredential, Error> {
+        self.get(&format!("cli/credentials/{}", segment(provider)), &[])
+            .await
+    }
+    /// Submit an encrypted credential through the API.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_set_credential(
+        &self,
+        body: &api::CliCredentialInput,
+    ) -> Result<api::CliSaved, Error> {
+        self.send(Method::POST, "cli/credentials", body).await
+    }
     #[must_use]
     pub fn stream(&self, subscription: api::Subscription) -> EventStream {
         let (changes, _) = watch::channel(subscription.clone());

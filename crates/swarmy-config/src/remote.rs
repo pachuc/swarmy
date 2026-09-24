@@ -142,6 +142,10 @@ pub struct RemoteProfile {
     pub nats_url: String,
     pub s3_endpoint: String,
     #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
+    pub api_token: Option<String>,
+    #[serde(default)]
     pub s3_bucket: Option<String>,
     #[serde(default)]
     pub s3_region: Option<String>,
@@ -167,6 +171,10 @@ impl RemoteProfile {
         settings.fdb_cluster_file = self.fdb_cluster_file.to_string_lossy().into_owned();
         settings.nats_url.clone_from(&self.nats_url);
         settings.s3_endpoint.clone_from(&self.s3_endpoint);
+        settings.api.url.clone_from(&self.api_url);
+        if let Some(token) = &self.api_token {
+            settings.api.token.clone_from(token);
+        }
         if let (Some(bucket), Some(region)) = (&self.s3_bucket, &self.s3_region) {
             settings.s3_bucket.clone_from(bucket);
             settings.s3_region.clone_from(region);
@@ -314,6 +322,8 @@ mod tests {
             fdb_cluster_file: state.join("test.cluster"),
             nats_url: "nats://127.0.0.1:14222".into(),
             s3_endpoint: "http://127.0.0.1:18333".into(),
+            api_url: Some("http://127.0.0.1:18742".into()),
+            api_token: Some("fixture-token".into()),
             s3_bucket: None,
             s3_region: None,
             default_image: Some("base-ubuntu:test".into()),
@@ -346,6 +356,8 @@ mod tests {
         );
         assert_eq!(loaded.settings.nats_url, profile.nats_url);
         assert_eq!(loaded.settings.s3_endpoint, profile.s3_endpoint);
+        assert_eq!(loaded.settings.api.url, profile.api_url);
+        assert_eq!(loaded.settings.api.token, "fixture-token");
         assert_eq!(
             Path::new(&loaded.settings.fdb_cluster_file),
             profile.fdb_cluster_file

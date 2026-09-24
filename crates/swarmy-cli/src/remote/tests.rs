@@ -685,9 +685,14 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
         assert_eq!(result.is_err(), fail_image);
         let node = state.require("demo").unwrap();
         assert_eq!(node.default_image.as_deref(), expected);
-        let profile =
-            super::connect::new_profile(dir.path(), &node, node.ports, dir.path().join("socket"))
-                .unwrap();
+        let profile = super::connect::new_profile(
+            dir.path(),
+            &node,
+            node.ports,
+            8742,
+            dir.path().join("socket"),
+        )
+        .unwrap();
         let profile: swarmy_config::RemoteProfile =
             serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
         assert_eq!(profile.default_image.as_deref(), expected);
@@ -926,9 +931,14 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         Some("swarmy-bucket-test")
     );
     let node = state.require("bucket-test").unwrap();
-    let profile =
-        super::connect::new_profile(dir.path(), &node, node.ports, dir.path().join("socket"))
-            .unwrap();
+    let profile = super::connect::new_profile(
+        dir.path(),
+        &node,
+        node.ports,
+        8742,
+        dir.path().join("socket"),
+    )
+    .unwrap();
     assert_eq!(profile.s3_bucket.as_deref(), Some("test-bucket"));
     assert_eq!(profile.s3_region.as_deref(), Some("us-east-1"));
     assert!(profile.s3_endpoint.is_empty());

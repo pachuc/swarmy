@@ -47,6 +47,8 @@ struct Fixture {
     directory: String,
     prefix: String,
     url: String,
+    api_url: String,
+    api_token: String,
 }
 
 impl Fixture {
@@ -59,6 +61,8 @@ impl Fixture {
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
             .env("SWARMY_BUS_PREFIX", &self.prefix)
             .env("SWARMY_DEFAULT_IMAGE", "fixture:test")
+            .env("SWARMY_API_URL", &self.api_url)
+            .env("SWARMY_API_TOKEN", &self.api_token)
             .env("TOKIO_WORKER_THREADS", "2")
             .stdin(Stdio::null())
             .kill_on_drop(true);
@@ -112,23 +116,38 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = Ulid::generate().to_string();
     let directory = format!("cli-test-{prefix}");
+    let store = Store::open(
+        Some(&cluster),
+        Some(std::slice::from_ref(&directory)),
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let bus = Bus::connect(
+        &url,
+        Config {
+            prefix: Some(SubjectToken::new(&prefix).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    let api_token = Ulid::generate().to_string();
+    let mut api = swarmy_api::AppState::new(
+        store.clone(),
+        bus.clone(),
+        api_token.clone(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+    );
+    api.default_image = Some("fixture:test".into());
+    let api_server = tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
     let fixture = Fixture {
-        store: Store::open(
-            Some(&cluster),
-            Some(std::slice::from_ref(&directory)),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap(),
-        bus: Bus::connect(
-            &url,
-            Config {
-                prefix: Some(SubjectToken::new(&prefix).unwrap()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap(),
+        store: store.clone(),
+        bus: bus.clone(),
+        api_url,
+        api_token,
         cluster,
         directory,
         prefix,
@@ -136,6 +155,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     };
     image_fixture::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;
+    api_server.abort();
     fixture.cleanup().await;
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);

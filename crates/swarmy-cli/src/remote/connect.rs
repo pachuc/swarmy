@@ -50,12 +50,19 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     let address = ssh::reachable_address(&node).await?;
     let probe_elapsed = probing.elapsed();
     let startup = Instant::now();
-    let (reservations, ports) = reserve_ports(&node)?;
+    let (mut reservations, ports) = reserve_ports(&node)?;
+    let api_port = reserve_api(&node, &mut reservations)?;
     // A private, short directory avoids the Unix socket path length limit.
     let socket_dir = tempfile::Builder::new()
         .prefix("swarmy-ssh-")
         .tempdir_in("/tmp")?;
-    let profile = new_profile(state_dir, &node, ports, socket_dir.path().join("control"))?;
+    let profile = new_profile(
+        state_dir,
+        &node,
+        ports,
+        api_port,
+        socket_dir.path().join("control"),
+    )?;
     let (mut command, log_path) = tunnel_command(&node, &profile, state_dir, &address)?;
     command.kill_on_drop(false);
     drop(reservations);
@@ -103,6 +110,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
             format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
         };
         state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
+        profile.api_token = read_remote_api_token(&node, &profile, &address).await?;
         state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
         Ok::<_, anyhow::Error>(())
     })
@@ -124,10 +132,60 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     )
 }
 
+fn reserve_api(
+    node: &swarmy_config::RemoteNode,
+    reservations: &mut Vec<TcpListener>,
+) -> Result<u16> {
+    if !remote_api(node) {
+        return Ok(0);
+    }
+    let listener = reserve(8742)?;
+    let port = listener.local_addr()?.port();
+    reservations.push(listener);
+    Ok(port)
+}
+async fn read_remote_api_token(
+    node: &swarmy_config::RemoteNode,
+    profile: &RemoteProfile,
+    address: &str,
+) -> Result<Option<String>> {
+    if !remote_api(node) {
+        return Ok(None);
+    }
+    let output = ssh::command(node)?
+        .arg("-S")
+        .arg(&profile.socket_path)
+        .arg(address)
+        .arg("cat swarmy/.swarmy/config.toml")
+        .output()
+        .await?;
+    ensure!(
+        output.status.success(),
+        "read remote API configuration failed"
+    );
+    let remote: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
+    let token = remote
+        .get("api")
+        .and_then(|api| api.get("token"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("");
+    ensure!(
+        !token.is_empty(),
+        "remote API has no token; run swarmy dev up on the node"
+    );
+    Ok(Some(token.to_owned()))
+}
+fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
+    node.launch_settings
+        .as_ref()
+        .is_some_and(|settings| settings.services == swarmy_config::RemoteServices::Node)
+}
+
 pub(super) fn new_profile(
     state_dir: &Path,
     node: &swarmy_config::RemoteNode,
     ports: RemotePorts,
+    api_port: u16,
     socket_path: std::path::PathBuf,
 ) -> Result<RemoteProfile> {
     Ok(RemoteProfile {
@@ -143,6 +201,13 @@ pub(super) fn new_profile(
         } else {
             format!("http://127.0.0.1:{}", ports.s3)
         },
+        api_url: Some(if api_port == 0 {
+            let api = swarmy_config::Settings::load_base()?.settings.api;
+            api.url.unwrap_or_else(|| format!("http://{}", api.listen))
+        } else {
+            format!("http://127.0.0.1:{api_port}")
+        }),
+        api_token: None,
         s3_bucket: node.bucket().map(str::to_owned),
         s3_region: node.bucket().map(|_| node.region.clone()),
         default_image: node.default_image.clone(),
@@ -174,6 +239,12 @@ fn tunnel_command(
     address: &str,
 ) -> Result<(tokio::process::Command, std::path::PathBuf)> {
     let ports = profile.ports;
+    let api_port = profile
+        .api_url
+        .as_deref()
+        .and_then(|url| url::Url::parse(url).ok())
+        .and_then(|url| url.port())
+        .unwrap_or(8742);
     let mut command = ssh::command(node)?;
     command
         .args(["-N", "-M", "-S"])
@@ -182,6 +253,7 @@ fn tunnel_command(
     for (local, remote) in [(ports.fdb, node.ports.fdb), (ports.nats, node.ports.nats)]
         .into_iter()
         .chain((profile.s3_bucket.is_none()).then_some((ports.s3, node.ports.s3)))
+        .chain(remote_api(node).then_some((api_port, 8742)))
     {
         ensure!(remote != 0, "remote ports must be nonzero");
         command
@@ -328,6 +400,8 @@ mod tests {
             fdb_cluster_file: dir.path().join("cluster"),
             nats_url: String::new(),
             s3_endpoint: String::new(),
+            api_url: None,
+            api_token: None,
             s3_bucket: None,
             s3_region: None,
             default_image: None,
@@ -348,6 +422,18 @@ mod tests {
                 assert!(args.contains(&format!("127.0.0.1:{port}:{destination}:{port}")));
             }
         }
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            services: swarmy_config::RemoteServices::Node,
+            ..swarmy_config::RemoteSettings::default()
+        });
+        let (command, _) = tunnel_command(&node, &profile, dir.path(), &node.public_ip).unwrap();
+        assert!(
+            command
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "127.0.0.1:8742:127.0.0.1:8742")
+        );
+        node.launch_settings = None;
         let mut bucket_profile = profile;
         bucket_profile.s3_bucket = Some("bucket-test".into());
         bucket_profile.s3_region = Some("us-east-1".into());

@@ -4,14 +4,80 @@ use std::{
     process::{Command, Output},
 };
 
-struct Fixture(tempfile::TempDir);
+struct Fixture {
+    dir: tempfile::TempDir,
+    endpoint: String,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
+    std::sync::OnceLock::new();
 
 impl Fixture {
-    fn new(config: &str) -> Self {
+    fn new(config: &str) -> Option<Self> {
+        let (Ok(cluster), Ok(nats)) = (
+            std::env::var("SWARMY_FDB_CLUSTER_FILE"),
+            std::env::var("SWARMY_NATS_URL"),
+        ) else {
+            eprintln!("skipping models integration: dev stack unavailable");
+            return None;
+        };
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join(".swarmy")).unwrap();
-        fs::write(directory.path().join(".swarmy/config.toml"), config).unwrap();
-        Self(directory)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let config = format!("{config}\n[api]\nurl = '{endpoint}'\ntoken = 'fixture-token'\n");
+        let config_path = directory.path().join(".swarmy/config.toml");
+        fs::write(&config_path, config).unwrap();
+        let settings = swarmy_config::Settings::read(&config_path).unwrap();
+        let catalog = settings.catalog().unwrap();
+        NETWORK.get_or_init(swarmy_store::boot);
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (ready, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let store = swarmy_store::Store::open(
+                    Some(&cluster),
+                    Some(&[format!("models-test-{}", ulid::Ulid::generate())]),
+                    std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+                )
+                .await
+                .unwrap();
+                let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
+                    .await
+                    .unwrap();
+                let state = swarmy_api::AppState::new(store, bus, "fixture-token".into(), catalog);
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                ready.send(()).unwrap();
+                axum::serve(listener, swarmy_api::router(state))
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
+            });
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        Some(Self {
+            dir: directory,
+            endpoint,
+            shutdown: Some(shutdown),
+            server: Some(server),
+        })
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -22,10 +88,10 @@ impl Fixture {
             }
         }
         command
-            .current_dir(self.0.path())
+            .current_dir(self.dir.path())
             .env_remove("OPENAI_API_KEY")
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path())
+            .env("HOME", self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path())
             .args(args)
             .output()
             .unwrap()
@@ -48,7 +114,9 @@ impl Fixture {
 
 #[test]
 fn lists_sorted_snapshot_models_as_json() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let rows = fixture.json(&["models", "ls", "--json"]);
     let rows = rows.as_array().unwrap();
     assert!(rows.iter().any(|row| row["key"] == "openai/gpt-5.5"));
@@ -72,7 +140,9 @@ fn lists_sorted_snapshot_models_as_json() {
 
 #[test]
 fn show_resolves_model_ids_with_slashes_and_includes_compat() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let output = fixture.success(&["models", "show", "openrouter/anthropic/claude-sonnet-4.6"]);
     let model: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(model["id"], "anthropic/claude-sonnet-4.6");
@@ -83,7 +153,9 @@ fn show_resolves_model_ids_with_slashes_and_includes_compat() {
 
 #[test]
 fn search_and_lookup_errors_are_clear() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     for (args, message) in [
         (
             vec!["models", "search", "nonexistent"],
@@ -107,7 +179,7 @@ fn search_and_lookup_errors_are_clear() {
 
 #[test]
 fn commands_share_configured_catalog_and_filters() {
-    let fixture = Fixture::new(
+    let Some(fixture) = Fixture::new(
         r#"
 [custom_providers.private]
 api = "OpenAiCompletions"
@@ -124,7 +196,9 @@ provider = "openai"
 id = "gpt-5.5"
 context_window = 42
 "#,
-    );
+    ) else {
+        return;
+    };
     let rows = fixture.json(&[
         "models",
         "ls",
@@ -135,6 +209,18 @@ context_window = 42
     ]);
     assert_eq!(rows.as_array().unwrap().len(), 1);
     assert_eq!(rows[0]["id"], "team/reasoner");
+    assert_eq!(
+        serde_json::json!({
+            "key": rows[0]["key"], "provider": rows[0]["provider"],
+            "id": rows[0]["id"], "effective_api": rows[0]["effective_api"],
+            "effective_base_url": rows[0]["effective_base_url"],
+        }),
+        serde_json::json!({
+            "key":"private/team/reasoner", "provider":"private", "id":"team/reasoner",
+            "effective_api":"OpenAiCompletions", "effective_base_url":"http://localhost:8000/v1"
+        })
+    );
+
     assert_eq!(rows[0]["effective_api"], "OpenAiCompletions");
     assert_eq!(rows[0]["effective_base_url"], "http://localhost:8000/v1");
     let shown = fixture.json(&["models", "show", "private/team/reasoner", "--json"]);
@@ -156,7 +242,9 @@ context_window = 42
 
 #[test]
 fn terminal_tables_fit_eighty_columns() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     for args in [
         vec!["models", "providers"],
         vec!["models", "ls", "--provider", "anthropic"],
@@ -173,10 +261,12 @@ fn terminal_tables_fit_eighty_columns() {
 
 #[test]
 fn probe_streams_fake_and_completes_tool_round_trip() {
-    let fixture = Fixture::new(
+    let Some(fixture) = Fixture::new(
         "model = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
-    );
-    let script = fixture.0.path().join("script.json");
+    ) else {
+        return;
+    };
+    let script = fixture.dir.path().join("script.json");
     fs::write(
         &script,
         r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"ready"}}"#,
@@ -215,9 +305,23 @@ fn probe_streams_fake_and_completes_tool_round_trip() {
 
 #[test]
 fn probe_missing_credential_names_auth_set() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let output = fixture.run(&["models", "probe", "openai/gpt-5.5"]);
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("swarmy auth set openai"), "{error}");
+}
+
+#[test]
+fn stopped_api_error_names_endpoint() {
+    let Some(mut fixture) = Fixture::new("") else {
+        return;
+    };
+    fixture.shutdown.take().unwrap().send(()).unwrap();
+    fixture.server.take().unwrap().join().unwrap();
+    let output = fixture.run(&["models", "ls"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&fixture.endpoint));
 }

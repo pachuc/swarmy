@@ -379,6 +379,10 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
             .into_owned();
     }
     settings.resolve_paths(&layout.root);
+    if settings.api.token.is_empty() {
+        // A usable API must reject unauthenticated traffic, including on loopback.
+        settings.api.token = ulid::Ulid::generate().to_string();
+    }
     write_private(&layout.config, &settings.to_toml()?)?;
     // Load again so environment overrides win, without persisting those overrides.
     settings = Settings::load()?.settings;
