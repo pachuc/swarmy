@@ -19,6 +19,7 @@ pub struct Conversation {
     client: Client,
     stream: EventStream,
     pending: Option<StreamItem>,
+    min_sequence: u64,
 }
 
 fn image_ref(text: &str) -> Result<api::ImageRef> {
@@ -110,6 +111,7 @@ impl Conversation {
             id: session.id.clone(),
             agent_name: agent_record.map(|a| a.name),
             created,
+            min_sequence: session.head_sequence,
             session,
             last_text: String::new(),
             tool_count: 0,
@@ -140,6 +142,7 @@ impl Conversation {
                 },
             )
             .await?;
+        self.min_sequence = appended.sequence;
         self.session.head_sequence = appended.sequence;
         self.session.state = api::SessionState::Runnable;
         Ok(appended.turn_id)
@@ -236,6 +239,9 @@ impl Conversation {
         run: bool,
         progress: &mut TurnProgress,
     ) -> Result<bool> {
+        if sequence < self.min_sequence {
+            return Ok(false);
+        }
         if json {
             println!(
                 "{}",
@@ -259,6 +265,7 @@ impl Conversation {
                         serde_json::json!({"event":"session_idle","session_id":self.id})
                     );
                 }
+                self.min_sequence = sequence;
                 self.session.head_sequence = sequence;
                 self.session.state = api::SessionState::Idle;
                 if let Some(error) = progress.error.take() {
