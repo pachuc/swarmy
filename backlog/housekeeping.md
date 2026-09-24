@@ -45,3 +45,9 @@ be forgotten. Do them opportunistically alongside related work.
   `crates/swarmy-session/src/runtime.rs` are unreachable from `swarmy` but
   still callable through `swarmy-session` directly. Remove them so there is
   one implementation.
+
+- `chat::named::open_chat_follows_a_summarized_main_with_a_notice`
+  (`crates/swarmy-cli/tests/session/chat_named.rs`) timed out once in CI on
+  2026-09-24 waiting for the typed message to appear on the successor
+  session; it passed on master minutes earlier. Timing-sensitive; widen the
+  wait or make the TUI fixture signal readiness before typing.
