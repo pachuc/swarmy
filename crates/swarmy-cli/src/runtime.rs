@@ -164,7 +164,7 @@ fn main() -> anyhow::Result<()> {
             Command::Gc { dry_run } => gc::run(dry_run, cli.json).await,
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
-            Command::Agent { command } => agent::run(command, cli.json).await,
+            Command::Agent { .. } => unreachable!("agent management uses the API"),
             Command::Run {
                 prompt,
                 image,

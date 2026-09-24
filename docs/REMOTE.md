@@ -133,10 +133,11 @@ An interrupted or failed `up` or `add-node` retains its state so `down` can clea
 client token identifies a launch if its response was lost before the instance id
 was saved. Run `down` before retrying an interrupted `up` with the same name.
 A completed bucket-backed remote accepts a repeat `up --bucket` without creating
-more resources. `down` waits for
-termination of every node and deletes their AWS keys and local records even
-when instances were already deleted. Joining nodes are terminated first. API failures retain state for retry. Do not delete the state
-directory while cloud resources still exist.
+more resources. `down` attempts instance termination and key-pair deletion
+independently, and reports missing AWS permissions. It removes local state once
+all instances are confirmed terminated or never launched, even if key-pair
+cleanup is denied. If an instance could still exist, it retains state for retry.
+The bucket, objects, IAM role, and instance profile remain for reuse.
 
 On the node, `sudo systemctl status swarmy-stack swarmyd` shows the services,
 and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script

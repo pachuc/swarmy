@@ -47,6 +47,7 @@ pub async fn run(
         name: name.into(),
         region: settings.region.clone(),
         instance_id: String::new(),
+        launch_attempted: false,
         public_ip: String::new(),
         private_ip: String::new(),
         key_path: state
@@ -115,6 +116,8 @@ async fn provision(
         .import_key(&key_name, public_key, &settings.managed_by_tag)
         .await?;
     println!("Launching {} from {image}", settings.instance_type);
+    node.launch_attempted = true;
+    state.save(node)?;
     node.instance_id = cloud
         .launch(&Launch {
             settings: settings.clone(),

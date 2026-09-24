@@ -54,6 +54,9 @@ models:
 	python3 scripts/models/generate.py
 
 check:
+	python3 -m unittest discover -s benchmarks -p 'test_*.py'
+	python3 images/base-desktop/tests/browser-helper.py
+	python3 crates/swarmyd/tests/files_test.py
 	bash scripts/test-remote-s3-env.sh
 	bash scripts/test-remote-upgrade.sh
 	$(CARGO) fmt --all --check

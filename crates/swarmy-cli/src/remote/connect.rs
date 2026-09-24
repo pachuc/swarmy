@@ -163,12 +163,17 @@ async fn read_remote_api_token(
         output.status.success(),
         "read remote API configuration failed"
     );
-    let remote: swarmy_config::Settings = toml::from_str(&String::from_utf8(output.stdout)?)?;
+    let remote: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
+    let token = remote
+        .get("api")
+        .and_then(|api| api.get("token"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("");
     ensure!(
-        !remote.api.token.is_empty(),
+        !token.is_empty(),
         "remote API has no token; run swarmy dev up on the node"
     );
-    Ok(Some(remote.api.token))
+    Ok(Some(token.to_owned()))
 }
 fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
     node.launch_settings

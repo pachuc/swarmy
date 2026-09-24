@@ -49,7 +49,11 @@ async fn submit(
 ) -> Result<()> {
     let body = serde_json::json!({"idempotency_key": ulid::Ulid::generate().to_string(),
         "provider":provider,"record":record});
-    crate::api_client::call(endpoint, client.cli_set_credential(&body)).await?;
+    crate::api_client::call(
+        endpoint,
+        client.cli_set_credential(&serde_json::from_value(body)?),
+    )
+    .await?;
     Ok(())
 }
 

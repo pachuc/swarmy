@@ -76,23 +76,36 @@ async fn projections_match_store_records_and_catalog() {
         .open_main_session(agent.agent_id, jiff::Timestamp::now())
         .await
         .unwrap();
-    let rows = client.cli_agents(None, 10).await.unwrap();
+    let rows: Vec<serde_json::Value> = client
+        .cli_agents(None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| serde_json::to_value(row).unwrap())
+        .collect();
     assert_eq!(rows[0]["agent_id"], agent.agent_id.to_string());
     assert_eq!(rows[0]["session_count"], 1);
-    let detailed = client.cli_agent("fixture-agent").await.unwrap();
+    let detailed = serde_json::to_value(client.cli_agent("fixture-agent").await.unwrap()).unwrap();
     assert_eq!(detailed["name"], agent.name);
     assert_eq!(detailed["sessions"][0]["session_id"], session.to_string());
-    let rows = client.cli_sessions(None, 10).await.unwrap();
+    let rows: Vec<serde_json::Value> = client
+        .cli_sessions(None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| serde_json::to_value(row).unwrap())
+        .collect();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
     assert_eq!(rows[0]["session_id"], session.to_string());
     assert_eq!(
         rows[0]["state"],
         serde_json::to_value(stored.state).unwrap()
     );
-    let detail = client.cli_session(&session.to_string()).await.unwrap();
+    let detail =
+        serde_json::to_value(client.cli_session(&session.to_string()).await.unwrap()).unwrap();
     assert_eq!(detail["session"]["session_id"], session.to_string());
     assert_eq!(
-        client.cli_image("fixture", "test").await.unwrap()["name"],
+        client.cli_image("fixture", "test").await.unwrap().name,
         "fixture"
     );
     assert!(
@@ -110,12 +123,12 @@ async fn projections_match_store_records_and_catalog() {
         },
         updated_at: jiff::Timestamp::now(),
     };
-    client.cli_set_credential(&serde_json::json!({"idempotency_key":"credential","provider":"test-provider","record":record})).await.unwrap();
+    client.cli_set_credential(&serde_json::from_value(serde_json::json!({"idempotency_key":"credential","provider":"test-provider","record":record})).unwrap()).await.unwrap();
     let summaries = client.cli_credentials().await.unwrap();
-    assert_eq!(summaries[0]["provider"], "test-provider");
-    assert_eq!(summaries[0]["kind"], "api_key");
+    assert_eq!(summaries[0].provider, "test-provider");
+    assert_eq!(summaries[0].kind, "api_key");
     assert_eq!(
-        client.cli_credential("test-provider").await.unwrap()["status"],
+        client.cli_credential("test-provider").await.unwrap().status,
         "ready"
     );
     client
@@ -140,10 +153,10 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     let Some((client, store, server)) = fixture().await else {
         return;
     };
-    let created = client.cli_create_agent(&serde_json::json!({
+    let created = serde_json::to_value(client.cli_create_agent(&serde_json::from_value(serde_json::json!({
         "idempotency_key":"create", "name":"worker", "image":"fixture:test", "description":"test",
         "provider":"fake", "model":"scripted", "memory":2048, "gpu":"shared", "github_token":"synthetic-github-token"
-    })).await.unwrap();
+    })).unwrap()).await.unwrap()).unwrap();
     assert_eq!(created["name"], "worker");
     assert!(!created.to_string().contains("synthetic-github-token"));
     let id =
@@ -153,28 +166,58 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         Some("synthetic-github-token")
     );
     assert_eq!(created["requirements"]["memory_mib"], 2048);
-    let replayed = client.cli_create_agent(&serde_json::json!({
+    let replayed = serde_json::to_value(client.cli_create_agent(&serde_json::from_value(serde_json::json!({
         "idempotency_key":"create", "name":"worker", "image":"fixture:test", "description":"test",
         "provider":"fake", "model":"scripted", "memory":2048, "gpu":"shared", "github_token":"synthetic-github-token"
-    })).await.unwrap();
+    })).unwrap()).await.unwrap()).unwrap();
     assert_eq!(replayed["agent_id"], created["agent_id"]);
-    let updated = client
+    let updated = serde_json::to_value(client
         .cli_update_agent(
             "worker",
-            &serde_json::json!({
+            &serde_json::from_value(serde_json::json!({
                 "idempotency_key":"update","memory":1024,"gpu":"none","resets":["provider","model"]
-            }),
+            })).unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()).unwrap();
     assert_eq!(updated["requirements"]["memory_mib"], 1024);
     assert!(updated["provider"].is_null());
     assert!(updated["model"].is_null());
     assert_eq!(
-        client.cli_agent("worker").await.unwrap()["agent_id"],
+        client.cli_agent("worker").await.unwrap().agent_id,
         created["agent_id"]
     );
     client.delete_agent("worker", "delete").await.unwrap();
     assert!(store.get_agent_by_name("worker").await.unwrap().is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn agent_update_rejects_invalid_merged_model() {
+    let Some((client, store, server)) = fixture().await else {
+        return;
+    };
+    let agent = store
+        .create_agent("selection-test", "fixture:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let request = serde_json::from_value(serde_json::json!({
+        "idempotency_key":"invalid-model", "model":"bogus"
+    }))
+    .unwrap();
+    let error = client
+        .cli_update_agent("selection-test", &request)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid_selection"), "{error}");
+    assert!(
+        store
+            .get_agent(agent.agent_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model
+            .is_none()
+    );
     server.abort();
 }

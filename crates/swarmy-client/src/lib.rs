@@ -347,13 +347,13 @@ impl Client {
         &self,
         after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<serde_json::Value>, Error> {
+    ) -> Result<Vec<api::CliSession>, Error> {
         self.get("cli/sessions", &page(after, limit)).await
     }
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_session(&self, id: &str) -> Result<serde_json::Value, Error> {
+    pub async fn cli_session(&self, id: &str) -> Result<api::CliSessionDetail, Error> {
         self.get(&format!("cli/sessions/{}", segment(id)), &[])
             .await
     }
@@ -364,20 +364,20 @@ impl Client {
         &self,
         after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<serde_json::Value>, Error> {
+    ) -> Result<Vec<api::CliAgent>, Error> {
         self.get("cli/agents", &page(after, limit)).await
     }
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_agent(&self, name: &str) -> Result<serde_json::Value, Error> {
+    pub async fn cli_agent(&self, name: &str) -> Result<api::CliAgent, Error> {
         self.get(&format!("cli/agents/{}", segment(name)), &[])
             .await
     }
     /// Read image metadata used by the CLI.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_image(&self, name: &str, tag: &str) -> Result<serde_json::Value, Error> {
+    pub async fn cli_image(&self, name: &str, tag: &str) -> Result<api::CliImage, Error> {
         self.get(
             &format!("cli/images/{}/{}", segment(name), segment(tag)),
             &[],
@@ -392,7 +392,7 @@ impl Client {
         q: Option<&str>,
         provider: Option<&str>,
         reasoning: bool,
-    ) -> Result<Vec<serde_json::Value>, Error> {
+    ) -> Result<Vec<api::Model>, Error> {
         let mut query = vec![("reasoning", reasoning.to_string())];
         if let Some(q) = q {
             query.push(("q", q.into()));
@@ -400,21 +400,21 @@ impl Client {
         if let Some(provider) = provider {
             query.push(("provider", provider.into()));
         }
-        self.get("cli/models", &query).await
+        self.get("models", &query).await
     }
     /// Read full provider rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_providers(&self) -> Result<Vec<serde_json::Value>, Error> {
-        self.get("cli/providers", &[]).await
+    pub async fn cli_providers(&self) -> Result<Vec<api::Provider>, Error> {
+        self.get("providers", &[]).await
     }
     /// Submit a CLI management mutation.
     /// # Errors
     /// Returns transport, API, or decoding failures.
     pub async fn cli_create_agent(
         &self,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, Error> {
+        body: &api::CliAgentChoice,
+    ) -> Result<api::CliAgent, Error> {
         self.send(Method::POST, "cli/agents", body).await
     }
     /// Submit a CLI management mutation.
@@ -423,8 +423,8 @@ impl Client {
     pub async fn cli_update_agent(
         &self,
         name: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, Error> {
+        body: &api::CliAgentChoice,
+    ) -> Result<api::CliAgent, Error> {
         self.send(
             Method::PATCH,
             &format!("cli/agents/{}/settings", segment(name)),
@@ -435,13 +435,13 @@ impl Client {
     /// Read credential metadata in the legacy CLI format.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_credentials(&self) -> Result<Vec<serde_json::Value>, Error> {
+    pub async fn cli_credentials(&self) -> Result<Vec<api::CliCredential>, Error> {
         self.get("cli/credentials", &[]).await
     }
     /// Read credential metadata in the legacy CLI format.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_credential(&self, provider: &str) -> Result<serde_json::Value, Error> {
+    pub async fn cli_credential(&self, provider: &str) -> Result<api::CliCredential, Error> {
         self.get(&format!("cli/credentials/{}", segment(provider)), &[])
             .await
     }
@@ -450,8 +450,8 @@ impl Client {
     /// Returns transport, API, or decoding failures.
     pub async fn cli_set_credential(
         &self,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, Error> {
+        body: &api::CliCredentialInput,
+    ) -> Result<api::CliSaved, Error> {
         self.send(Method::POST, "cli/credentials", body).await
     }
     #[must_use]

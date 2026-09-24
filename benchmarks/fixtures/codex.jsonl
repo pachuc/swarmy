@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"fixture"}
+{"type":"item.started","item":{"type":"command_execution","id":"call-1"}}
+{"type":"item.completed","item":{"type":"command_execution","id":"call-1"}}
+{"type":"turn.completed","usage":{"input_tokens":21,"output_tokens":8}}
