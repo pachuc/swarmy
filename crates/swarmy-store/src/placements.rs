@@ -6,7 +6,7 @@ use swarmy_core::{
     AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
 };
 
-use crate::{Result, Store, StoreError, check_limit, read, scan, write};
+use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, check_limit, read, scan, write};
 
 /// Last node reporting local scratch for a computer. Bytes are an estimate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,11 +173,6 @@ impl Store {
             .pack(&("placement_count", node.as_ulid().to_bytes().as_slice()))
     }
 
-    fn placement_memory_key(&self, node: NodeId) -> Vec<u8> {
-        self.root
-            .pack(&("placement_memory", node.as_ulid().to_bytes().as_slice()))
-    }
-
     pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
         self.placement_key("computer_memory", agent)
     }
@@ -200,16 +195,36 @@ impl Store {
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn committed_memory(&self, node: NodeId) -> Result<u64> {
-        self.transaction(|trx| async move {
-            if let Some(bytes) = read(&trx, &self.placement_memory_key(node)).await? {
-                return Ok(bytes);
+        self.transaction(|trx| async move { self.committed_bytes(&trx, node).await })
+            .await
+    }
+
+    /// Sum the requirements of every placement on the node. Deriving the figure
+    /// from the placements themselves means it cannot drift when a placement is
+    /// released by a process that accounts for memory differently, which
+    /// happened during the upgrade that introduced memory budgets.
+    async fn committed_bytes(&self, trx: &Transaction, node: NodeId) -> Result<u64> {
+        let (start, end) = self
+            .root
+            .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
+            .range();
+        let mut begin = start;
+        let mut total: u64 = 0;
+        loop {
+            let page = scan(trx, (begin.clone(), end.clone()), MAX_SCAN_LIMIT).await?;
+            let full = page.len() == MAX_SCAN_LIMIT;
+            for (key, value) in page {
+                let record: PlacementRecord = decode(&value)?;
+                total = total
+                    .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
+                    .ok_or(StoreError::InvalidState)?;
+                begin = key;
+                begin.push(0);
             }
-            let count: u32 = read(&trx, &self.placement_count_key(node))
-                .await?
-                .unwrap_or(0);
-            Ok(u64::from(count) * 768 * 1024 * 1024)
-        })
-        .await
+            if !full {
+                return Ok(total);
+            }
+        }
     }
 
     async fn reserve_computer(
@@ -230,37 +245,16 @@ impl Store {
             return Err(StoreError::NodeAtCapacity);
         }
         let bytes = self.requirement_bytes(trx, agent).await?;
-        let memory_key = self.placement_memory_key(node);
-        let committed: u64 = read(trx, &memory_key)
-            .await?
-            .unwrap_or(u64::from(count) * 768 * 1024 * 1024);
+        let committed = self.committed_bytes(trx, node).await?;
         if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
             return Err(StoreError::NodeAtCapacity);
         }
-        write(
-            trx,
-            &memory_key,
-            &committed
-                .checked_add(bytes)
-                .ok_or(StoreError::InvalidState)?,
-        )?;
         write(trx, &key, &(count + 1))
     }
 
-    async fn free_computer(&self, trx: &Transaction, node: NodeId, agent: AgentId) -> Result<()> {
+    async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
         let key = self.placement_count_key(node);
         let count: u32 = read(trx, &key).await?.ok_or(StoreError::Corrupt)?;
-        let memory_key = self.placement_memory_key(node);
-        let committed: u64 = read(trx, &memory_key)
-            .await?
-            .unwrap_or(u64::from(count) * 768 * 1024 * 1024);
-        write(
-            trx,
-            &memory_key,
-            &committed
-                .checked_sub(self.requirement_bytes(trx, agent).await?)
-                .ok_or(StoreError::Corrupt)?,
-        )?;
         write(trx, &key, &count.checked_sub(1).ok_or(StoreError::Corrupt)?)
     }
 
