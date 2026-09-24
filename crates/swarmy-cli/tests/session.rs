@@ -26,11 +26,11 @@ use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
-    Event, LeaseOwnerId, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
-    SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
+    Event, LeaseOwnerId, LiveTokenDelta, Message, MessageId, MessageRole, Nudge, Part, RequestId,
+    SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -47,6 +47,8 @@ struct Fixture {
     directory: String,
     prefix: String,
     url: String,
+    api_url: String,
+    api_token: String,
 }
 
 impl Fixture {
@@ -59,6 +61,8 @@ impl Fixture {
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
             .env("SWARMY_BUS_PREFIX", &self.prefix)
             .env("SWARMY_DEFAULT_IMAGE", "fixture:test")
+            .env("SWARMY_API_URL", &self.api_url)
+            .env("SWARMY_API_TOKEN", &self.api_token)
             .env("TOKIO_WORKER_THREADS", "2")
             .stdin(Stdio::null())
             .kill_on_drop(true);
@@ -70,6 +74,20 @@ impl Fixture {
             .await
             .expect("CLI hung")
             .unwrap()
+    }
+
+    async fn publish_token(&self, id: SessionId, text: &str, position: u64) {
+        self.bus
+            .publish_live(
+                LiveFeed::ApiTokenDeltas(id),
+                &LiveTokenDelta {
+                    turn_id: id.to_string(),
+                    position,
+                    text: text.into(),
+                },
+            )
+            .await
+            .unwrap();
     }
 
     async fn cleanup(&self) {
@@ -112,23 +130,63 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = Ulid::generate().to_string();
     let directory = format!("cli-test-{prefix}");
+    let store = Store::open(
+        Some(&cluster),
+        Some(std::slice::from_ref(&directory)),
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let bus = Bus::connect(
+        &url,
+        Config {
+            prefix: Some(SubjectToken::new(&prefix).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    // These tests drive fake workers and gateways directly; advertise their
+    // availability so the API chat health gate does not wait for real daemons.
+    for role in [
+        ServiceRole::Worker,
+        ServiceRole::Scheduler,
+        ServiceRole::Gateway,
+    ] {
+        let detail = if role == ServiceRole::Gateway {
+            ServiceDetail::Providers(vec!["fake".into(), "openai".into()])
+        } else {
+            ServiceDetail::None
+        };
+        store
+            .put_service_heartbeat(&ServiceHeartbeat {
+                role,
+                instance_id: Ulid::generate().to_string(),
+                version: "test".into(),
+                host: "test".into(),
+                started_at: Timestamp::now(),
+                last_seen: Timestamp::now(),
+                detail,
+            })
+            .await
+            .unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    let api_token = Ulid::generate().to_string();
+    let mut api = swarmy_api::AppState::new(
+        store.clone(),
+        bus.clone(),
+        api_token.clone(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+    );
+    api.default_image = Some("fixture:test".into());
+    let api_server = tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
     let fixture = Fixture {
-        store: Store::open(
-            Some(&cluster),
-            Some(std::slice::from_ref(&directory)),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap(),
-        bus: Bus::connect(
-            &url,
-            Config {
-                prefix: Some(SubjectToken::new(&prefix).unwrap()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap(),
+        store: store.clone(),
+        bus: bus.clone(),
+        api_url,
+        api_token,
         cluster,
         directory,
         prefix,
@@ -136,6 +194,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     };
     image_fixture::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;
+    api_server.abort();
     fixture.cleanup().await;
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
@@ -255,7 +314,7 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
         .await
         .unwrap();
     if live {
-        for text in ["scripted ", "answer"] {
+        for (position, text) in [(0, "scripted "), (9, "answer")] {
             fixture
                 .bus
                 .publish_live(
@@ -267,6 +326,7 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
                 )
                 .await
                 .unwrap();
+            fixture.publish_token(id, text, position).await;
         }
     }
     let request_id = RequestId::for_step(id, lease.seq);
@@ -590,6 +650,7 @@ async fn text_is_flushed_before_the_turn_finishes() {
             )
             .await
             .unwrap();
+        fixture.publish_token(id, "scripted ", 0).await;
         let mut prefix = [0; 9];
         timeout(WAIT, child.stdout.as_mut().unwrap().read_exact(&mut prefix))
             .await
@@ -643,27 +704,33 @@ async fn text_is_flushed_before_the_turn_finishes() {
 #[tokio::test]
 async fn run_requires_default_image_and_explicit_image_overrides_it() {
     run(|fixture| async move {
-        let missing = fixture
+        // The API server, not the client settings, owns the default image.
+        let server = serve(&fixture, true).await;
+        let default = fixture
             .command(&["run", "hello"])
             .env("SWARMY_DEFAULT_IMAGE", "")
             .output()
             .await
             .unwrap();
-        assert!(!missing.status.success());
-        let error = String::from_utf8_lossy(&missing.stderr);
         assert!(
-            error.contains("default_image") && error.contains("SWARMY_DEFAULT_IMAGE"),
-            "{error}"
+            default.status.success(),
+            "{}",
+            String::from_utf8_lossy(&default.stderr)
         );
-        assert!(
+        let sessions = fixture.store.list_sessions(None, 64).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
             fixture
                 .store
-                .list_sessions(None, 64)
+                .session_image(sessions[0].session_id)
+                .await
+                .unwrap(),
+            fixture
+                .store
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
                 .await
                 .unwrap()
-                .is_empty()
         );
-        let server = serve(&fixture, true).await;
         let output = timeout(
             WAIT,
             fixture
@@ -696,6 +763,37 @@ async fn run_rejects_unknown_images_before_creating_a_session() {
             error.contains("missing:tag") && error.contains("registered images: fixture:test"),
             "{error}"
         );
+        assert!(
+            fixture
+                .store
+                .list_sessions(None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn unavailable_api_reports_endpoint_before_creating_a_session() {
+    run(|fixture| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let output = timeout(
+            WAIT,
+            fixture
+                .command(&["run", "hello", "--image", "fixture:test"])
+                .env("SWARMY_API_URL", &endpoint)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("API at {endpoint}:")), "{stderr}");
         assert!(
             fixture
                 .store

@@ -1,5 +1,5 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
-use super::{ApiResult, AppState, error, id, replay, session, storage};
+use super::{ApiResult, AppState, error, id, replay, session_with_next, storage};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -176,13 +176,12 @@ pub async fn create(
                 Err(failure) => return Err(storage(failure)),
             }
         };
-        Ok(Json(session(
-            &store
-                .fetch_session(id)
-                .await
-                .map_err(storage)?
-                .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?,
-        )))
+        let record = store
+            .fetch_session(id)
+            .await
+            .map_err(storage)?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+        Ok(Json(session_with_next(&store, &record).await?))
     })
     .await
 }
@@ -357,7 +356,7 @@ pub async fn wait_idle(
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))
         {
-            return Ok(Json(session(&record)));
+            return Ok(Json(session_with_next(&state.store, &record).await?));
         }
         loop {
             tokio::select! {

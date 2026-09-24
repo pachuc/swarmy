@@ -1,6 +1,7 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
 mod agent;
 mod agent_command;
+mod api_client;
 mod auth;
 mod auth_command;
 mod bench;

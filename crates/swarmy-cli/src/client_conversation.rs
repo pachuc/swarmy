@@ -16,10 +16,14 @@ pub struct Conversation {
     pub session: api::Session,
     pub last_text: String,
     pub tool_count: usize,
+    pub tool_result: Option<serde_json::Value>,
+    observer: Option<tokio::sync::mpsc::UnboundedSender<swarmy_core::TurnStage>>,
     client: Client,
     stream: EventStream,
-    pending: Option<StreamItem>,
+    pending: std::collections::VecDeque<StreamItem>,
     min_sequence: u64,
+    current_turn: Option<String>,
+    poll: tokio::time::Interval,
 }
 
 fn image_ref(text: &str) -> Result<api::ImageRef> {
@@ -32,6 +36,102 @@ fn image_ref(text: &str) -> Result<api::ImageRef> {
         name: name.into(),
         tag: tag.into(),
     })
+}
+
+async fn create_session(
+    client: &Client,
+    image: Option<&str>,
+    agent_id: Option<String>,
+    new: bool,
+    selection: swarmy_core::InferenceSelection,
+) -> Result<api::Session> {
+    let image = image.map(image_ref).transpose()?;
+    let result = client
+        .create_session(&api::CreateSession {
+            idempotency_key: ulid::Ulid::generate().to_string(),
+            agent_id,
+            new,
+            image: image.clone(),
+            provider: selection.provider,
+            model: selection.model,
+            effort: selection
+                .effort
+                .map(serde_json::to_value)
+                .transpose()?
+                .map(serde_json::from_value)
+                .transpose()?,
+        })
+        .await;
+    match result {
+        Err(swarmy_client::Error::Api { body, .. }) if body.code == "image_not_found" => {
+            let images = client.images(None, 100).await?;
+            let known = images
+                .iter()
+                .map(|image| format!("{}:{}", image.name, image.tag))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "image {} not found; registered images: {known}",
+                image
+                    .as_ref()
+                    .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
+            );
+        }
+        other => Ok(other?),
+    }
+}
+
+pub async fn wait_healthy(client: &Client, provider: Option<&str>) -> Result<()> {
+    let (_, endpoint) = crate::api_client::connect()?;
+    let mut last = String::new();
+    loop {
+        let health = crate::api_client::call(&endpoint, client.health()).await?;
+        let services: Vec<api::ServiceHealth> = serde_json::from_value(
+            health
+                .get("services")
+                .cloned()
+                .context("health has no services")?,
+        )?;
+        let provider = provider.or_else(|| {
+            health
+                .get("default_provider")
+                .and_then(serde_json::Value::as_str)
+        });
+        let problem = service_problem(&services, provider);
+        if problem.is_empty() {
+            return Ok(());
+        }
+        let message = format!(
+            "{problem}{}; waiting for service health...",
+            provider.map_or(String::new(), |p| format!(" ({p})"))
+        );
+        if message != last {
+            eprintln!("{message}");
+            last = message;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+fn print_tools(record: &serde_json::Value) {
+    if let Some(call) = record
+        .get("tool_call_requested")
+        .and_then(|v| v.get("call"))
+    {
+        println!(
+            "Tool call {} {} {}",
+            call.get("call_id").unwrap_or(&serde_json::Value::Null),
+            call.get("tool").unwrap_or(&serde_json::Value::Null),
+            call.get("arguments").unwrap_or(&serde_json::Value::Null)
+        );
+    }
+    if let Some(completed) = record.get("tool_call_completed") {
+        println!(
+            "Tool result {} {}",
+            completed.get("call_id").unwrap_or(&serde_json::Value::Null),
+            completed.get("result").unwrap_or(&serde_json::Value::Null)
+        );
+    }
 }
 
 impl Conversation {
@@ -66,24 +166,22 @@ impl Conversation {
         let session = if let Some(id) = id {
             client.session(&id).await?
         } else {
-            let image = image.as_deref().map(image_ref).transpose()?;
-            client
-                .create_session(&api::CreateSession {
-                    idempotency_key: ulid::Ulid::generate().to_string(),
-                    agent_id: agent_record.as_ref().map(|a| a.id.clone()),
-                    new,
-                    image,
-                    provider: selection.provider,
-                    model: selection.model,
-                    effort: selection
-                        .effort
-                        .map(serde_json::to_value)
-                        .transpose()?
-                        .map(serde_json::from_value)
-                        .transpose()?,
-                })
-                .await?
+            create_session(
+                &client,
+                image.as_deref(),
+                agent_record.as_ref().map(|a| a.id.clone()),
+                new,
+                selection,
+            )
+            .await?
         };
+        let mut session = session;
+        while session.state == api::SessionState::Completed {
+            let Some(next) = client.successor(&session).await? else {
+                break;
+            };
+            session = next;
+        }
         let agent_record = if agent_record.is_none() {
             if let Some(agent_id) = &session.agent_id {
                 Some(client.agent(agent_id).await?)
@@ -112,12 +210,19 @@ impl Conversation {
             agent_name: agent_record.map(|a| a.name),
             created,
             min_sequence: session.head_sequence,
+            current_turn: None,
+            poll: tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(3),
+                Duration::from_secs(3),
+            ),
             session,
             last_text: String::new(),
             tool_count: 0,
+            tool_result: None,
+            observer: None,
             client,
             stream,
-            pending: None,
+            pending: std::collections::VecDeque::new(),
         })
     }
 
@@ -125,82 +230,176 @@ impl Conversation {
         ensure!(!text.trim().is_empty(), "message is empty");
         self.last_text.clear();
         self.tool_count = 0;
-        // A fresh head is required for the atomic idle-and-head append check.
-        self.session = self.client.session(&self.id).await?;
+        self.tool_result = None;
         ensure!(
             self.session.state == api::SessionState::Idle,
             "session is not idle"
         );
-        let appended = self
-            .client
-            .append_message(
-                &self.id,
-                &api::AppendMessage {
-                    idempotency_key: ulid::Ulid::generate().to_string(),
-                    expected_head: self.session.head_sequence,
-                    text,
-                },
-            )
-            .await?;
+        let mut body = api::AppendMessage {
+            idempotency_key: ulid::Ulid::generate().to_string(),
+            expected_head: self.session.head_sequence,
+            text,
+        };
+        let first = self.client.append_message(&self.id, &body).await;
+        let appended = match first {
+            Err(swarmy_client::Error::Api {
+                status,
+                body: error,
+            }) if status.as_u16() == 409 && error.code == "stale_head" => {
+                let (_, endpoint) = crate::api_client::connect()?;
+                self.session =
+                    crate::api_client::call(&endpoint, self.client.session(&self.id)).await?;
+                ensure!(
+                    self.session.state == api::SessionState::Idle,
+                    "session is not idle"
+                );
+                body.expected_head = self.session.head_sequence;
+                crate::api_client::call(&endpoint, self.client.append_message(&self.id, &body))
+                    .await?
+            }
+            other => other?,
+        };
+        self.current_turn = Some(appended.turn_id.clone());
         self.min_sequence = appended.sequence;
         self.session.head_sequence = appended.sequence;
         self.session.state = api::SessionState::Runnable;
+        self.poll.reset_after(Duration::from_secs(3));
         Ok(appended.turn_id)
     }
 
+    pub fn observe_with(
+        &mut self,
+        sender: tokio::sync::mpsc::UnboundedSender<swarmy_core::TurnStage>,
+    ) {
+        self.observer = Some(sender);
+    }
+
+    pub async fn interrupt(&mut self) -> Result<()> {
+        if self.current_turn.is_some() {
+            let (_, endpoint) = crate::api_client::connect()?;
+            crate::api_client::call(
+                &endpoint,
+                self.client.interrupt(
+                    &self.id,
+                    &api::InterruptSession {
+                        idempotency_key: ulid::Ulid::generate().to_string(),
+                    },
+                ),
+            )
+            .await?;
+            self.current_turn = None;
+        }
+        Ok(())
+    }
+
     pub async fn next(&mut self) -> Result<StreamItem> {
-        if let Some(item) = self.pending.take() {
+        loop {
+            let (item, queued) = if let Some(item) = self.pending.pop_front() {
+                (item, true)
+            } else {
+                (
+                    tokio::select! {
+                        item = self.stream.next_item() => item?,
+                        _ = self.poll.tick(), if self.current_turn.is_some() || self.session.state != api::SessionState::Idle => {
+                            let session = self.client.session(&self.id).await?;
+                            if session.state == api::SessionState::Idle && session.head_sequence >= self.min_sequence {
+                                let history = self.client.events(&self.id, self.min_sequence.saturating_sub(1), 100).await?;
+                                for event in history {
+                                    if event.sequence <= session.head_sequence { self.pending.push_back(StreamItem::Event(event)); }
+                                }
+                            self.session = session;
+                            self.current_turn = None;
+                            self.pending.push_back(StreamItem::Event(api::Event {
+                                    log_id: self.session.log_id.clone(), sequence: self.session.head_sequence,
+                                    payload: api::EventPayload::StoreRecord {
+                                        record: serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":self.session.head_sequence}}),
+                                    },
+                                }));
+                                continue;
+                            }
+                            continue;
+                        }
+                    },
+                    false,
+                )
+            };
+            if let StreamItem::Event(event) = &item {
+                if event.log_id != self.session.log_id
+                    || (!queued && event.sequence < self.min_sequence)
+                {
+                    continue;
+                }
+                if let api::EventPayload::StoreRecord { record } = &event.payload
+                    && record.get("state_changed").and_then(|v| v.get("to"))
+                        == Some(&serde_json::json!("completed"))
+                {
+                    let old = self.id.clone();
+                    let session = self.client.session(&old).await?;
+                    if let Some(successor) = self.client.successor(&session).await? {
+                        let next = successor.id.clone();
+                        self.stream.subscription_handle().set(api::Subscription {
+                            cursors: vec![api::Cursor {
+                                log_id: successor.log_id.clone(),
+                                sequence: 0,
+                            }],
+                            token_deltas: true,
+                        });
+                        self.id.clone_from(&next);
+                        self.session = successor;
+                        self.min_sequence = 0;
+                        self.current_turn = None;
+                        return Ok(StreamItem::Event(api::Event {
+                            log_id: self.session.log_id.clone(),
+                            sequence: 0,
+                            payload: api::EventPayload::StoreRecord {
+                                record: serde_json::json!({"session_summarized":{"previous_session_id":old,"session_id":next}}),
+                            },
+                        }));
+                    }
+                }
+                if let api::EventPayload::StoreRecord { record } = &event.payload
+                    && record.get("state_changed").and_then(|v| v.get("to"))
+                        == Some(&serde_json::json!("idle"))
+                {
+                    self.session.state = api::SessionState::Idle;
+                    self.session.head_sequence = event.sequence;
+                    self.min_sequence = event.sequence;
+                    self.current_turn = None;
+                }
+            }
             return Ok(item);
         }
-        Ok(self.stream.next_item().await?)
     }
 
     pub fn queue(&mut self, item: StreamItem) {
-        self.pending = Some(item);
+        self.pending.push_back(item);
     }
 
     pub async fn wait_healthy(&self, provider: Option<&str>) -> Result<()> {
-        let mut last = String::new();
-        loop {
-            let health = self.client.health().await?;
-            let services: Vec<api::ServiceHealth> = serde_json::from_value(
-                health
-                    .get("services")
-                    .cloned()
-                    .context("health has no services")?,
-            )?;
-            let provider = provider.or_else(|| {
-                health
-                    .get("default_provider")
-                    .and_then(serde_json::Value::as_str)
-            });
-            let problem = service_problem(&services, provider);
-            if problem.is_empty() {
-                return Ok(());
-            }
-            let message = format!(
-                "{problem}{}; waiting for service health...",
-                provider.map_or(String::new(), |p| format!(" ({p})"))
-            );
-            if message != last {
-                eprintln!("{message}");
-                last = message;
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
+        wait_healthy(&self.client, provider).await
     }
 
     pub async fn until_idle(&mut self, json: bool, run: bool) -> Result<()> {
         let mut progress = TurnProgress::default();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let item = if run && !progress.started {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                tokio::time::timeout(remaining, self.next())
-                    .await
-                    .context("worker did not pick up session within 30 seconds")??
-            } else {
-                self.next().await?
+            let next = async {
+                if run && !progress.started {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    Ok(tokio::time::timeout(remaining, self.next())
+                        .await
+                        .context("worker did not pick up session within 30 seconds")??)
+                } else {
+                    self.next().await
+                }
+            };
+            let item = tokio::select! {
+                item = next => Some(item?),
+                _ = tokio::signal::ctrl_c() => None,
+            };
+            let Some(item) = item else {
+                self.interrupt().await?;
+                bail!("interrupted");
             };
             match item {
                 StreamItem::TokenDelta {
@@ -210,7 +409,7 @@ impl Conversation {
                     if json {
                         println!(
                             "{}",
-                            serde_json::json!({"event":"model_delta","delta":{"text":{"output_index":0,"text":text}}})
+                            serde_json::json!({"event":"model_delta","delta":{"Text":{"output_index":0,"text":text}}})
                         );
                     } else {
                         print!("{text}");
@@ -242,6 +441,21 @@ impl Conversation {
         if sequence < self.min_sequence {
             return Ok(false);
         }
+        if let Some(summary) = record.get("session_summarized") {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"event":"session_summarized","previous_session_id":summary["previous_session_id"],"session_id":summary["session_id"]})
+                );
+            } else {
+                eprintln!(
+                    "Conversation summarized. Session {} archived; continuing in {}.",
+                    summary["previous_session_id"], summary["session_id"]
+                );
+            }
+            progress.started = true;
+            return Ok(false);
+        }
         if json {
             println!(
                 "{}",
@@ -268,6 +482,10 @@ impl Conversation {
                 self.min_sequence = sequence;
                 self.session.head_sequence = sequence;
                 self.session.state = api::SessionState::Idle;
+                self.current_turn = None;
+                if let Some(sender) = &self.observer {
+                    let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
+                }
                 if let Some(error) = progress.error.take() {
                     bail!("{error}");
                 }
@@ -281,8 +499,15 @@ impl Conversation {
         if record.get("inference_requested").is_some() {
             progress.started = true;
         }
-        if record.get("tool_call_completed").is_some() {
+        if !json {
+            print_tools(record);
+        }
+        if let Some(result) = record
+            .get("tool_call_completed")
+            .and_then(|v| v.get("result"))
+        {
             self.tool_count += 1;
+            self.tool_result = Some(result.clone());
         }
         if let Some(failure) = record
             .get("tool_call_completed")
@@ -341,6 +566,9 @@ impl Conversation {
         progress.reply = true;
         progress.error = None;
         self.last_text.clone_from(&text);
+        if let Some(sender) = &self.observer {
+            let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
+        }
         if json {
             println!(
                 "{}",

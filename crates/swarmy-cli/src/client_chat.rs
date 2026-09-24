@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{self, IsTerminal},
 };
 use swarmy_api_types as api;
@@ -192,7 +192,10 @@ pub async fn run(
             key = keys.next() => {
                 if let Event::Key(key) = key.context("terminal input closed")??
                     && key.kind != KeyEventKind::Release {
-                    if quit(key) { return Ok(()); }
+                    if quit(key) {
+                        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { conversation.interrupt().await?; }
+                        return Ok(());
+                    }
                     if !view.ready { continue; }
                     match key.code {
                         KeyCode::Enter if !input.text.trim().is_empty() => {
@@ -220,6 +223,8 @@ struct View {
     partial: String,
     users: HashSet<String>,
     assistants: HashSet<String>,
+    systems: HashSet<String>,
+    tools: HashMap<String, usize>,
     ready: bool,
     state: String,
     selection: String,
@@ -251,6 +256,8 @@ impl View {
             partial: String::new(),
             users: HashSet::new(),
             assistants: HashSet::new(),
+            systems: HashSet::new(),
+            tools: HashMap::new(),
             ready: false,
             state: format!("{:?}", conversation.session.state),
             selection: format!("{provider}/{model} {effort}"),
@@ -288,6 +295,13 @@ impl View {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return;
                 };
+                if let Some(summary) = record.get("session_summarized") {
+                    self.entries.push(format!(
+                        "System: Conversation summarized. Session {} archived; continuing in {}.",
+                        summary["previous_session_id"], summary["session_id"]
+                    ));
+                    return;
+                }
                 if let Some(state) = record
                     .get("state_changed")
                     .and_then(|s| s.get("to"))
@@ -310,26 +324,50 @@ impl View {
                     .get("tool_call_requested")
                     .and_then(|v| v.get("call"))
                 {
-                    self.entries.push(format!(
-                        "Tool: {} {}",
-                        call.get("tool")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("tool"),
-                        call.get("arguments").unwrap_or(&serde_json::Value::Null)
-                    ));
+                    let id = call
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    if !self.tools.contains_key(&id) {
+                        self.tools.insert(id.clone(), self.entries.len());
+                        self.entries.push(format!(
+                            "Tool: {} [{id}] {} (running)",
+                            call.get("tool")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool"),
+                            call.get("arguments").unwrap_or(&serde_json::Value::Null)
+                        ));
+                    }
+                }
+                if let Some(completed) = record.get("tool_call_completed") {
+                    if let Some(id) = completed.get("call_id").and_then(serde_json::Value::as_str)
+                        && let Some(index) = self.tools.get(id).copied()
+                    {
+                        self.entries[index] = self.entries[index].replace("(running)", "(done)");
+                    }
+                    if let Some(output) = completed
+                        .get("result")
+                        .and_then(|v| v.get("completed"))
+                        .and_then(|v| v.get("output"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        self.entries.push(format!("  Result: {output}"));
+                    }
                 }
                 if let Some(message) = record
                     .get("inference_completed")
                     .or_else(|| record.get("message_appended"))
                     .and_then(|v| v.get("message"))
+                    && let api::LogId::Session(session_id) = &event.log_id
                 {
-                    self.message(message);
+                    self.message(message, session_id);
                 }
             }
             StreamItem::TokenDelta { .. } => {}
         }
     }
-    fn message(&mut self, message: &serde_json::Value) {
+    fn message(&mut self, message: &serde_json::Value, session_id: &str) {
         let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else {
             return;
         };
@@ -348,6 +386,10 @@ impl View {
         match role {
             Some("user") if self.users.insert(id.into()) => {
                 self.entries.push(format!("You: {text}"));
+            }
+            Some("system") if self.systems.insert(id.into()) => {
+                self.entries
+                    .push(format!("System [session {session_id}]: {text}"));
             }
             Some("assistant") if self.assistants.insert(id.into()) => {
                 self.partial.clear();

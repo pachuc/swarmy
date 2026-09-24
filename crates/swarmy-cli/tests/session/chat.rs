@@ -73,6 +73,8 @@ impl Terminal {
         command.env("SWARMY_BUS_PREFIX", &fixture.prefix);
         command.env("SWARMY_PROVIDER", "fake");
         command.env("SWARMY_DEFAULT_IMAGE", default);
+        command.env("SWARMY_API_URL", &fixture.api_url);
+        command.env("SWARMY_API_TOKEN", &fixture.api_token);
         command.env("TERM", "xterm-256color");
         command.env("TOKIO_WORKER_THREADS", "2");
         let child = pair.slave.spawn_command(command).unwrap();
@@ -514,6 +516,9 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
                 )
                 .await
                 .unwrap();
+            fixture
+                .publish_token(id, text, if text == "scripted " { 0 } else { 9 })
+                .await;
             let screen = terminal.screen(|screen| screen.contains(expected)).await;
             assert!(screen.contains("input locked"));
         }
@@ -544,20 +549,18 @@ async fn chat_requires_default_image_and_explicit_image_overrides_it() {
             .screen(|screen| screen.contains("New session"))
             .await;
         terminal.type_text("\r");
-        terminal.exit(false).await;
-        let screen = terminal.parser.screen().contents();
-        assert!(
-            screen.contains("default_image") && screen.contains("SWARMY_DEFAULT_IMAGE"),
-            "{screen}"
-        );
-        assert!(
+        terminal.ready().await;
+        let default = session_id(&fixture).await;
+        assert_eq!(
+            fixture.store.session_image(default).await.unwrap(),
             fixture
                 .store
-                .list_sessions(None, 64)
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
                 .await
                 .unwrap()
-                .is_empty()
         );
+        terminal.type_text("\x1b");
+        terminal.exit(true).await;
         let mut terminal =
             Terminal::with_image(&fixture, None, Some("fixture:test"), "unregistered:default");
         terminal
@@ -565,7 +568,12 @@ async fn chat_requires_default_image_and_explicit_image_overrides_it() {
             .await;
         terminal.type_text("\r");
         terminal.ready().await;
-        let id = session_id(&fixture).await;
+        let id = fixture
+            .store
+            .list_sessions(Some(default), 64)
+            .await
+            .unwrap()[0]
+            .session_id;
         assert_eq!(
             fixture.store.session_image(id).await.unwrap(),
             fixture

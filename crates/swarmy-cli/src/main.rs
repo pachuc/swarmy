@@ -1,6 +1,10 @@
 mod agent_command;
+mod api_client;
+mod api_commands;
+mod auth;
 mod auth_command;
 mod bench_command;
+mod client_bench;
 mod client_chat;
 mod client_commands;
 mod client_conversation;
@@ -156,6 +160,36 @@ fn main() -> anyhow::Result<()> {
         return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
     }
     if matches!(
+        &cli.command,
+        Command::Auth {
+            command: auth_command::Command::Login { .. } | auth_command::Command::Import { .. },
+            ..
+        }
+    ) {
+        let Command::Auth { command, auth_file } = cli.command else {
+            unreachable!()
+        };
+        return tokio::runtime::Runtime::new()?.block_on(auth::run(command, auth_file, cli.json));
+    }
+    if matches!(
+        &cli.command,
+        Command::Session {
+            command: session_command::Command::List | session_command::Command::Show { .. }
+        } | Command::Agent { .. }
+            | Command::Image {
+                command: image_command::Command::Ls | image_command::Command::Show { .. }
+            }
+            | Command::Auth {
+                command: auth_command::Command::Set(_)
+                    | auth_command::Command::Ls
+                    | auth_command::Command::Rm { .. }
+                    | auth_command::Command::Check { .. },
+                ..
+            }
+    ) {
+        return tokio::runtime::Runtime::new()?.block_on(api_commands::run(cli.command, cli.json));
+    }
+    if matches!(
         cli.command,
         Command::Auth { .. }
             | Command::Models {
@@ -184,9 +218,11 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Models { command } => models::run(command, cli.json)?,
+        Command::Models { command } => models::run(command, cli.json).await?,
         Command::Bench { command } => {
-            client_commands::bench(api_client()?, command, cli.json).await?;
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_bench::run(client, command, cli.json).await?;
         }
         Command::Run {
             prompt,
@@ -195,16 +231,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             new,
             selection,
         } => {
-            client_commands::run(
-                api_client()?,
-                prompt,
-                image,
-                agent,
-                new,
-                selection,
-                cli.json,
-            )
-            .await?;
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_commands::run(client, prompt, image, agent, new, selection, cli.json).await?;
         }
         Command::Chat {
             session_id,
@@ -213,19 +242,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             new,
             selection,
         } => {
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_conversation::wait_healthy(&client, selection.provider.as_deref()).await?;
             if cli.json {
-                client_commands::chat(
-                    api_client()?,
-                    session_id,
-                    image,
-                    agent,
-                    new,
-                    selection,
-                    true,
-                )
-                .await?;
+                client_commands::chat(client, session_id, image, agent, new, selection, true)
+                    .await?;
             } else {
-                client_chat::run(api_client()?, session_id, image, agent, new, selection).await?;
+                client_chat::run(client, session_id, image, agent, new, selection).await?;
             }
         }
         #[cfg(feature = "remote")]
@@ -247,13 +271,4 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())
-}
-
-// Replaced by the settings/remote-profile resolver from the sibling CLI port.
-fn api_client() -> anyhow::Result<swarmy_client::Client> {
-    let settings = swarmy_config::Settings::load()?.settings;
-    Ok(swarmy_client::Client::new(
-        &format!("http://{}", settings.api.listen),
-        settings.api.token,
-    )?)
 }
