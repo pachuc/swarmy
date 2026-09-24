@@ -39,3 +39,9 @@ be forgotten. Do them opportunistically alongside related work.
   exit), and `unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job`
   in `swarmy-worker` failed once with "lease is absent, expired, or no longer
   matches". Both passed on rerun. Worth a look if they recur in CI.
+
+- After the CLI management commands moved behind the API (PR 132), the
+  store-backed `Agent`, `Image`, and `Session` List/Show handlers in
+  `crates/swarmy-session/src/runtime.rs` are unreachable from `swarmy` but
+  still callable through `swarmy-session` directly. Remove them so there is
+  one implementation.
