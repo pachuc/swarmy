@@ -21,11 +21,19 @@ pub async fn run(
     for current in nodes.iter().rev() {
         terminate(cloud, current, delay).await?;
     }
+    if node.bucket().is_some() {
+        cloud
+            .delete_profile(&format!("swarmy-{}", node.name))
+            .await?;
+    }
     for current in nodes {
         state.remove_key(current)?;
     }
     state.remove(node)?;
     println!("Removed remote {}", node.name);
+    if let Some(bucket) = node.bucket() {
+        println!("Bucket {bucket} and its objects were kept");
+    }
     Ok(())
 }
 

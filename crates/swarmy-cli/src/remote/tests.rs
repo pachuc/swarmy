@@ -13,6 +13,13 @@ use super::{Cloud, Host, Instance, Launch, down, state::State, up, wait_running}
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<Launch>>,
+    bucket_ensures: RefCell<Vec<(String, String, String)>>,
+    bucket_creates: RefCell<Vec<String>>,
+    role_creates: RefCell<Vec<String>>,
+    profile_creates: RefCell<Vec<String>>,
+    profile_present: Cell<bool>,
+    fail_profile_launch_once: Cell<bool>,
+    profiles_deleted: RefCell<Vec<String>>,
     launch_ids: RefCell<VecDeque<String>>,
     keys: RefCell<Vec<(String, Vec<u8>, String)>>,
     observations: RefCell<VecDeque<Option<Instance>>>,
@@ -25,6 +32,30 @@ struct FakeCloud {
 }
 
 impl Cloud for FakeCloud {
+    fn prepare_bucket(
+        &self,
+        bucket: &str,
+        region: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<()>> {
+        self.bucket_ensures
+            .borrow_mut()
+            .push((bucket.into(), region.into(), name.into()));
+        if !self.bucket_creates.borrow().contains(&bucket.to_owned()) {
+            self.bucket_creates.borrow_mut().push(bucket.into());
+        }
+        if !self.profile_present.replace(true) {
+            self.role_creates.borrow_mut().push(name.into());
+            self.profile_creates.borrow_mut().push(name.into());
+        }
+        std::future::ready(Ok(()))
+    }
+    fn delete_profile(&self, name: &str) -> impl Future<Output = Result<()>> {
+        self.profiles_deleted.borrow_mut().push(name.into());
+        self.profile_present.set(false);
+        std::future::ready(Ok(()))
+    }
+
     fn stock_image(&self) -> impl Future<Output = Result<String>> {
         self.stock_reads.set(self.stock_reads.get() + 1);
         std::future::ready(Ok("ami-stock".into()))
@@ -42,6 +73,11 @@ impl Cloud for FakeCloud {
     }
     fn launch(&self, request: &Launch) -> impl Future<Output = Result<String>> {
         self.requests.borrow_mut().push(request.clone());
+        if self.fail_profile_launch_once.replace(false) {
+            return std::future::ready(Err(anyhow::anyhow!(
+                "InvalidParameterValue: Invalid IAM Instance Profile name"
+            )));
+        }
         std::future::ready(Ok(self
             .launch_ids
             .borrow_mut()
@@ -737,4 +773,115 @@ async fn add_node_copies_both_secrets_only_when_requested() {
     assert_eq!(host.services.get(), 1);
     assert_eq!(*host.credentials.borrow(), vec![auth]);
     assert_eq!(*host.keyrings.borrow(), vec![keyring]);
+}
+
+#[tokio::test]
+async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
+    let host = FakeHost::default();
+    let settings = RemoteSettings {
+        bucket: Some("test-bucket".into()),
+        ..settings()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        "bucket-test",
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
+    assert_eq!(
+        cloud.requests.borrow()[0].profile.as_deref(),
+        Some("swarmy-bucket-test")
+    );
+    assert!(
+        up::run(
+            &cloud,
+            &host,
+            &state,
+            &settings,
+            "bucket-test",
+            None.into(),
+            Duration::ZERO
+        )
+        .await
+        .is_ok()
+    );
+    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
+    assert_eq!(cloud.requests.borrow().len(), 1);
+    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
+    assert_eq!(cloud.role_creates.borrow().len(), 1);
+    assert_eq!(cloud.profile_creates.borrow().len(), 1);
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
+    super::add_node::run(&cloud, &host, &state, "bucket-test", Duration::ZERO, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        cloud.requests.borrow()[1].profile.as_deref(),
+        Some("swarmy-bucket-test")
+    );
+    let node = state.require("bucket-test").unwrap();
+    let profile =
+        super::connect::new_profile(dir.path(), &node, node.ports, dir.path().join("socket"))
+            .unwrap();
+    assert_eq!(profile.s3_bucket.as_deref(), Some("test-bucket"));
+    assert_eq!(profile.s3_region.as_deref(), Some("us-east-1"));
+    assert!(profile.s3_endpoint.is_empty());
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(&*cloud.profiles_deleted.borrow(), &["swarmy-bucket-test"]);
+    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        "bucket-test",
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
+    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
+    assert_eq!(cloud.role_creates.borrow().len(), 2);
+    assert_eq!(cloud.profile_creates.borrow().len(), 2);
+}
+
+#[tokio::test]
+async fn profile_propagation_retries_one_failed_fake_launch() {
+    let cloud = FakeCloud::default();
+    cloud.fail_profile_launch_once.set(true);
+    let request = Launch {
+        settings: settings(),
+        image: "ami-test".into(),
+        name: "test".into(),
+        key_name: "test-key".into(),
+        profile: Some("swarmy-test".into()),
+    };
+    let id = super::aws::retry_profile_propagation(|| cloud.launch(&request), true, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(id, "i-test");
+    assert_eq!(cloud.requests.borrow().len(), 2);
 }

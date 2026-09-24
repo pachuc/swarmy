@@ -32,6 +32,7 @@ impl std::str::FromStr for RemoteServices {
 pub struct RemoteSettings {
     pub services: RemoteServices,
     pub region: String,
+    pub bucket: Option<String>,
     pub subnet: Option<String>,
     pub security_group: Option<String>,
     pub instance_type: String,
@@ -46,6 +47,7 @@ impl Default for RemoteSettings {
         Self {
             services: RemoteServices::Laptop,
             region: "us-east-1".into(),
+            bucket: None,
             subnet: None,
             security_group: None,
             instance_type: "m6id.xlarge".into(),
@@ -101,6 +103,13 @@ pub struct RemoteNode {
     pub created_at: String,
 }
 
+impl RemoteNode {
+    #[must_use]
+    pub fn bucket(&self) -> Option<&str> {
+        self.launch_settings.as_ref()?.bucket.as_deref()
+    }
+}
+
 fn ssh_user() -> String {
     "ubuntu".into()
 }
@@ -117,6 +126,10 @@ pub struct RemoteProfile {
     pub fdb_cluster_file: PathBuf,
     pub nats_url: String,
     pub s3_endpoint: String,
+    #[serde(default)]
+    pub s3_bucket: Option<String>,
+    #[serde(default)]
+    pub s3_region: Option<String>,
     #[serde(default)]
     pub default_image: Option<String>,
 }
@@ -139,6 +152,12 @@ impl RemoteProfile {
         settings.fdb_cluster_file = self.fdb_cluster_file.to_string_lossy().into_owned();
         settings.nats_url.clone_from(&self.nats_url);
         settings.s3_endpoint.clone_from(&self.s3_endpoint);
+        if let (Some(bucket), Some(region)) = (&self.s3_bucket, &self.s3_region) {
+            settings.s3_bucket.clone_from(bucket);
+            settings.s3_region.clone_from(region);
+            settings.s3_access_key.clear();
+            settings.s3_secret_key.clear();
+        }
         if self.default_image.is_some() {
             settings.default_image.clone_from(&self.default_image);
         }
@@ -242,6 +261,21 @@ mod tests {
     }
 
     #[test]
+    fn bucket_profile_uses_laptop_credentials_and_region() {
+        let mut profile: RemoteProfile = serde_json::from_str(r#"{"name":"remote","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"","s3_bucket":"bucket","s3_region":"eu-west-1"}"#).unwrap();
+        let mut settings = Settings::default();
+        profile.apply(&mut settings);
+        assert_eq!(settings.s3_bucket, "bucket");
+        assert_eq!(settings.s3_region, "eu-west-1");
+        assert!(settings.s3_endpoint.is_empty());
+        assert!(settings.s3_access_key.is_empty());
+        assert!(settings.s3_secret_key.is_empty());
+        profile.s3_bucket = None;
+        profile.apply(&mut settings);
+        assert_eq!(settings.s3_bucket, "bucket");
+    }
+
+    #[test]
     fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join(".swarmy");
@@ -265,6 +299,8 @@ mod tests {
             fdb_cluster_file: state.join("test.cluster"),
             nats_url: "nats://127.0.0.1:14222".into(),
             s3_endpoint: "http://127.0.0.1:18333".into(),
+            s3_bucket: None,
+            s3_region: None,
             default_image: Some("base-ubuntu:test".into()),
         };
         std::fs::write(

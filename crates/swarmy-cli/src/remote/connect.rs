@@ -50,17 +50,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     let address = ssh::reachable_address(&node).await?;
     let probe_elapsed = probing.elapsed();
     let startup = Instant::now();
-    // Reserve all three ports together so an ephemeral choice cannot be reused.
-    let reservations = [
-        reserve(node.ports.fdb)?,
-        reserve(node.ports.nats)?,
-        reserve(node.ports.s3)?,
-    ];
-    let ports = RemotePorts {
-        fdb: reservations[0].local_addr()?.port(),
-        nats: reservations[1].local_addr()?.port(),
-        s3: reservations[2].local_addr()?.port(),
-    };
+    let (reservations, ports) = reserve_ports(&node)?;
     // A private, short directory avoids the Unix socket path length limit.
     let socket_dir = tempfile::Builder::new()
         .prefix("swarmy-ssh-")
@@ -148,9 +138,33 @@ pub(super) fn new_profile(
         remote_ports: node.ports,
         fdb_cluster_file: remote_path(state_dir, &node.name, "cluster")?,
         nats_url: format!("nats://127.0.0.1:{}", ports.nats),
-        s3_endpoint: format!("http://127.0.0.1:{}", ports.s3),
+        s3_endpoint: if node.bucket().is_some() {
+            String::new()
+        } else {
+            format!("http://127.0.0.1:{}", ports.s3)
+        },
+        s3_bucket: node.bucket().map(str::to_owned),
+        s3_region: node.bucket().map(|_| node.region.clone()),
         default_image: node.default_image.clone(),
     })
+}
+
+fn reserve_ports(node: &swarmy_config::RemoteNode) -> Result<(Vec<TcpListener>, RemotePorts)> {
+    let mut reservations = vec![reserve(node.ports.fdb)?, reserve(node.ports.nats)?];
+    let s3 = if node.bucket().is_some() {
+        0
+    } else {
+        let listener = reserve(node.ports.s3)?;
+        let port = listener.local_addr()?.port();
+        reservations.push(listener);
+        port
+    };
+    let ports = RemotePorts {
+        fdb: reservations[0].local_addr()?.port(),
+        nats: reservations[1].local_addr()?.port(),
+        s3,
+    };
+    Ok((reservations, ports))
 }
 
 fn tunnel_command(
@@ -165,11 +179,10 @@ fn tunnel_command(
         .args(["-N", "-M", "-S"])
         .arg(&profile.socket_path)
         .args(["-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes"]);
-    for (local, remote) in [
-        (ports.fdb, node.ports.fdb),
-        (ports.nats, node.ports.nats),
-        (ports.s3, node.ports.s3),
-    ] {
+    for (local, remote) in [(ports.fdb, node.ports.fdb), (ports.nats, node.ports.nats)]
+        .into_iter()
+        .chain((profile.s3_bucket.is_none()).then_some((ports.s3, node.ports.s3)))
+    {
         ensure!(remote != 0, "remote ports must be nonzero");
         command
             .arg("-L")
@@ -237,7 +250,7 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
             profile.name,
             profile.fdb_cluster_file.display(),
             profile.nats_url,
-            profile.s3_endpoint
+            profile.s3_bucket.as_deref().unwrap_or(&profile.s3_endpoint)
         );
         if let Some(image) = &profile.default_image {
             println!("# Default image: {image}");
@@ -315,6 +328,8 @@ mod tests {
             fdb_cluster_file: dir.path().join("cluster"),
             nats_url: String::new(),
             s3_endpoint: String::new(),
+            s3_bucket: None,
+            s3_region: None,
             default_image: None,
         };
         for (settings, destination) in [
@@ -333,6 +348,34 @@ mod tests {
                 assert!(args.contains(&format!("127.0.0.1:{port}:{destination}:{port}")));
             }
         }
+        let mut bucket_profile = profile;
+        bucket_profile.s3_bucket = Some("bucket-test".into());
+        bucket_profile.s3_region = Some("us-east-1".into());
+        let (command, _) =
+            tunnel_command(&node, &bucket_profile, dir.path(), &node.public_ip).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|arg| arg.contains(":8333:")));
+    }
+
+    #[test]
+    fn bucket_remote_reserves_only_database_and_bus_ports() {
+        let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "test", "region": "us-east-1", "instance_id": "i-test",
+            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
+            "key_path": "key", "created_at": "now"
+        }))
+        .unwrap();
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            bucket: Some("bucket-test".into()),
+            ..Default::default()
+        });
+        let (reservations, ports) = reserve_ports(&node).unwrap();
+        assert_eq!(reservations.len(), 2);
+        assert_eq!(ports.s3, 0);
     }
 
     #[test]

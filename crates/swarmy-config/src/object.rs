@@ -1,9 +1,52 @@
 use std::{str::FromStr, sync::Arc};
 
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path, prefix::PrefixStore};
+use aws_credential_types::provider::ProvideCredentials;
+use object_store::{
+    CredentialProvider, ObjectStore,
+    aws::{AmazonS3Builder, AwsCredential},
+    path::Path,
+    prefix::PrefixStore,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Settings};
+
+#[derive(Debug)]
+struct DefaultAwsCredentials {
+    region: String,
+    chain:
+        tokio::sync::OnceCell<aws_config::default_provider::credentials::DefaultCredentialsChain>,
+}
+
+#[async_trait::async_trait]
+impl CredentialProvider for DefaultAwsCredentials {
+    type Credential = AwsCredential;
+
+    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
+        let chain = self
+            .chain
+            .get_or_init(|| async {
+                aws_config::default_provider::credentials::DefaultCredentialsChain::builder()
+                    .region(aws_config::Region::new(self.region.clone()))
+                    .build()
+                    .await
+            })
+            .await;
+        let credentials =
+            chain
+                .provide_credentials()
+                .await
+                .map_err(|error| object_store::Error::Generic {
+                    store: "S3 credentials",
+                    source: Box::new(error),
+                })?;
+        Ok(Arc::new(AwsCredential {
+            key_id: credentials.access_key_id().to_owned(),
+            secret_key: credentials.secret_access_key().to_owned(),
+            token: credentials.session_token().map(str::to_owned),
+        }))
+    }
+}
 
 /// An exact object namespace, with no empty or relative path segments.
 /// Empty selects the whole bucket. Parsing never trims or encodes the value.
@@ -71,6 +114,39 @@ impl Settings {
         Ok((bucket, prefix))
     }
 
+    fn s3_mode(&self) -> (bool, bool) {
+        (
+            self.s3_endpoint.is_empty(),
+            self.s3_access_key.is_empty() && self.s3_secret_key.is_empty(),
+        )
+    }
+
+    fn s3_builder(&self, bucket: &str) -> AmazonS3Builder {
+        let mut builder = AmazonS3Builder::new()
+            .with_bucket_name(bucket)
+            .with_region(&self.s3_region);
+        let (regional, default_credentials) = self.s3_mode();
+        if regional {
+            builder = builder.with_virtual_hosted_style_request(true);
+        } else {
+            builder = builder
+                .with_endpoint(&self.s3_endpoint)
+                .with_allow_http(true)
+                .with_virtual_hosted_style_request(false);
+        }
+        if default_credentials {
+            builder = builder.with_credentials(Arc::new(DefaultAwsCredentials {
+                region: self.s3_region.clone(),
+                chain: tokio::sync::OnceCell::new(),
+            }));
+        } else {
+            builder = builder
+                .with_access_key_id(&self.s3_access_key)
+                .with_secret_access_key(&self.s3_secret_key);
+        }
+        builder
+    }
+
     /// Build the shared S3 client with namespace-relative request keys and
     /// listing names. A legacy bucket/prefix keeps its exact object locations.
     /// # Errors
@@ -82,15 +158,7 @@ impl Settings {
                 "s3_bucket = bucket/prefix is deprecated; set s3_bucket and s3_prefix separately"
             );
         }
-        let store = AmazonS3Builder::new()
-            .with_endpoint(&self.s3_endpoint)
-            .with_access_key_id(&self.s3_access_key)
-            .with_secret_access_key(&self.s3_secret_key)
-            .with_bucket_name(bucket)
-            .with_region(&self.s3_region)
-            .with_allow_http(true)
-            .with_virtual_hosted_style_request(false)
-            .build()?;
+        let store = self.s3_builder(bucket).build()?;
         if prefix.as_str().is_empty() {
             Ok(Arc::new(store))
         } else {
@@ -106,6 +174,24 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn regional_and_custom_modes_build_without_network() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.s3_mode(), (false, false));
+        let custom = settings.s3_builder("bucket").build().unwrap();
+        let debug = format!("{custom:?}");
+        assert!(debug.contains("http://127.0.0.1:8333/bucket"));
+        assert!(debug.contains("StaticCredentialProvider"));
+        settings.s3_endpoint.clear();
+        settings.s3_access_key.clear();
+        settings.s3_secret_key.clear();
+        assert_eq!(settings.s3_mode(), (true, true));
+        let regional = settings.s3_builder("bucket").build().unwrap();
+        let debug = format!("{regional:?}");
+        assert!(debug.contains("https://bucket.s3.us-east-1.amazonaws.com"));
+        assert!(debug.contains("DefaultAwsCredentials"));
+    }
 
     #[test]
     fn prefixes_are_validated_without_normalization() {

@@ -250,7 +250,9 @@ impl Ssh {
         println!("Provisioning node and building release binaries (this takes several minutes)");
         checked(
             base(node)?.arg(&address).arg(format!(
-                "cd swarmy && bash scripts/remote-provision.sh {mode} {service_ip}"
+                "cd swarmy && bash scripts/remote-provision.sh {mode} {service_ip} {} {}",
+                shell_words::quote(node.bucket().unwrap_or("")),
+                shell_words::quote(&node.region)
             )),
             "provision remote node",
         )

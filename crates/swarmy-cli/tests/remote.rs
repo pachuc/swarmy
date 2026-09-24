@@ -198,6 +198,8 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
         fdb_cluster_file: root.path().join("cluster"),
         nats_url: "nats://127.0.0.1:4222".into(),
         s3_endpoint: "http://127.0.0.1:8333".into(),
+        s3_bucket: None,
+        s3_region: None,
         default_image: Some("base-ubuntu:test".into()),
     };
     std::fs::write(

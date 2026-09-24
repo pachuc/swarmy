@@ -96,7 +96,9 @@ address that answered. Keys and records are private local files. SSH stores host
 
 An interrupted or failed `up` or `add-node` retains its state so `down` can clean up. A unique
 client token identifies a launch if its response was lost before the instance id
-was saved. Run `down` before retrying `up` with the same name. `down` waits for
+was saved. Run `down` before retrying an interrupted `up` with the same name.
+A completed bucket-backed remote accepts a repeat `up --bucket` without creating
+more resources. `down` waits for
 termination of every node and deletes their AWS keys and local records even
 when instances were already deleted. Joining nodes are terminated first. API failures retain state for retry. Do not delete the state
 directory while cloud resources still exist.
@@ -112,8 +114,8 @@ copied from the first node, preserving its cluster identity and loopback
 coordinator address. `add-node` generates a dedicated tunnel key on the joining
 node and authorizes it for service forwards on the first node. It pins the first
 node's host key using the authenticated provisioning connection. The key permits
-no interactive shell. The tunnel forwards local ports 4500, 4222, and 8333 to
-the same loopback ports on the first node. It starts before swarmyd and restarts
+no interactive shell. The tunnel forwards local ports 4500 and 4222 to
+the same loopback ports on the first node, plus 8333 only when SeaweedFS is used. It starts before swarmyd and restarts
 automatically after SSH failure. Inspect it with
 `sudo journalctl -u swarmy-tunnel`. Its identity and pinned host key are stored
 under `/etc/swarmy/`, readable only by the SSH user. The scheduler, gateway, worker,
@@ -149,15 +151,33 @@ Reusing a healthy control master reports `reused: true` and zero for the two
 skipped phases.
 
 For a proof from a launcher in the same VPC, block direct access before running
-the workflow as the ordinary user. Keep SSH port 22 allowed. For example:
+the workflow as the ordinary user. Keep SSH port 22 allowed. Add port 8333
+when using SeaweedFS instead of an S3 bucket. For example:
 
 ```sh
 sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
-  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+  -p tcp -m multiport --dports 4500,4222 -j REJECT
 # Run up/connect/doctor/run/chat/checkpoint/add-node/recovery/down as ubuntu.
 sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
-  -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
+  -p tcp -m multiport --dports 4500,4222 -j REJECT
 ```
 
 Record the block, failed direct probes, successful doctor transactions, and
 provider teardown queries with the run. Remove the rule even after a failure.
+
+## Persistent object storage
+
+Pass `--bucket NAME` to `swarmy remote up` (or set `[remote] bucket = "NAME"`).
+The bucket is retained after `remote down`; remove it separately only when its
+objects are no longer needed. The instance profile grants access only to that
+bucket. The laptop identity must have `s3:GetObject`, `s3:PutObject`,
+`s3:DeleteObject`, `s3:ListBucket`, and `s3:GetBucketLocation` on the same
+bucket to use volume, image, GC, and doctor commands directly against S3.
+
+Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
+`s3:PutBucketEncryption`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
+`iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`,
+`iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
+`iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
+`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role, plus the object
+permissions above. Existing remotes without a bucket continue using SeaweedFS.
