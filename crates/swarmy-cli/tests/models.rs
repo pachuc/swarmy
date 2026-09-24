@@ -19,56 +19,18 @@ impl Drop for Fixture {
         }
     }
 }
-#[derive(serde::Deserialize)]
-struct Search {
-    q: Option<String>,
-    provider: Option<String>,
-    reasoning: Option<bool>,
-}
-async fn models(
-    axum::extract::State(catalog): axum::extract::State<swarmy_llm::catalog::Catalog>,
-    axum::extract::Query(search): axum::extract::Query<Search>,
-) -> axum::Json<Vec<Value>> {
-    let rows = catalog
-        .find(search.q.as_deref().unwrap_or(""))
-        .into_iter()
-        .filter(|(provider, model)| {
-            search.provider.as_ref().is_none_or(|id| id == &provider.id)
-                && (!search.reasoning.unwrap_or(false)
-                    || model
-                        .supported_efforts()
-                        .iter()
-                        .any(|effort| *effort != swarmy_core::ReasoningEffort::None))
-        })
-        .map(|(provider, model)| {
-            let mut row = serde_json::to_value(model).unwrap();
-            row["key"] = serde_json::json!(format!("{}/{}", provider.id, model.id));
-            row["provider"] = serde_json::json!(provider.id);
-            row["effective_api"] = serde_json::json!(model.api.unwrap_or(provider.api));
-            row["effective_base_url"] =
-                serde_json::json!(model.base_url.as_deref().unwrap_or(&provider.base_url));
-            row["supported_efforts"] = serde_json::json!(model.supported_efforts());
-            row
-        })
-        .collect();
-    axum::Json(rows)
-}
-async fn providers(
-    axum::extract::State(catalog): axum::extract::State<swarmy_llm::catalog::Catalog>,
-) -> axum::Json<Vec<Value>> {
-    axum::Json(
-        catalog
-            .providers()
-            .map(|provider| {
-                serde_json::json!({"id":provider.id,"api":provider.api,
-        "auth_kinds":provider.auth_kinds,"env_keys":provider.env_keys,"credential":"unknown"})
-            })
-            .collect(),
-    )
-}
+static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
+    std::sync::OnceLock::new();
 
 impl Fixture {
-    fn new(config: &str) -> Self {
+    fn new(config: &str) -> Option<Self> {
+        let (Ok(cluster), Ok(nats)) = (
+            std::env::var("SWARMY_FDB_CLUSTER_FILE"),
+            std::env::var("SWARMY_NATS_URL"),
+        ) else {
+            eprintln!("skipping models integration: dev stack unavailable");
+            return None;
+        };
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join(".swarmy")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -77,22 +39,28 @@ impl Fixture {
         let config = format!("{config}\n[api]\nurl = '{endpoint}'\ntoken = 'fixture-token'\n");
         let config_path = directory.path().join(".swarmy/config.toml");
         fs::write(&config_path, config).unwrap();
-        let catalog = swarmy_config::Settings::read(&config_path)
-            .unwrap()
-            .catalog()
-            .unwrap();
+        let settings = swarmy_config::Settings::read(&config_path).unwrap();
+        let catalog = settings.catalog().unwrap();
+        NETWORK.get_or_init(swarmy_store::boot);
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
-                let app = axum::Router::new()
-                    .route("/v1/cli/models", axum::routing::get(models))
-                    .route("/v1/cli/providers", axum::routing::get(providers))
-                    .with_state(catalog);
+                let store = swarmy_store::Store::open(
+                    Some(&cluster),
+                    Some(&[format!("models-test-{}", ulid::Ulid::generate())]),
+                    std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+                )
+                .await
+                .unwrap();
+                let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
+                    .await
+                    .unwrap();
+                let state = swarmy_api::AppState::new(store, bus, "fixture-token".into(), catalog);
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 ready.send(()).unwrap();
-                axum::serve(listener, app)
+                axum::serve(listener, swarmy_api::router(state))
                     .with_graceful_shutdown(async {
                         let _ = stopped.await;
                     })
@@ -103,11 +71,11 @@ impl Fixture {
         started
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
-        Self {
+        Some(Self {
             dir: directory,
             shutdown: Some(shutdown),
             server: Some(server),
-        }
+        })
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -144,7 +112,9 @@ impl Fixture {
 
 #[test]
 fn lists_sorted_snapshot_models_as_json() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let rows = fixture.json(&["models", "ls", "--json"]);
     let rows = rows.as_array().unwrap();
     assert!(rows.iter().any(|row| row["key"] == "openai/gpt-5.5"));
@@ -168,7 +138,9 @@ fn lists_sorted_snapshot_models_as_json() {
 
 #[test]
 fn show_resolves_model_ids_with_slashes_and_includes_compat() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let output = fixture.success(&["models", "show", "openrouter/anthropic/claude-sonnet-4.6"]);
     let model: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(model["id"], "anthropic/claude-sonnet-4.6");
@@ -179,7 +151,9 @@ fn show_resolves_model_ids_with_slashes_and_includes_compat() {
 
 #[test]
 fn search_and_lookup_errors_are_clear() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     for (args, message) in [
         (
             vec!["models", "search", "nonexistent"],
@@ -203,7 +177,7 @@ fn search_and_lookup_errors_are_clear() {
 
 #[test]
 fn commands_share_configured_catalog_and_filters() {
-    let fixture = Fixture::new(
+    let Some(fixture) = Fixture::new(
         r#"
 [custom_providers.private]
 api = "OpenAiCompletions"
@@ -220,7 +194,9 @@ provider = "openai"
 id = "gpt-5.5"
 context_window = 42
 "#,
-    );
+    ) else {
+        return;
+    };
     let rows = fixture.json(&[
         "models",
         "ls",
@@ -252,7 +228,9 @@ context_window = 42
 
 #[test]
 fn terminal_tables_fit_eighty_columns() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     for args in [
         vec!["models", "providers"],
         vec!["models", "ls", "--provider", "anthropic"],
@@ -269,9 +247,11 @@ fn terminal_tables_fit_eighty_columns() {
 
 #[test]
 fn probe_streams_fake_and_completes_tool_round_trip() {
-    let fixture = Fixture::new(
+    let Some(fixture) = Fixture::new(
         "model = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
-    );
+    ) else {
+        return;
+    };
     let script = fixture.dir.path().join("script.json");
     fs::write(
         &script,
@@ -311,7 +291,9 @@ fn probe_streams_fake_and_completes_tool_round_trip() {
 
 #[test]
 fn probe_missing_credential_names_auth_set() {
-    let fixture = Fixture::new("");
+    let Some(fixture) = Fixture::new("") else {
+        return;
+    };
     let output = fixture.run(&["models", "probe", "openai/gpt-5.5"]);
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);

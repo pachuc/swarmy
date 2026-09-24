@@ -15,7 +15,343 @@
       "description": "Version 1 control plane"
     }
   ],
-  "paths": {},
+  "paths": {
+    "/v1/cli/agents": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_agents",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CliAgent"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_create_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CliAgentChoice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliAgent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/agents/{name}": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_agent",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliAgent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/agents/{name}/settings": {
+      "patch": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_update_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CliAgentChoice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliAgent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/credentials": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_credentials",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CliCredential"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_set_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CliCredentialInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/credentials/{provider}": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_credential",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliCredential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/images/{name}/{tag}": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_image",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliImage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/sessions": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_sessions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CliSession"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/sessions/{id}": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_session",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliSessionDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "components": {
     "schemas": {
       "Agent": {
@@ -138,6 +474,268 @@
           "turn_id": {
             "type": "string"
           }
+        }
+      },
+      "CliAgent": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "name"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {}
+      },
+      "CliAgentChoice": {
+        "type": "object",
+        "description": "Input for CLI agent creation or settings updates.",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "clear_github_token": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gpu": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "memory": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CliCredential": {
+        "type": "object",
+        "required": [
+          "provider",
+          "kind",
+          "label",
+          "status",
+          "updated_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "CliCredentialInput": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "provider",
+          "record"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "record": {
+            "description": "Encrypted by the API, never returned by credential endpoints."
+          }
+        }
+      },
+      "CliImage": {
+        "type": "object",
+        "required": [
+          "name",
+          "tag",
+          "manifest_id",
+          "header",
+          "scratch"
+        ],
+        "properties": {
+          "header": {},
+          "manifest_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "scratch": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "CliSaved": {
+        "type": "object",
+        "required": [
+          "saved"
+        ],
+        "properties": {
+          "saved": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CliSession": {
+        "type": "object",
+        "description": "CLI projections retain store record fields for compatibility with existing scripts.",
+        "required": [
+          "session_id",
+          "resolved_inference",
+          "archived",
+          "main"
+        ],
+        "properties": {
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "main": {
+            "type": "boolean"
+          },
+          "resolved_inference": {},
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {}
+      },
+      "CliSessionDetail": {
+        "type": "object",
+        "required": [
+          "session",
+          "resolved",
+          "usage",
+          "cost_dollars",
+          "scratch",
+          "requirements",
+          "placement",
+          "wait",
+          "events"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_dollars": {
+            "type": "number",
+            "format": "double"
+          },
+          "events": {
+            "type": "array",
+            "items": {}
+          },
+          "placement": {},
+          "requirements": {},
+          "resolved": {},
+          "scratch": {},
+          "session": {},
+          "usage": {},
+          "wait": {}
         }
       },
       "CloseSession": {
@@ -901,7 +1499,8 @@
           "provider_id": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": {}
       },
       "Node": {
         "type": "object",
@@ -988,7 +1587,8 @@
           "status": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": {}
       },
       "ReasoningEffort": {
         "type": "string",

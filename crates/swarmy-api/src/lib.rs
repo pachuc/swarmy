@@ -160,8 +160,6 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/cli/models", get(cli::models))
-        .route("/v1/cli/providers", get(cli::providers))
         .route("/v1/cli/sessions", get(cli::sessions))
         .route("/v1/cli/sessions/{id}", get(cli::session_show))
         .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
@@ -524,21 +522,64 @@ async fn show_image(
         tag,
     }))
 }
-fn model(provider: &str, entry: &swarmy_llm::catalog::ModelInfo) -> api::Model {
+fn model(
+    provider: &swarmy_llm::catalog::ProviderInfo,
+    entry: &swarmy_llm::catalog::ModelInfo,
+) -> api::Model {
+    let mut catalog = serde_json::to_value(entry)
+        .expect("catalog model serializes")
+        .as_object()
+        .expect("catalog model is an object")
+        .clone();
+    catalog.remove("id");
+    catalog.insert(
+        "key".into(),
+        serde_json::json!(format!("{}/{}", provider.id, entry.id)),
+    );
+    catalog.insert("provider".into(), serde_json::json!(provider.id));
+    catalog.insert(
+        "effective_api".into(),
+        serde_json::json!(entry.api.unwrap_or(provider.api)),
+    );
+    catalog.insert(
+        "effective_base_url".into(),
+        serde_json::json!(entry.base_url.as_deref().unwrap_or(&provider.base_url)),
+    );
+    catalog.insert(
+        "supported_efforts".into(),
+        serde_json::json!(entry.supported_efforts()),
+    );
     api::Model {
         id: entry.id.clone(),
-        provider_id: provider.into(),
+        provider_id: provider.id.clone(),
         context_window: entry.limit.context,
+        catalog: catalog.into_iter().collect(),
     }
 }
-async fn models(State(state): State<AppState>) -> Json<Vec<api::Model>> {
-    Json(
+async fn models(
+    State(state): State<AppState>,
+    Query(query): Query<cli::ModelsQuery>,
+) -> ApiResult<Vec<api::Model>> {
+    if let Some(provider) = &query.provider
+        && state.catalog.provider(provider).is_none()
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "unknown_provider"));
+    }
+    Ok(Json(
         state
             .catalog
-            .providers()
-            .flat_map(|p| p.models.values().map(|m| model(&p.id, m)))
+            .find(query.q.as_deref().unwrap_or(""))
+            .into_iter()
+            .filter(|(p, m)| {
+                query.provider.as_ref().is_none_or(|id| id == &p.id)
+                    && (!query.reasoning.unwrap_or(false)
+                        || m.supported_efforts()
+                            .iter()
+                            .any(|e| *e != swarmy_core::ReasoningEffort::None))
+            })
+            .map(|(p, m)| model(p, m))
             .collect(),
-    )
+    ))
 }
 #[derive(Deserialize)]
 struct Search {
@@ -553,7 +594,7 @@ async fn search_models(
             .catalog
             .find(&search.q)
             .into_iter()
-            .map(|(p, m)| model(&p.id, m))
+            .map(|(p, m)| model(p, m))
             .collect(),
     )
 }
@@ -561,8 +602,12 @@ async fn show_model(
     State(state): State<AppState>,
     Path((provider, name)): Path<(String, String)>,
 ) -> ApiResult<api::Model> {
+    let p = state
+        .catalog
+        .provider(&provider)
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
     Ok(Json(model(
-        &provider,
+        p,
         state
             .catalog
             .model(&provider, &name)
@@ -578,6 +623,13 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 status: "available".into(),
+                catalog: [
+                    ("api".into(), serde_json::json!(p.api)),
+                    ("auth_kinds".into(), serde_json::json!(p.auth_kinds)),
+                    ("env_keys".into(), serde_json::json!(p.env_keys)),
+                    ("credential".into(), serde_json::json!("unknown")),
+                ]
+                .into(),
             })
             .collect(),
     )

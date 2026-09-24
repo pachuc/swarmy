@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-use swarmy_core::{ImageTag, ManifestId};
-use swarmy_store::MAX_SCAN_LIMIT;
+use anyhow::Result;
 use swarmy_volume::image::{Recipe, build_ext4, upload_image_protected, validate_label};
 
 use crate::{conversation::store, image_command::Command};
@@ -12,69 +10,9 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             tag,
             name,
             output,
-        } => build(recipe, tag, name, output, json).await?,
-        Command::Ls => {
-            let store = store().await?;
-            let mut after: Option<swarmy_core::ImageRecord> = None;
-            loop {
-                let images = store
-                    .list_images(
-                        after
-                            .as_ref()
-                            .map(|image| (image.name.as_str(), &image.tag)),
-                        MAX_SCAN_LIMIT,
-                    )
-                    .await?;
-                if images.is_empty() {
-                    break;
-                }
-                for image in images {
-                    if json {
-                        println!("{}", serde_json::to_string(&image)?);
-                    } else {
-                        println!("{}:{} {}", image.name, image.tag.0, image.manifest_id);
-                    }
-                    after = Some(image);
-                }
-            }
-        }
-        Command::Show { image } => {
-            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            validate_label(name)?;
-            validate_label(tag)?;
-            let store = store().await?;
-            let manifest_id = store
-                .get_image(name, &ImageTag(tag.into()))
-                .await?
-                .context("image not found")?;
-            let scratch = store
-                .image_scratch(&swarmy_core::ImageRecord {
-                    name: name.into(),
-                    tag: ImageTag(tag.into()),
-                    manifest_id,
-                })
-                .await?;
-            let header = store
-                .get_manifest(manifest_id)
-                .await?
-                .context("image manifest is missing")?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"name": name, "tag": tag, "manifest_id": manifest_id, "header": header, "scratch": scratch})
-                );
-            } else {
-                println!(
-                    "{image} {manifest_id}\nsize={} chunk_size={} root_hash={} scratch={}",
-                    header.size,
-                    header.chunk_size,
-                    header.root_hash,
-                    scratch.join(",")
-                );
-            }
-        }
+        } => build(recipe, tag, name, output, json).await,
+        Command::Ls | Command::Show { .. } => unreachable!("image reads use the API"),
     }
-    Ok(())
 }
 
 async fn build(

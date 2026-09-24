@@ -1,9 +1,8 @@
 use std::{collections::HashSet, io::Write, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState, ToolResult};
 use swarmy_llm::Delta;
-use swarmy_store::MAX_SCAN_LIMIT;
 
 use crate::conversation::{Conversation, Notification, Opened, TranscriptEvent, store};
 
@@ -51,134 +50,9 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 json,
             )?;
         }
-        Command::Show { session_id } => {
-            show_session(&store, SessionId::from_ulid(session_id), json).await?;
-        }
-        Command::List => {
-            let mut after = None;
-            loop {
-                let sessions = store.list_sessions(after, MAX_SCAN_LIMIT).await?;
-                if sessions.is_empty() {
-                    break;
-                }
-                for session in sessions {
-                    let agent = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
-                        store.get_agent(session.agent_id).await?
-                    } else {
-                        None
-                    };
-                    let selection = crate::selection::resolved_session(&store, &session).await?;
-                    let main = agent
-                        .as_ref()
-                        .is_some_and(|agent| agent.main_session == Some(session.session_id));
-                    let name = agent.map(|agent| agent.name);
-                    let mut value = serde_json::to_value(&session)?;
-                    value["state_since"] =
-                        serde_json::to_value(store.session_state_since(session.session_id).await?)?;
-                    let successor = store.next_session(session.session_id).await?;
-                    value["archived"] = successor.is_some().into();
-                    value["next_session"] = serde_json::to_value(successor)?;
-                    value["previous_session"] =
-                        serde_json::to_value(store.previous_session(session.session_id).await?)?;
-                    value["resolved_inference"] = serde_json::to_value(&selection)?;
-                    value["main"] = main.into();
-                    value["agent_name"] = serde_json::to_value(&name)?;
-                    let kind = match session.kind {
-                        swarmy_core::SessionKind::Ephemeral => "ephemeral",
-                        swarmy_core::SessionKind::Named { .. } => "named",
-                    };
-                    crate::vol::output(
-                        &value,
-                        &format!(
-                            "{} {:?} {}/{} kind={kind} agent={} head={} computer_deleted={} archived={} main={main}",
-                            session.session_id,
-                            session.state,
-                            selection.provider,
-                            selection.model,
-                            name.as_deref().unwrap_or("-"),
-                            session.head_seq,
-                            session.computer_deleted,
-                            successor.is_some()
-                        ),
-                        json,
-                    )?;
-                    after = Some(session.session_id);
-                }
-            }
-        }
+        Command::Show { .. } | Command::List => unreachable!("session reads use the API"),
     }
     Ok(())
-}
-
-async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) -> Result<()> {
-    let session = store
-        .fetch_session(id)
-        .await?
-        .context("session not found")?;
-    show_selection(store, &session, json).await?;
-    show_usage(&store.session_usage(id).await?, json);
-    show_inference_wait(store, &session, json).await?;
-    let mut after = 0;
-    while after < session.head_seq {
-        let events = store.read_events(id, after, MAX_SCAN_LIMIT).await?;
-        if events.is_empty() {
-            bail!("session log ended before its recorded head");
-        }
-        for event in events
-            .iter()
-            .take_while(|event| event.seq() <= session.head_seq)
-        {
-            if json {
-                println!("{}", serde_json::to_string(event)?);
-            } else {
-                println!("{} {}", event.seq(), serde_json::to_string(event)?);
-            }
-            after = event.seq();
-        }
-    }
-    Ok(())
-}
-
-async fn show_inference_wait(
-    store: &swarmy_store::Store,
-    session: &swarmy_core::SessionRecord,
-    json: bool,
-) -> Result<()> {
-    if session.state == SessionState::Sleeping
-        && let Some(wait) = store.inference_wait(session.session_id).await?
-    {
-        let value = serde_json::json!({"state": "waiting_for_inference", "wake_at": wait.wake_at, "reasons": wait.reasons});
-        crate::vol::output(
-            &value,
-            &format!(
-                "WaitingForInference until {}: {}",
-                wait.wake_at,
-                wait.reasons.join("; ")
-            ),
-            json,
-        )?;
-    }
-    Ok(())
-}
-
-fn show_usage(totals: &swarmy_core::UsageTotals, json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({"session_usage": totals, "cost_dollars": totals.dollars()})
-        );
-    } else {
-        println!(
-            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-            totals.usage.input_tokens,
-            totals.usage.cached_input_tokens,
-            totals.usage.cache_write_input_tokens,
-            totals.usage.output_tokens,
-            totals.usage.reasoning_output_tokens,
-            totals.usage.total_tokens,
-            totals.dollars()
-        );
-    }
 }
 
 pub async fn run(
@@ -543,61 +417,6 @@ pub(crate) fn final_text(event: &Event) -> bool {
         if message.role == MessageRole::Assistant
         && message.parts.iter().any(|part| matches!(part, Part::Text { text } if !text.is_empty()))
         && !message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })))
-}
-
-async fn show_selection(
-    store: &swarmy_store::Store,
-    session: &swarmy_core::SessionRecord,
-    json: bool,
-) -> Result<()> {
-    let selection = crate::selection::resolved_session(store, session).await?;
-    let scratch = store.scratch(session.agent_id).await?;
-    let requirements = if let Some(agent) = store.get_agent(session.agent_id).await? {
-        agent.requirements
-    } else if let Some(image) = store.pinned_image(session.session_id).await? {
-        swarmy_core::SandboxRequirements {
-            memory_mib: store.image_memory(&image).await?.unwrap_or(768),
-            gpu: swarmy_core::GpuRequirement::default(),
-        }
-    } else {
-        swarmy_core::SandboxRequirements::default()
-    };
-    let placement = store.get_by_agent(session.agent_id).await?;
-    let address = if let Some(ref placement) = placement {
-        store.placement_address(placement).await?
-    } else {
-        None
-    };
-    let marker = |overridden: bool| if overridden { "" } else { " (inherited)" };
-    crate::vol::output(
-        &serde_json::json!({ "event": "session_selection", "session_id": session.session_id,
-            "state": session.state, "interrupt_requested": session.interrupt_requested,
-            "inference": session.inference, "resolved": selection, "scratch": scratch,
-            "sandbox_requirements": requirements, "memory_limit_mib": requirements.memory_mib,
-            "placement": placement, "sandbox_address": address,
-            "sandbox_status": if placement.is_some() { "placed" } else { "waiting_for_capacity_or_first_tool" } }),
-        &format!(
-            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
-            session.session_id,
-            session.state,
-            session.interrupt_requested,
-            selection.provider,
-            marker(session.inference.provider.is_some()),
-            selection.model,
-            marker(session.inference.model.is_some()),
-            selection.effort,
-            marker(session.inference.effort.is_some()),
-            scratch
-                .as_ref()
-                .map_or_else(|| "-".into(), |record| record.node_id.to_string()),
-            scratch.as_ref().map_or(0, |record| record.bytes),
-            requirements.memory_mib,
-            requirements.gpu,
-            address.map_or_else(|| "-".into(), |address| address.to_string())
-        ),
-        json,
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

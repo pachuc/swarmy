@@ -9,6 +9,10 @@ pub fn connect() -> Result<(Client, String)> {
         .url
         .clone()
         .unwrap_or_else(|| format!("http://{}", settings.api.listen));
+    anyhow::ensure!(
+        !settings.api.token.is_empty(),
+        "no [api] token configured; run swarmy dev up"
+    );
     let client = Client::new(&endpoint, settings.api.token)
         .with_context(|| format!("invalid API endpoint {endpoint}"))?;
     Ok((client, endpoint))

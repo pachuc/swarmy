@@ -7,14 +7,21 @@ use axum::{
     http::StatusCode,
 };
 use serde_json::{Value, json};
+use swarmy_api_types as api;
 use swarmy_core::{AgentId, ImageTag, SessionId, VolumeId};
 use swarmy_store::MAX_SCAN_LIMIT;
 use ulid::Ulid;
 
+fn typed<T: serde::de::DeserializeOwned>(
+    value: Value,
+) -> Result<T, (StatusCode, Json<api::ApiError>)> {
+    serde_json::from_value(value)
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))
+}
 pub async fn sessions(
     State(state): State<AppState>,
     Query(page): Query<Page>,
-) -> ApiResult<Vec<Value>> {
+) -> ApiResult<Vec<api::CliSession>> {
     let after = page
         .after
         .as_deref()
@@ -67,7 +74,7 @@ pub async fn sessions(
         value["resolved_inference"] = json!(selection);
         value["main"] = json!(main);
         value["agent_name"] = json!(name);
-        result.push(value);
+        result.push(typed(value)?);
     }
     Ok(Json(result))
 }
@@ -106,7 +113,7 @@ async fn selection(
 pub async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliSessionDetail> {
     let session_id = id(&text, SessionId::from_ulid)?;
     let record = state
         .store
@@ -183,16 +190,16 @@ pub async fn session_show(
         after = page.last().map_or(after, swarmy_core::Event::seq);
         events.extend(page);
     }
-    Ok(Json(
+    Ok(Json(typed(
         json!({"session":record,"resolved":selection,"usage":usage,"cost_dollars":usage.dollars(),"scratch":scratch,
         "requirements":requirements,"placement":placement,"address":address,"wait":wait,"events":events}),
-    ))
+    )?))
 }
 
 pub async fn agents(
     State(state): State<AppState>,
     Query(page): Query<Page>,
-) -> ApiResult<Vec<Value>> {
+) -> ApiResult<Vec<api::CliAgent>> {
     let after = page
         .after
         .as_deref()
@@ -205,14 +212,14 @@ pub async fn agents(
         .await
         .map_err(storage)?
     {
-        result.push(agent_value(&state, record, false).await?);
+        result.push(typed(agent_value(&state, record, false).await?)?);
     }
     Ok(Json(result))
 }
 pub async fn agent_show(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliAgent> {
     let record = state
         .store
         .get_agent_by_name(&name)
@@ -230,7 +237,7 @@ pub async fn agent_show(
     } else {
         return Err(error(StatusCode::NOT_FOUND, "agent_not_found"));
     };
-    Ok(Json(agent_value(&state, record, true).await?))
+    Ok(Json(typed(agent_value(&state, record, true).await?)?))
 }
 async fn agent_value(
     state: &AppState,
@@ -353,7 +360,7 @@ async fn agent_detail(
 pub async fn image_show(
     State(state): State<AppState>,
     Path((name, tag)): Path<(String, String)>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliImage> {
     let manifest_id = state
         .store
         .get_image(&name, &ImageTag(tag.clone()))
@@ -375,80 +382,18 @@ pub async fn image_show(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing"))?;
-    Ok(Json(
+    Ok(Json(typed(
         json!({"name":name,"tag":tag,"manifest_id":manifest_id,"header":header,"scratch":scratch}),
-    ))
+    )?))
 }
 
 #[derive(serde::Deserialize)]
 pub struct ModelsQuery {
-    q: Option<String>,
-    provider: Option<String>,
-    reasoning: Option<bool>,
+    pub q: Option<String>,
+    pub provider: Option<String>,
+    pub reasoning: Option<bool>,
 }
-pub async fn models(
-    State(state): State<AppState>,
-    Query(query): Query<ModelsQuery>,
-) -> ApiResult<Vec<Value>> {
-    if let Some(provider) = &query.provider
-        && state.catalog.provider(provider).is_none()
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "unknown_provider"));
-    }
-    let mut rows = Vec::new();
-    for (provider, model) in state.catalog.find(query.q.as_deref().unwrap_or("")) {
-        if query.provider.as_ref().is_some_and(|id| *id != provider.id) {
-            continue;
-        }
-        if query.reasoning.unwrap_or(false)
-            && model
-                .supported_efforts()
-                .iter()
-                .all(|effort| *effort == swarmy_core::ReasoningEffort::None)
-        {
-            continue;
-        }
-        let mut row = serde_json::to_value(model)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
-        row["key"] = json!(format!("{}/{}", provider.id, model.id));
-        row["provider"] = json!(provider.id);
-        row["effective_api"] = json!(model.api.unwrap_or(provider.api));
-        row["effective_base_url"] = json!(model.base_url.as_deref().unwrap_or(&provider.base_url));
-        row["supported_efforts"] = json!(model.supported_efforts());
-        rows.push(row);
-    }
-    Ok(Json(rows))
-}
-pub async fn providers(State(state): State<AppState>) -> ApiResult<Vec<Value>> {
-    let rows = state
-        .catalog
-        .providers()
-        .map(|provider| {
-            json!({
-                "id":provider.id,"api":provider.api,"auth_kinds":provider.auth_kinds,
-                "env_keys":provider.env_keys,"credential":"unknown"
-            })
-        })
-        .collect();
-    Ok(Json(rows))
-}
-
-#[derive(serde::Deserialize)]
-pub struct AgentChoice {
-    idempotency_key: String,
-    name: Option<String>,
-    image: Option<String>,
-    description: Option<String>,
-    provider: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    system_prompt: Option<String>,
-    memory: Option<u64>,
-    gpu: Option<String>,
-    github_token: Option<String>,
-    clear_github_token: Option<bool>,
-    resets: Option<Vec<String>>,
-}
+type AgentChoice = api::CliAgentChoice;
 fn settings(
     body: &AgentChoice,
     catalog: &swarmy_llm::catalog::Catalog,
@@ -489,7 +434,7 @@ fn settings(
 pub async fn agent_create(
     State(state): State<AppState>,
     Json(body): Json<AgentChoice>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliAgent> {
     let choice = settings(&body, &state.catalog)?;
     let inference = swarmy_core::InferenceSelection {
         provider: choice.provider.clone(),
@@ -523,7 +468,7 @@ pub async fn agent_create(
             )
             .await
             .map_err(storage)?;
-        Ok(Json(json!(record)))
+        Ok(Json(typed(json!(record))?))
     })
     .await
 }
@@ -531,7 +476,7 @@ pub async fn agent_update(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<AgentChoice>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliAgent> {
     let record = state
         .store
         .get_agent_by_name(&name)
@@ -550,6 +495,18 @@ pub async fn agent_update(
             _ => Err(error(StatusCode::BAD_REQUEST, "invalid_reset")),
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut merged = record.clone();
+    choice.apply_to(&mut merged, &resets);
+    swarmy_llm::selection::validate(
+        &state.catalog,
+        &swarmy_core::InferenceSelection {
+            provider: merged.provider,
+            model: merged.model,
+            effort: merged.reasoning_effort,
+        },
+        &state.default_selection,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let key = body.idempotency_key.clone();
     let store = state.store.clone();
     super::replay(
@@ -567,18 +524,13 @@ pub async fn agent_update(
                     .await
                     .map_err(storage)?;
             }
-            Ok(Json(json!(updated)))
+            Ok(Json(typed(json!(updated))?))
         },
     )
     .await
 }
-#[derive(serde::Deserialize)]
-pub struct CredentialInput {
-    idempotency_key: String,
-    provider: String,
-    record: swarmy_core::CredentialRecord,
-}
-pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<Value>> {
+type CredentialInput = api::CliCredentialInput;
+pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::CliCredential>> {
     let store = super::credential_store(&state)?;
     Ok(Json(
         store
@@ -586,32 +538,32 @@ pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<Value>>
             .await
             .map_err(storage)?
             .into_iter()
-            .map(|summary| json!(summary))
-            .collect(),
+            .map(|summary| typed(json!(summary)))
+            .collect::<Result<Vec<_>, _>>()?,
     ))
 }
 pub async fn credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliCredential> {
     let store = super::credential_store(&state)?;
     let record = store
         .get_credential(swarmy_core::CredentialScope::Cluster, &provider)
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(json!(
+    Ok(Json(typed(json!(
         swarmy_store::credentials::CredentialSummary::new(
             provider,
             &record,
             jiff::Timestamp::now()
         )
-    )))
+    ))?))
 }
 pub async fn credential_set(
     State(state): State<AppState>,
     Json(body): Json<CredentialInput>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CliSaved> {
     let store = super::credential_store(&state)?;
     let provider = body.provider.clone();
     super::replay(
@@ -623,11 +575,12 @@ pub async fn credential_set(
                 .put_credential(
                     swarmy_core::CredentialScope::Cluster,
                     &provider,
-                    &body.record,
+                    &serde_json::from_value(body.record.clone())
+                        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_credential"))?,
                 )
                 .await
                 .map_err(storage)?;
-            Ok(Json(json!({"saved":true})))
+            Ok(Json(api::CliSaved { saved: true }))
         },
     )
     .await

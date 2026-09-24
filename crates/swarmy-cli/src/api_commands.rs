@@ -3,11 +3,19 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 use swarmy_client::Client;
+use swarmy_volume::image::validate_label;
 use ulid::Ulid;
 
 use crate::{Command, agent_command, auth_command, image_command, session_command};
 
 use crate::api_client::call as request;
+async fn projection<T: serde::Serialize>(
+    endpoint: &str,
+    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+) -> Result<Value> {
+    Ok(serde_json::to_value(request(endpoint, future).await?)?)
+}
+
 fn print(value: &Value, text: &str, json: bool) {
     if json {
         println!("{value}");
@@ -51,7 +59,11 @@ async fn session(
         session_command::Command::List => {
             let mut after = None;
             loop {
-                let page = request(endpoint, client.cli_sessions(after.as_deref(), 256)).await?;
+                let page = request(endpoint, client.cli_sessions(after.as_deref(), 256))
+                    .await?
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
                 if page.is_empty() {
                     break;
                 }
@@ -95,7 +107,7 @@ async fn show_session(
     session_id: ulid::Ulid,
     json: bool,
 ) -> Result<()> {
-    let details = request(endpoint, client.cli_session(&session_id.to_string())).await?;
+    let details = projection(endpoint, client.cli_session(&session_id.to_string())).await?;
     let record = &details["session"];
     let selection = &details["resolved"];
     let id = session_id.to_string();
@@ -221,7 +233,17 @@ async fn image(
         }
         image_command::Command::Show { image } => {
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            let value = request(endpoint, client.cli_image(name, tag)).await?;
+            validate_label(name)?;
+            validate_label(tag)?;
+            let value = projection(endpoint, client.cli_image(name, tag))
+                .await
+                .map_err(|error| {
+                    if error.to_string().contains("image_not_found") {
+                        anyhow::anyhow!("image not found")
+                    } else {
+                        error
+                    }
+                })?;
             print(
                 &value,
                 &format!(
@@ -404,7 +426,11 @@ async fn agent(
         agent_command::Command::Ls => {
             let mut after = None;
             loop {
-                let page = request(endpoint, client.cli_agents(after.as_deref(), 256)).await?;
+                let page = request(endpoint, client.cli_agents(after.as_deref(), 256))
+                    .await?
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
                 if page.is_empty() {
                     break;
                 }
@@ -415,7 +441,7 @@ async fn agent(
             }
         }
         agent_command::Command::Show { name } => {
-            let row = request(endpoint, client.cli_agent(&name)).await?;
+            let row = projection(endpoint, client.cli_agent(&name)).await?;
             print(&row, &agent_text(&row, true), json);
         }
         agent_command::Command::Create {
@@ -442,7 +468,11 @@ async fn agent(
             );
             body["github_token"] = json!(token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let created = request(endpoint, client.cli_create_agent(&body)).await?;
+            let created = projection(
+                endpoint,
+                client.cli_create_agent(&serde_json::from_value(body)?),
+            )
+            .await?;
             print(
                 &created,
                 &format!(
@@ -470,9 +500,14 @@ async fn agent(
                 body.as_object().is_some_and(|value| value.len() > 3)
                     || github_token.is_some()
                     || clear_github_token,
-                "agent set requires an inference option or GitHub token change"
+                "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
+                 --memory, --gpu, --github-token, or --clear-github-token"
             );
-            let updated = request(endpoint, client.cli_update_agent(&name, &body)).await?;
+            let updated = projection(
+                endpoint,
+                client.cli_update_agent(&name, &serde_json::from_value(body)?),
+            )
+            .await?;
             print(
                 &updated,
                 &format!(
@@ -498,7 +533,7 @@ async fn delete_agent(
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let current = request(endpoint, client.cli_agent(name)).await?;
+    let current = projection(endpoint, client.cli_agent(name)).await?;
     if !yes {
         use std::io::{IsTerminal as _, Write as _};
         ensure!(
@@ -639,11 +674,20 @@ async fn auth(
                 updated_at: jiff::Timestamp::now(),
             };
             let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":args.provider,"record":record});
-            request(endpoint, client.cli_set_credential(&body)).await?;
+            projection(
+                endpoint,
+                client.cli_set_credential(&serde_json::from_value(body)?),
+            )
+            .await?;
             auth_report("saved", &args.provider, json);
         }
         auth_command::Command::Ls => {
-            for summary in request(endpoint, client.cli_credentials()).await? {
+            for summary in request(endpoint, client.cli_credentials())
+                .await?
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?
+            {
                 auth_display(&summary, json, false);
             }
         }
@@ -652,9 +696,13 @@ async fn auth(
                 let summary = request(endpoint, client.cli_credential(&provider))
                     .await
                     .with_context(|| format!("credential for {provider} does not exist"))?;
-                vec![summary]
+                vec![serde_json::to_value(summary)?]
             } else {
-                request(endpoint, client.cli_credentials()).await?
+                request(endpoint, client.cli_credentials())
+                    .await?
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?
             };
             let ready = rows.iter().all(|row| row["status"] == "ready");
             let expired_bedrock = rows
