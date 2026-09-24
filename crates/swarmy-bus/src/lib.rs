@@ -156,6 +156,7 @@ impl WorkQueue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveFeed {
     ModelDeltas(SessionId),
+    ApiTokenDeltas(SessionId),
     TurnTimeline(SessionId),
     SessionEvents(SessionId),
 }
@@ -164,6 +165,7 @@ impl LiveFeed {
     fn subject(self) -> String {
         match self {
             Self::TurnTimeline(session) => format!("session.timeline.{session}"),
+            Self::ApiTokenDeltas(session) => format!("session.api_token.{session}"),
             Self::ModelDeltas(session) => {
                 subjects::INFER_LIVE.replace("{session_id}", &session.to_string())
             }

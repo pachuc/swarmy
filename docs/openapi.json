@@ -587,9 +587,15 @@
                 "type": "object",
                 "required": [
                   "turn_id",
+                  "position",
                   "text"
                 ],
                 "properties": {
+                  "position": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
                   "text": {
                     "type": "string"
                   },

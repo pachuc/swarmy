@@ -27,6 +27,13 @@ pub struct Subscription {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LiveTokenDelta {
+    pub turn_id: String,
+    pub position: u64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnStatus {
     Running,
@@ -319,6 +326,7 @@ pub enum EventPayload {
     },
     TokenDelta {
         turn_id: String,
+        position: u64,
         text: String,
     },
     ServiceStatusChanged {
@@ -453,7 +461,7 @@ mod tests {
             serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
             serde_json::json!({"type":"inference_error","data":{"turn_id":"t","error":{"code":"provider_error","message":"failed","provider_text":"original"}}}),
             serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
-            serde_json::json!({"type":"token_delta","data":{"turn_id":"t","text":"a"}}),
+            serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
             serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
             serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
         ];

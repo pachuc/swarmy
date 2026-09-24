@@ -82,3 +82,11 @@ pub use credential::{CredentialKind, CredentialRecord, CredentialScope, Credenti
 
 mod usage;
 pub use usage::{TokenUsage, UsageTotals};
+
+/// An ephemeral token update on the live bus, without a durable cursor.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveTokenDelta {
+    pub turn_id: String,
+    pub position: u64,
+    pub text: String,
+}
