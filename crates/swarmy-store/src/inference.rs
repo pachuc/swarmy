@@ -41,6 +41,19 @@ impl Store {
         self.inference_key("inference_request", id)
     }
 
+    /// Store the gateway payload for a request published before requests were
+    /// stored separately from their inputs, so a republished reference resolves.
+    /// # Errors
+    /// Returns storage or blob upload errors.
+    pub async fn put_inference_request<T: Serialize + Sync>(
+        &self,
+        id: RequestId,
+        request: &T,
+    ) -> Result<()> {
+        self.put_payload(self.inference_request_key(id), request)
+            .await
+    }
+
     /// Read the gateway payload by its request id.
     /// # Errors
     /// Returns storage, blob, or decoding errors.

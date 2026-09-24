@@ -304,11 +304,16 @@ impl Gateway {
             message.extend_deadline().await?;
             sleep(self.ack_wait / 3).await;
         }
-        let request: swarmy_llm::Request = self
+        let Some(request) = self
             .store
-            .get_inference_request(job.request_id)
+            .get_inference_request::<swarmy_llm::Request>(job.request_id)
             .await?
-            .context("inference request missing from store")?;
+        else {
+            // Nothing can serve a reference whose request is gone; the worker's
+            // recovery scan republishes live work with its request stored.
+            warn!(request_id = %job.request_id, "terminating job with no stored request");
+            return Ok(message.terminate().await?);
+        };
         anyhow::ensure!(
             request.settings == job.selection,
             "stored inference selection differs from delivery"
