@@ -507,7 +507,7 @@ pub async fn agent_create(
         .ok_or_else(|| error(StatusCode::BAD_REQUEST, "missing_image"))?;
     let key = body.idempotency_key.clone();
     let store = state.store.clone();
-    let store_key = key.clone();
+    let store_key = format!("cli:agents:create:{key}");
     super::replay(&state, &key, "cli:agents:create", async move {
         let record = store
             .create_agent_with_token_replay(
@@ -515,9 +515,11 @@ pub async fn agent_create(
                 &image,
                 body.description.as_deref().unwrap_or(""),
                 &choice,
-                body.github_token.as_deref(),
                 jiff::Timestamp::now(),
-                &format!("cli:agents:create:{store_key}"),
+                swarmy_store::AgentCreationReplay {
+                    key: &store_key,
+                    github_token: body.github_token.as_deref(),
+                },
             )
             .await
             .map_err(storage)?;
