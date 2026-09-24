@@ -5,16 +5,25 @@ use swarmy_config::RemoteNode;
 
 use super::{Cloud, Host, Launch, NodeShape, key_name, state::State, wait_running};
 
+pub struct NewNode<'a> {
+    pub name: &'a str,
+    pub sandboxes: u32,
+    pub shape: NodeShape,
+}
+
 pub async fn run(
     cloud: &impl Cloud,
     host: &impl Host,
     state: &State,
-    name: &str,
-    sandboxes: u32,
-    shape: NodeShape,
+    request: NewNode<'_>,
     delay: Duration,
     options: Option<&super::services::Options<'_>>,
 ) -> Result<()> {
+    let NewNode {
+        name,
+        sandboxes,
+        shape,
+    } = request;
     let mut primary = state.require(name)?;
     let mut settings = primary.launch_settings.clone().context(
         "remote has no saved launch configuration; recreate it with remote up before adding nodes",

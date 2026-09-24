@@ -47,7 +47,7 @@ dirty data there. EBS holds the repository, backing databases, and node identity
 The script refuses to format EBS disks or reuse unrecognized filesystems.
 
 ```sh
-swarmy remote up demo --instance-type m6i.large --disk-gb 40 --sandboxes 0
+swarmy remote up demo --services node --instance-type m6i.large --disk-gb 40 --sandboxes 0
 # up prints image build time, total elapsed time, and an SSH command
 swarmy remote add-node demo --instance-type m6id.4xlarge --disk-gb 100
 swarmy remote connect demo

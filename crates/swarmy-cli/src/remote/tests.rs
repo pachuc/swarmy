@@ -191,6 +191,13 @@ fn instance(status: &str) -> Instance {
     }
 }
 
+fn observe_running(cloud: &FakeCloud) {
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
+}
+
 fn settings() -> RemoteSettings {
     RemoteSettings {
         subnet: Some("subnet-test".into()),
@@ -533,9 +540,11 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         &cloud,
         &host,
         &state,
-        "demo",
-        4,
-        super::NodeShape::default(),
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         None,
     )
@@ -618,9 +627,11 @@ async fn failed_join_retains_child_for_cleanup() {
             &cloud,
             &host,
             &state,
-            "demo",
-            64,
-            super::NodeShape::default(),
+            super::add_node::NewNode {
+                name: "demo",
+                sandboxes: 64,
+                shape: super::NodeShape::default()
+            },
             Duration::ZERO,
             None
         )
@@ -809,9 +820,11 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &cloud,
         &host,
         &state,
-        "demo",
-        64,
-        super::NodeShape::default(),
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 64,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         None,
     )
@@ -839,9 +852,11 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &cloud,
         &host,
         &state,
-        "demo",
-        64,
-        super::NodeShape::default(),
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 64,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         Some(&options),
     )
@@ -857,10 +872,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
     let cloud = FakeCloud::default();
-    cloud
-        .observations
-        .borrow_mut()
-        .extend([Some(instance("running"))]);
+    observe_running(&cloud);
     let host = FakeHost::default();
     let request = up::NewNode {
         name: "bucket-test",
@@ -903,17 +915,16 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
     assert_eq!(cloud.role_creates.borrow().len(), 1);
     assert_eq!(cloud.profile_creates.borrow().len(), 1);
-    cloud
-        .observations
-        .borrow_mut()
-        .push_back(Some(instance("running")));
+    observe_running(&cloud);
     super::add_node::run(
         &cloud,
         &host,
         &state,
-        "bucket-test",
-        4,
-        super::NodeShape::default(),
+        super::add_node::NewNode {
+            name: "bucket-test",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         None,
     )
@@ -936,10 +947,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         .unwrap();
     assert_eq!(&*cloud.profiles_deleted.borrow(), &["swarmy-bucket-test"]);
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    cloud
-        .observations
-        .borrow_mut()
-        .extend([Some(instance("running"))]);
+    observe_running(&cloud);
     up::run(
         &cloud,
         &host,
@@ -1004,7 +1012,10 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
         &host,
         &state,
         &first,
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
         None.into(),
         Duration::ZERO,
     )
@@ -1019,10 +1030,13 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
         &cloud,
         &host,
         &state,
-        "demo",
-        super::NodeShape {
-            instance_type: Some("m6id.4xlarge".into()),
-            disk_gb: Some(100),
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape {
+                instance_type: Some("m6id.4xlarge".into()),
+                disk_gb: Some(100),
+            },
         },
         Duration::ZERO,
         None,
@@ -1073,7 +1087,10 @@ async fn invalid_join_shape_fails_before_launch_or_state_change() {
         &host,
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         None.into(),
         Duration::ZERO,
     )
@@ -1090,9 +1107,20 @@ async fn invalid_join_shape_fails_before_launch_or_state_change() {
         },
     ] {
         assert!(
-            super::add_node::run(&cloud, &host, &state, "demo", shape, Duration::ZERO, None)
-                .await
-                .is_err()
+            super::add_node::run(
+                &cloud,
+                &host,
+                &state,
+                super::add_node::NewNode {
+                    name: "demo",
+                    sandboxes: 4,
+                    shape
+                },
+                Duration::ZERO,
+                None
+            )
+            .await
+            .is_err()
         );
         assert_eq!(cloud.requests.borrow().len(), 1);
         assert!(state.require("demo").unwrap().nodes.is_empty());
@@ -1120,7 +1148,10 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
         &FakeHost::default(),
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         None.into(),
         Duration::ZERO,
     )
@@ -1134,10 +1165,13 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
         &cloud,
         &host,
         &state,
-        "demo",
-        super::NodeShape {
-            instance_type: Some("m6i.large".into()),
-            disk_gb: Some(40),
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape {
+                instance_type: Some("m6i.large".into()),
+                disk_gb: Some(40),
+            },
         },
         Duration::ZERO,
         None,

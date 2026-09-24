@@ -105,60 +105,64 @@ pub async fn run(json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&statuses)?);
     } else {
-        for status in statuses {
-            println!(
-                "{} instance={} type={} state={} sandboxes={} tunnel={}",
-                status.name,
-                status.instance_id,
-                status.instance_type.as_deref().unwrap_or("unknown"),
-                status.instance_state,
-                status.sandboxes,
-                if status.tunnel { "up" } else { "down" }
-            );
-            for node in status.nodes {
-                println!(
-                    "  {} instance={} type={} state={} private_ip={} sandboxes={}",
-                    node.name,
-                    node.instance_id,
-                    node.instance_type.as_deref().unwrap_or("unknown"),
-                    node.instance_state,
-                    node.private_ip,
-                    node.sandboxes
-                );
-            }
-            for service in status.services {
-                println!(
-                    "  service {:?} {} {}",
-                    service.heartbeat.role,
-                    service.heartbeat.instance_id,
-                    if service.alive { "live" } else { "stale" }
-                );
-            }
-            for image in status.images {
-                println!(
-                    "  image {}:{} {}",
-                    image.name, image.tag.0, image.manifest_id
-                );
-            }
-            if let Some(error) = status.image_error {
-                println!("  images: {error}");
-            }
-            for record in status.registrations {
-                println!(
-                    "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
-                    record.node_id,
-                    record.heartbeat_age_seconds,
-                    if record.heartbeating { "live" } else { "stale" },
-                    record.committed_memory_mib,
-                    record.free_memory_mib
-                );
-            }
-            if let Some(error) = status.registration_error {
-                println!("  registration: {error}");
-            }
-        }
+        print_human(statuses);
     }
     Ok(())
+}
+
+fn print_human(statuses: Vec<Status>) {
+    for status in statuses {
+        println!(
+            "{} instance={} type={} state={} sandboxes={} tunnel={}",
+            status.name,
+            status.instance_id,
+            status.instance_type.as_deref().unwrap_or("unknown"),
+            status.instance_state,
+            status.sandboxes,
+            if status.tunnel { "up" } else { "down" }
+        );
+        for node in status.nodes {
+            println!(
+                "  {} instance={} type={} state={} private_ip={} sandboxes={}",
+                node.name,
+                node.instance_id,
+                node.instance_type.as_deref().unwrap_or("unknown"),
+                node.instance_state,
+                node.private_ip,
+                node.sandboxes
+            );
+        }
+        for service in status.services {
+            println!(
+                "  service {:?} {} {}",
+                service.heartbeat.role,
+                service.heartbeat.instance_id,
+                if service.alive { "live" } else { "stale" }
+            );
+        }
+        for image in status.images {
+            println!(
+                "  image {}:{} {}",
+                image.name, image.tag.0, image.manifest_id
+            );
+        }
+        if let Some(error) = status.image_error {
+            println!("  images: {error}");
+        }
+        for record in status.registrations {
+            println!(
+                "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
+                record.node_id,
+                record.heartbeat_age_seconds,
+                if record.heartbeating { "live" } else { "stale" },
+                record.committed_memory_mib,
+                record.free_memory_mib
+            );
+        }
+        if let Some(error) = status.registration_error {
+            println!("  registration: {error}");
+        }
+    }
 }
 
 async fn inspect<F, Fut>(node: &RemoteNode, tunnel: bool, reachable: bool, scan: F) -> Status
@@ -323,6 +327,7 @@ mod tests {
             name: "test-2".into(),
             instance_id: "i-child".into(),
             instance_state: "running".into(),
+            instance_type: Some("m6id.4xlarge".into()),
             private_ip: "10.0.0.2".into(),
             sandboxes: 4,
         };

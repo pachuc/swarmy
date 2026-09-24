@@ -85,7 +85,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let host = ssh::Ssh::discover()?;
             let cloud = aws::Aws::new(&node.region).await;
             tokio::select! {
-                result = Box::pin(add_node::run(&cloud, &host, &state, &name, sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), NodeShape { instance_type, disk_gb }, Duration::from_secs(5), options.as_ref())) => result,
+                result = Box::pin(add_node::run(&cloud, &host, &state, add_node::NewNode { name: &name, sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), shape: NodeShape { instance_type, disk_gb } }, Duration::from_secs(5), options.as_ref())) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
