@@ -811,11 +811,21 @@ FoundationDB has one placement record per agent: agent id, node id, epoch,
 lease expiry, last epoch change reason (`initial`, `failure`, `eviction`, or `unstarted`),
 and change time. The store API is `place`, `renew`, `release`, `take_over`,
 `get_by_agent`, and `list_by_node`. Place requires absence and a registered
-sandbox node with capacity. Registration already advertises the maximum as
-`NodeCapacity.sandboxes`. Occupancy is a separate transactional counter, so a
-heartbeat cannot reset it. Expired placements still reserve their slots until
+sandbox node with capacity. Registration advertises a sandbox memory budget (`NodeCapacity.memory_bytes`)
+after reserving host memory for the daemon and caches. Each computer commits its
+required memory in the same transaction as placement, and the node enforces the
+limit through the container memory cgroup. A maximum sandbox count remains a
+secondary cap. Occupancy and committed memory are separate transactional counters,
+so a heartbeat cannot reset them. Expired placements still reserve memory until
 takeover or release. Node listings include expired records and paginate by
 agent id; schedulers can use them to find computers needing recovery.
+
+Sandbox requirements are memory in MiB and a future GPU mode (`none`, `shared`,
+`dedicated`). An agent can override them on creation or after eviction; memory
+defaults to the pinned image recipe and then to the swarm's 768 MiB default.
+Ephemeral sessions pin the image default when created. A resident sandbox cannot
+change requirements until it has been evicted, so its cgroup limit and committed
+budget stay consistent.
 
 The holder renews a live lease using its node id and epoch. Renewals preserve
 the epoch and change metadata. Release checks that same authority, removes

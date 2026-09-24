@@ -495,6 +495,28 @@ fn reasoning(
 
 fn part_block(part: &Part, model: &ModelInfo) -> Result<Option<ContentBlock>, Error> {
     Ok(match part {
+        Part::Image {
+            media_type, bytes, ..
+        } => {
+            let format = match media_type.as_str() {
+                "image/png" => sdk::ImageFormat::Png,
+                "image/jpeg" => sdk::ImageFormat::Jpeg,
+                "image/gif" => sdk::ImageFormat::Gif,
+                "image/webp" => sdk::ImageFormat::Webp,
+                _ => {
+                    return Err(Error::Protocol(format!(
+                        "unsupported image media type: {media_type}"
+                    )));
+                }
+            };
+            Some(ContentBlock::Image(
+                sdk::ImageBlock::builder()
+                    .format(format)
+                    .source(sdk::ImageSource::Bytes(Blob::new(bytes.clone())))
+                    .build()
+                    .map_err(build_error)?,
+            ))
+        }
         Part::Text { text } => (!text.trim().is_empty()).then(|| ContentBlock::Text(text.clone())),
         Part::Reasoning { text, metadata } => reasoning(text, metadata, model)?,
         Part::ToolCall {
@@ -887,6 +909,26 @@ mod tests {
                 reasoning_effort: None,
             },
         }
+    }
+
+    #[test]
+    fn image_block_contains_raw_bytes() {
+        let model = model("anthropic.claude-3-7-sonnet-v1:0");
+        let part = Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            object_key: None,
+            detail: None,
+        };
+        let block = part_block(&part, &model).unwrap().unwrap();
+        let ContentBlock::Image(image) = block else {
+            panic!("expected image block")
+        };
+        assert_eq!(image.format, sdk::ImageFormat::Png);
+        assert_eq!(
+            image.source.unwrap().as_bytes().unwrap().as_ref(),
+            &[1, 2, 3]
+        );
     }
 
     #[test]

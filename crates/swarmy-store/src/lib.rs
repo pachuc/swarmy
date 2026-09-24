@@ -103,6 +103,8 @@ pub enum StoreError {
     NodeMissing,
     #[error("node has no computer capacity available")]
     NodeAtCapacity,
+    #[error("sandbox requirements can only change after the current placement is evicted")]
+    ActiveSandboxRequirements,
     #[error("placement already exists")]
     PlacementExists,
     #[error("volume does not exist")]
@@ -272,6 +274,16 @@ impl Store {
             },
             other => StoreError::Binding(other),
         })
+    }
+
+    /// Persist binary tool content without adding it to the session event log.
+    ///
+    /// # Errors
+    /// Returns an error if object storage rejects the upload.
+    pub async fn put_tool_blob(&self, bytes: Vec<u8>) -> Result<String> {
+        let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
+        self.blobs.put(&key, bytes.into()).await?;
+        Ok(key)
     }
 
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {

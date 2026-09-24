@@ -23,6 +23,15 @@ def stop(signum, frame):
     global stopping
     stopping = True
 signal.signal(signal.SIGTERM, stop)
+def oom_kills():
+    try:
+        for line in Path('/sys/fs/cgroup/memory.events').read_text().splitlines():
+            if line.startswith('oom_kill '):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+before_oom = oom_kills()
 with os.fdopen(os.open(directory / 'stdin', os.O_RDWR), 'rb', buffering=0) as stdin:
     # A login shell so the image's profile applies: it sets PATH for the
     # toolchain and CARGO_TARGET_DIR to the scratch mount; a plain -c shell
@@ -44,6 +53,9 @@ with os.fdopen(os.open(directory / 'stdin', os.O_RDWR), 'rb', buffering=0) as st
                     ready.unregister(key.fileobj)
                     key.fileobj.close()
     code = child.wait()
+    after_oom = oom_kills()
+    if before_oom is not None and after_oom is not None and after_oom > before_oom:
+        (directory / 'oom_killed').touch()
     temporary = directory / 'exit.tmp'
     temporary.write_text(json.dumps(code))
     temporary.rename(directory / 'exit.json')
@@ -68,7 +80,11 @@ def running(record):
 def status(record, lifetime):
     if record['lifetime'] != lifetime:
         return 'restarted'
-    return 'running' if running(record) else 'exited'
+    if running(record):
+        return 'running'
+    if (ROOT / record['process_id'] / 'oom_killed').exists():
+        return 'killed for exceeding sandbox memory limit'
+    return 'exited'
 
 
 def preview(path, budget=BUDGET):
@@ -154,12 +170,18 @@ def bash(directory, record, options):
                 streams.append(stream.read(options.get('output_budget_bytes', BUDGET) + 1).decode('utf-8', errors='replace'))
         if sum(len(text.encode()) for text in streams) <= options.get('output_budget_bytes', BUDGET):
             stdout, stderr = streams
+    exit_code = json.loads((directory / 'exit.json').read_text()) if finished else None
+    oom = (directory / 'oom_killed').exists()
+    if oom:
+        stderr += '\nSandbox process killed for exceeding its memory limit.'
+    elif exit_code in (-9, 137):
+        stderr += '\nSandbox process killed by SIGKILL.'
     result.update(process_id=record['process_id'], log_path=record['log_path'],
                   stdout=stdout, stderr=stderr, backgrounded=backgrounded,
                   timed_out=timed_out,
-                  exit_code=json.loads((directory / 'exit.json').read_text()) if finished else None,
+                  exit_code=exit_code,
                   status=('timeout reached; command continues in background' if timed_out else
-                          'yield elapsed; command continues in background') if backgrounded else 'exited')
+                          'yield elapsed; command continues in background') if backgrounded else ('killed for exceeding sandbox memory limit' if oom else ('killed by SIGKILL' if exit_code in (-9, 137) else 'exited')))
     return result
 
 

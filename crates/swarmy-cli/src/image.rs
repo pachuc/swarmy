@@ -87,6 +87,11 @@ async fn build(
     validate_label(&tag)?;
     let (recipe, directory, directory_name) = Recipe::load(&path)?;
     let scratch = recipe.sandbox.scratch.clone();
+    let memory_mib = recipe.sandbox.memory_mib;
+    anyhow::ensure!(
+        memory_mib.is_none_or(|m| m > 0),
+        "sandbox memory_mib must be positive"
+    );
     let name = name.unwrap_or(directory_name);
     validate_label(&name)?;
     let store = store().await?;
@@ -115,7 +120,13 @@ async fn build(
     let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
     store.put_manifest(manifest_id, &built.header).await?;
     store
-        .put_image_with_scratch(&name, &ImageTag(tag.clone()), manifest_id, &scratch)
+        .put_image_with_requirements(
+            &name,
+            &ImageTag(tag.clone()),
+            manifest_id,
+            &scratch,
+            memory_mib,
+        )
         .await?;
     if json {
         println!(

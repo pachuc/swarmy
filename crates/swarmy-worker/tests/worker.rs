@@ -39,6 +39,8 @@ struct Fixture {
     max_wait_seconds: u64,
     gateway_wait_seconds: u64,
     provider: String,
+    model: String,
+    nats_url: String,
     files: TempDir,
     children: Vec<Child>,
     snapshots: Mutex<HashSet<String>>,
@@ -46,12 +48,16 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
+        let Ok(url) = std::env::var("SWARMY_NATS_URL") else {
+            eprintln!("skipping worker integration test: SWARMY_NATS_URL is unset");
+            return None;
+        };
+        Self::new_at(url).await
+    }
+
+    async fn new_at(nats_url: String) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        for variable in [
-            "SWARMY_FDB_CLUSTER_FILE",
-            "SWARMY_NATS_URL",
-            "SWARMY_S3_ENDPOINT",
-        ] {
+        for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
             if std::env::var(variable).is_err() {
                 eprintln!("skipping worker integration test: {variable} is unset");
                 return None;
@@ -67,7 +73,7 @@ impl Fixture {
         .await
         .unwrap();
         let bus = Bus::connect(
-            &std::env::var("SWARMY_NATS_URL").unwrap(),
+            &nats_url,
             Config {
                 prefix: Some(SubjectToken::new(&prefix).unwrap()),
                 ..Default::default()
@@ -84,6 +90,8 @@ impl Fixture {
             max_wait_seconds: 3600,
             gateway_wait_seconds: 1,
             provider: "fake".into(),
+            model: "fake-model".into(),
+            nats_url,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
@@ -171,10 +179,11 @@ impl Fixture {
         let mut command = Command::new(executable);
         command
             .env("SWARMY_PROVIDER", &self.provider)
+            .env("SWARMY_NATS_URL", &self.nats_url)
             .env(
                 "SWARMY_MODEL",
                 if self.provider == "fake" {
-                    "fake-model"
+                    self.model.as_str()
                 } else {
                     "gpt-5.5"
                 },
@@ -343,9 +352,7 @@ impl Fixture {
         })
         .await
         .unwrap();
-        let client = async_nats::connect(std::env::var("SWARMY_NATS_URL").unwrap())
-            .await
-            .unwrap();
+        let client = async_nats::connect(&self.nats_url).await.unwrap();
         let context = async_nats::jetstream::new(client);
         for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
             context
@@ -359,7 +366,18 @@ impl Fixture {
 async fn run(
     test: impl for<'a> FnOnce(&'a mut Fixture) -> std::pin::Pin<Box<dyn Future<Output = ()> + 'a>>,
 ) {
-    let Some(mut fixture) = Fixture::new().await else {
+    run_at(None, test).await;
+}
+
+async fn run_at(
+    nats_url: Option<String>,
+    test: impl for<'a> FnOnce(&'a mut Fixture) -> std::pin::Pin<Box<dyn Future<Output = ()> + 'a>>,
+) {
+    let Some(mut fixture) = (if let Some(url) = nats_url {
+        Fixture::new_at(url).await
+    } else {
+        Fixture::new().await
+    }) else {
         return;
     };
     let result = AssertUnwindSafe(timeout(Duration::from_secs(90), test(&mut fixture)))
@@ -829,6 +847,184 @@ async fn recover_before_release() {
 #[tokio::test]
 async fn recover_unpublished_waiting_inference() {
     kill_point("after_release").await;
+}
+
+#[tokio::test]
+async fn large_request_dispatches_on_default_nats_limit() {
+    if std::env::var("SWARMY_FDB_CLUSTER_FILE").is_err()
+        || std::env::var("SWARMY_S3_ENDPOINT").is_err()
+    {
+        eprintln!("skipping worker integration test: dev stack is unset");
+        return;
+    }
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let files = TempDir::new().unwrap();
+    let mut server = Command::new("nats-server")
+        .args([
+            "-js",
+            "-sd",
+            files.path().to_str().unwrap(),
+            "-p",
+            &port.to_string(),
+        ])
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let url = format!("nats://127.0.0.1:{port}");
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(client) = async_nats::connect(&url).await {
+                assert_eq!(client.max_payload(), 1_048_576);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    run_at(Some(url), |f| {
+        Box::pin(async move {
+            f.script(false, "");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
+            f.store
+                .append_events(
+                    id,
+                    head,
+                    &[Event::MessageAppended {
+                        seq: 0,
+                        message: Message {
+                            id: MessageId::from_ulid(Ulid::generate()),
+                            role: MessageRole::Tool,
+                            parts: vec![Part::Text {
+                                text: "x".repeat(1_200_000),
+                            }],
+                        },
+                    }],
+                )
+                .await
+                .unwrap();
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert_requests(id, &events, 1);
+            let request = events
+                .iter()
+                .find_map(|event| match event {
+                    Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            let job: swarmy_llm::InferenceJob =
+                f.store.get_inference_input(request).await.unwrap().unwrap();
+            assert!(swarmy_core::encode(&job.request).unwrap().len() > 1_048_576);
+            assert_eq!(f.calls(), 1);
+        })
+    })
+    .await;
+    server.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn permanent_publish_error_ends_turn() {
+    if std::env::var("SWARMY_FDB_CLUSTER_FILE").is_err()
+        || std::env::var("SWARMY_S3_ENDPOINT").is_err()
+    {
+        eprintln!("skipping worker integration test: dev stack is unset");
+        return;
+    }
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let files = TempDir::new().unwrap();
+    let config = files.path().join("nats.conf");
+    std::fs::write(&config, "max_payload: 1MB\n").unwrap();
+    let mut server = Command::new("nats-server")
+        .args([
+            "-js",
+            "-sd",
+            files.path().to_str().unwrap(),
+            "-p",
+            &port.to_string(),
+            "-c",
+            config.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let url = format!("nats://127.0.0.1:{port}");
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if async_nats::connect(&url).await.is_ok() {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut f = Fixture::new_at(url.clone()).await.unwrap();
+    f.bus.setup(&[WorkQueue::Runnable(7)]).await.unwrap();
+    std::fs::write(&config, "max_payload: 512\n").unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-HUP", &server.id().unwrap().to_string()])
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(client) = async_nats::connect(&url).await
+                && client.max_payload() == 512
+            {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    f.model = "long-model-".to_owned() + &"x".repeat(600);
+    f.script(false, "");
+    f.start("swarmy-scheduler", None);
+    f.start("swarmy-worker", None);
+    let id = f.create().await;
+    let started = std::time::Instant::now();
+    f.wake(id).await;
+    let events = f.idle(id).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let failed = events.iter().any(|event| {
+        matches!(event, Event::InferenceFailed { retryable: false, error, .. }
+            if error.contains("encoded bus message size") && error.contains("512"))
+    });
+    assert!(failed);
+    let request_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        f.store
+            .get_inference_request::<swarmy_llm::Request>(request_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.calls(), 0);
+    f.cleanup().await;
+    server.kill().await.unwrap();
 }
 
 #[tokio::test]

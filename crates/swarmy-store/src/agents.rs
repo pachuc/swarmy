@@ -175,10 +175,17 @@ impl Store {
                 {
                     return Err(StoreError::AgentExists);
                 }
+                let image = self.resolve_image(&trx, image).await?;
+                let default_memory: Option<u64> = read(
+                    &trx,
+                    &self.image_memory_key(&image.name, &image.tag, image.manifest_id),
+                )
+                .await?
+                .flatten();
                 let record = AgentRecord {
                     agent_id: id,
                     name: name.into(),
-                    image: self.resolve_image(&trx, image).await?,
+                    image,
                     description: description.into(),
                     created_at: now,
                     main_session: None,
@@ -186,6 +193,10 @@ impl Store {
                     model: settings.model.clone(),
                     reasoning_effort: settings.reasoning_effort,
                     provider: settings.provider.clone(),
+                    requirements: swarmy_core::SandboxRequirements {
+                        memory_mib: settings.memory_mib.or(default_memory).unwrap_or(768),
+                        gpu: settings.gpu.unwrap_or_default(),
+                    },
                 };
                 write(&trx, &self.agent_key(id), &record)?;
                 if let Some(token) = github_token {
@@ -311,7 +322,15 @@ impl Store {
                 .read_agent(&trx, id)
                 .await?
                 .ok_or(StoreError::AgentMissing)?;
+            let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
+            if agent.requirements != previous_requirements
+                && read::<swarmy_core::PlacementRecord>(&trx, &self.placement_key("placement", id))
+                    .await?
+                    .is_some()
+            {
+                return Err(StoreError::ActiveSandboxRequirements);
+            }
             write(&trx, &self.agent_key(id), &agent)?;
             Ok(agent)
         })
@@ -450,6 +469,19 @@ impl Store {
                     .image
             }
         };
+        if matches!(session.kind, SessionKind::Ephemeral) {
+            let memory: Option<u64> = read(
+                trx,
+                &self.image_memory_key(&selected.name, &selected.tag, selected.manifest_id),
+            )
+            .await?
+            .flatten();
+            write(
+                trx,
+                &self.computer_memory_key(session.agent_id),
+                &memory.unwrap_or(768),
+            )?;
+        }
         write(trx, &self.session_image_key(id), &selected)?;
         swarmy_core::UpdatePlanArguments {
             plan: session.plan.clone(),
@@ -738,6 +770,8 @@ fn validate_github_token(token: Option<&str>) -> Result<()> {
 /// Postcard structs have no field count, so Serde defaults alone cannot read an
 /// old record. Only accept the legacy schema when it consumes the entire value,
 /// so existing agents acquire no main session or inference overrides on upgrade.
+// Legacy postcard layouts require explicit decoding rather than serde defaults.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
     #[derive(serde::Deserialize)]
     struct LegacyAgent {
@@ -773,9 +807,38 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
         reasoning_effort: Option<swarmy_core::ReasoningEffort>,
     }
 
+    #[derive(serde::Deserialize)]
+    struct ProviderAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+        main_session: Option<SessionId>,
+        system_prompt: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
+        provider: Option<String>,
+    }
+
     match decode(bytes) {
         Ok(agent) => Ok(agent),
         Err(error) => {
+            if let Ok(old) = decode::<ProviderAgent>(bytes) {
+                return Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: old.main_session,
+                    system_prompt: old.system_prompt,
+                    model: old.model,
+                    reasoning_effort: old.reasoning_effort,
+                    provider: old.provider,
+                    requirements: swarmy_core::SandboxRequirements::default(),
+                });
+            }
             if let Ok(old) = decode::<SettingsAgent>(bytes) {
                 return Ok(AgentRecord {
                     agent_id: old.agent_id,
@@ -788,6 +851,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: old.model,
                     reasoning_effort: old.reasoning_effort,
                     provider: None,
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
             if let Ok(old) = decode::<MainSessionAgent>(bytes) {
@@ -802,6 +866,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
             match decode::<LegacyAgent>(bytes) {
@@ -816,6 +881,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 }),
                 Err(_) => Err(error.into()),
             }
@@ -868,6 +934,7 @@ mod tests {
             model: Some("gpt-5.5".into()),
             reasoning_effort: Some(ReasoningEffort::Max),
             provider: None,
+            requirements: swarmy_core::SandboxRequirements::default(),
         };
         let bytes = encode(&(
             record.agent_id,
@@ -902,6 +969,7 @@ mod tests {
             model: Some("model".into()),
             reasoning_effort: Some(ReasoningEffort::High),
             provider: Some("openai".into()),
+            requirements: swarmy_core::SandboxRequirements::default(),
         };
         let mut bytes = encode(&record).unwrap();
         assert_eq!(decode_agent(&bytes).unwrap(), record);

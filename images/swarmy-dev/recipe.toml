@@ -2,6 +2,7 @@ disk_size = 68719476736
 source_date_epoch = 1789978988
 
 [sandbox]
+memory_mib = 6144  # a cargo test build of this workspace peaks at several GiB
 scratch = ["/home/agent/.cargo-target", "/tmp"]
 
 [source]

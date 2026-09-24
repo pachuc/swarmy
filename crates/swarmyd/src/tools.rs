@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use std::{sync::Arc, time::Duration};
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::{
@@ -120,7 +121,7 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
     let sandbox = swarmy_core::Sandbox {
         agent_id: claim.placement.agent_id,
     };
-    let result = match &claim.job.arguments {
+    let mut result = match &claim.job.arguments {
         SandboxArguments::Checkpoint(_) => {
             let manifest_id = runtime.checkpoint(&sandbox).await?;
             completed(
@@ -139,7 +140,15 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
                     ),
                 }
             } else if exit.exit_code != 0 {
-                ToolResult::Error { error: stderr }
+                ToolResult::Error {
+                    error: if exit.exit_code == 137 {
+                        format!(
+                            "sandbox process killed (memory limit may have been exceeded); stderr: {stderr}"
+                        )
+                    } else {
+                        stderr
+                    },
+                }
             } else if arguments.is_file_tool() {
                 serde_json::from_str(&stdout)?
             } else {
@@ -164,6 +173,14 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             }
         }
     };
+    if let ToolResult::Completed { metadata, .. } = &mut result
+        && let Some(encoded) = metadata.remove("image_base64")
+    {
+        let encoded = encoded.as_str().context("image payload must be base64")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+        let key = store.put_tool_blob(bytes).await?;
+        metadata.insert("image_object_key".into(), serde_json::json!(key));
+    }
     if store.interrupt_requested(claim.job.session_id).await? {
         stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
     }

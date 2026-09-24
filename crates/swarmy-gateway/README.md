@@ -1,9 +1,9 @@
 # Inference gateway
 
 `swarmy-gateway` consumes `WorkQueue::Inference` for one provider class. Workers
-publish a versioned `swarmy_llm::InferenceJob` after recording the session as
-`WaitingInference`. The gateway verifies the deterministic request id before
-calling the provider.
+publish a versioned `swarmy_llm::InferenceJobRef` after recording the session as
+`WaitingInference`. The gateway verifies the deterministic request id, claims
+the job, and loads its `Request` from the store before calling the provider.
 
 | Environment variable | Meaning / default |
 | --- | --- |
@@ -34,10 +34,11 @@ publication is logged and durable completion still proceeds. Partial deltas may
 repeat after a crash. Consumers treat the final durable event as authoritative.
 
 `Store::complete_inference` atomically writes the response, appends the success
-or failure event, clears inflight and the claim, marks idempotency complete, and
-indexes the session as Runnable. Large values are uploaded to content-addressed
-blobs first. As with other store writes, failed transactions can leave blobs for
-later garbage collection. Full results, including usage and stop reason, are
+or failure event, clears inflight, the stored gateway request, and the claim,
+marks idempotency complete, and indexes the session as Runnable. Large values
+are uploaded to content-addressed blobs first. As with other store writes,
+failed transactions can leave blobs for later garbage collection. Full
+results, including usage and stop reason, are
 available through `Store::get_inference_result::<Result<Response, String>>`;
 success events also contain the assistant message. Acknowledgement follows the
 transaction. Replayed completed jobs are acknowledged without provider calls.

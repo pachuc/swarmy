@@ -9,7 +9,7 @@ use swarmy_core::{
     decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
-use swarmy_llm::InferenceJob;
+use swarmy_llm::{InferenceJob, InferenceJobRef};
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition};
 use tokio::{
     sync::Mutex,
@@ -139,9 +139,18 @@ impl Worker {
 
     async fn publish_events(&self, id: SessionId, events: &[Event]) -> Result<()> {
         for event in events {
-            self.bus
+            if let Err(error) = self
+                .bus
                 .publish_live(LiveFeed::SessionEvents(id), event)
-                .await?;
+                .await
+            {
+                if matches!(error, swarmy_bus::Error::PayloadTooLarge { .. }) {
+                    // The event is already durable. Live observers can read it by cursor.
+                    tracing::warn!(%id, seq = event.seq(), %error, "live event exceeds bus limit");
+                } else {
+                    return Err(error.into());
+                }
+            }
         }
         Ok(())
     }
@@ -581,6 +590,20 @@ impl Worker {
             .catalog
             .model(&selection.provider, &selection.model)
         {
+            if !model
+                .input_modalities
+                .iter()
+                .any(|modality| modality == "image")
+            {
+                omit_unsupported_images(request);
+            }
+            if model
+                .input_modalities
+                .iter()
+                .any(|modality| modality == "image")
+            {
+                self.hydrate_images(request).await?;
+            }
             let (effort, changed) = model.clamp_effort(selection.effort);
             request.settings.reasoning_effort = Some(effort);
             if changed && !self.has_effort_notice(session.session_id).await? {
@@ -622,6 +645,58 @@ impl Worker {
         Ok(selection.provider)
     }
 
+    async fn hydrate_images(&self, request: &mut swarmy_llm::Request) -> Result<()> {
+        for message in &mut request.messages {
+            for part in &mut message.parts {
+                if let swarmy_core::Part::Image {
+                    bytes,
+                    object_key: Some(key),
+                    ..
+                } = part
+                    && bytes.is_empty()
+                {
+                    *bytes = self.blobs.get(key).await?.to_vec();
+                }
+            }
+        }
+        let mut expanded = Vec::with_capacity(request.messages.len());
+        for message in request.messages.drain(..) {
+            let mut images = Vec::new();
+            for part in &message.parts {
+                if let swarmy_core::Part::ToolResult {
+                    result: swarmy_core::ToolResult::Completed { metadata, .. },
+                    ..
+                } = part
+                    && let (Some(key), Some(media_type)) = (
+                        metadata
+                            .get("image_object_key")
+                            .and_then(serde_json::Value::as_str),
+                        metadata
+                            .get("image_media_type")
+                            .and_then(serde_json::Value::as_str),
+                    )
+                {
+                    images.push(swarmy_core::Part::Image {
+                        media_type: media_type.to_owned(),
+                        bytes: self.blobs.get(key).await?.to_vec(),
+                        object_key: Some(key.to_owned()),
+                        detail: None,
+                    });
+                }
+            }
+            expanded.push(message);
+            if !images.is_empty() {
+                expanded.push(swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::User,
+                    parts: images,
+                });
+            }
+        }
+        request.messages = expanded;
+        Ok(())
+    }
+
     async fn build_inference(
         &self,
         session: &mut SessionRecord,
@@ -654,7 +729,7 @@ impl Worker {
             let mut token = lease.lock().await;
             let event = self
                 .store
-                .submit_inference_after(
+                .submit_inference_after_with_request(
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &InflightRecord {
@@ -664,6 +739,7 @@ impl Worker {
                         key_id: String::new(),
                     },
                     &job,
+                    &job.request,
                     &preceding,
                 )
                 .await?;
@@ -679,13 +755,7 @@ impl Worker {
         if self.fail_unserved(&job).await? {
             return Ok(());
         }
-        self.bus
-            .publish_work(
-                &WorkQueue::Inference(SubjectToken::new(&job.provider)?),
-                &job,
-            )
-            .await?;
-        Ok(())
+        self.publish_inference(&job).await
     }
 
     async fn execute_pending(
@@ -1020,12 +1090,67 @@ impl Worker {
         if self.fail_unserved(job).await? {
             return Ok(());
         }
-        self.bus
+        self.publish_inference(job).await
+    }
+
+    async fn publish_inference(&self, job: &InferenceJob) -> Result<()> {
+        let published = self
+            .bus
             .publish_work(
                 &WorkQueue::Inference(SubjectToken::new(self.job_provider(job))?),
-                job,
+                &InferenceJobRef::from(job),
             )
-            .await?;
+            .await;
+        if let Err(error) = published {
+            if error.permanent_publish_failure() {
+                self.fail_publication(job, &error).await?;
+            } else {
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn fail_publication(&self, job: &InferenceJob, error: &swarmy_bus::Error) -> Result<()> {
+        let now = Timestamp::now();
+        let claim = swarmy_store::InferenceClaim {
+            session_id: job.session_id,
+            request_id: job.request_id,
+            owner: LeaseOwnerId::from_ulid(Ulid::generate()),
+            expires_at: now.checked_add(std::time::Duration::from_secs(30))?,
+        };
+        if self.store.start_inference(&claim, now).await? {
+            let session = self
+                .store
+                .fetch_session(job.session_id)
+                .await?
+                .context("session missing")?;
+            let event = Event::InferenceFailed {
+                seq: session
+                    .head_seq
+                    .checked_add(1)
+                    .context("sequence overflow")?,
+                request_id: job.request_id,
+                error: error.to_string(),
+                retryable: false,
+                retry_at: None,
+            };
+            if self
+                .store
+                .complete_inference(
+                    &swarmy_store::InferenceCompletion {
+                        claim,
+                        expected_head: session.head_seq,
+                        event: event.clone(),
+                        now,
+                    },
+                    &(),
+                )
+                .await?
+            {
+                self.publish_events(job.session_id, &[event]).await?;
+            }
+        }
         Ok(())
     }
 
@@ -1451,12 +1576,20 @@ impl Worker {
             if self.fail_unserved(&job).await? {
                 return Ok(());
             }
-            self.bus
+            let published = self
+                .bus
                 .publish_work(
                     &WorkQueue::Inference(SubjectToken::new(&record.provider)?),
-                    &job,
+                    &InferenceJobRef::from(&job),
                 )
-                .await?;
+                .await;
+            if let Err(error) = published {
+                if error.permanent_publish_failure() {
+                    self.fail_publication(&job, &error).await?;
+                } else {
+                    return Err(error.into());
+                }
+            }
         }
         Ok(())
     }
@@ -1489,4 +1622,46 @@ fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)> {
         }
         None
     }).collect()
+}
+
+fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
+    for message in &mut request.messages {
+        for part in &mut message.parts {
+            if matches!(part, swarmy_core::Part::Image { .. }) {
+                *part = swarmy_core::Part::Text {
+                    text: "[An image was omitted because this model does not accept images.]"
+                        .into(),
+                };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use swarmy_core::{Message, MessageRole, Part};
+
+    #[test]
+    fn unsupported_model_gets_a_note_instead_of_image_bytes() {
+        let mut request = swarmy_llm::Request {
+            system_prompt: String::new(),
+            messages: vec![Message {
+                id: MessageId::from_ulid(Ulid::nil()),
+                role: MessageRole::User,
+                parts: vec![Part::Image {
+                    media_type: "image/png".into(),
+                    bytes: vec![1, 2, 3],
+                    object_key: None,
+                    detail: None,
+                }],
+            }],
+            tools: Vec::new(),
+            settings: swarmy_llm::GenerationSettings::default(),
+        };
+        omit_unsupported_images(&mut request);
+        assert!(
+            matches!(&request.messages[0].parts[0], Part::Text { text } if text.contains("image was omitted"))
+        );
+    }
 }

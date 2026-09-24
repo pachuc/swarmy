@@ -1,5 +1,6 @@
 //! Anthropic Messages on Anthropic direct, Vertex, and `OpenRouter`.
 
+use base64::Engine as _;
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -367,6 +368,14 @@ fn tool_id(id: &str) -> String {
 
 fn content(part: &Part, request: &Request, endpoint: &Endpoint) -> Option<Value> {
     Some(match part {
+        Part::Image {
+            media_type,
+            bytes,
+            detail: _,
+            object_key: _,
+        } => {
+            json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}})
+        }
         Part::Text { text } => {
             if text.is_empty() {
                 return None;

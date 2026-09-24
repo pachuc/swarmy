@@ -155,7 +155,7 @@ impl Store {
         .await
     }
 
-    fn placement_key(&self, kind: &str, agent: AgentId) -> Vec<u8> {
+    pub(crate) fn placement_key(&self, kind: &str, agent: AgentId) -> Vec<u8> {
         self.root
             .pack(&(kind, agent.as_ulid().to_bytes().as_slice()))
     }
@@ -173,7 +173,51 @@ impl Store {
             .pack(&("placement_count", node.as_ulid().to_bytes().as_slice()))
     }
 
-    async fn reserve_computer(&self, trx: &Transaction, node: NodeId) -> Result<()> {
+    fn placement_memory_key(&self, node: NodeId) -> Vec<u8> {
+        self.root
+            .pack(&("placement_memory", node.as_ulid().to_bytes().as_slice()))
+    }
+
+    pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
+        self.placement_key("computer_memory", agent)
+    }
+
+    async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
+        let ephemeral: Option<u64> = read(trx, &self.computer_memory_key(agent)).await?;
+        let mib = if let Some(mib) = ephemeral {
+            mib
+        } else {
+            self.read_agent(trx, agent)
+                .await?
+                .map_or(768, |record| record.requirements.memory_mib)
+        };
+        mib.checked_mul(1024 * 1024)
+            .filter(|bytes| *bytes > 0)
+            .ok_or(StoreError::InvalidState)
+    }
+
+    /// Committed sandbox memory in bytes; expired placements remain committed.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn committed_memory(&self, node: NodeId) -> Result<u64> {
+        self.transaction(|trx| async move {
+            if let Some(bytes) = read(&trx, &self.placement_memory_key(node)).await? {
+                return Ok(bytes);
+            }
+            let count: u32 = read(&trx, &self.placement_count_key(node))
+                .await?
+                .unwrap_or(0);
+            Ok(u64::from(count) * 768 * 1024 * 1024)
+        })
+        .await
+    }
+
+    async fn reserve_computer(
+        &self,
+        trx: &Transaction,
+        node: NodeId,
+        agent: AgentId,
+    ) -> Result<()> {
         let registered: NodeRecord = read(trx, &self.node_key(node))
             .await?
             .ok_or(StoreError::NodeMissing)?;
@@ -185,12 +229,38 @@ impl Store {
         if count >= registered.capacity.sandboxes {
             return Err(StoreError::NodeAtCapacity);
         }
+        let bytes = self.requirement_bytes(trx, agent).await?;
+        let memory_key = self.placement_memory_key(node);
+        let committed: u64 = read(trx, &memory_key)
+            .await?
+            .unwrap_or(u64::from(count) * 768 * 1024 * 1024);
+        if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
+            return Err(StoreError::NodeAtCapacity);
+        }
+        write(
+            trx,
+            &memory_key,
+            &committed
+                .checked_add(bytes)
+                .ok_or(StoreError::InvalidState)?,
+        )?;
         write(trx, &key, &(count + 1))
     }
 
-    async fn free_computer(&self, trx: &Transaction, node: NodeId) -> Result<()> {
+    async fn free_computer(&self, trx: &Transaction, node: NodeId, agent: AgentId) -> Result<()> {
         let key = self.placement_count_key(node);
         let count: u32 = read(trx, &key).await?.ok_or(StoreError::Corrupt)?;
+        let memory_key = self.placement_memory_key(node);
+        let committed: u64 = read(trx, &memory_key)
+            .await?
+            .unwrap_or(u64::from(count) * 768 * 1024 * 1024);
+        write(
+            trx,
+            &memory_key,
+            &committed
+                .checked_sub(self.requirement_bytes(trx, agent).await?)
+                .ok_or(StoreError::Corrupt)?,
+        )?;
         write(trx, &key, &count.checked_sub(1).ok_or(StoreError::Corrupt)?)
     }
 
@@ -275,7 +345,7 @@ impl Store {
             let epoch: u64 = read(&trx, &self.placement_key("placement_epoch", agent))
                 .await?
                 .unwrap_or(0);
-            self.reserve_computer(&trx, node).await?;
+            self.reserve_computer(&trx, node, agent).await?;
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
@@ -346,7 +416,8 @@ impl Store {
             if current.expires_at <= Timestamp::now() {
                 return Err(StoreError::LeaseMismatch);
             }
-            self.free_computer(&trx, current.node_id).await?;
+            self.free_computer(&trx, current.node_id, current.agent_id)
+                .await?;
             trx.clear(&self.placement_key("placement", current.agent_id));
             trx.clear(&self.placement_key("placement_hosting", current.agent_id));
             trx.clear(&self.placement_key("placement_address", current.agent_id));
@@ -374,8 +445,9 @@ impl Store {
             if current.expires_at > now || expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
             }
-            self.free_computer(&trx, current.node_id).await?;
-            self.reserve_computer(&trx, node).await?;
+            self.free_computer(&trx, current.node_id, current.agent_id)
+                .await?;
+            self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self.read_placement_hosting(&trx, &current).await?;
             // Missing metadata predates claim tracking, so do not assume that
             // an existing resident computer was never started.
@@ -464,7 +536,7 @@ impl Store {
         if let Some(current) =
             read::<PlacementRecord>(trx, &self.placement_key("placement", agent)).await?
         {
-            self.free_computer(trx, current.node_id).await?;
+            self.free_computer(trx, current.node_id, agent).await?;
             trx.clear(&self.placement_key("placement", agent));
             trx.clear(&self.placement_key("placement_hosting", agent));
             trx.clear(&self.placement_node_key(current.node_id, agent));

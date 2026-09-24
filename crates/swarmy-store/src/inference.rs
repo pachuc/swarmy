@@ -37,6 +37,21 @@ impl Store {
         self.root.pack(&(kind, id.as_bytes().as_slice()))
     }
 
+    pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
+        self.inference_key("inference_request", id)
+    }
+
+    /// Read the gateway payload by its request id.
+    /// # Errors
+    /// Returns storage, blob, or decoding errors.
+    pub async fn get_inference_request<T: DeserializeOwned>(
+        &self,
+        id: RequestId,
+    ) -> Result<Option<T>> {
+        self.get_payload(self.inference_key("inference_request", id))
+            .await
+    }
+
     /// Claim a request or renew the same owner's claim and record it as started.
     /// Returns false for completed requests or a live claim held by another owner.
     /// `Requested` is the durable started state; it remains retryable after expiry.
@@ -110,9 +125,9 @@ impl Store {
         .await
     }
 
-    /// Store the full result, append its event, clear inflight and the claim, mark
-    /// idempotency complete, and index Runnable in one transaction. Large result
-    /// and event values use the blob path before the transaction starts.
+    /// Store the full result, append its event, clear inflight, the request and
+    /// the claim, mark idempotency complete, and index Runnable in one
+    /// transaction. Large result and event values use the blob path first.
     /// Returns true only for a newly committed result. A duplicate returns false,
     /// so callers never fan out an event that lost to another completion.
     /// # Errors
@@ -271,6 +286,9 @@ impl Store {
             );
             trx.set(&idem_key, completed);
             trx.clear(&self.inference_key("inflight", claim.request_id));
+            // The completed request id is never retried. Retryable failures
+            // create a new step after the worker's wait.
+            trx.clear(&self.inference_key("inference_request", claim.request_id));
             trx.clear(&claim_key);
             session.head_seq = head;
             let interrupt_requested = read::<bool>(&trx, &self.interrupt_key(claim.session_id))

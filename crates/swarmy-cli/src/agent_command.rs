@@ -19,6 +19,12 @@ pub struct InferenceArgs {
     /// Reasoning effort: none, minimal, low, medium, high, xhigh, or max
     #[arg(long, value_parser = crate::selection_command::effort_or_default)]
     pub effort: Option<String>,
+    /// Sandbox memory limit in MiB
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub memory: Option<u64>,
+    /// GPU requirement for placement
+    #[arg(long, value_parser = ["none", "shared", "dedicated"])]
+    pub gpu: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -109,6 +115,24 @@ mod tests {
                     "inline",
                     "--system-prompt-file",
                     "prompt.txt"
+                ])
+                .is_err()
+            );
+        }
+        for command in ["create", "set"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy", "agent", command, "tommy", "--memory", "2048", "--gpu", "shared"
+                ])
+                .is_ok()
+            );
+            assert!(
+                crate::Cli::try_parse_from(["swarmy", "agent", command, "tommy", "--memory", "0"])
+                    .is_err()
+            );
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy", "agent", command, "tommy", "--gpu", "unknown"
                 ])
                 .is_err()
             );

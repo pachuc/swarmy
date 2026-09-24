@@ -397,3 +397,23 @@ async fn legacy_function_calls_get_distinct_ids() {
     assert_ne!(first, second);
     assert!(!first.0.is_empty());
 }
+
+#[test]
+fn image_request_body() {
+    let id = "gemini-2.5-flash";
+    let mut req = request(id);
+    req.messages = vec![message(
+        MessageRole::User,
+        vec![Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            object_key: None,
+            detail: None,
+        }],
+    )];
+    let body = request_json(&req, "google", &model(id)).unwrap();
+    assert_eq!(
+        body["contents"][0]["parts"][0],
+        serde_json::json!({"inlineData":{"mimeType":"image/png", "data":"AQID"}})
+    );
+}

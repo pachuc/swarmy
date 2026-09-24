@@ -152,6 +152,8 @@ pub struct Settings {
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
+    /// When set, advertise RAM minus this reserve as sandbox memory.
+    pub node_memory_reserve_mib: Option<u64>,
     pub node_heartbeat_interval_ms: u64,
     pub fdb_cluster_file: String,
     pub nats_url: String,
@@ -240,6 +242,7 @@ impl Default for Settings {
                 swarmy_core::NodeRole::Sandbox,
                 swarmy_core::NodeRole::Volume,
             ],
+            node_memory_reserve_mib: None,
             node_capacity: swarmy_core::NodeCapacity {
                 cpu_millis: 1000,
                 memory_bytes: 1_073_741_824,
@@ -755,6 +758,13 @@ impl Settings {
             self.node_capacity.cpu_millis = value
                 .parse()
                 .map_err(|_| Error::Environment("SWARMY_NODE_CPU_MILLIS".into()))?;
+        }
+        if let Some(value) = environment.get("SWARMY_NODE_MEMORY_RESERVE_MIB") {
+            self.node_memory_reserve_mib = Some(
+                value
+                    .parse()
+                    .map_err(|_| Error::Environment("SWARMY_NODE_MEMORY_RESERVE_MIB".into()))?,
+            );
         }
         if let Some(value) = environment.get("SWARMY_NODE_MEMORY_BYTES") {
             self.node_capacity.memory_bytes = value

@@ -28,7 +28,16 @@ def command(args, *, input=None):
 
 
 def records(output):
-    return [json.loads(line) for line in output.splitlines() if line.strip()]
+    """Parse JSON lines, skipping a torn last line still being written by a live run."""
+    values = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            values.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return values
 
 
 def one(output):

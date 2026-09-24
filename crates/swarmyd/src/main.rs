@@ -64,6 +64,9 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
         last_heartbeat: jiff::Timestamp::now(),
         cached_images: Vec::new(),
     };
+    if let Some(reserve) = settings.node_memory_reserve_mib {
+        record.capacity.memory_bytes = advertised_memory(reserve)?;
+    }
     store.put_node(&record).await?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
     let mut heartbeat =
@@ -161,4 +164,21 @@ async fn storage(
     )
     .await?;
     Ok((store, objects))
+}
+
+fn advertised_memory(reserve_mib: u64) -> Result<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    let total_kib: u64 = meminfo
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("MemTotal missing from /proc/meminfo"))?;
+    Ok(total_kib
+        .saturating_sub(reserve_mib.saturating_mul(1024))
+        .saturating_mul(1024))
 }

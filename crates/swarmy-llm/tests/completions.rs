@@ -768,3 +768,29 @@ fn reasoning_without_replay_details_is_kept_as_text() {
     assert_eq!(body["messages"][2]["content"], "Think first.");
     assert!(body["messages"][2].get("reasoning_details").is_none());
 }
+
+#[test]
+fn image_request_body() {
+    let model = Catalog::get()
+        .provider("openrouter")
+        .unwrap()
+        .models
+        .values()
+        .next()
+        .unwrap();
+    let mut req = request(model);
+    req.messages = vec![message(
+        MessageRole::User,
+        vec![Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            object_key: None,
+            detail: Some("high".into()),
+        }],
+    )];
+    let body = request_json(&req, "openrouter", model).unwrap();
+    assert_eq!(
+        body["messages"][1]["content"][0],
+        json!({"type":"image_url", "image_url":{"url":"data:image/png;base64,AQID", "detail":"high"}})
+    );
+}

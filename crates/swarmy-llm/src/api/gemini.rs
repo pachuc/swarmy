@@ -1,5 +1,6 @@
 //! Gemini generateContent on the Gemini API and Google Vertex.
 
+use base64::Engine as _;
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -276,6 +277,11 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
             .collect();
         for (index, part) in message.parts.iter().enumerate() {
             let mut wire = match part {
+                Part::Image {
+                    media_type, bytes, ..
+                } => {
+                    json!({"inlineData": {"mimeType": media_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}})
+                }
                 Part::Text { text } => json!({"text": text}),
                 Part::Reasoning { text, metadata } => {
                     let meta = metadata.get("google");
