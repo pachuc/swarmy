@@ -7,6 +7,12 @@ use swarmy_core::{
     SessionRecord, SessionState, decode,
 };
 
+/// The replay key and private token are committed with a new agent atomically.
+pub struct AgentCreationReplay<'a> {
+    pub key: &'a str,
+    pub github_token: Option<&'a str>,
+}
+
 struct CreationOptions<'a> {
     github_token: Option<&'a str>,
     replay_key: Option<&'a str>,
@@ -146,9 +152,8 @@ impl Store {
         image: &str,
         description: &str,
         settings: &AgentSettings,
-        github_token: Option<&str>,
         now: Timestamp,
-        key: &str,
+        replay: AgentCreationReplay<'_>,
     ) -> Result<AgentRecord> {
         self.create_agent_with_replay(
             name,
@@ -157,8 +162,8 @@ impl Store {
             settings,
             now,
             CreationOptions {
-                github_token,
-                replay_key: Some(key),
+                github_token: replay.github_token,
+                replay_key: Some(replay.key),
             },
         )
         .await
