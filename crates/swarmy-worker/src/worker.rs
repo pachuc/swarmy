@@ -581,6 +581,20 @@ impl Worker {
             .catalog
             .model(&selection.provider, &selection.model)
         {
+            if !model
+                .input_modalities
+                .iter()
+                .any(|modality| modality == "image")
+            {
+                omit_unsupported_images(request);
+            }
+            if model
+                .input_modalities
+                .iter()
+                .any(|modality| modality == "image")
+            {
+                self.hydrate_images(request).await?;
+            }
             let (effort, changed) = model.clamp_effort(selection.effort);
             request.settings.reasoning_effort = Some(effort);
             if changed && !self.has_effort_notice(session.session_id).await? {
@@ -620,6 +634,58 @@ impl Worker {
             }
         }
         Ok(selection.provider)
+    }
+
+    async fn hydrate_images(&self, request: &mut swarmy_llm::Request) -> Result<()> {
+        for message in &mut request.messages {
+            for part in &mut message.parts {
+                if let swarmy_core::Part::Image {
+                    bytes,
+                    object_key: Some(key),
+                    ..
+                } = part
+                    && bytes.is_empty()
+                {
+                    *bytes = self.blobs.get(key).await?.to_vec();
+                }
+            }
+        }
+        let mut expanded = Vec::with_capacity(request.messages.len());
+        for message in request.messages.drain(..) {
+            let mut images = Vec::new();
+            for part in &message.parts {
+                if let swarmy_core::Part::ToolResult {
+                    result: swarmy_core::ToolResult::Completed { metadata, .. },
+                    ..
+                } = part
+                    && let (Some(key), Some(media_type)) = (
+                        metadata
+                            .get("image_object_key")
+                            .and_then(serde_json::Value::as_str),
+                        metadata
+                            .get("image_media_type")
+                            .and_then(serde_json::Value::as_str),
+                    )
+                {
+                    images.push(swarmy_core::Part::Image {
+                        media_type: media_type.to_owned(),
+                        bytes: self.blobs.get(key).await?.to_vec(),
+                        object_key: Some(key.to_owned()),
+                        detail: None,
+                    });
+                }
+            }
+            expanded.push(message);
+            if !images.is_empty() {
+                expanded.push(swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::User,
+                    parts: images,
+                });
+            }
+        }
+        request.messages = expanded;
+        Ok(())
     }
 
     async fn build_inference(
@@ -1489,4 +1555,46 @@ fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)> {
         }
         None
     }).collect()
+}
+
+fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
+    for message in &mut request.messages {
+        for part in &mut message.parts {
+            if matches!(part, swarmy_core::Part::Image { .. }) {
+                *part = swarmy_core::Part::Text {
+                    text: "[An image was omitted because this model does not accept images.]"
+                        .into(),
+                };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use swarmy_core::{Message, MessageRole, Part};
+
+    #[test]
+    fn unsupported_model_gets_a_note_instead_of_image_bytes() {
+        let mut request = swarmy_llm::Request {
+            system_prompt: String::new(),
+            messages: vec![Message {
+                id: MessageId::from_ulid(Ulid::nil()),
+                role: MessageRole::User,
+                parts: vec![Part::Image {
+                    media_type: "image/png".into(),
+                    bytes: vec![1, 2, 3],
+                    object_key: None,
+                    detail: None,
+                }],
+            }],
+            tools: Vec::new(),
+            settings: swarmy_llm::GenerationSettings::default(),
+        };
+        omit_unsupported_images(&mut request);
+        assert!(
+            matches!(&request.messages[0].parts[0], Part::Text { text } if text.contains("image was omitted"))
+        );
+    }
 }

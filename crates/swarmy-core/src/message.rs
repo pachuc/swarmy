@@ -56,6 +56,13 @@ pub enum Part {
         #[serde(with = "crate::encoding::json")]
         metadata: BTreeMap<String, Value>,
     },
+    /// Image bytes are kept outside the log when `object_key` is set.
+    Image {
+        media_type: String,
+        bytes: Vec<u8>,
+        object_key: Option<String>,
+        detail: Option<String>,
+    },
 }
 
 /// Tool success and failure remain distinct when replayed into a model prompt.
@@ -163,6 +170,12 @@ pub(crate) mod tests {
                 ..message()
             });
         }
+        assert_round_trip(&Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![0, 1, 2],
+            object_key: None,
+            detail: Some("low".into()),
+        });
         assert_round_trip(&Part::Reasoning {
             text: String::new(),
             metadata: BTreeMap::new(),

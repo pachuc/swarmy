@@ -268,6 +268,16 @@ impl Store {
         })
     }
 
+    /// Persist binary tool content without adding it to the session event log.
+    ///
+    /// # Errors
+    /// Returns an error if object storage rejects the upload.
+    pub async fn put_tool_blob(&self, bytes: Vec<u8>) -> Result<String> {
+        let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
+        self.blobs.put(&key, bytes.into()).await?;
+        Ok(key)
+    }
+
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         let bytes = encode(value)?;
         let stored = if bytes.len() > INLINE_LIMIT {

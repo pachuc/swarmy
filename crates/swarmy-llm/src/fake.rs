@@ -36,9 +36,22 @@ pub struct FakeProvider {
     /// Tool calls take precedence over a response for the same turn.
     pub tool_calls: Option<BTreeMap<usize, Vec<Part>>>,
     calls: AtomicUsize,
+    requests: std::sync::Mutex<Vec<Request>>,
 }
 
 impl FakeProvider {
+    /// Returns requests captured before the provider scripted its responses.
+    ///
+    /// # Panics
+    /// Panics if a prior test poisoned the request lock.
+    #[must_use]
+    pub fn requests(&self) -> Vec<Request> {
+        self.requests
+            .lock()
+            .expect("fake request lock poisoned")
+            .clone()
+    }
+
     #[must_use]
     pub fn call_count(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -46,7 +59,11 @@ impl FakeProvider {
 }
 
 impl Provider for FakeProvider {
-    fn request(&self, _request: Request) -> ProviderStream {
+    fn request(&self, request: Request) -> ProviderStream {
+        self.requests
+            .lock()
+            .expect("fake request lock poisoned")
+            .push(request);
         let turn = self.calls.fetch_add(1, Ordering::SeqCst);
         let response = self
             .tool_calls
@@ -111,5 +128,27 @@ mod tests {
         );
         assert!(fake.request(request).next().await.unwrap().is_ok());
         assert_eq!(fake.call_count(), 2);
+    }
+    #[tokio::test]
+    async fn captures_image_inputs() {
+        let fake = FakeProvider::default();
+        let mut request = Request {
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            settings: crate::GenerationSettings::default(),
+        };
+        request.messages.push(swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::nil()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![Part::Image {
+                media_type: "image/png".into(),
+                bytes: vec![1, 2, 3],
+                object_key: None,
+                detail: None,
+            }],
+        });
+        let _ = fake.request(request.clone()).next().await;
+        assert_eq!(fake.requests(), vec![request]);
     }
 }

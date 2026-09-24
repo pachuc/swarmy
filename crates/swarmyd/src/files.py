@@ -1,5 +1,7 @@
 """File tools use one JSON request on stdin and one JSON result on stdout."""
+import base64
 import difflib
+import struct
 import fnmatch
 import json
 import os
@@ -23,8 +25,55 @@ def text_file(path):
     return data.decode("utf-8")
 
 
+def image_dimensions(data, kind):
+    if kind == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return struct.unpack(">II", data[16:24])
+    if kind == "image/gif" and data[:3] == b"GIF":
+        return struct.unpack("<HH", data[6:10])
+    if kind == "image/webp" and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        if data[12:16] == b"VP8X":
+            return (int.from_bytes(data[24:27], "little") + 1,
+                    int.from_bytes(data[27:30], "little") + 1)
+        if data[12:16] == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            return (int.from_bytes(data[26:28], "little") & 0x3fff,
+                    int.from_bytes(data[28:30], "little") & 0x3fff)
+        if data[12:16] == b"VP8L" and data[20] == 0x2f:
+            bits = int.from_bytes(data[21:25], "little")
+            return ((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+    if kind == "image/jpeg" and data.startswith(b"\xff\xd8"):
+        pos = 2
+        while pos + 4 < len(data):
+            if data[pos] != 0xff:
+                break
+            marker = data[pos + 1]
+            if marker in (0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+                          0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf):
+                return struct.unpack(">HH", data[pos + 5:pos + 9])[::-1]
+            length = int.from_bytes(data[pos + 2:pos + 4], "big")
+            if length < 2:
+                break
+            pos += length + 2
+    raise ValueError("invalid or unsupported image")
+
+
 def read(args):
-    lines = text_file(args["path"]).splitlines()
+    path = Path(args["path"])
+    kinds = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+             ".gif": "image/gif", ".webp": "image/webp"}
+    kind = kinds.get(path.suffix.lower())
+    if kind:
+        size = path.stat().st_size
+        if size > 5 * 1024 * 1024:
+            raise ValueError("image exceeds the 5 MiB read cap")
+        data = path.read_bytes()
+        width, height = image_dimensions(data, kind)
+        result = completed("read", f"Image {path} ({width}x{height}).")
+        result["completed"]["metadata"] = {
+            "image_media_type": kind, "image_base64": base64.b64encode(data).decode("ascii"),
+            "image_width": width, "image_height": height,
+        }
+        return result
+    lines = text_file(path).splitlines()
     offset, limit = args.get("offset", 1), args.get("limit", 2000)
     if offset < 1 or limit < 1:
         raise ValueError("offset and limit must be positive")

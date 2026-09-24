@@ -18,6 +18,19 @@ use swarmy_store::{
 };
 
 #[tokio::test]
+async fn large_tool_image_blob_round_trips_without_inline_bytes() {
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let Some(f) = TestStore::new(blobs.clone()) else {
+        return;
+    };
+    let image = vec![42_u8; 2 * 1024 * 1024];
+    let key = f.store.put_tool_blob(image.clone()).await.unwrap();
+    assert!(key.starts_with("blobs/"));
+    assert_eq!(blobs.get(&key).await.unwrap().as_ref(), image.as_slice());
+    f.cleanup().await;
+}
+
+#[tokio::test]
 async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
     let Some(f) = TestStore::memory() else { return };
     let id = f.create().await;
