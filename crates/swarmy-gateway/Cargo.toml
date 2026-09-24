@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-api-types.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 swarmy-version.workspace = true

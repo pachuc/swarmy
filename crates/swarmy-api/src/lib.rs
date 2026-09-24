@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+mod stream;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
@@ -29,6 +30,11 @@ pub struct AppState {
     pub catalog: Catalog,
     // Serialize mutations so retries through this instance observe completed responses.
     mutations: Arc<Mutex<()>>,
+    stream_connections: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::watch::Sender<api::Subscription>>,
+        >,
+    >,
 }
 
 impl AppState {
@@ -40,6 +46,7 @@ impl AppState {
             token,
             catalog,
             mutations: Arc::new(Mutex::new(())),
+            stream_connections: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -148,6 +155,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", get(sessions))
         .route("/v1/sessions/{id}", get(show_session))
         .route("/v1/sessions/{id}/events", get(events))
+        .route("/v1/events", get(stream::subscribe))
+        .route(
+            "/v1/events/{connection_id}/subscription",
+            axum::routing::put(stream::update),
+        )
         .route("/v1/images", get(images))
         .route("/v1/images/{name}/{tag}", get(show_image))
         .route("/v1/models", get(models))

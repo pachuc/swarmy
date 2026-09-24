@@ -3813,9 +3813,12 @@ name = "swarmy-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "axum",
+ "base64",
  "blake3",
  "foundationdb",
+ "futures",
  "jiff",
  "reqwest",
  "serde",
@@ -3979,6 +3982,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",

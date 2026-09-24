@@ -26,6 +26,14 @@ pub struct Subscription {
     pub token_deltas: bool,
 }
 
+/// An ephemeral token update has no durable sequence or SSE cursor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LiveTokenDelta {
+    pub turn_id: String,
+    pub position: u64,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnStatus {
@@ -319,6 +327,7 @@ pub enum EventPayload {
     },
     TokenDelta {
         turn_id: String,
+        position: u64,
         text: String,
     },
     ServiceStatusChanged {
@@ -347,7 +356,7 @@ pub struct ApiError {
     info(title = "Swarmy API", version = "1.0.0"),
     servers((url = "/v1", description = "Version 1 control plane")),
     components(schemas(
-    LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
+    LogId, Cursor, Subscription, LiveTokenDelta, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
@@ -453,7 +462,7 @@ mod tests {
             serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
             serde_json::json!({"type":"inference_error","data":{"turn_id":"t","error":{"code":"provider_error","message":"failed","provider_text":"original"}}}),
             serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
-            serde_json::json!({"type":"token_delta","data":{"turn_id":"t","text":"a"}}),
+            serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
             serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
             serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
         ];

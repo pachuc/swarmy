@@ -359,6 +359,15 @@ impl Gateway {
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
+        let turn_id = match self.store.request_turn_id(job.request_id).await {
+            Ok(Some(id)) => id.to_string(),
+            Ok(None) => job.request_id.to_string(),
+            Err(error) => {
+                warn!(%error, "cannot resolve token turn; using request id");
+                job.request_id.to_string()
+            }
+        };
+        let mut token_position = 0_u64;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
             if response.is_some() {
@@ -372,6 +381,21 @@ impl Gateway {
                 .await
             {
                 warn!(%error, "live delta publication failed");
+            }
+            if let Delta::Text { text, .. } = &delta {
+                let live = swarmy_api_types::LiveTokenDelta {
+                    turn_id: turn_id.clone(),
+                    position: token_position,
+                    text: text.clone(),
+                };
+                token_position = token_position.saturating_add(text.len() as u64);
+                if let Err(error) = self
+                    .bus
+                    .publish_live(LiveFeed::ApiTokenDeltas(job.session_id), &live)
+                    .await
+                {
+                    warn!(%error, "api token publication failed");
+                }
             }
             if let Delta::Completed(completed) = delta {
                 response = Some(completed);

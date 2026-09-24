@@ -29,6 +29,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
 blake3.workspace = true
+base64.workspace = true
+futures.workspace = true
+async-stream.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true

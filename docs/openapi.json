@@ -587,9 +587,15 @@
                 "type": "object",
                 "required": [
                   "turn_id",
+                  "position",
                   "text"
                 ],
                 "properties": {
+                  "position": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
                   "text": {
                     "type": "string"
                   },
@@ -716,6 +722,28 @@
             "type": "string"
           },
           "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "LiveTokenDelta": {
+        "type": "object",
+        "description": "An ephemeral token update has no durable sequence or SSE cursor.",
+        "required": [
+          "turn_id",
+          "position",
+          "text"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          },
+          "turn_id": {
             "type": "string"
           }
         }
