@@ -85,6 +85,14 @@ swarmy-store = { path = "crates/swarmy-store" }
 swarmy-tools = { path = "crates/swarmy-tools" }
 swarmy-harness = { path = "crates/swarmy-harness" }
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
 [profile.dev.package."*"]
 opt-level = 3
 
