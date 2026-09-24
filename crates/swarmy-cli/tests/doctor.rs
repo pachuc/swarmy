@@ -249,3 +249,15 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
         }
     }
 }
+
+#[test]
+fn text_doctor_renders_ok_warn_fix_and_providers() {
+    let (fixture, server) = api_fixture(false);
+    let output = fixture.doctor(false);
+    server.join().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("ok API:"), "{text}");
+    assert!(text.contains("warn nodes:"), "{text}");
+    assert!(text.contains("fix scheduler:"), "{text}");
+    assert!(text.contains("Providers:"), "{text}");
+}

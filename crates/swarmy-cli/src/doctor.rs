@@ -126,17 +126,7 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
 
     let providers = if let Ok(loaded) = &loaded {
         checks.extend(remote_checks(loaded).await);
-        let settings = &loaded.settings;
-        let profile = settings.remote.profile.as_ref().and_then(|name| {
-            swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
-        });
-        let (result, fix) = s3_check(settings, profile.as_ref(), None).await;
-        let label = if settings.remote.profile.is_some() {
-            "remote S3"
-        } else {
-            "dev stack S3"
-        };
-        checks.push(Check::new(label, result, fix));
+        checks.push(s3_line(&loaded.settings).await);
         if let Some(path) = Path::new(&loaded.settings.credential_file).to_str() {
             let result = if Path::new(path).is_file() {
                 Check::new("credential file", Ok(format!("{path} present")), "")
@@ -328,6 +318,19 @@ fn keyring() -> Result<String, String> {
     }
 }
 
+async fn s3_line(settings: &Settings) -> Check {
+    let profile = settings.remote.profile.as_ref().and_then(|name| {
+        swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
+    });
+    let (result, fix) = s3_check(settings, profile.as_ref(), None).await;
+    let label = if settings.remote.profile.is_some() {
+        "remote S3"
+    } else {
+        "dev stack S3"
+    };
+    Check::new(label, result, fix)
+}
+
 async fn s3_check(
     settings: &Settings,
     profile: Option<&swarmy_config::RemoteProfile>,
@@ -396,7 +399,6 @@ async fn bucket_list(bucket: &str, objects: Arc<dyn ObjectStore>) -> Result<Stri
 }
 
 type Snapshot = swarmy_api_types::DoctorSnapshot;
-type Service = swarmy_api_types::DoctorService;
 
 async fn api_checks(
     checks: &mut Vec<Check>,

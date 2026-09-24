@@ -13,7 +13,6 @@ mod image;
 mod image_command;
 mod models_probe;
 mod models_probe_command;
-mod provider_report;
 mod provider_runtime;
 mod remote_command;
 // Status only needs the health and command helpers; provisioning helpers stay unused here.

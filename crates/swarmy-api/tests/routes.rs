@@ -351,27 +351,26 @@ async fn check_doctor(base: &str) {
         .doctor()
         .await
         .unwrap();
-    assert_eq!(doctor["default_image"], "fixture:test");
-    assert_eq!(doctor["images"][0], "fixture:test");
+    assert_eq!(doctor.default_image.as_deref(), Some("fixture:test"));
+    assert_eq!(doctor.images[0], "fixture:test");
+    assert!(doctor.services.iter().any(|row| {
+        row.role == "node"
+            && row
+                .capacity
+                .as_ref()
+                .is_some_and(|capacity| capacity.sandboxes == 4)
+    }));
     assert!(
-        doctor["services"]
-            .as_array()
-            .unwrap()
+        doctor
+            .services
             .iter()
-            .any(|row| row["role"] == "node" && row["capacity"]["sandboxes"] == 4)
+            .any(|row| row.role == "scheduler" && row.alive)
     );
-    assert!(
-        doctor["services"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["role"] == "scheduler" && row["alive"] == true)
-    );
-    assert!(
-        doctor["services"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["role"] == "gateway" && row["providers"][0] == "fake")
-    );
+    assert!(doctor.services.iter().any(|row| {
+        row.role == "gateway"
+            && row
+                .providers
+                .first()
+                .is_some_and(|provider| provider == "fake")
+    }));
 }
