@@ -150,6 +150,8 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     model: Some("agent-model".into()),
                     reasoning_effort: Some(ReasoningEffort::High),
                     provider: None,
+                    memory_mib: None,
+                    gpu: None,
                 },
                 Timestamp::now(),
             )
@@ -172,6 +174,8 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     model: Some("updated-model".into()),
                     reasoning_effort: Some(ReasoningEffort::None),
                     provider: None,
+                    memory_mib: None,
+                    gpu: None,
                 },
             )
             .await

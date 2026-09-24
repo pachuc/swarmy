@@ -1,4 +1,6 @@
-use crate::{AgentId, ImageRecord, ReasoningEffort, SessionId};
+use crate::{
+    AgentId, GpuRequirement, ImageRecord, ReasoningEffort, SandboxRequirements, SessionId,
+};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +25,8 @@ pub struct AgentRecord {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
     pub provider: Option<String>,
+    #[serde(default)]
+    pub requirements: SandboxRequirements,
 }
 
 /// Optional inference overrides. Omitted fields inherit the stack defaults on create
@@ -33,6 +37,8 @@ pub struct AgentSettings {
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub provider: Option<String>,
+    pub memory_mib: Option<u64>,
+    pub gpu: Option<GpuRequirement>,
 }
 
 impl AgentRecord {
@@ -64,6 +70,12 @@ impl AgentSettings {
         }
         if let Some(model) = &self.model {
             agent.model = Some(model.clone());
+        }
+        if let Some(memory) = self.memory_mib {
+            agent.requirements.memory_mib = memory;
+        }
+        if let Some(gpu) = self.gpu {
+            agent.requirements.gpu = gpu;
         }
         if let Some(effort) = self.reasoning_effort {
             agent.reasoning_effort = Some(effort);

@@ -136,6 +136,8 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
             spec: SandboxSpec {
                 agent_id: agent.agent_id,
                 scratch: Vec::new(),
+
+                requirements: swarmy_core::SandboxRequirements::default(),
             },
             disk: BlockDevice { volume_id: volume },
         })

@@ -99,9 +99,9 @@ SWARMY_S3_SECRET_KEY=swarmy-dev-secret
 SWARMY_S3_BUCKET=swarmy
 SWARMY_S3_REGION=us-east-1
 SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
-SWARMY_NODE_MEMORY_BYTES=$(awk '/MemTotal/ {printf "%.0f", $2 * 1024}' /proc/meminfo)
+SWARMY_NODE_MEMORY_BYTES=$(awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", bytes > 0 ? bytes : 0}' /proc/meminfo)
 SWARMY_NODE_DISK_BYTES=$(df -B1 --output=size "$local_mount" | tail -1 | tr -d ' ')
-SWARMY_NODE_SANDBOXES=4
+SWARMY_NODE_SANDBOXES=64
 # Long-lived workers rewrite build caches constantly; keep few snapshots and
 # reclaim unreferenced chunks quickly so the node's object store stays small.
 SWARMY_VOLUME_SNAPSHOT_RETENTION=3

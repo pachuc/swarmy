@@ -140,7 +140,15 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
                     ),
                 }
             } else if exit.exit_code != 0 {
-                ToolResult::Error { error: stderr }
+                ToolResult::Error {
+                    error: if exit.exit_code == 137 {
+                        format!(
+                            "sandbox process killed (memory limit may have been exceeded); stderr: {stderr}"
+                        )
+                    } else {
+                        stderr
+                    },
+                }
             } else if arguments.is_file_tool() {
                 serde_json::from_str(&stdout)?
             } else {

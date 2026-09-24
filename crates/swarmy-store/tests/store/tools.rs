@@ -311,7 +311,7 @@ fn node() -> NodeRecord {
         roles: vec![NodeRole::Sandbox],
         capacity: NodeCapacity {
             cpu_millis: 4000,
-            memory_bytes: 1024,
+            memory_bytes: 1024 * 1024 * 1024,
             disk_bytes: 1024,
             sandboxes: 1,
         },

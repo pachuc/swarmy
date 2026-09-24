@@ -49,6 +49,7 @@ pub struct Recipe {
 pub struct SandboxRecipe {
     #[serde(default)]
     pub scratch: Vec<String>,
+    pub memory_mib: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

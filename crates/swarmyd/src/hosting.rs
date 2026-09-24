@@ -73,6 +73,31 @@ pub struct Hosting {
 }
 
 impl Hosting {
+    async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
+        Ok(SandboxSpec {
+            agent_id: agent,
+            scratch: self.scratch_for_session(session).await?,
+            requirements: self.requirements_for_session(agent, session).await?,
+        })
+    }
+
+    async fn requirements_for_session(
+        &self,
+        agent: AgentId,
+        session: SessionId,
+    ) -> Result<swarmy_core::SandboxRequirements> {
+        if let Some(record) = self.store.get_agent(agent).await? {
+            return Ok(record.requirements);
+        }
+        if let Some(image) = self.store.pinned_image(session).await? {
+            return Ok(swarmy_core::SandboxRequirements {
+                memory_mib: self.store.image_memory(&image).await?.unwrap_or(768),
+                gpu: swarmy_core::GpuRequirement::default(),
+            });
+        }
+        Ok(swarmy_core::SandboxRequirements::default())
+    }
+
     async fn scratch_for_session(&self, session: SessionId) -> Result<Vec<String>> {
         if let Some(image) = self.store.pinned_image(session).await? {
             Ok(self.store.image_scratch(&image).await?)
@@ -224,13 +249,9 @@ impl Hosting {
                 .store
                 .agent_volume(first.job.session_id, &placement)
                 .await?;
-            let scratch = self.scratch_for_session(first.job.session_id).await?;
             self.runtime
                 .create(
-                    SandboxSpec {
-                        agent_id: agent,
-                        scratch,
-                    },
+                    self.sandbox_spec(agent, first.job.session_id).await?,
                     BlockDevice { volume_id: volume },
                 )
                 .await?;

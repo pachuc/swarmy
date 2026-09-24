@@ -297,6 +297,8 @@ async fn agent_inference_settings_create_and_independent_updates() {
         model: Some("agent-model".into()),
         reasoning_effort: Some(ReasoningEffort::High),
         provider: None,
+        memory_mib: None,
+        gpu: None,
     };
     let mut expected = store
         .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
@@ -786,5 +788,46 @@ async fn legacy_session_without_selection_row_inherits_defaults() {
         .unwrap();
     let record = test.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.inference, swarmy_core::InferenceSelection::default());
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn agent_memory_and_gpu_requirements_are_durable() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = image_fixture::image(&test.store).await;
+    let settings = AgentSettings {
+        memory_mib: Some(2048),
+        gpu: Some(swarmy_core::GpuRequirement::Shared),
+        ..Default::default()
+    };
+    let agent = test
+        .store
+        .create_agent_with_settings("memory", image, "", &settings, timestamp(0))
+        .await
+        .unwrap();
+    assert_eq!(agent.requirements.memory_mib, 2048);
+    assert_eq!(agent.requirements.gpu, swarmy_core::GpuRequirement::Shared);
+    let updated = test
+        .store
+        .set_agent(
+            agent.agent_id,
+            &AgentSettings {
+                memory_mib: Some(3072),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.requirements.memory_mib, 3072);
+    assert_eq!(
+        updated.requirements.gpu,
+        swarmy_core::GpuRequirement::Shared
+    );
+    assert_eq!(
+        test.store.get_agent(agent.agent_id).await.unwrap(),
+        Some(updated)
+    );
     test.cleanup().await;
 }

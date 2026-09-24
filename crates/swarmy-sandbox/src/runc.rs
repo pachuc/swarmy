@@ -483,11 +483,17 @@ impl RuncRuntime {
         Ok(process)
     }
 
-    async fn start(&self, id: AgentId, scratch: &[String]) -> Result<()> {
+    async fn start(&self, id: AgentId, scratch: &[String], memory_mib: u64) -> Result<()> {
         let bundle = self.bundle(id);
         checked(self.command().args(["spec", "--bundle"]).arg(&bundle)).await?;
         let path = bundle.join("config.json");
         let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let bytes = memory_mib
+            .checked_mul(1024 * 1024)
+            .and_then(|bytes| i64::try_from(bytes).ok())
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| Error::Operation("invalid sandbox memory limit".into()))?;
+        config["linux"]["resources"]["memory"]["limit"] = serde_json::json!(bytes);
         config["root"]["path"] = serde_json::json!(bundle.join("rootfs"));
         config["root"]["readonly"] = false.into();
         config["process"]["terminal"] = false.into();
@@ -708,6 +714,8 @@ impl RuncRuntime {
 
 #[async_trait]
 impl SandboxRuntime for RuncRuntime {
+    // Creation keeps attachment cleanup and journal publication in one fenced path.
+    #[allow(clippy::too_many_lines)]
     async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total > 0
@@ -717,8 +725,11 @@ impl SandboxRuntime for RuncRuntime {
             self.sweep_scratch().await?;
         }
         let _lifecycle = self.lifecycle.lock().await;
-        let id = spec.agent_id;
-        let scratch = spec.scratch.clone();
+        let (id, scratch, memory_mib) = (
+            spec.agent_id,
+            spec.scratch.clone(),
+            spec.requirements.memory_mib,
+        );
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
@@ -789,7 +800,7 @@ impl SandboxRuntime for RuncRuntime {
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch)?;
-            self.start(id, &scratch).await?;
+            self.start(id, &scratch, memory_mib).await?;
             if !scratch.is_empty() {
                 self.config
                     .store

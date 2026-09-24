@@ -11,6 +11,8 @@ struct Registration {
     node_id: swarmy_core::NodeId,
     heartbeat_age_seconds: i64,
     heartbeating: bool,
+    committed_memory_mib: u64,
+    free_memory_mib: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,10 +120,12 @@ pub async fn run(json: bool) -> Result<()> {
             }
             for record in status.registrations {
                 println!(
-                    "  swarmyd {} heartbeat={}s {}",
+                    "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
                     record.node_id,
                     record.heartbeat_age_seconds,
-                    if record.heartbeating { "live" } else { "stale" }
+                    if record.heartbeating { "live" } else { "stale" },
+                    record.committed_memory_mib,
+                    record.free_memory_mib
                 );
             }
             if let Some(error) = status.registration_error {
@@ -135,7 +139,7 @@ pub async fn run(json: bool) -> Result<()> {
 async fn inspect<F, Fut>(node: &RemoteNode, tunnel: bool, reachable: bool, scan: F) -> Status
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(Vec<NodeRecord>, Vec<ImageRecord>)>>,
+    Fut: Future<Output = Result<(Vec<NodeRecord>, Vec<ImageRecord>, Vec<u64>)>>,
 {
     let mut status = Status {
         name: node.name.clone(),
@@ -154,17 +158,21 @@ where
         return status;
     }
     match timeout(Duration::from_secs(5), scan()).await {
-        Ok(Ok((records, images))) => {
+        Ok(Ok((records, images, committed))) => {
             status.images = images;
             let now = jiff::Timestamp::now().as_second();
             status.registrations = records
                 .into_iter()
-                .map(|record| {
+                .zip(committed)
+                .map(|(record, committed)| {
                     let age = now.saturating_sub(record.last_heartbeat.as_second()).max(0);
                     Registration {
                         node_id: record.node_id,
                         heartbeat_age_seconds: age,
                         heartbeating: age <= 30,
+                        committed_memory_mib: committed / (1024 * 1024),
+                        free_memory_mib: record.capacity.memory_bytes.saturating_sub(committed)
+                            / (1024 * 1024),
                     }
                 })
                 .collect();
@@ -185,7 +193,10 @@ where
     status
 }
 
-async fn inventory(base: &Settings, name: &str) -> Result<(Vec<NodeRecord>, Vec<ImageRecord>)> {
+async fn inventory(
+    base: &Settings,
+    name: &str,
+) -> Result<(Vec<NodeRecord>, Vec<ImageRecord>, Vec<u64>)> {
     use std::sync::Arc;
     use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
     let mut settings = base.clone();
@@ -212,12 +223,16 @@ async fn inventory(base: &Settings, name: &str) -> Result<(Vec<NodeRecord>, Vec<
         }
         cursor = next;
     }
+    let mut committed = Vec::with_capacity(records.len());
+    for record in &records {
+        committed.push(store.committed_memory(record.node_id).await?);
+    }
     let mut images: Vec<ImageRecord> = Vec::new();
     loop {
         let after = images.last().map(|image| (image.name.as_str(), &image.tag));
         let page = store.list_images(after, MAX_SCAN_LIMIT).await?;
         if page.is_empty() {
-            return Ok((records, images));
+            return Ok((records, images, committed));
         }
         images.extend(page);
     }
@@ -247,6 +262,7 @@ mod tests {
                     tag: swarmy_core::ImageTag("test".into()),
                     manifest_id: swarmy_core::ManifestId::from_ulid(ulid::Ulid::generate()),
                 }],
+                vec![0, 0],
             ))
         })
         .await;
@@ -255,7 +271,7 @@ mod tests {
         assert!(status.image_error.is_none());
         assert!(status.registrations[0].heartbeating);
         assert!(!status.registrations[1].heartbeating);
-        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![])) }).await;
+        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![], vec![])) }).await;
         assert!(absent.images.is_empty());
         assert!(absent.image_error.is_none());
         assert!(absent.registration_error.unwrap().contains("no swarmyd"));
