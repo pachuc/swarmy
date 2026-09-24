@@ -49,6 +49,7 @@ pub async fn run(
         name: format!("{name}-{}", primary.nodes.len() + 2),
         region: primary.region.clone(),
         instance_id: String::new(),
+        launch_attempted: false,
         public_ip: String::new(),
         private_ip: String::new(),
         key_path: state
@@ -75,6 +76,9 @@ pub async fn run(
                 &settings.managed_by_tag,
             )
             .await?;
+        node.launch_attempted = true;
+        *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
+        state.save(&primary)?;
         node.instance_id = cloud
             .launch(&Launch {
                 settings: settings.clone(),
