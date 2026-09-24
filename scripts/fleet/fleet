@@ -147,6 +147,9 @@ def selection_args(args, config):
 
 def create_worker(name, config, selection, image):
     extra = ["--image", image] if image else []
+    # A worker builds the workspace; the sandbox default of 768 MiB would be
+    # enforced as a cgroup limit and kill cargo.
+    extra += ["--memory", str(config.get("memory_mib", 6144))]
     command(swarmy(config, "agent", "create", name, *extra, "--description", "fleet worker",
                    *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
 
@@ -355,7 +358,8 @@ def release(task_id, config, *, force=False):
             raise RuntimeError("collect the pull request before releasing the worker, or pass --force")
         verify_pr(data["pr_url"], data, config, merged=True)
     workers = load_workers(config)
-    if workers.get(data["worker"]) == task_id:
+    held = workers.get(data["worker"])
+    if held and task_suffix(held) == task_suffix(task_id):
         workers[data["worker"]] = None
         save_workers(config, workers)
     path.unlink()

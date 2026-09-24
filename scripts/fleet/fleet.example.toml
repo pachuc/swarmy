@@ -5,6 +5,8 @@ provider = "openrouter"
 model = "openai/gpt-6-sol"
 effort = "medium"
 workers = 4
+# Sandbox memory requirement for each worker in MiB; cargo builds need this much.
+memory_mib = 6144
 # kill_timeout_seconds = 60
 # image = "swarmy-dev:dev"  # for new workers; defaults to the remote's default image
 github_token = "replace-with-github-token"
