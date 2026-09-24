@@ -113,41 +113,6 @@ async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) ->
         .fetch_session(id)
         .await?
         .context("session not found")?;
-    let requirements = if let Some(agent) = store.get_agent(session.agent_id).await? {
-        agent.requirements
-    } else if let Some(image) = store.pinned_image(id).await? {
-        swarmy_core::SandboxRequirements {
-            memory_mib: store.image_memory(&image).await?.unwrap_or(768),
-            gpu: swarmy_core::GpuRequirement::default(),
-        }
-    } else {
-        swarmy_core::SandboxRequirements::default()
-    };
-    crate::vol::output(
-        &serde_json::json!({"sandbox_requirements": requirements, "memory_limit_mib": requirements.memory_mib}),
-        &format!(
-            "Sandbox memory requirement and limit: {} MiB; GPU: {:?}",
-            requirements.memory_mib, requirements.gpu
-        ),
-        json,
-    )?;
-    if let Some(placement) = store.get_by_agent(session.agent_id).await? {
-        let address = store.placement_address(&placement).await?;
-        crate::vol::output(
-            &serde_json::json!({"placement": placement, "sandbox_address": address}),
-            &format!(
-                "Sandbox address: {}",
-                address.map_or_else(|| "-".into(), |address| address.to_string())
-            ),
-            json,
-        )?;
-    } else {
-        crate::vol::output(
-            &serde_json::json!({"placement": null, "sandbox_status": "waiting_for_capacity_or_first_tool"}),
-            "Sandbox not placed; pending tools wait for node memory capacity",
-            json,
-        )?;
-    }
     show_selection(store, &session, json).await?;
     show_usage(&store.session_usage(id).await?, json);
     show_inference_wait(store, &session, json).await?;
@@ -585,13 +550,32 @@ async fn show_selection(
 ) -> Result<()> {
     let selection = crate::selection::resolved_session(store, session).await?;
     let scratch = store.scratch(session.agent_id).await?;
+    let requirements = if let Some(agent) = store.get_agent(session.agent_id).await? {
+        agent.requirements
+    } else if let Some(image) = store.pinned_image(session.session_id).await? {
+        swarmy_core::SandboxRequirements {
+            memory_mib: store.image_memory(&image).await?.unwrap_or(768),
+            gpu: swarmy_core::GpuRequirement::default(),
+        }
+    } else {
+        swarmy_core::SandboxRequirements::default()
+    };
+    let placement = store.get_by_agent(session.agent_id).await?;
+    let address = if let Some(ref placement) = placement {
+        store.placement_address(placement).await?
+    } else {
+        None
+    };
     let marker = |overridden: bool| if overridden { "" } else { " (inherited)" };
     crate::vol::output(
         &serde_json::json!({ "event": "session_selection", "session_id": session.session_id,
             "state": session.state, "interrupt_requested": session.interrupt_requested,
-            "inference": session.inference, "resolved": selection, "scratch": scratch }),
+            "inference": session.inference, "resolved": selection, "scratch": scratch,
+            "sandbox_requirements": requirements, "memory_limit_mib": requirements.memory_mib,
+            "placement": placement, "sandbox_address": address,
+            "sandbox_status": if placement.is_some() { "placed" } else { "waiting_for_capacity_or_first_tool" } }),
         &format!(
-            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} scratch_node={} scratch_bytes={}",
+            "Session {}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
             session.session_id,
             session.state,
             session.interrupt_requested,
@@ -604,7 +588,10 @@ async fn show_selection(
             scratch
                 .as_ref()
                 .map_or_else(|| "-".into(), |record| record.node_id.to_string()),
-            scratch.as_ref().map_or(0, |record| record.bytes)
+            scratch.as_ref().map_or(0, |record| record.bytes),
+            requirements.memory_mib,
+            requirements.gpu,
+            address.map_or_else(|| "-".into(), |address| address.to_string())
         ),
         json,
     )?;
