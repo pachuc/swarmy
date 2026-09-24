@@ -65,6 +65,32 @@ until scratch lands.
    `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod
    600`. The file is ignored by git.
 
+## The split layout in practice
+
+The first split swarm (`dev2`, 2026-09-24) runs a control node on an
+m6i.xlarge (FoundationDB, NATS, scheduler, worker, gateway, API, no
+sandboxes) and a sandbox node on an m6id.4xlarge with four sandboxes on its
+870 GB local NVMe, with chunks in a real bucket. Bring-up took 28 minutes for
+the control node (16 of them building and uploading the dev image) and 10
+minutes for the sandbox node. A live turn takes two to three seconds.
+
+Things learned on the way, all fixed in code or documented here:
+
+- The control node needs at least 8 GiB; the node CLI is now built without
+  the provisioning SDKs (which needed 5.8 GiB to compile), and provisioning
+  refuses early when less than 6 GiB is available.
+- The instance role and profile stay with the bucket across `remote down`;
+  recreating them seconds before a launch bound the instance to a stale
+  profile whose credentials were rejected.
+- The laptop can hold a tunnel to only one remote at a time, because
+  FoundationDB advertises port 4500 and refuses a remapped port. Run
+  `swarmy remote disconnect OLD` before `swarmy remote connect NEW`. While
+  the tunnel points elsewhere the fleet keeps running on its nodes; only
+  the driver's status, collect, and launch need the tunnel.
+- `swarmy doctor` still reports the S3 endpoint of a bucket remote as
+  invalid (a dev-fleet task fixes the check); the nodes and the image
+  build use the bucket correctly.
+
 ## Daily operation
 
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
