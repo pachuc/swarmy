@@ -1,6 +1,8 @@
 mod agent_command;
 mod auth_command;
 mod bench_command;
+mod client_commands;
+mod client_conversation;
 mod dev;
 mod doctor;
 mod image_command;
@@ -152,11 +154,8 @@ fn main() -> anyhow::Result<()> {
             | Command::Remote {
                 command: remote_command::Command::Status
             }
-            | Command::Bench { .. }
-            | Command::Run { .. }
             | Command::Agent { .. }
             | Command::Session { .. }
-            | Command::Chat { .. }
             | Command::Vol { .. }
             | Command::Image { .. }
             | Command::Gc { .. }
@@ -176,13 +175,49 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Models { command } => models::run(command, cli.json)?,
+        Command::Bench { command } => {
+            client_commands::bench(api_client()?, command, cli.json).await?;
+        }
+        Command::Run {
+            prompt,
+            image,
+            agent,
+            new,
+            selection,
+        } => {
+            client_commands::run(
+                api_client()?,
+                prompt,
+                image,
+                agent,
+                new,
+                selection,
+                cli.json,
+            )
+            .await?;
+        }
+        Command::Chat {
+            session_id,
+            image,
+            agent,
+            new,
+            selection,
+        } => {
+            client_commands::chat(
+                api_client()?,
+                session_id,
+                image,
+                agent,
+                new,
+                selection,
+                cli.json,
+            )
+            .await?;
+        }
         Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Bench { .. }
-        | Command::Run { .. }
-        | Command::Agent { .. }
+        Command::Agent { .. }
         | Command::Session { .. }
-        | Command::Chat { .. }
         | Command::Vol { .. }
         | Command::Image { .. }
         | Command::Gc { .. } => unreachable!(),
@@ -195,4 +230,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())
+}
+
+// Replaced by the settings/remote-profile resolver from the sibling CLI port.
+fn api_client() -> anyhow::Result<swarmy_client::Client> {
+    let settings = swarmy_config::Settings::load()?.settings;
+    Ok(swarmy_client::Client::new(
+        &format!("http://{}", settings.api.listen),
+        settings.api.token,
+    )?)
 }

@@ -110,6 +110,8 @@ pub struct Session {
     pub created_at: String,
     pub computer_deleted: bool,
     pub waiting: Option<WaitingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -216,6 +218,8 @@ pub struct ServiceHealth {
     pub version: String,
     pub alive: bool,
     pub last_seen: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
 }
 
 /// Every client mutation has a key that survives retries of the same intent.

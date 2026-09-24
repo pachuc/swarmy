@@ -136,6 +136,7 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
             .unwrap_or_default(),
         computer_deleted: record.computer_deleted,
         waiting: None,
+        provider: record.inference.provider.clone(),
     }
 }
 async fn authorize(
@@ -214,10 +215,14 @@ async fn health(State(state): State<AppState>) -> ApiResult<Value> {
             version: s.heartbeat.version,
             alive: s.alive,
             last_seen: s.heartbeat.last_seen.to_string(),
+            providers: match s.heartbeat.detail {
+                swarmy_store::ServiceDetail::Providers(providers) => providers,
+                _ => Vec::new(),
+            },
         })
         .collect();
     Ok(Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "services": services, "node_count": node_count}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "services": services, "node_count": node_count, "default_provider": state.default_selection.provider}),
     ))
 }
 async fn openapi() -> Json<Value> {

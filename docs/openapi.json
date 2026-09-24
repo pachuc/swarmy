@@ -1021,6 +1021,12 @@
           "last_seen": {
             "type": "string"
           },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "role": {
             "type": "string"
           },
@@ -1066,6 +1072,12 @@
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/SessionState"

@@ -41,6 +41,8 @@ fs2.workspace = true
 tempfile.workspace = true
 rustix = { workspace = true, features = ["process"] }
 swarmy-config.workspace = true
+swarmy-client.workspace = true
+swarmy-api-types.workspace = true
 clap.workspace = true
 swarmy-core.workspace = true
 anyhow.workspace = true

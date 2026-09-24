@@ -414,6 +414,17 @@ impl EventStream {
     pub fn cursors(&self) -> &[api::Cursor] {
         &self.subscription.cursors
     }
+    /// Establish the SSE subscription before submitting work, so live token deltas
+    /// are not missed while the HTTP connection is being opened.
+    ///
+    /// # Errors
+    /// Returns an API or transport error if the subscription cannot be established.
+    pub async fn open(&mut self) -> Result<(), Error> {
+        if self.response.is_none() {
+            self.connect().await?;
+        }
+        Ok(())
+    }
     async fn connect(&mut self) -> Result<(), Error> {
         let query = serde_json::to_string(&self.subscription)?;
         let response = self
