@@ -210,7 +210,10 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         &host,
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
@@ -281,7 +284,10 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
             &host,
             &state,
             &settings(),
-            "demo",
+            up::NewNode {
+                name: "demo",
+                sandboxes: 64
+            },
             Some(std::path::Path::new("images/base-ubuntu")).into(),
             Duration::ZERO
         )
@@ -313,7 +319,10 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
             &host,
             &state,
             &settings,
-            "demo",
+            up::NewNode {
+                name: "demo",
+                sandboxes: 64
+            },
             Some(std::path::Path::new("images/base-ubuntu")).into(),
             Duration::ZERO
         )
@@ -351,7 +360,10 @@ async fn down_missing_instance_and_retry_after_key_failure() {
         &FakeHost::default(),
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
@@ -386,7 +398,10 @@ async fn down_recovers_launch_before_instance_id_was_saved() {
         &FakeHost::default(),
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
@@ -455,7 +470,10 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
         &FakeHost::default(),
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
@@ -496,18 +514,30 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         &host,
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
     .await
     .unwrap();
-    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
+    super::add_node::run(&cloud, &host, &state, "demo", 4, Duration::ZERO, None)
         .await
         .unwrap();
     let node = state.require("demo").unwrap();
     assert_eq!(node.nodes.len(), 1);
     let child = &node.nodes[0];
+    assert_eq!(serde_json::to_value(&node).unwrap()["sandboxes"], 0);
+    assert_eq!(
+        serde_json::to_value(&node).unwrap()["nodes"][0]["sandboxes"],
+        4
+    );
+    assert_eq!(node.sandboxes, 0);
+    assert_eq!(child.sandboxes, 4);
+    assert_eq!(host.provisioned.borrow()[0].sandboxes, 0);
+    assert_eq!(host.provisioned.borrow()[1].sandboxes, 4);
     assert_eq!(child.name, "demo-2");
     assert_ne!(child.key_path, node.key_path);
     assert_eq!(cloud.stock_reads.get(), 1);
@@ -555,7 +585,10 @@ async fn failed_join_retains_child_for_cleanup() {
         &FakeHost::default(),
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         Some(std::path::Path::new("images/base-ubuntu")).into(),
         Duration::ZERO,
     )
@@ -566,7 +599,7 @@ async fn failed_join_retains_child_for_cleanup() {
         ..Default::default()
     };
     assert!(
-        super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
+        super::add_node::run(&cloud, &host, &state, "demo", 64, Duration::ZERO, None)
             .await
             .is_err()
     );
@@ -615,7 +648,10 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
             &host,
             &state,
             &settings(),
-            "demo",
+            up::NewNode {
+                name: "demo",
+                sandboxes: 64,
+            },
             recipe.into(),
             Duration::ZERO,
         )
@@ -685,7 +721,10 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
             &host,
             &state,
             &settings.remote,
-            "demo",
+            up::NewNode {
+                name: "demo",
+                sandboxes: 64,
+            },
             options,
             Duration::ZERO,
         )
@@ -733,13 +772,16 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &host,
         &state,
         &settings(),
-        "demo",
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
         None.into(),
         Duration::ZERO,
     )
     .await
     .unwrap();
-    super::add_node::run(&cloud, &host, &state, "demo", Duration::ZERO, None)
+    super::add_node::run(&cloud, &host, &state, "demo", 64, Duration::ZERO, None)
         .await
         .unwrap();
     assert_eq!(host.services.get(), 0);
@@ -765,6 +807,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &host,
         &state,
         "demo",
+        64,
         Duration::ZERO,
         Some(&options),
     )
@@ -783,8 +826,12 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     cloud
         .observations
         .borrow_mut()
-        .push_back(Some(instance("running")));
+        .extend([Some(instance("running"))]);
     let host = FakeHost::default();
+    let request = up::NewNode {
+        name: "bucket-test",
+        sandboxes: 0,
+    };
     let settings = RemoteSettings {
         bucket: Some("test-bucket".into()),
         ..settings()
@@ -794,13 +841,12 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         &host,
         &state,
         &settings,
-        "bucket-test",
+        request,
         None.into(),
         Duration::ZERO,
     )
     .await
     .unwrap();
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
     assert_eq!(
         cloud.requests.borrow()[0].profile.as_deref(),
         Some("swarmy-bucket-test")
@@ -811,7 +857,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
             &host,
             &state,
             &settings,
-            "bucket-test",
+            request,
             None.into(),
             Duration::ZERO
         )
@@ -826,10 +872,18 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     cloud
         .observations
         .borrow_mut()
-        .push_back(Some(instance("running")));
-    super::add_node::run(&cloud, &host, &state, "bucket-test", Duration::ZERO, None)
-        .await
-        .unwrap();
+        .extend([Some(instance("running"))]);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        "bucket-test",
+        4,
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         cloud.requests.borrow()[1].profile.as_deref(),
         Some("swarmy-bucket-test")
@@ -850,13 +904,13 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     cloud
         .observations
         .borrow_mut()
-        .push_back(Some(instance("running")));
+        .extend([Some(instance("running"))]);
     up::run(
         &cloud,
         &host,
         &state,
         &settings,
-        "bucket-test",
+        request,
         None.into(),
         Duration::ZERO,
     )

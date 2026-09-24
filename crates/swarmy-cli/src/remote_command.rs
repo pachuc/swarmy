@@ -7,6 +7,9 @@ pub enum Command {
         name: String,
         #[arg(long)]
         bucket: Option<String>,
+        /// Maximum sandboxes on this node (zero for a control-only node)
+        #[arg(long)]
+        sandboxes: Option<u32>,
         /// Run control-plane services on the laptop (default) or the node
         #[arg(long)]
         services: Option<swarmy_config::RemoteServices>,
@@ -23,6 +26,9 @@ pub enum Command {
     /// Join another node to a remote over its private network
     AddNode {
         name: String,
+        /// Maximum sandboxes on the joining node
+        #[arg(long)]
+        sandboxes: Option<u32>,
         /// Copy the `ChatGPT` credential and keyring and run a gateway on this node
         #[arg(long)]
         copy_credential: bool,
@@ -117,5 +123,38 @@ mod tests {
             ])
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod sandbox_limit_tests {
+    use super::Command;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    #[test]
+    fn accepts_zero_and_rejects_invalid_limits_before_launch() {
+        for action in ["up", "add-node"] {
+            for invalid in ["-1", "wrong", "4294967296"] {
+                assert!(
+                    Cli::try_parse_from(["remote", action, "demo", "--sandboxes", invalid])
+                        .is_err()
+                );
+            }
+            let command = Cli::try_parse_from(["remote", action, "demo", "--sandboxes", "0"])
+                .unwrap()
+                .command;
+            match command {
+                Command::Up { sandboxes, .. } | Command::AddNode { sandboxes, .. } => {
+                    assert_eq!(sandboxes, Some(0));
+                }
+                _ => panic!("expected launch command"),
+            }
+        }
     }
 }

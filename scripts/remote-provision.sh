@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Provision the Ubuntu checkout copied by swarmy remote up. Safe to rerun.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 [[ $repo_dir == /home/ubuntu/swarmy ]] || { echo 'Expected checkout at /home/ubuntu/swarmy' >&2; exit 1; }
 cd "$repo_dir"
@@ -8,6 +9,7 @@ mode=${1:-stack}
 service_address=${2:-127.0.0.1}
 bucket=${3:-}
 bucket_region=${4:-}
+sandboxes=$(parse_sandbox_count "${5-64}")
 if [[ -n $bucket ]] && [[ ! $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ || ! $bucket_region =~ ^[a-z0-9-]+$ ]]; then
     echo 'Invalid bucket name or region: use a 3-63 character lowercase DNS name without dots and a region.' >&2
     exit 1
@@ -36,39 +38,44 @@ if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
     sudo modprobe ublk_drv
 fi
 
-# Only instance-store NVMe is eligible for formatting. Never choose an EBS disk.
-local_device=''
-for device in /sys/block/nvme*n1; do
-    [[ -r $device/device/model ]] || continue
-    if [[ $(<"$device/device/model") == *'Amazon EC2 NVMe Instance Storage'* ]]; then
-        local_device="/dev/${device##*/}"
-        break
-    fi
-done
-[[ -n $local_device ]] || { echo 'An instance with local NVMe storage is required (default: m6id.xlarge)' >&2; exit 1; }
+# Only sandbox nodes need instance-store NVMe. Never choose an EBS disk.
 local_mount=/mnt/swarmy-local
-sudo mkdir -p "$local_mount"
-if ! sudo blkid "$local_device" >/dev/null 2>&1; then
-    # Refuse a disk with partitions or mounts even if it has no filesystem signature.
-    [[ $(lsblk -nr -o NAME "$local_device" | wc -l) == 1 ]]
-    [[ -z $(lsblk -nr -o MOUNTPOINTS "$local_device" | tr -d '[:space:]') ]]
-    sudo mkfs.ext4 -L swarmy-local "$local_device"
+if (( sandboxes > 0 )); then
+    local_device=''
+    for device in /sys/block/nvme*n1; do
+        [[ -r $device/device/model ]] || continue
+        if [[ $(<"$device/device/model") == *'Amazon EC2 NVMe Instance Storage'* ]]; then
+            local_device="/dev/${device##*/}"
+            break
+        fi
+    done
+    [[ -n $local_device ]] || { echo 'An instance with local NVMe storage is required (default: m6id.xlarge)' >&2; exit 1; }
+    sudo mkdir -p "$local_mount"
+    if ! sudo blkid "$local_device" >/dev/null 2>&1; then
+        # Refuse a disk with partitions or mounts even if it has no filesystem signature.
+        [[ $(lsblk -nr -o NAME "$local_device" | wc -l) == 1 ]]
+        [[ -z $(lsblk -nr -o MOUNTPOINTS "$local_device" | tr -d '[:space:]') ]]
+        sudo mkfs.ext4 -L swarmy-local "$local_device"
+    fi
+    [[ $(sudo blkid -s LABEL -o value "$local_device") == swarmy-local ]] || { echo 'Refusing to reuse an unrecognized instance-store filesystem' >&2; exit 1; }
+    if ! mountpoint -q "$local_mount"; then
+        sudo mount "$local_device" "$local_mount"
+    fi
+    [[ $(findmnt -n -o SOURCE --target "$local_mount") == "$local_device" ]]
+    if ! grep -q '^LABEL=swarmy-local ' /etc/fstab; then
+        printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' | sudo tee -a /etc/fstab >/dev/null
+    fi
+    sudo mkdir -p "$local_mount/volumes"
+    sudo chown ubuntu:ubuntu "$local_mount/volumes"
+    mkdir -p .swarmy
+    if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
+        ln -s "$local_mount/volumes" .swarmy/volumes
+    fi
+    [[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
+else
+    # With no mount, the volume server and scratch directories use the EBS root.
+    mkdir -p .swarmy/volumes
 fi
-[[ $(sudo blkid -s LABEL -o value "$local_device") == swarmy-local ]] || { echo 'Refusing to reuse an unrecognized instance-store filesystem' >&2; exit 1; }
-if ! mountpoint -q "$local_mount"; then
-    sudo mount "$local_device" "$local_mount"
-fi
-[[ $(findmnt -n -o SOURCE --target "$local_mount") == "$local_device" ]]
-if ! grep -q '^LABEL=swarmy-local ' /etc/fstab; then
-    printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' | sudo tee -a /etc/fstab >/dev/null
-fi
-sudo mkdir -p "$local_mount/volumes"
-sudo chown ubuntu:ubuntu "$local_mount/volumes"
-mkdir -p .swarmy
-if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
-    ln -s "$local_mount/volumes" .swarmy/volumes
-fi
-[[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
 # Keep node identity, backing data, and configuration on the EBS root disk.
 [[ -e .swarmy/config.toml ]] || touch .swarmy/config.toml
 
@@ -96,24 +103,7 @@ fi
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
-# Keep bucket credentials out of the command line and the checkout.
-source "$repo_dir/scripts/remote-s3-env.sh"
-s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region")
-sudo tee /etc/swarmy/node.env >/dev/null <<ENV
-SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
-SWARMY_NATS_URL=nats://127.0.0.1:4222
-$s3_env
-SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
-SWARMY_NODE_MEMORY_BYTES=$(awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", bytes > 0 ? bytes : 0}' /proc/meminfo)
-SWARMY_NODE_DISK_BYTES=$(df -B1 --output=size "$local_mount" | tail -1 | tr -d ' ')
-SWARMY_NODE_SANDBOXES=64
-# Long-lived workers rewrite build caches constantly; keep few snapshots and
-# reclaim unreferenced chunks quickly so the node's object store stays small.
-SWARMY_VOLUME_SNAPSHOT_RETENTION=3
-SWARMY_GC_GRACE_SECONDS=1800
-SWARMY_GC_INTERVAL_SECONDS=600
-LD_LIBRARY_PATH=/home/ubuntu/.local/lib
-ENV
+node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" | sudo tee /etc/swarmy/node.env >/dev/null
 if [[ $mode == stack ]]; then
 sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
 [Unit]
@@ -165,13 +155,15 @@ TimeoutStartSec=40
 WantedBy=multi-user.target
 UNIT
 fi
+mount_requirement=''
+if (( sandboxes > 0 )); then mount_requirement="RequiresMountsFor=$local_mount"; fi
 sudo tee /etc/systemd/system/swarmyd.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy node agent
 $dependency_kind=$stack_dependency
 After=network-online.target $stack_dependency systemd-modules-load.service
 Wants=network-online.target
-RequiresMountsFor=$local_mount
+${mount_requirement}
 
 [Service]
 WorkingDirectory=$repo_dir

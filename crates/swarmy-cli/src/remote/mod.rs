@@ -28,6 +28,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Up {
             name,
             bucket,
+            sandboxes,
             no_image,
             image_recipe,
             services,
@@ -51,7 +52,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
             let cloud = aws::Aws::new(&settings.remote.region).await;
             tokio::select! {
-                result = Box::pin(up::run(&cloud, &host, &state, &settings.remote, &name, options, Duration::from_secs(5))) => result,
+                result = Box::pin(up::run(&cloud, &host, &state, &settings.remote, up::NewNode { name: &name, sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes) }, options, Duration::from_secs(5))) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")
@@ -60,6 +61,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         }
         Command::AddNode {
             name,
+            sandboxes,
             copy_credential,
         } => {
             let mut settings = loaded.settings;
@@ -74,7 +76,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let host = ssh::Ssh::discover()?;
             let cloud = aws::Aws::new(&node.region).await;
             tokio::select! {
-                result = Box::pin(add_node::run(&cloud, &host, &state, &name, Duration::from_secs(5), options.as_ref())) => result,
+                result = Box::pin(add_node::run(&cloud, &host, &state, &name, sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), Duration::from_secs(5), options.as_ref())) => result,
                 result = tokio::signal::ctrl_c() => {
                     result?;
                     bail!("interrupted; run swarmy remote down {name} to clean up")

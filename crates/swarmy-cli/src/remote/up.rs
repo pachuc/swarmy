@@ -5,15 +5,22 @@ use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
 use super::{Cloud, Host, Launch, key_name, state::State, wait_running};
 
+#[derive(Clone, Copy)]
+pub struct NewNode<'a> {
+    pub name: &'a str,
+    pub sandboxes: u32,
+}
+
 pub async fn run(
     cloud: &impl Cloud,
     host: &impl Host,
     state: &State,
     settings: &RemoteSettings,
-    name: &str,
+    request: NewNode<'_>,
     options: super::services::Options<'_>,
     delay: Duration,
 ) -> Result<()> {
+    let NewNode { name, sandboxes } = request;
     if let Some(existing) = state.read(name)? {
         if settings.bucket.is_some()
             && existing.launch_settings.as_ref().is_some_and(|saved| {
@@ -48,6 +55,7 @@ pub async fn run(
         ssh_user: "ubuntu".into(),
         ports: RemotePorts::default(),
         nodes: Vec::new(),
+        sandboxes,
         default_image: None,
         launch_settings: Some(RemoteSettings {
             image: Some(image.clone()),
