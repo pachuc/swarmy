@@ -41,13 +41,13 @@ def tool_count(events):
     return len(calls) if any(event.get("type") == "turn.completed" for event in events) else None
 
 
-def record(label, task, repeat, wall, events, provider, model, effort):
+def record(label, task, repeat, wall, events, provider, model, effort, cold):
     input_tokens, output_tokens = usage(events)
     return {"label": label, "environment": "codex-daytona", "task": task,
             "run": repeat, "commit": PIN, "provider": provider, "model": model,
             "effort": effort, "session_id": None, "wall_seconds": wall,
             "input_tokens": input_tokens, "output_tokens": output_tokens,
-            "tool_calls": tool_count(events), "passed": None,
+            "tool_calls": tool_count(events), "passed": None, "cold": cold,
             **{name: None for name in METRICS}}
 
 
@@ -67,10 +67,10 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    provider = os.environ.get("BENCH_PROVIDER", "openrouter")
-    model = os.environ.get("BENCH_MODEL", "openai/gpt-6-sol")
+    provider = os.environ.get("BENCH_PROVIDER", "chatgpt")
+    model = os.environ.get("BENCH_MODEL", "gpt-6-sol")
     effort = os.environ.get("BENCH_EFFORT", "medium")
-    prefix = shlex.split(os.environ.get("DAYTONA_LANE_CMD", "codex-daytona run"))
+    prefix = shlex.split(os.environ.get("DAYTONA_LANE_CMD", str(ROOT / "benchmarks/daytona-lane.sh")))
     if not prefix:
         parser.error("DAYTONA_LANE_CMD must name a lane runner")
     if not args.label.replace("-", "").replace("_", "").isalnum():
@@ -99,7 +99,11 @@ def main(argv=None):
                 raw = output.parent / f"{args.label}-{name}-{repeat}.jsonl"
                 raw.parent.mkdir(parents=True, exist_ok=True)
                 raw.write_text(response.stdout)
-                results.append(record(args.label, name, repeat, wall, events, provider, model, effort))
+                cache = [event["cold"] for event in events if event.get("event") == "benchmark_cache"]
+                if len(cache) != 1 or not isinstance(cache[0], bool):
+                    raise ValueError(f"{name}-{repeat}: lane did not report cache state")
+                results.append(record(args.label, name, repeat, wall, events,
+                                      provider, model, effort, cache[0]))
     if not args.dry_run:
         write_report(output, args.label, results)
         print(output)

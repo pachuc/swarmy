@@ -10,14 +10,15 @@ environment in a fresh clone. Warm neither run selectively: record whether
 images, dependencies, and cargo targets were cold or warm.
 
 Use the same `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_EFFORT` on every runner;
-defaults are `openrouter`, `openai/gpt-6-sol`, and `medium`. Verify both
-providers actually serve the selected model before comparing results. The
-codex-daytona lane adapter named by `DAYTONA_LANE_CMD` must accept `--provider`,
-`--model`, `--effort`, `--workspace`, `--json`, and `--prompt-file`, run the
-prompt in a fresh lane/workspace, and emit Codex JSONL events to stdout.
-Configure the adapter for the installed codex-daytona revision; do not silently
-substitute a different provider or effort. A runner that cannot honor the
-selection should fail instead of producing an incomparable sample.
+defaults are `chatgpt`, `gpt-6-sol`, and `medium`, matching the fleet and
+codex-daytona subscription lanes. OpenRouter is a fallback only when every
+environment can use the same provider and model; never compare different
+providers as if they were one baseline. `benchmarks/daytona-lane.sh` is the
+default adapter. It accepts `--provider`, `--model`, `--effort`, `--workspace`,
+`--json`, and `--prompt-file`, runs `codex exec --json` under the state directory
+in `CODEX_LANE_STATE` (default `~/.local/state/cdx-lane2`), and rejects providers
+other than `chatgpt`. Set `DAYTONA_LANE_CMD` for another lane or installation.
+Do not silently substitute a different provider or effort.
 
 From a laptop connected to one remote at a time:
 
@@ -25,23 +26,28 @@ From a laptop connected to one remote at a time:
 benchmarks/run-swarm.sh dev baseline-dev --dry-run
 benchmarks/run-swarm.sh dev baseline-dev
 benchmarks/run-swarm.sh dev2 baseline-dev2
-DAYTONA_LANE_CMD='/path/to/codex-daytona-lane-adapter' \
+CODEX_LANE_STATE=~/.local/state/cdx-lane2 \
   python3 benchmarks/run-daytona.py baseline-daytona
 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 ```
 
 The swarm runner calls the fleet driver's `benchmark` action for each isolated
-session, waits for completion, and invokes `swarmy --remote REMOTE fleet report
---label LABEL --session ID ...` on the six session IDs. This relies on the
-separately developed `fleet report` CLI; do not run the live script until that
-command is installed. The driver uses ephemeral sessions rather than tasky
-assignments, so benchmark branches do not consume real task IDs or workers.
-The swarm runner retains session IDs and raw event JSONL in `.dev/benchmarks/`
-so a report can be retried without launching another run. The daytona runner
-writes `.dev/benchmarks/LABEL-daytona.json` (or `--output`)
+session, waits for completion, and invokes `scripts/fleet/fleet report
+--label LABEL --session ID ...` on the six session IDs. The fleet driver reads
+its remote from `scripts/fleet/fleet.toml`; configure it to match the runner
+remote. The `report` action lands in a sibling task, so do not run the live
+script until that driver action is installed. The driver uses ephemeral
+sessions rather than tasky assignments, so benchmark branches do not consume
+real task IDs or workers.
+The swarm runner asks each session to print `BENCH_COLD=true` or `false`
+before cloning, based on whether both its cargo target and registry are empty.
+It records that Boolean per run, along with session IDs and raw event JSONL, in
+`.dev/benchmarks/` so a report can be retried without launching another run.
+The lane adapter records the same cache state before starting Codex. The
+daytona runner writes `.dev/benchmarks/LABEL-daytona.json` (or `--output`)
 with `{ "label": LABEL, "runs": [...] }`. Each run includes task, run (1 or 2),
 environment, commit, provider, model, effort, session_id, wall_seconds,
-input_tokens, output_tokens, tool_calls, passed, queue_ms, placement_ms,
+input_tokens, output_tokens, tool_calls, passed, cold, queue_ms, placement_ms,
 inference_ms, tool_ms, wait_ms, tokens_per_second, and cost_dollars. Unavailable
 metrics are JSON `null`, not zero. Token counts come from Codex `turn.completed`
 usage (or the final aggregate `thread.completed` usage); tool calls count

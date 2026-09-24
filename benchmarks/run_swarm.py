@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -16,9 +17,22 @@ DRIVER = ROOT / "scripts/fleet/fleet"
 
 
 def prompt(task):
-    return (f"Clone https://github.com/pachuc/swarmy.git into a fresh directory, "
+    return ("Before cloning or building, check whether both ~/.cargo-target and "
+            "~/.cargo/registry have no entries (a missing directory is empty). "
+            "Print BENCH_COLD=<true-or-false> as your first output, using true "
+            "only when both are empty. Then continue.\n\n"
+            f"Clone https://github.com/pachuc/swarmy.git into a fresh directory, "
             f"check out commit {PIN} on a new local benchmark branch, then do this task. "
             f"Keep the clone and report the commands and results.\n\n{task['prompt']}")
+
+
+def cold_from_events(events):
+    for event in events:
+        if event.get("event") == "session_event":
+            match = re.search(r"BENCH_COLD=(true|false)\b", json.dumps(event.get("value", {})))
+            if match:
+                return match.group(1) == "true"
+    raise ValueError("session did not print BENCH_COLD at the start")
 
 
 def commands(remote, provider, model, effort, directory):
@@ -38,14 +52,15 @@ def main(argv=None):
     parser.add_argument("label")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    provider = os.environ.get("BENCH_PROVIDER", "openrouter")
-    model = os.environ.get("BENCH_MODEL", "openai/gpt-6-sol")
+    provider = os.environ.get("BENCH_PROVIDER", "chatgpt")
+    model = os.environ.get("BENCH_MODEL", "gpt-6-sol")
     effort = os.environ.get("BENCH_EFFORT", "medium")
     if not args.label.replace("-", "").replace("_", "").isalnum():
         parser.error("label must contain only letters, digits, hyphens, and underscores")
     with tempfile.TemporaryDirectory(prefix="swarmy-benchmark-") as temp:
         runs = list(commands(args.remote, provider, model, effort, Path(temp)))
         sessions = []
+        records = []
         output_dir = ROOT / ".dev" / "benchmarks"
         for name, repeat, command in runs:
             if args.dry_run:
@@ -63,10 +78,16 @@ def main(argv=None):
                    if event.get("event") in ("session_created", "session_opened")]
             if not ids:
                 raise RuntimeError(f"{name}-{repeat}: no session id in fleet output")
+            cold = cold_from_events(events)
             sessions.append(ids[0])
+            records.append({"label": args.label, "environment": args.remote,
+                            "task": name, "run": repeat, "session_id": ids[0],
+                            "cold": cold})
+            (output_dir / f"{args.label}-swarm-runs.json").write_text(
+                json.dumps({"label": args.label, "runs": records}, indent=2) + "\n")
             (output_dir / f"{args.label}-swarm-sessions.json").write_text(json.dumps(sessions, indent=2) + "\n")
             print(f"{name}-{repeat}: {ids[0]}", flush=True)
-        report = ["swarmy", "--remote", args.remote, "fleet", "report", "--label", args.label]
+        report = [str(DRIVER), "report", "--label", args.label]
         for session in sessions if not args.dry_run else [f"<{name}-{repeat}-session>" for name, repeat, _ in runs]:
             report += ["--session", session]
         if args.dry_run:
