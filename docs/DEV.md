@@ -59,6 +59,13 @@ sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
 ./target/debug/swarmy dev down
 ```
 
+On one fleet worker, a clean `cargo test --workspace --no-run --locked` build
+used 28,860,925,523 bytes of target space and took 404 seconds before the
+debug-profile change; with line-table debug info and incremental compilation
+disabled it used 9,404,695,572 bytes and took 417 seconds. Both runs used the
+same machine and a clean target directory. For a local debugging session with
+full debug info, run `CARGO_PROFILE_DEV_DEBUG=2 cargo build --workspace`.
+
 `up` starts FoundationDB, NATS, and SeaweedFS when needed, then starts one
 scheduler, worker, and gateway under a background CLI supervisor. It returns
 when their logs report readiness and prints process ids. The default fake
