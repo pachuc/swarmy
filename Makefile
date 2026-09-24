@@ -59,6 +59,6 @@ check:
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 
 uninstall:
-	@for bin in swarmy swarmy-session swarmy-scheduler swarmy-worker swarmy-gateway swarmyd; do \
+	@for bin in swarmy swarmy-session swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done

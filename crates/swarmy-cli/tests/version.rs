@@ -8,10 +8,11 @@ use std::{
 use serde_json::Value;
 
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
-const SERVICES: [(&str, &str); 3] = [
+const SERVICES: [(&str, &str); 4] = [
     ("scheduler", "scheduler started"),
     ("worker", "worker ready"),
     ("gateway", "gateway ready"),
+    ("api", "api ready"),
 ];
 
 fn script(path: &Path, body: &str) {

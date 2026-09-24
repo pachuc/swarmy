@@ -7,6 +7,11 @@ use swarmy_core::{
     SessionRecord, SessionState, decode,
 };
 
+struct CreationOptions<'a> {
+    github_token: Option<&'a str>,
+    replay_key: Option<&'a str>,
+}
+
 impl Store {
     pub(crate) async fn session_kind(
         &self,
@@ -91,6 +96,60 @@ impl Store {
         github_token: Option<&str>,
         now: Timestamp,
     ) -> Result<AgentRecord> {
+        self.create_agent_with_replay(
+            name,
+            image,
+            description,
+            settings,
+            now,
+            CreationOptions {
+                github_token,
+                replay_key: None,
+            },
+        )
+        .await
+    }
+
+    /// Create an agent and its replay marker in the same transaction. A retry
+    /// after an unknown commit returns the original record instead of another agent.
+    /// # Errors
+    /// Returns validation and storage errors.
+    pub async fn create_agent_with_settings_replay(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        settings: &AgentSettings,
+        now: Timestamp,
+        key: &str,
+    ) -> Result<AgentRecord> {
+        self.create_agent_with_replay(
+            name,
+            image,
+            description,
+            settings,
+            now,
+            CreationOptions {
+                github_token: None,
+                replay_key: Some(key),
+            },
+        )
+        .await
+    }
+
+    async fn create_agent_with_replay(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        settings: &AgentSettings,
+        now: Timestamp,
+        options: CreationOptions<'_>,
+    ) -> Result<AgentRecord> {
+        let CreationOptions {
+            github_token,
+            replay_key,
+        } = options;
         validate_github_token(github_token)?;
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);
@@ -101,6 +160,16 @@ impl Store {
         let id = AgentId::from_ulid(ulid::Ulid::generate());
         let result = self
             .transaction(|trx| async move {
+                if let Some(key) = replay_key {
+                    let replay_key = self.root.pack(&("api_idempotency", key));
+                    if let Some(previous) =
+                        read::<crate::api_idempotency::ApiReplay>(&trx, &replay_key).await?
+                        && previous.expires_at > now
+                    {
+                        return serde_json::from_str(&previous.result)
+                            .map_err(|_| StoreError::Corrupt);
+                    }
+                }
                 if trx.get(&self.agent_name_key(name), false).await?.is_some()
                     || trx.get(&self.agent_key(id), false).await?.is_some()
                 {
@@ -134,6 +203,19 @@ impl Store {
                     write(&trx, &self.agent_github_token_key(id), &token)?;
                 }
                 write(&trx, &self.agent_name_key(name), &id)?;
+                if let Some(key) = replay_key {
+                    let result = serde_json::to_string(&record).map_err(|_| StoreError::Corrupt)?;
+                    write(
+                        &trx,
+                        &self.root.pack(&("api_idempotency", key)),
+                        &crate::api_idempotency::ApiReplay {
+                            result,
+                            expires_at: now
+                                .checked_add(jiff::Span::new().hours(1))
+                                .unwrap_or(jiff::Timestamp::MAX),
+                        },
+                    )?;
+                }
                 Ok(record)
             })
             .await;

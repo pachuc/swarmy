@@ -20,10 +20,11 @@ use tokio::{
 
 use process::Identity;
 
-const SERVICES: [(&str, &str); 3] = [
+const SERVICES: [(&str, &str); 4] = [
     ("scheduler", "scheduler started"),
     ("worker", "worker ready"),
     ("gateway", "gateway ready"),
+    ("api", "api ready"),
 ];
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -41,13 +42,13 @@ pub enum Command {
     Status,
     /// Follow all service logs, or one service's log
     Logs {
-        #[arg(value_parser = ["scheduler", "worker", "gateway", "supervisor"])]
+        #[arg(value_parser = ["scheduler", "worker", "gateway", "api", "supervisor"])]
         service: Option<String>,
     },
     #[command(hide = true)]
     Supervise {
         state: PathBuf,
-        #[arg(num_args = 3, required = true)]
+        #[arg(num_args = 4, required = true)]
         binaries: Vec<PathBuf>,
     },
 }
@@ -236,7 +237,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
     ensure_keyring()?;
     let binaries = check_versions(allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
-    let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway"]
+    let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
         .filter(|name| Identity::read(&layout.state.join(format!("{name}.pid"))).is_some())
         .collect();
@@ -396,7 +397,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
 }
 
 // Keep this command aligned with docs/DEV.md's no-root installation workflow.
-pub const REINSTALL: &str = "for crate in cli scheduler worker gateway; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
+pub const REINSTALL: &str = "for crate in cli scheduler worker gateway api; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
 
 pub fn service_binary(name: &str) -> Result<PathBuf> {
     let executable =
@@ -559,7 +560,7 @@ async fn status(layout: &Layout) -> Result<()> {
         }
         println!("stack: {}", entries.join(", "));
     }
-    for name in ["scheduler", "worker", "gateway", "supervisor"] {
+    for name in ["scheduler", "worker", "gateway", "api", "supervisor"] {
         if let Some(identity) = Identity::read(&layout.state.join(format!("{name}.pid"))) {
             println!(
                 "{name}: up (pid {}, uptime {}s)",

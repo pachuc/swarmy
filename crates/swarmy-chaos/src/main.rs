@@ -178,6 +178,7 @@ impl Fixture {
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
             (Kind::Gateway, config.gateways),
+            (Kind::Api, 1),
             (
                 Kind::Node,
                 usize::from(config.image.is_some() && !config.agent_checks.persistent),

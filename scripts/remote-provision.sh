@@ -81,8 +81,8 @@ fi
 build_started=$SECONDS
 if [[ $mode == stack ]]; then
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker
-    sudo install -m 0755 target/release/{swarmy,swarmy-session,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker} /usr/local/bin/
+        -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
+    sudo install -m 0755 target/release/{swarmy,swarmy-session,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker,swarmy-api} /usr/local/bin/
 else
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd
     sudo install -m 0755 target/release/swarmyd /usr/local/bin/

@@ -123,7 +123,23 @@ impl GarbageCollection {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct ApiSettings {
+    pub listen: String,
+    pub token: String,
+}
+impl Default for ApiSettings {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:8742".into(),
+            token: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub api: ApiSettings,
     pub state_dir: String,
     pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
@@ -212,6 +228,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             state_dir: ".swarmy".into(),
+            api: ApiSettings::default(),
             remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
             ephemeral_retention_seconds: std::num::NonZeroU64::new(86400).unwrap(),

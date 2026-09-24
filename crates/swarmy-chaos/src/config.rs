@@ -136,6 +136,8 @@ impl Config {
             "-p",
             "swarmy-gateway",
             "-p",
+            "swarmy-api",
+            "-p",
             "swarmyd",
         ]);
         if directory.file_name().is_some_and(|name| name == "release") {

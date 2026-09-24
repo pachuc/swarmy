@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the optional control plane after its configuration and credentials arrive.
 set -euo pipefail
-for service in scheduler worker gateway; do
+for service in scheduler worker gateway api; do
     sudo tee "/etc/systemd/system/swarmy-$service.service" >/dev/null <<UNIT
 [Unit]
 Description=Swarmy $service
@@ -27,11 +27,11 @@ done
 sudo systemctl daemon-reload
 # Reload the same namespace configuration in the execution node.
 sudo systemctl restart swarmyd.service
-for service in scheduler worker gateway; do
+for service in scheduler worker gateway api; do
     sudo systemctl enable "swarmy-$service.service"
     sudo systemctl restart "swarmy-$service.service"
 done
-for service in scheduler worker gateway; do
+for service in scheduler worker gateway api; do
     invocation=$(sudo systemctl show -p InvocationID --value "swarmy-$service")
     ready=false
     message="$service ready"
@@ -48,4 +48,4 @@ for service in scheduler worker gateway; do
         exit 1
     fi
 done
-echo 'scheduler, worker, and gateway ready on node and enabled at boot'
+echo 'scheduler, worker, gateway, and api ready on node and enabled at boot'
