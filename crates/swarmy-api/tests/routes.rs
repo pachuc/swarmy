@@ -6,7 +6,7 @@ use swarmy_api_types::{
 };
 use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -44,13 +44,15 @@ async fn authenticated_routes_and_create_replay() {
         .put_image("fixture", &ImageTag("test".into()), manifest)
         .await
         .unwrap();
+    register_services(&store).await;
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();
-    let state = AppState::new(
+    let mut state = AppState::new(
         store.clone(),
         bus,
         "test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
     );
+    state.default_image = Some("fixture:test".into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
@@ -62,6 +64,7 @@ async fn authenticated_routes_and_create_replay() {
         .unwrap();
     assert!(health.status().is_success());
     assert!(health.json::<serde_json::Value>().await.unwrap()["version"].is_string());
+    check_doctor(&base).await;
     let denied = client
         .get(format!("{base}/v1/agents"))
         .send()
@@ -308,4 +311,67 @@ async fn assert_session_routes(store: &Store, client: &reqwest::Client, base: &s
         .await
         .unwrap();
     assert_event(client, base, &session_id.to_string()).await;
+}
+
+async fn register_services(store: &Store) {
+    for role in [
+        ServiceRole::Scheduler,
+        ServiceRole::Worker,
+        ServiceRole::Gateway,
+        ServiceRole::Node,
+    ] {
+        let now = jiff::Timestamp::now();
+        store
+            .put_service_heartbeat(&ServiceHeartbeat {
+                role: role.clone(),
+                instance_id: format!("{role:?}"),
+                version: "0.1.0".into(),
+                host: "test".into(),
+                started_at: now,
+                last_seen: now,
+                detail: match role {
+                    ServiceRole::Gateway => ServiceDetail::Providers(vec!["fake".into()]),
+                    ServiceRole::Node => ServiceDetail::Capacity(swarmy_core::NodeCapacity {
+                        cpu_millis: 1000,
+                        memory_bytes: 4096,
+                        disk_bytes: 8192,
+                        sandboxes: 4,
+                    }),
+                    _ => ServiceDetail::None,
+                },
+            })
+            .await
+            .unwrap();
+    }
+}
+
+async fn check_doctor(base: &str) {
+    let doctor = swarmy_client::Client::new(base, "test-token")
+        .unwrap()
+        .doctor()
+        .await
+        .unwrap();
+    assert_eq!(doctor["default_image"], "fixture:test");
+    assert_eq!(doctor["images"][0], "fixture:test");
+    assert!(
+        doctor["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["role"] == "node" && row["capacity"]["sandboxes"] == 4)
+    );
+    assert!(
+        doctor["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["role"] == "scheduler" && row["alive"] == true)
+    );
+    assert!(
+        doctor["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["role"] == "gateway" && row["providers"][0] == "fake")
+    );
 }

@@ -477,6 +477,9 @@ pub mod cli_paths {
         ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
         CliSession, CliSessionDetail,
     };
+    #[utoipa::path(get, path = "/v1/cli/doctor",
+        responses((status = 200, body = serde_json::Value), (status = 503, body = ApiError)))]
+    pub fn cli_doctor() {}
     #[utoipa::path(get, path = "/v1/cli/sessions",
         responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
     pub fn cli_sessions() {}
@@ -518,7 +521,7 @@ pub mod cli_paths {
     info(title = "Swarmy API", version = "1.0.0"),
     servers((url = "/v1", description = "Version 1 control plane")),
     paths(
-        cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
+        cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
         cli_paths::cli_credential

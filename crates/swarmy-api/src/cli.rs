@@ -10,7 +10,70 @@ use serde_json::{Value, json};
 use swarmy_api_types as api;
 use swarmy_core::{AgentId, ImageTag, SessionId, VolumeId};
 use swarmy_store::MAX_SCAN_LIMIT;
+use swarmy_store::{ServiceDetail, ServiceRole};
 use ulid::Ulid;
+
+/// One bounded API read gives doctor a consistent view of service heartbeats.
+pub async fn doctor(State(state): State<AppState>) -> ApiResult<Value> {
+    let services = state.store.list_services().await.map_err(storage)?;
+    let services: Vec<_> = services
+        .into_iter()
+        .map(|service| {
+            let role = match service.heartbeat.role {
+                ServiceRole::Scheduler => "scheduler",
+                ServiceRole::Worker => "worker",
+                ServiceRole::Gateway => "gateway",
+                ServiceRole::Api => "api",
+                ServiceRole::Node => "node",
+            };
+            let providers = match &service.heartbeat.detail {
+                ServiceDetail::Providers(value) => value.clone(),
+                _ => Vec::new(),
+            };
+            let capacity = match &service.heartbeat.detail {
+                ServiceDetail::Capacity(value) => Some(value.clone()),
+                _ => None,
+            };
+            json!({"role": role, "instance_id": service.heartbeat.instance_id,
+               "version": service.heartbeat.version, "alive": service.alive,
+               "providers": providers, "capacity": capacity})
+        })
+        .collect();
+    let mut images = Vec::new();
+    loop {
+        let after = images
+            .last()
+            .map(|image: &swarmy_core::ImageRecord| (image.name.as_str(), &image.tag));
+        let page = state
+            .store
+            .list_images(after, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        let done = page.len() < MAX_SCAN_LIMIT;
+        images.extend(page);
+        if done {
+            break;
+        }
+    }
+    let images: Vec<_> = images
+        .into_iter()
+        .map(|image| format!("{}:{}", image.name, image.tag.0))
+        .collect();
+    let credentials = match super::credential_store(&state) {
+        Ok(store) => Some(
+            store
+                .list_credentials(swarmy_core::CredentialScope::Cluster)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .map(super::credential)
+                .collect::<Vec<_>>(),
+        ),
+        Err(_) => None,
+    };
+    Ok(Json(json!({"services": services, "images": images,
+                   "default_image": state.default_image, "credentials": credentials})))
+}
 
 fn typed<T: serde::de::DeserializeOwned>(
     value: Value,
