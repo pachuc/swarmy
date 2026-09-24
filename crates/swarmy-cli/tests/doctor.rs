@@ -116,7 +116,16 @@ fn finds_home_tools_but_tcp_listeners_do_not_prove_service_usability() {
         nats.local_addr().unwrap(),
         s3.local_addr().unwrap()
     ));
-    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let report: Value = serde_json::from_slice(
+        &fixture
+            .command(true)
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
     assert_eq!(check(&report, "config")["ok"], true);
     assert!(
         check(&report, "config")["detail"]
@@ -138,7 +147,7 @@ fn finds_home_tools_but_tcp_listeners_do_not_prove_service_usability() {
         assert_eq!(check(&report, name)["ok"], false);
     }
     drop((fdb, nats, s3));
-    let output = fixture.doctor(true);
+    let output = fixture.command(true).env("PATH", path).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     for name in ["dev stack FoundationDB", "dev stack NATS", "dev stack S3"] {
