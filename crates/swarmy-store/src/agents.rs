@@ -242,13 +242,12 @@ impl Store {
                 .ok_or(StoreError::AgentMissing)?;
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
-            if agent.requirements != previous_requirements {
-                if read::<swarmy_core::PlacementRecord>(&trx, &self.placement_key("placement", id))
+            if agent.requirements != previous_requirements
+                && read::<swarmy_core::PlacementRecord>(&trx, &self.placement_key("placement", id))
                     .await?
                     .is_some()
-                {
-                    return Err(StoreError::ActiveSandboxRequirements);
-                }
+            {
+                return Err(StoreError::ActiveSandboxRequirements);
             }
             write(&trx, &self.agent_key(id), &agent)?;
             Ok(agent)
@@ -689,6 +688,8 @@ fn validate_github_token(token: Option<&str>) -> Result<()> {
 /// Postcard structs have no field count, so Serde defaults alone cannot read an
 /// old record. Only accept the legacy schema when it consumes the entire value,
 /// so existing agents acquire no main session or inference overrides on upgrade.
+// Legacy postcard layouts require explicit decoding rather than serde defaults.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
     #[derive(serde::Deserialize)]
     struct LegacyAgent {
@@ -753,7 +754,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: old.model,
                     reasoning_effort: old.reasoning_effort,
                     provider: old.provider,
-                    requirements: Default::default(),
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
             if let Ok(old) = decode::<SettingsAgent>(bytes) {
@@ -768,7 +769,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: old.model,
                     reasoning_effort: old.reasoning_effort,
                     provider: None,
-                    requirements: Default::default(),
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
             if let Ok(old) = decode::<MainSessionAgent>(bytes) {
@@ -783,7 +784,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
-                    requirements: Default::default(),
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
             match decode::<LegacyAgent>(bytes) {
@@ -798,7 +799,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
-                    requirements: Default::default(),
+                    requirements: swarmy_core::SandboxRequirements::default(),
                 }),
                 Err(_) => Err(error.into()),
             }
@@ -851,7 +852,7 @@ mod tests {
             model: Some("gpt-5.5".into()),
             reasoning_effort: Some(ReasoningEffort::Max),
             provider: None,
-            requirements: Default::default(),
+            requirements: swarmy_core::SandboxRequirements::default(),
         };
         let bytes = encode(&(
             record.agent_id,
@@ -886,7 +887,7 @@ mod tests {
             model: Some("model".into()),
             reasoning_effort: Some(ReasoningEffort::High),
             provider: Some("openai".into()),
-            requirements: Default::default(),
+            requirements: swarmy_core::SandboxRequirements::default(),
         };
         let mut bytes = encode(&record).unwrap();
         assert_eq!(decode_agent(&bytes).unwrap(), record);
