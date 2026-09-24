@@ -73,10 +73,13 @@ def save(path, value):
 
 
 def task_suffix(task_id):
+    """The last six characters of a tasky id, the random part, lowercased.
+
+    A full 26-character ULID and its six-character suffix name the same task."""
     suffix = task_id.rsplit("-", 1)[-1].lower()
     if not re.fullmatch(r"[a-z0-9]+", suffix):
         raise RuntimeError("task id must end in an alphanumeric suffix")
-    return suffix
+    return suffix[-6:]
 
 
 def task_fields(task):

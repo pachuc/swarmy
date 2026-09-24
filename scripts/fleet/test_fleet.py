@@ -197,6 +197,12 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(call[:3] == ["task", "start", "EWR2HD"] for call in self.calls()))
 
+    def test_full_task_id_uses_the_six_character_suffix(self):
+        result = self.call("launch", "01M38DCQ5BFPXNPNF0NWRXRZH2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "state" / "rxrzh2.json").exists())
+        self.assertIn("swarmy/rxrzh2", (self.root / "prompt-worker-1").read_text())
+
     def test_collect_refuses_missing_open_pr(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
         env = dict(self.env, PR_STATE="CLOSED")
