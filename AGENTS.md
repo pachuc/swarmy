@@ -100,6 +100,7 @@ OpenRouter models and the subscription side by side.
 |---|---|
 | operability-batch (active) | Collector batching, `run` exit code, NATS test flake; the nightly root-suite job was dropped in favour of the manual rule in Building and testing |
 | dev-fleet (active) | Swarmy as its own development fleet: the `swarmy-dev` image, rate limits as waits with a circuit breaker, a fleet driver over the CLI with tasky integration, a sized long-lived swarm with a runbook and a proof on real tasks over OpenRouter and ChatGPT |
+| perf-baseline (active) | Durable per-turn metrics (latency, tokens per second, tool and placement timing, waits and errors) exposed through CLI and API, a `fleet report` aggregator, a fixed three-task benchmark set with swarm and codex-daytona runners, and a written comparison of `dev`, `dev2`, and codex-daytona before building further on the split deployment |
 | control-plane-api | The swarmy API (HTTP, JSON, SSE) as the only thing a client talks to; the CLI as a thin client; doctor and chat read live service health |
 | one-binary-install | `swarmy` client and `swarmy-core` multi-call binary; signed releases; the client fetches and ships the core; install script, Homebrew, cargo-binstall |
 | swarm-model | Swarms as the unit of deployment: registry, `swarm create/up/down/stop/start/status/ls/use`, local and split topologies, sudo sandboxes on Linux, docs rewrite |
