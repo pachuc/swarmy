@@ -9,18 +9,29 @@ use object_store::{ObjectStore, path::Path as ObjectPath};
 use serde::Serialize;
 use std::sync::Arc;
 use swarmy_config::{Loaded, Settings};
-use tokio::{net::TcpStream, process::Command, time::timeout};
+use tokio::{process::Command, time::timeout};
 
 #[derive(Serialize)]
 struct Check {
     name: String,
     ok: bool,
+    status: &'static str,
     detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     fix: Option<String>,
 }
 
 impl Check {
+    fn warn(name: &str, detail: impl Into<String>, fix: &str) -> Self {
+        Self {
+            name: name.into(),
+            ok: true,
+            status: "warn",
+            detail: detail.into(),
+            fix: Some(fix.into()),
+        }
+    }
+
     fn new(name: &str, result: Result<String, String>, fix: &str) -> Self {
         let (ok, detail) = match result {
             Ok(detail) => (true, detail),
@@ -29,6 +40,7 @@ impl Check {
         Self {
             name: name.into(),
             ok,
+            status: if ok { "pass" } else { "fail" },
             detail,
             fix: (!ok).then(|| fix.into()),
         }
@@ -63,11 +75,16 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         "Run swarmy dev up to create .swarmy/config.toml; repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
     checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
-    checks.push(Check::new("libfdb_c", client_library(),
-        "Run scripts/install-dev-tools.sh and the printed cargo install command; keep libfdb_c.so (libfdb_c.dylib on macOS) in the directory selected by SWARMY_FDB_LIB_DIR at build time."));
     let remote = loaded
         .as_ref()
         .is_ok_and(|loaded| loaded.settings.remote.profile.is_some());
+    let library = client_library();
+    checks.push(match (remote, library) {
+        (true, Err(detail)) => Check::warn("libfdb_c", format!("{detail}; not needed by the API client"),
+            "Install the FoundationDB client library only for local database commands."),
+        (_, result) => Check::new("libfdb_c", result,
+            "Run scripts/install-dev-tools.sh and the printed cargo install command; keep libfdb_c.so (libfdb_c.dylib on macOS) in the directory selected by SWARMY_FDB_LIB_DIR at build time."),
+    });
     if !remote {
         for (name, argument) in [
             ("fdbserver", "--version"),
@@ -95,31 +112,40 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
             Ok(path) => crate::dev::version_check(&path, name).await,
             Err(error) => Err(error),
         };
-        checks.push(Check::new(
-            name,
-            result.map_err(|error| format!("{error:#}")),
-            &format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL),
-        ));
+        let result = result.map_err(|error| format!("{error:#}"));
+        let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
+        checks.push(match (remote, result) {
+            (true, Err(detail)) if name != "swarmy-session" => Check::warn(
+                name,
+                format!("{detail}; service binary runs on the remote node"),
+                &fix,
+            ),
+            (_, result) => Check::new(name, result, &fix),
+        });
     }
 
-    if let Ok(loaded) = &loaded {
-        checks.extend(remote_checks(loaded).await);
-        checks.extend(stack(loaded).await);
-    } else {
-        for name in ["credentials", "dev stack"] {
-            checks.push(Check::new(
-                name,
-                Err("cannot check without valid settings".into()),
-                "Repair the configuration and run swarmy doctor again.",
-            ));
-        }
-    }
     let providers = if let Ok(loaded) = &loaded {
-        match gateway_providers(&loaded.settings).await {
-            Ok(rows) => rows,
-            Err(_) => crate::provider_report::local(&loaded.settings.catalog()?, "unavailable"),
+        checks.extend(remote_checks(loaded).await);
+        checks.push(s3_line(&loaded.settings).await);
+        if let Some(path) = Path::new(&loaded.settings.credential_file).to_str() {
+            let result = if Path::new(path).is_file() {
+                Check::new("credential file", Ok(format!("{path} present")), "")
+            } else {
+                Check::warn(
+                    "credential file",
+                    format!("{path} absent; store credentials may still be ready"),
+                    "Use swarmy auth login or swarmy auth import if a subscription login is needed.",
+                )
+            };
+            checks.push(result);
         }
+        api_checks(&mut checks, loaded).await
     } else {
+        checks.push(Check::new(
+            "API",
+            Err("cannot check without valid settings".into()),
+            "Repair the configuration and run swarmy doctor again.",
+        ));
         Vec::new()
     };
     Ok(report(checks, providers, json))
@@ -138,10 +164,10 @@ fn report(
         );
     } else {
         for check in checks {
-            if let Some(fix) = check.fix {
-                println!("fix {}: {}. {fix}", check.name, check.detail);
-            } else {
-                println!("ok {}: {}", check.name, check.detail);
+            match (check.status, check.fix) {
+                ("fail", Some(fix)) => println!("fix {}: {}. {fix}", check.name, check.detail),
+                ("warn", Some(fix)) => println!("warn {}: {}. {fix}", check.name, check.detail),
+                _ => println!("ok {}: {}", check.name, check.detail),
             }
         }
         println!("Providers:");
@@ -292,47 +318,17 @@ fn keyring() -> Result<String, String> {
     }
 }
 
-async fn stack(loaded: &Loaded) -> Vec<Check> {
-    let settings = &loaded.settings;
-    if let Some(name) = &settings.remote.profile
-        && swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).is_err()
-    {
-        return vec![Check::new(
-            "remote services",
-            Err("cannot check without a tunnel profile".into()),
-            &format!("Run swarmy remote connect {name}."),
-        )];
-    }
-    let cluster = Path::new(&settings.fdb_cluster_file);
-    if !loaded.root.join(".dev").exists() && !cluster.parent().is_some_and(Path::is_dir) {
-        return vec![Check::new(
-            "dev stack",
-            Ok("not initialized; run swarmy dev up when ready".into()),
-            "",
-        )];
-    }
-    let fdb = database_transaction(settings).await;
-    let label = if settings.remote.profile.is_some() {
-        "remote"
-    } else {
-        "dev stack"
-    };
-    let mut checks = vec![Check::new(
-        &format!("{label} FoundationDB"),
-        fdb,
-        "Run swarmy dev up; check fdb_cluster_file if the stack is remote.",
-    )];
-    checks.push(Check::new(
-        &format!("{label} NATS"),
-        nats_round_trip(&settings.nats_url).await,
-        "Run swarmy dev up; check the configured NATS endpoint and tunnel if remote.",
-    ));
+async fn s3_line(settings: &Settings) -> Check {
     let profile = settings.remote.profile.as_ref().and_then(|name| {
         swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
     });
     let (result, fix) = s3_check(settings, profile.as_ref(), None).await;
-    checks.push(Check::new(&format!("{label} S3"), result, fix));
-    checks
+    let label = if settings.remote.profile.is_some() {
+        "remote S3"
+    } else {
+        "dev stack S3"
+    };
+    Check::new(label, result, fix)
 }
 
 async fn s3_check(
@@ -372,6 +368,15 @@ async fn s3_check(
     )
 }
 
+async fn connect(address: &str) -> bool {
+    timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect(address),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
 async fn bucket_list(bucket: &str, objects: Arc<dyn ObjectStore>) -> Result<String, String> {
     let listing = timeout(
         Duration::from_secs(8),
@@ -393,108 +398,249 @@ async fn bucket_list(bucket: &str, objects: Arc<dyn ObjectStore>) -> Result<Stri
     }
 }
 
-async fn connect(address: &str) -> bool {
-    timeout(Duration::from_secs(2), TcpStream::connect(address))
-        .await
-        .is_ok_and(|result| result.is_ok())
-}
+type Snapshot = swarmy_api_types::DoctorSnapshot;
 
-// Keep the public CLI runnable when libfdb_c is missing, and bound native client retries.
-async fn database_transaction(settings: &Settings) -> Result<String, String> {
-    if let Some(name) = &settings.remote.profile {
-        swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name)
-            .and_then(|profile| profile.validate_fdb_port())
-            .map_err(|error| error.to_string())?;
-    }
-    let runtime = std::env::current_exe()
-        .map_err(|error| error.to_string())?
-        .with_file_name("swarmy-session");
-    let output = timeout(
-        Duration::from_secs(8),
-        Command::new(runtime)
-            .arg("doctor-fdb")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .status(),
-    )
-    .await
-    .map_err(|_| "FoundationDB transaction timed out after 8s; a reachable coordinator or SSH tunnel does not prove database usability".to_owned())?
-    .map_err(|error| format!("cannot start FoundationDB transaction probe: {error}"))?;
-    if output.success() {
-        Ok("FoundationDB session read transaction succeeded".into())
-    } else {
-        Err(format!(
-            "FoundationDB transaction failed ({output}); check the cluster file, advertised address, and tunnel"
-        ))
-    }
-}
-
-async fn nats_round_trip(endpoint: &str) -> Result<String, String> {
-    use futures_util::StreamExt;
-    timeout(Duration::from_secs(5), async {
-        let client = async_nats::connect(endpoint)
-            .await
-            .map_err(|_| "NATS connection failed")?;
-        let inbox = client.new_inbox();
-        let mut subscription = client
-            .subscribe(inbox.clone())
-            .await
-            .map_err(|_| "NATS subscribe failed")?;
-        client
-            .flush()
-            .await
-            .map_err(|_| "NATS subscription flush failed")?;
-        let payload = ulid::Ulid::generate().to_string();
-        client
-            .publish(inbox, payload.clone().into())
-            .await
-            .map_err(|_| "NATS publish failed")?;
-        client
-            .flush()
-            .await
-            .map_err(|_| "NATS publish flush failed")?;
-        let message = subscription
-            .next()
-            .await
-            .ok_or("NATS subscription closed")?;
-        if message.payload.as_ref() != payload.as_bytes() {
-            return Err("NATS round trip payload mismatch");
+async fn api_checks(
+    checks: &mut Vec<Check>,
+    loaded: &Loaded,
+) -> Vec<crate::provider_report::ProviderRow> {
+    let (client, endpoint) = match crate::api_client::connect() {
+        Ok(result) => result,
+        Err(error) => {
+            checks.push(Check::new(
+                "API",
+                Err(format!("{error:#}")),
+                "Run swarmy dev up or swarmy remote connect NAME; check the API URL and token.",
+            ));
+            return Vec::new();
         }
-        Ok("NATS publish/subscribe round trip succeeded".to_owned())
-    })
-    .await
-    .map_err(|_| "NATS round trip timed out after 5s".to_owned())?
-    .map_err(str::to_owned)
+    };
+    let health = crate::api_client::call(&endpoint, client.health()).await;
+    let health = match health {
+        Ok(health) => health,
+        Err(error) => {
+            checks.push(Check::new(
+                "API",
+                Err(format!("{error:#}")),
+                "Run swarmy dev up or swarmy remote connect NAME; check the API URL and token.",
+            ));
+            return Vec::new();
+        }
+    };
+    let version = health["version"].as_str().unwrap_or("unknown");
+    let commit = health["git_commit"].as_str().unwrap_or("unknown");
+    checks.push(Check::new(
+        "API",
+        if version == swarmy_version::VERSION && commit == swarmy_version::GIT_COMMIT {
+            Ok(format!(
+                "reachable at {endpoint}; version {version} ({commit})"
+            ))
+        } else {
+            Err(format!(
+                "version {version} ({commit}); CLI expects {}",
+                swarmy_version::IDENTITY
+            ))
+        },
+        "Reinstall the CLI and API from the same checkout, then restart the API.",
+    ));
+    let snapshot = crate::api_client::call(&endpoint, client.doctor())
+        .await
+        .map_err(|error| format!("{error:#}"));
+    match snapshot {
+        Ok(snapshot) => snapshot_checks(checks, snapshot, &loaded.settings),
+        Err(error) => {
+            checks.push(Check::new(
+                "API diagnostics",
+                Err(error),
+                "Update the API to the CLI version and check the API token.",
+            ));
+            Vec::new()
+        }
+    }
 }
 
-async fn gateway_providers(
+fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
+    snapshot
+        .services
+        .iter()
+        .filter(|s| s.role == "gateway" && s.alive)
+        .flat_map(|s| s.providers.iter().cloned())
+        .collect()
+}
+
+fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
+    for role in ["scheduler", "worker", "gateway"] {
+        let live: Vec<_> = snapshot
+            .services
+            .iter()
+            .filter(|s| s.role == role && s.alive)
+            .collect();
+        let result = if live.is_empty() {
+            Err(format!("no live {role} heartbeat"))
+        } else {
+            Ok(format!(
+                "{} alive: {}",
+                live.len(),
+                live.iter()
+                    .map(|s| format!("{} ({})", s.instance_id, s.version))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        };
+        checks.push(Check::new(role, result, &format!("Restart swarmy-{role} and inspect its logs; check the API's service heartbeat store.")));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let nodes: Vec<_> = snapshot
+        .services
+        .iter()
+        .rev()
+        .filter(|s| s.role == "node" && s.alive && seen.insert(s.instance_id.as_str()))
+        .collect();
+    let slots: u32 = nodes
+        .iter()
+        .filter_map(|s| s.capacity.as_ref().map(|c| c.sandboxes))
+        .sum();
+    checks.push(if nodes.is_empty() {
+        Check::warn(
+            "nodes",
+            "no live nodes; capacity is zero",
+            "Start swarmyd on a sandbox node.",
+        )
+    } else {
+        Check::new(
+            "nodes",
+            Ok(format!("{} alive; {} sandbox slots", nodes.len(), slots)),
+            "",
+        )
+    });
+    let images = snapshot.images.join(", ");
+    checks.push(
+        if snapshot.images.is_empty() || snapshot.default_image.is_none() {
+            Check::warn(
+                "images",
+                format!(
+                    "registered: {}; default: {}",
+                    if images.is_empty() { "none" } else { &images },
+                    snapshot.default_image.as_deref().unwrap_or("unset")
+                ),
+                "Build and register an image, then configure default_image.",
+            )
+        } else {
+            Check::new(
+                "images",
+                Ok(format!(
+                    "registered: {images}; default: {}",
+                    snapshot.default_image.as_deref().unwrap_or_default()
+                )),
+                "",
+            )
+        },
+    );
+    let gateway_providers = gateway_providers(snapshot);
+    checks.push(if gateway_providers.is_empty() {
+        Check::warn(
+            "gateway providers",
+            "no providers advertised",
+            "Configure a provider credential and restart the gateway.",
+        )
+    } else {
+        Check::new("gateway providers", Ok(gateway_providers.join(", ")), "")
+    });
+}
+
+fn snapshot_checks(
+    checks: &mut Vec<Check>,
+    snapshot: Snapshot,
     settings: &Settings,
-) -> Result<Vec<crate::provider_report::ProviderRow>, String> {
-    // Keep the front end usable when the native database client cannot load.
-    let runtime = std::env::current_exe()
-        .map_err(|error| error.to_string())?
-        .with_file_name("swarmy-session");
-    let output = timeout(
-        Duration::from_secs(5),
-        Command::new(runtime)
-            .arg("doctor-providers")
-            .envs(settings.environment())
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "provider discovery timed out".to_owned())?
-    .map_err(|error| format!("cannot start provider discovery: {error}"))?;
-    if !output.status.success() {
-        return Err(
-            "provider discovery failed; check configuration and database connectivity".into(),
+) -> Vec<crate::provider_report::ProviderRow> {
+    service_checks(checks, &snapshot);
+    let mut rows = settings
+        .catalog()
+        .map(|catalog| crate::provider_report::local(&catalog, "absent"))
+        .unwrap_or_default();
+    let gateway_providers = gateway_providers(&snapshot);
+    if let Some(credentials) = snapshot.credentials {
+        for credential in credentials {
+            let name = format!("credential {}", credential.provider);
+            let status = format!("{:?}", credential.status).to_lowercase();
+            checks.push(
+                if credential.status == swarmy_api_types::CredentialStatus::Ready {
+                    Check::new(&name, Ok(format!("present; {status}")), "")
+                } else {
+                    Check::warn(
+                        &name,
+                        format!("present; {status}"),
+                        "Refresh the credential with swarmy auth login or auth set.",
+                    )
+                },
+            );
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.provider == credential.provider)
+            {
+                row.credential = "store".into();
+                row.store = "present".into();
+                row.status = status;
+            }
+        }
+    } else {
+        checks.push(Check::warn(
+            "credentials",
+            "credential metadata unavailable",
+            "Install the cluster keyring on the API host.",
+        ));
+    }
+    for row in &mut rows {
+        if row.credential != "store" && row.credential != "not required" {
+            checks.push(Check::warn(
+                &format!("credential {}", row.provider),
+                "no stored credential (ambient credentials are not verified)",
+                "Use swarmy auth set or swarmy auth login if this provider is needed.",
+            ));
+        }
+        row.gateway = if gateway_providers.contains(&row.provider) {
+            "served"
+        } else {
+            "unavailable"
+        }
+        .into();
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn core_services_are_required_and_missing_api_has_no_service_lines() {
+        let mut checks = vec![Check::new("API", Err("unreachable".into()), "start API")];
+        assert!(!report(std::mem::take(&mut checks), Vec::new(), true));
+        let snapshot: Snapshot = serde_json::from_value(json!({
+            "services": [{"role":"scheduler", "instance_id":"s1", "version":"0.1.0", "alive":false,
+                "providers":[], "capacity":null}], "images":[], "default_image":null,
+            "credentials":[]
+        }))
+        .unwrap();
+        let settings = Settings::default();
+        snapshot_checks(&mut checks, snapshot, &settings);
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "scheduler" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "worker" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "gateway" && check.status == "fail")
         );
     }
-    serde_json::from_slice(&output.stdout).map_err(|_| "invalid provider report".into())
 }
 
 #[cfg(test)]

@@ -89,6 +89,13 @@ impl Client {
     pub async fn health(&self) -> Result<serde_json::Value, Error> {
         self.get("health", &[]).await
     }
+    /// Read live service, image, and credential health for doctor.
+    ///
+    /// # Errors
+    /// Returns transport, API, or response decoding failures.
+    pub async fn doctor(&self) -> Result<api::DoctorSnapshot, Error> {
+        self.get("cli/doctor", &[]).await
+    }
     /// Calls the corresponding API route.
     ///
     /// # Errors

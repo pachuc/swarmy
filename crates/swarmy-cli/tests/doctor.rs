@@ -1,4 +1,4 @@
-use std::{fs, net::TcpListener, os::unix::fs::PermissionsExt, process::Command};
+use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 use serde_json::Value;
 
@@ -70,95 +70,25 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
 }
 
 #[test]
-fn providers_report_environment_without_gateway_or_secret_values() {
+fn no_api_fails_without_service_lines_and_does_not_leak_secrets() {
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'");
+    fixture.config("provider = 'fake'\n[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
     let output = fixture
         .command(true)
         .env("OPENAI_API_KEY", "DO_NOT_PRINT")
         .output()
         .unwrap();
+    assert_eq!(output.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("DO_NOT_PRINT"));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let providers = report["providers"].as_array().unwrap();
-    assert_eq!(providers.len(), 12);
-    let openai = providers
-        .iter()
-        .find(|row| row["provider"] == "openai")
-        .unwrap();
-    assert_eq!(openai["credential"], "environment");
-    assert_eq!(openai["status"], "unverified");
-    assert_eq!(openai["gateway"], "unknown");
-    assert!(String::from_utf8_lossy(&fixture.doctor(false).stdout).contains("Providers:"));
-}
-
-#[test]
-fn finds_home_tools_but_tcp_listeners_do_not_prove_service_usability() {
-    let fixture = Fixture::new();
-    let bin = fixture.0.path().join(".local/bin");
-    fs::create_dir_all(&bin).unwrap();
-    for name in ["fdbserver", "fdbcli", "nats-server", "weed"] {
-        let path = bin.join(name);
-        fs::write(&path, "#!/bin/sh\necho test-version\n").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let fdb = TcpListener::bind("127.0.0.1:0").unwrap();
-    let nats = TcpListener::bind("127.0.0.1:0").unwrap();
-    let s3 = TcpListener::bind("127.0.0.1:0").unwrap();
-    fs::create_dir(fixture.0.path().join(".dev")).unwrap();
-    fs::write(
-        fixture.0.path().join(".dev/fdb.cluster"),
-        format!("test:test@{}", fdb.local_addr().unwrap()),
-    )
-    .unwrap();
-    fixture.config(&format!(
-        "nats_url = 'nats://{}'\ns3_endpoint = 'http://{}'",
-        nats.local_addr().unwrap(),
-        s3.local_addr().unwrap()
-    ));
-    let path = format!("{}:/usr/bin:/bin", bin.display());
-    let report: Value = serde_json::from_slice(
-        &fixture
-            .command(true)
-            .env("PATH", &path)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    assert_eq!(check(&report, "config")["ok"], true);
+    assert_eq!(check(&report, "API")["status"], "fail");
     assert!(
-        check(&report, "config")["detail"]
-            .as_str()
+        !report["checks"]
+            .as_array()
             .unwrap()
-            .contains(fixture.0.path().to_str().unwrap())
+            .iter()
+            .any(|row| row["name"] == "scheduler")
     );
-    for name in ["fdbserver", "fdbcli", "nats-server", "weed"] {
-        assert_eq!(check(&report, name)["ok"], true);
-        assert!(
-            check(&report, name)["detail"]
-                .as_str()
-                .unwrap()
-                .contains("test-version")
-        );
-    }
-    assert_eq!(check(&report, "dev stack S3")["ok"], true);
-    for name in ["dev stack FoundationDB", "dev stack NATS"] {
-        assert_eq!(check(&report, name)["ok"], false);
-    }
-    drop((fdb, nats, s3));
-    let output = fixture.command(true).env("PATH", path).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    for name in ["dev stack FoundationDB", "dev stack NATS", "dev stack S3"] {
-        assert_eq!(check(&report, name)["ok"], false);
-        assert!(
-            check(&report, name)["fix"]
-                .as_str()
-                .unwrap()
-                .contains("swarmy dev up")
-        );
-    }
 }
 
 #[test]
@@ -223,12 +153,8 @@ fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
 }
 
 #[test]
-fn remote_doctor_rejects_unusable_database_even_with_healthy_tunnel_and_open_port() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let fixture = remote_fixture(
-        &format!("test:test@{}", listener.local_addr().unwrap()),
-        "nats://127.0.0.1:1",
-    );
+fn remote_doctor_requires_api_even_with_healthy_tunnel() {
+    let fixture = remote_fixture("test:test@127.0.0.1:4500", "nats://127.0.0.1:1");
     let output = fixture
         .command(true)
         .args(["--remote", "test"])
@@ -237,47 +163,7 @@ fn remote_doctor_rejects_unusable_database_even_with_healthy_tunnel_and_open_por
     assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(check(&report, "remote tunnel")["ok"], true);
-    assert_eq!(check(&report, "remote FoundationDB")["ok"], false);
-    assert!(
-        check(&report, "remote FoundationDB")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("transaction")
-    );
-}
-
-#[test]
-fn remote_doctor_proves_real_database_and_nats_through_profile() {
-    let (Ok(cluster_path), Ok(nats_url)) = (
-        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-        std::env::var("SWARMY_NATS_URL"),
-    ) else {
-        eprintln!("Skipping real doctor probes: start dev stack and source .dev/env");
-        return;
-    };
-    let fixture = remote_fixture(&fs::read_to_string(cluster_path).unwrap(), &nats_url);
-    let output = fixture
-        .command(true)
-        .args(["--remote", "test"])
-        .output()
-        .unwrap();
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(output.status.success(), "{report}");
-    for name in ["remote tunnel", "remote FoundationDB", "remote NATS"] {
-        assert_eq!(check(&report, name)["ok"], true, "{report}");
-    }
-    assert!(
-        check(&report, "remote FoundationDB")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("transaction succeeded")
-    );
-    assert!(
-        check(&report, "remote NATS")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("round trip succeeded")
-    );
+    assert_eq!(check(&report, "API")["status"], "fail");
 }
 
 #[test]
@@ -306,92 +192,72 @@ fn reports_keyring_presence_and_permissions() {
     assert_eq!(check(&invalid, "keyring")["ok"], false);
 }
 
-#[tokio::test]
-async fn provider_section_reads_store_status_and_gateway_expiry() {
-    use std::sync::Arc;
-    use swarmy_core::{CredentialKind, CredentialRecord, CredentialScope};
-    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-        eprintln!("Skipping provider report integration: source .dev/env");
-        return;
-    };
-    let _network = swarmy_store::boot();
+fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'");
-    let key_path = fixture.0.path().join(".swarmy/keyring");
-    let keyring = swarmy_config::Keyring::generate_at(&key_path).unwrap();
-    let directory = format!("doctor-providers-{}", ulid::Ulid::generate());
-    let store = swarmy_store::Store::open(
-        Some(&cluster),
-        Some(std::slice::from_ref(&directory)),
-        Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    let now = jiff::Timestamp::now();
-    store
-        .credentials(keyring.clone())
-        .put_credential(
-            CredentialScope::Cluster,
-            "openai",
-            &CredentialRecord {
-                kind: CredentialKind::ApiKey {
-                    key: "DO_NOT_PRINT".into(),
-                    extra: std::collections::BTreeMap::new(),
-                },
-                updated_at: now,
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .credentials(keyring)
-        .put_credential(
-            CredentialScope::Cluster,
-            "azure",
-            &CredentialRecord {
-                kind: CredentialKind::OAuth {
-                    access: "DO_NOT_PRINT".into(),
-                    refresh: "DO_NOT_PRINT".into(),
-                    expires_at: jiff::Timestamp::from_second(now.as_second() - 60).unwrap(),
-                    extra: std::collections::BTreeMap::new(),
-                },
-                updated_at: now,
-            },
-        )
-        .await
-        .unwrap();
-    for (provider, seconds) in [("openai", 60_i64), ("anthropic", -60)] {
-        store
-            .put_gateway_provider(
-                provider,
-                &swarmy_store::GatewayProvider {
-                    expires_at: jiff::Timestamp::from_second(now.as_second() + seconds).unwrap(),
-                    reason: "fixture".into(),
-                },
-            )
-            .await
-            .unwrap();
+    fixture.config(&format!(
+        "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
+        listener.local_addr().unwrap()
+    ));
+    let handle = std::thread::spawn(move || {
+        for body in [
+            format!(
+                "{{\"version\":\"{}\",\"git_commit\":\"{}\"}}",
+                swarmy_version::VERSION,
+                swarmy_version::GIT_COMMIT
+            ),
+            format!(
+                "{{\"services\":[{{\"role\":\"scheduler\",\"instance_id\":\"s1\",\"version\":\"0.1.0\",\"alive\":{scheduler_alive},\"providers\":[],\"capacity\":null}},{{\"role\":\"worker\",\"instance_id\":\"w1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}},{{\"role\":\"gateway\",\"instance_id\":\"g1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[\"fake\"],\"capacity\":null}}],\"images\":[\"fixture:test\"],\"default_image\":\"fixture:test\",\"credentials\":[]}}"
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    (fixture, handle)
+}
+
+#[test]
+fn api_snapshot_reports_live_services_and_scheduler_failure() {
+    for alive in [true, false] {
+        let (fixture, server) = api_fixture(alive);
+        let output = fixture.doctor(true);
+        server.join().unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(check(&report, "API")["status"], "pass", "{report}");
+        assert_eq!(
+            check(&report, "scheduler")["status"],
+            if alive { "pass" } else { "fail" }
+        );
+        assert_eq!(check(&report, "worker")["status"], "pass");
+        assert_eq!(check(&report, "gateway")["status"], "pass");
+        assert!(check(&report, "scheduler")["detail"].is_string());
+        if !alive {
+            assert!(!output.status.success());
+            assert!(
+                check(&report, "scheduler")["fix"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Restart")
+            );
+        }
     }
-    let output = fixture
-        .command(true)
-        .env("SWARMY_FDB_CLUSTER_FILE", cluster)
-        .env("SWARMY_STORE_DIRECTORY", directory)
-        .env("OPENAI_API_KEY", "DO_NOT_PRINT_ENV")
-        .output()
-        .unwrap();
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("DO_NOT_PRINT"));
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let rows = report["providers"].as_array().unwrap();
-    let openai = rows.iter().find(|row| row["provider"] == "openai").unwrap();
-    assert_eq!(openai["credential"], "store", "{report}");
-    assert_eq!(openai["status"], "ready");
-    assert_eq!(openai["gateway"], "served");
-    let anthropic = rows
-        .iter()
-        .find(|row| row["provider"] == "anthropic")
-        .unwrap();
-    assert_eq!(anthropic["gateway"], "expired");
-    let azure = rows.iter().find(|row| row["provider"] == "azure").unwrap();
-    assert_eq!(azure["status"], "expired");
-    assert_eq!(azure["gateway"], "not served");
+}
+
+#[test]
+fn text_doctor_renders_ok_warn_fix_and_providers() {
+    let (fixture, server) = api_fixture(false);
+    let output = fixture.doctor(false);
+    server.join().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("ok API:"), "{text}");
+    assert!(text.contains("warn nodes:"), "{text}");
+    assert!(text.contains("fix scheduler:"), "{text}");
+    assert!(text.contains("Providers:"), "{text}");
 }

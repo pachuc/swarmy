@@ -1,5 +1,5 @@
 use std::{path::Path, sync::Arc, time::Duration};
-use swarmy_core::{CredentialRecord, CredentialScope};
+use swarmy_core::CredentialRecord;
 use swarmy_llm::{
     Error,
     auth::{AuthStore, Login},
@@ -50,47 +50,4 @@ pub async fn auth_store(settings: &swarmy_config::Settings) -> anyhow::Result<Ar
     })
     .await
     .map_err(|_| anyhow::anyhow!("credential store timed out"))?
-}
-
-pub async fn report() -> anyhow::Result<Vec<crate::provider_report::ProviderRow>> {
-    let settings = swarmy_config::Settings::load()?.settings;
-    let mut rows = crate::provider_report::local(&settings.catalog()?, "absent");
-    if !Path::new(&settings.fdb_cluster_file).exists() {
-        return Ok(rows);
-    }
-    let store = open(&settings).await?;
-    let keyring = swarmy_config::Keyring::load().ok();
-    for row in &mut rows {
-        row.store = "absent".into();
-        if store
-            .has_credential(CredentialScope::Cluster, &row.provider)
-            .await?
-        {
-            row.credential = "store".into();
-            row.store = "present".into();
-            row.status = "unreadable; check keyring".into();
-            if let Some(keyring) = &keyring
-                && let Ok(Some(record)) = store
-                    .credentials(keyring.clone())
-                    .get_credential(CredentialScope::Cluster, &row.provider)
-                    .await
-            {
-                row.status = serde_json::to_value(record.status(jiff::Timestamp::now()))?
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .into();
-            }
-        }
-        row.gateway = "not served".into();
-        if let Some(record) = store.gateway_provider(&row.provider).await? {
-            row.gateway = if record.expires_at > jiff::Timestamp::now() {
-                "served"
-            } else {
-                "expired"
-            }
-            .into();
-            row.gateway_reason = record.reason;
-        }
-    }
-    Ok(rows)
 }
