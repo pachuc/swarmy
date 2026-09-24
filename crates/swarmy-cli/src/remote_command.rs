@@ -45,6 +45,19 @@ pub enum Command {
         #[arg(long)]
         copy_credential: bool,
     },
+    /// Update binaries and services on every node without replacing instances
+    Upgrade {
+        name: String,
+        /// Leave node daemons running even when their binaries changed
+        #[arg(long)]
+        services_only: bool,
+        /// Accept uncommitted local checkout changes
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Maximum seconds to wait for running sandbox commands
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..))]
+        drain_timeout: u64,
+    },
     /// Terminate all nodes and remove their key pairs and local state
     Down { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
@@ -138,6 +151,48 @@ mod tests {
         };
         assert_eq!(instance_type.as_deref(), Some("m6id.4xlarge"));
         assert_eq!(disk_gb, Some(100));
+    }
+
+    #[test]
+    fn upgrade_flags_parse_with_positive_drain_timeout() {
+        let Command::Upgrade {
+            name,
+            services_only,
+            allow_dirty,
+            drain_timeout,
+        } = Cli::try_parse_from(["remote", "upgrade", "demo"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected upgrade")
+        };
+        assert_eq!(name, "demo");
+        assert!(!services_only && !allow_dirty);
+        assert_eq!(drain_timeout, 600);
+        let Command::Upgrade {
+            services_only,
+            allow_dirty,
+            drain_timeout,
+            ..
+        } = Cli::try_parse_from([
+            "remote",
+            "upgrade",
+            "demo",
+            "--services-only",
+            "--allow-dirty",
+            "--drain-timeout",
+            "17",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected upgrade")
+        };
+        assert!(services_only && allow_dirty);
+        assert_eq!(drain_timeout, 17);
+        assert!(
+            Cli::try_parse_from(["remote", "upgrade", "demo", "--drain-timeout", "0"]).is_err()
+        );
     }
 
     #[test]

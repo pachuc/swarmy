@@ -175,16 +175,10 @@ impl Ssh {
         Ok(relative.to_owned())
     }
 
-    /// Copy the checkout and run the provisioning script; returns the reachable address.
-    pub async fn provision(
-        &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
-    ) -> Result<String> {
-        let address = wait_ssh(node).await?;
-        checked(base(node)?.arg(&address)
+    /// Copy the same filtered checkout used by initial provisioning.
+    pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<()> {
+        checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (sudo cloud-init status --wait && sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
-        println!("Copying repository checkout");
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         let settings = swarmy_config::Settings::load_base()?.settings;
@@ -216,6 +210,79 @@ impl Ssh {
             "copy checkout with rsync",
         )
         .await?;
+        Ok(())
+    }
+
+    /// Require committed source unless the operator explicitly accepts dirty files.
+    pub fn is_clean(&self) -> Result<bool> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(["status", "--porcelain"])
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "cannot inspect checkout git status"
+        );
+        Ok(output.stdout.is_empty())
+    }
+
+    pub async fn node_version(&self, node: &RemoteNode, address: &str) -> Result<String> {
+        let output = base(node)?
+            .arg(address)
+            .arg("/usr/local/bin/swarmyd --version")
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "read node version failed with {}",
+            output.status
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+
+    pub async fn upgrade(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> Result<serde_json::Value> {
+        self.copy_checkout(node, address).await?;
+        let mode = if stack { "stack" } else { "node" };
+        let services = if services_only {
+            "services-only"
+        } else {
+            "all"
+        };
+        let script = format!(
+            "cd swarmy && bash scripts/remote-upgrade.sh {mode} {services} {}",
+            drain_timeout.as_secs()
+        );
+        let output = base(node)?
+            .arg(address)
+            .arg(script)
+            .stderr(Stdio::inherit())
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "remote upgrade failed with {}",
+            output.status
+        );
+        serde_json::from_slice(&output.stdout).context("parse remote upgrade summary")
+    }
+
+    /// Copy the checkout and run the provisioning script; returns the reachable address.
+    pub async fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> Result<String> {
+        let address = wait_ssh(node).await?;
+        println!("Copying repository checkout");
+        self.copy_checkout(node, &address).await?;
         let service_ip: std::net::Ipv4Addr = primary
             .unwrap_or(node)
             .private_ip

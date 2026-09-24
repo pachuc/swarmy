@@ -10,6 +10,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 mod up;
+mod upgrade;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -91,6 +92,19 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                     bail!("interrupted; run swarmy remote down {name} to clean up")
                 }
             }
+        }
+        Command::Upgrade {
+            name,
+            services_only,
+            allow_dirty,
+            drain_timeout,
+        } => {
+            upgrade::command(
+                &state,
+                &name,
+                upgrade::Options::new(allow_dirty, services_only, drain_timeout, json),
+            )
+            .await
         }
         Command::Down { name } => {
             let _lock = state.lock()?;

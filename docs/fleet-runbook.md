@@ -117,21 +117,15 @@ not replicate the backing services: the first node holds the store.
 
 ## Updating the swarm in place
 
-There is no upgrade command yet (a swarm-model task). The manual procedure,
-which is what the automation will do:
-
-1. Ship the commit: `git archive --format=tar COMMIT | ssh NODE 'tar -x -C
-   ~/swarmy'`. The archive gives files the commit's timestamp, which can be
-   older than the last build's, so also `find ~/swarmy/crates -type f -exec
-   touch {} +` or cargo will skip the rebuild.
-2. On the node: `cargo build --release --locked -p swarmy-cli -p swarmyd -p
-   swarmy-scheduler -p swarmy-gateway -p swarmy-worker`, `sudo install` the
-   six binaries into `/usr/local/bin`, then `sudo systemctl restart
-   swarmy-scheduler swarmy-worker swarmy-gateway`. These three can restart
-   at any time; sessions resume from the store.
-3. Restart `swarmyd` only when no worker is mid-task: it tears down the
-   sandboxes it hosts, and a running command fails.
-4. `make install` on the laptop so the CLI matches.
+Commit and install the checkout you want to deploy, then run
+`swarmy remote upgrade dev`. The command prints the local and node versions,
+updates joining nodes before the first node, and copies the checkout with the
+same credential exclusions as `remote up`. It rebuilds changed binaries and
+restarts only the affected services. A changed `swarmyd` waits for managed
+sandbox commands to finish before restarting; this evicts idle placements.
+Use `--drain-timeout 1200` for long builds, or `--services-only` when node
+sandboxes must stay untouched. A dirty local checkout requires the explicit
+`--allow-dirty` acknowledgement. `--json` prints one summary per node.
 
 ## Recovery
 
