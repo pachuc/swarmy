@@ -64,10 +64,11 @@ pub async fn run(
             .await?;
         node.instance_id = cloud
             .launch(&Launch {
-                settings,
+                settings: settings.clone(),
                 image,
                 name: node.name.clone(),
                 key_name: key,
+                profile: settings.bucket.as_ref().map(|_| format!("swarmy-{name}")),
             })
             .await?;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();

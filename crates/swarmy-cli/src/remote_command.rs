@@ -5,6 +5,8 @@ pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
     Up {
         name: String,
+        #[arg(long)]
+        bucket: Option<String>,
         /// Run control-plane services on the laptop (default) or the node
         #[arg(long)]
         services: Option<swarmy_config::RemoteServices>,
@@ -62,6 +64,18 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: Command,
+    }
+
+    #[test]
+    fn bucket_flag_parses() {
+        let Command::Up { bucket, .. } =
+            Cli::try_parse_from(["remote", "up", "demo", "--bucket", "example-bucket"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected up");
+        };
+        assert_eq!(bucket.as_deref(), Some("example-bucket"));
     }
 
     #[test]

@@ -34,10 +34,10 @@ until scratch lands.
 2. Build and install the CLI from the commit you want the swarm to run:
    `make install`. The version guard refuses a mismatch later.
 3. Launch: `swarmy remote up dev --services node --copy-credential
-   --image-recipe images/swarmy-dev`. About ten minutes: instance, backing
+   --image-recipe images/swarmy-dev --bucket YOUR-BUCKET`. About ten minutes: instance, backing
    services, release build on the node, systemd units, the dev image.
-4. Connect: `swarmy remote connect dev`. Tunnels to FoundationDB, NATS, and
-   S3 stay up as a recorded background process.
+4. Connect: `swarmy remote connect dev`. FoundationDB and NATS use tunnels;
+   S3 uses the laptop's AWS credentials directly.
 5. Credentials go into the swarm's encrypted store, not into files:
    `swarmy auth import --remote dev` for the ChatGPT login,
    `swarmy auth set openrouter --file KEYFILE --remote dev` for OpenRouter.

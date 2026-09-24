@@ -6,6 +6,10 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 mode=${1:-stack}
 service_address=${2:-127.0.0.1}
+bucket=${3:-}
+bucket_region=${4:-}
+[[ -z $bucket || $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || exit 1
+[[ -z $bucket || $bucket_region =~ ^[a-z0-9-]+$ ]] || exit 1
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 stack_dependency=''
@@ -90,14 +94,13 @@ fi
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
+# Keep bucket credentials out of the command line and the checkout.
+source "$repo_dir/scripts/remote-s3-env.sh"
+s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region")
 sudo tee /etc/swarmy/node.env >/dev/null <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
 SWARMY_NATS_URL=nats://127.0.0.1:4222
-SWARMY_S3_ENDPOINT=http://127.0.0.1:8333
-SWARMY_S3_ACCESS_KEY=swarmy-dev
-SWARMY_S3_SECRET_KEY=swarmy-dev-secret
-SWARMY_S3_BUCKET=swarmy
-SWARMY_S3_REGION=us-east-1
+$s3_env
 SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
 SWARMY_NODE_MEMORY_BYTES=$(awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", bytes > 0 ? bytes : 0}' /proc/meminfo)
 SWARMY_NODE_DISK_BYTES=$(df -B1 --output=size "$local_mount" | tail -1 | tr -d ' ')
@@ -112,7 +115,7 @@ ENV
 if [[ $mode == stack ]]; then
 sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
 [Unit]
-Description=Swarmy backing services (FoundationDB, NATS, SeaweedFS)
+Description=Swarmy backing services (FoundationDB, NATS, optional SeaweedFS)
 After=network-online.target
 Wants=network-online.target
 
@@ -122,6 +125,7 @@ RemainAfterExit=yes
 User=ubuntu
 WorkingDirectory=$repo_dir
 Environment=HOME=/home/ubuntu
+EnvironmentFile=/etc/swarmy/node.env
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
 # systemd owns these processes, so stale state from an interrupted boot is safe to clear.
 ExecStartPre=/usr/bin/rm -f $repo_dir/.dev/fdb.pid $repo_dir/.dev/nats.pid $repo_dir/.dev/seaweed.pid

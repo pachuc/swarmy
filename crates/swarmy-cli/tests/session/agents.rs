@@ -594,6 +594,8 @@ async fn new_commands_use_the_selected_remote_profile() {
                 .unwrap()
                 .settings
                 .s3_endpoint,
+            s3_bucket: None,
+            s3_region: None,
             default_image: Some("fixture:test".into()),
         };
         std::fs::write(

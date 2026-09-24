@@ -28,6 +28,9 @@ aws-sdk-bedrockruntime = { version = "1", default-features = false, features = [
 aws-smithy-types = { version = "1", default-features = false }
 aws-sdk-ec2 = "1"
 aws-sdk-ssm = "1"
+aws-sdk-s3 = "1"
+aws-sdk-iam = "1"
+aws-credential-types = "1"
 portable-pty = "0.9"
 vt100 = "0.16"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }

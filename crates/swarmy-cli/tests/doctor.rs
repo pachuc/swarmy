@@ -204,6 +204,8 @@ fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
         fdb_cluster_file: cluster_path,
         nats_url: nats_url.into(),
         s3_endpoint: "http://127.0.0.1:8333".into(),
+        s3_bucket: None,
+        s3_region: None,
         default_image: None,
     };
     fs::write(

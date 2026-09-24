@@ -6,6 +6,7 @@ export PATH="$PATH:${HOME:?HOME must be set}/.local/bin:/usr/sbin"
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 dev_dir="$repo_dir/.dev"
 services=(fdb nats seaweed)
+if [[ ${SWARMY_DEV_SKIP_S3:-0} == 1 ]]; then services=(fdb nats); fi
 started=()
 locked=false
 start_complete=false
@@ -131,9 +132,10 @@ s3_request() {
 start() {
     local binary service port requested_port
     local -a ports
-    for binary in fdbserver fdbcli nats-server weed curl; do
+    for binary in fdbserver fdbcli nats-server curl; do
         command -v "$binary" >/dev/null || fail "Missing $binary; see docs/DEV.md for installation."
     done
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed'; fi
     [[ $(curl --help all) == *'--aws-sigv4'* ]] || fail 'curl 7.75 or newer is required for S3 authentication.'
     mkdir -p -- "$dev_dir/fdb/data" "$dev_dir/fdb/logs" "$dev_dir/nats" "$dev_dir/seaweed" "$dev_dir/logs"
 
@@ -200,11 +202,13 @@ NATS
     socket_dir="${TMPDIR:-/tmp}/swarmy-$(printf '%s' "$dev_dir" | sha256sum | cut -c1-12)"
     mkdir -p -- "$socket_dir"
     # Separate S3 test buckets each need collection volume slots.
-    launch seaweed weed server -dir "$dev_dir/seaweed" -ip "$advertise_address" -ip.bind "$bind_address" \
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then
+        launch seaweed weed server -dir "$dev_dir/seaweed" -ip "$advertise_address" -ip.bind "$bind_address" \
         -volume.max 32 \
         -s3 -s3.port 8333 -s3.config "$dev_dir/s3.json" \
         -filer.localSocket "$socket_dir/filer.sock" -s3.localSocket "$socket_dir/s3.sock" \
         -s3.port.iceberg 0 -s3.port.lance 0 -master.telemetry=false
+    fi
 
     if [[ ! -f $dev_dir/fdb/configured ]]; then
         # An interrupted first start may already have configured the database.
@@ -214,12 +218,14 @@ NATS
     wait_ready fdb fdb_ready
     touch "$dev_dir/fdb/configured"
     wait_ready nats curl --fail --silent --show-error --noproxy '*' --max-time 3 http://127.0.0.1:8222/jsz
-    wait_ready seaweed s3_request http://127.0.0.1:8333/
-    if ! s3_request --head http://127.0.0.1:8333/swarmy >/dev/null 2>&1; then
-        s3_request -X PUT http://127.0.0.1:8333/swarmy >"$dev_dir/logs/s3-bucket.log" 2>&1 \
-            || fail 'Could not create the swarmy bucket; see .dev/logs/s3-bucket.log'
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then
+        wait_ready seaweed s3_request http://127.0.0.1:8333/
+        if ! s3_request --head http://127.0.0.1:8333/swarmy >/dev/null 2>&1; then
+            s3_request -X PUT http://127.0.0.1:8333/swarmy >"$dev_dir/logs/s3-bucket.log" 2>&1 \
+                || fail 'Could not create the swarmy bucket; see .dev/logs/s3-bucket.log'
+        fi
+        s3_request --head http://127.0.0.1:8333/swarmy >/dev/null
     fi
-    s3_request --head http://127.0.0.1:8333/swarmy >/dev/null
 
     {
         printf 'export SWARMY_FDB_CLUSTER_FILE=%q\n' "$dev_dir/fdb.cluster"

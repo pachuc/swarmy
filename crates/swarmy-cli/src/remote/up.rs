@@ -14,29 +14,20 @@ pub async fn run(
     options: super::services::Options<'_>,
     delay: Duration,
 ) -> Result<()> {
-    ensure!(
-        state.read(name)?.is_none(),
-        "remote node {name} already exists; run swarmy remote down {name} first"
-    );
-    ensure!(
-        !settings.region.is_empty(),
-        "configure remote.region in config.toml before running swarmy remote up"
-    );
-    for (field, value) in [
-        ("subnet", &settings.subnet),
-        ("security_group", &settings.security_group),
-    ] {
-        ensure!(
-            value.as_deref().is_some_and(|value| !value.is_empty()),
-            "remote.{field} is not configured; set [remote] {field} in config.toml before running swarmy remote up"
-        );
+    if let Some(existing) = state.read(name)? {
+        if settings.bucket.is_some()
+            && existing.launch_settings.as_ref().is_some_and(|saved| {
+                saved.bucket == settings.bucket && saved.region == settings.region
+            })
+            && !existing.instance_id.is_empty()
+            && !existing.public_ip.is_empty()
+        {
+            println!("Remote node {name} already exists; bucket resources and node are unchanged");
+            return Ok(());
+        }
+        anyhow::bail!("remote node {name} already exists; run swarmy remote down {name} first");
     }
-    ensure!(
-        settings.disk_gb > 0
-            && !settings.managed_by_tag.is_empty()
-            && !settings.instance_type.is_empty(),
-        "remote disk_gb must be positive and instance_type and managed_by_tag must not be empty"
-    );
+    validate(settings, name)?;
     let started = Instant::now();
     println!("Resolving Ubuntu image in {}", settings.region);
     let image = match &settings.image {
@@ -65,6 +56,9 @@ pub async fn run(
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
     state.save(&node)?;
     let result = async {
+        if let Some(bucket) = &settings.bucket {
+            cloud.prepare_bucket(bucket, &settings.region, name).await?;
+        }
         let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
         if settings.services == swarmy_config::RemoteServices::Node {
             host.services(&node, &address, &options).await?;
@@ -117,6 +111,10 @@ async fn provision(
             image,
             name: node.name.clone(),
             key_name,
+            profile: settings
+                .bucket
+                .as_ref()
+                .map(|_| format!("swarmy-{}", node.name)),
         })
         .await?;
     state.save(node)?;
@@ -126,4 +124,42 @@ async fn provision(
     node.private_ip = instance.private_ip;
     state.save(node)?;
     host.provision(node, None).await
+}
+
+fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
+    ensure!(
+        !settings.region.is_empty(),
+        "configure remote.region in config.toml before running swarmy remote up"
+    );
+    for (field, value) in [
+        ("subnet", &settings.subnet),
+        ("security_group", &settings.security_group),
+    ] {
+        ensure!(
+            value.as_deref().is_some_and(|value| !value.is_empty()),
+            "remote.{field} is not configured; set [remote] {field} in config.toml before running swarmy remote up"
+        );
+    }
+    ensure!(
+        settings.disk_gb > 0
+            && !settings.managed_by_tag.is_empty()
+            && !settings.instance_type.is_empty(),
+        "remote disk_gb must be positive and instance_type and managed_by_tag must not be empty"
+    );
+    if let Some(bucket) = &settings.bucket {
+        ensure!(
+            name.len() <= 57,
+            "bucket-backed remote name must be at most 57 characters to fit the IAM role name"
+        );
+        ensure!(
+            (3..=63).contains(&bucket.len())
+                && bucket
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !bucket.starts_with('-')
+                && !bucket.ends_with('-'),
+            "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)"
+        );
+    }
+    Ok(())
 }

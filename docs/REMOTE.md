@@ -96,7 +96,9 @@ address that answered. Keys and records are private local files. SSH stores host
 
 An interrupted or failed `up` or `add-node` retains its state so `down` can clean up. A unique
 client token identifies a launch if its response was lost before the instance id
-was saved. Run `down` before retrying `up` with the same name. `down` waits for
+was saved. Run `down` before retrying an interrupted `up` with the same name.
+A completed bucket-backed remote accepts a repeat `up --bucket` without creating
+more resources. `down` waits for
 termination of every node and deletes their AWS keys and local records even
 when instances were already deleted. Joining nodes are terminated first. API failures retain state for retry. Do not delete the state
 directory while cloud resources still exist.
@@ -161,3 +163,20 @@ sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
 
 Record the block, failed direct probes, successful doctor transactions, and
 provider teardown queries with the run. Remove the rule even after a failure.
+
+## Persistent object storage
+
+Pass `--bucket NAME` to `swarmy remote up` (or set `[remote] bucket = "NAME"`).
+The bucket is retained after `remote down`; remove it separately only when its
+objects are no longer needed. The instance profile grants access only to that
+bucket. The laptop identity must have `s3:GetObject`, `s3:PutObject`,
+`s3:DeleteObject`, `s3:ListBucket`, and `s3:GetBucketLocation` on the same
+bucket to use volume, image, GC, and doctor commands over a tunnel.
+
+Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
+`s3:PutBucketEncryption`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
+`iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`,
+`iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
+`iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
+`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role, plus the object
+permissions above. Existing remotes without a bucket continue using SeaweedFS.

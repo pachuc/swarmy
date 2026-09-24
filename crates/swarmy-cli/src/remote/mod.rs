@@ -27,6 +27,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Up {
             name,
+            bucket,
             no_image,
             image_recipe,
             services,
@@ -43,6 +44,9 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let mut settings = loaded.settings;
             if let Some(services) = services {
                 settings.remote.services = services;
+            }
+            if let Some(bucket) = bucket {
+                settings.remote.bucket = Some(bucket);
             }
             let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
             let cloud = aws::Aws::new(&settings.remote.region).await;
@@ -99,6 +103,7 @@ struct Launch {
     image: String,
     name: String,
     key_name: String,
+    profile: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +116,8 @@ struct Instance {
 
 /// Only this boundary knows about AWS. Missing resources are represented by None.
 trait Cloud {
+    async fn prepare_bucket(&self, bucket: &str, region: &str, name: &str) -> Result<()>;
+    async fn delete_profile(&self, name: &str) -> Result<()>;
     async fn stock_image(&self) -> Result<String>;
     async fn import_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()>;
     async fn launch(&self, request: &Launch) -> Result<String>;
