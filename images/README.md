@@ -46,7 +46,9 @@ Debootstrap installs the minimal base system, then apt installs the listed
 packages without recommendations so virtual dependencies resolve correctly. Optional
 `components = ["main", "universe"]` selects additional archive components. An optional `script = "setup.sh"` in the source table runs through
 `/bin/sh -es` inside the installed system before cleanup. See
-[the developer image](base-ubuntu/README.md) for its tools and credential setup. The
+[the developer image](base-ubuntu/README.md) for its tools and credential setup,
+[the desktop image](base-desktop/README.md) for its supervised display and
+software renderers. The
 optional `source_commit = "..."` must be a full 40-digit Git hash and is passed
 to that script as `SWARMY_SOURCE_COMMIT`; the swarmy-dev recipe uses it to pin
 the checkout that warms Cargo.

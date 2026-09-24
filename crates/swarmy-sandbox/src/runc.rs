@@ -497,7 +497,14 @@ impl RuncRuntime {
         config["root"]["path"] = serde_json::json!(bundle.join("rootfs"));
         config["root"]["readonly"] = false.into();
         config["process"]["terminal"] = false.into();
-        config["process"]["args"] = serde_json::json!(["/bin/sleep", "infinity"]);
+        // An image may provide its own PID 1 for background services. Older
+        // images keep the inert init used before this hook was introduced.
+        let init = bundle.join("rootfs/usr/local/libexec/swarmy-init");
+        config["process"]["args"] = if init.is_file() {
+            serde_json::json!(["/bin/sh", "/usr/local/libexec/swarmy-init"])
+        } else {
+            serde_json::json!(["/bin/sleep", "infinity"])
+        };
         // Package managers need ordinary root filesystem capabilities, but no
         // host administration capabilities such as SYS_ADMIN or NET_ADMIN.
         let caps = serde_json::json!([
@@ -514,12 +521,21 @@ impl RuncRuntime {
         for set in ["bounding", "effective", "permitted"] {
             config["process"]["capabilities"][set] = caps.clone();
         }
-        config["process"]["env"] = serde_json::json!([
+        let mut env = vec![
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME=/home/agent",
             "GH_CONFIG_DIR=/run/swarmy-gh",
-            "TERM=xterm"
-        ]);
+            "TERM=xterm",
+        ];
+        if init.is_file() {
+            env.extend([
+                "DISPLAY=:99",
+                "LIBGL_ALWAYS_SOFTWARE=1",
+                "GALLIUM_DRIVER=llvmpipe",
+                "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+            ]);
+        }
+        config["process"]["env"] = serde_json::json!(env);
         config["process"]["rlimits"]
             .as_array_mut()
             .ok_or(Error::State)?
