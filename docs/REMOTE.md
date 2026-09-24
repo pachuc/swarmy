@@ -210,7 +210,7 @@ bucket. The laptop identity must have `s3:GetObject`, `s3:PutObject`,
 bucket to use volume, image, GC, and doctor commands directly against S3.
 
 Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
-`s3:PutBucketEncryption`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
+`s3:PutEncryptionConfiguration`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
 `iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,

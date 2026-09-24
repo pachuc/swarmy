@@ -116,7 +116,7 @@ impl Aws {
                 )
                 .send()
                 .await
-                .context("s3:PutBucketEncryption (bucket may belong to another account)")?;
+                .context("s3:PutEncryptionConfiguration (bucket may belong to another account)")?;
         }
         self.s3
             .put_public_access_block()
