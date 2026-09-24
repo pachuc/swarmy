@@ -9,7 +9,7 @@ automate; every step here is a plain command.
 
 | Piece | Value | Why |
 |---|---|---|
-| Control node | `m6i.large`, 40 GiB root disk, `--sandboxes 0` | keep the control plane on a small EBS-backed node |
+| Control node | minimum `m6i.large` (8 GiB RAM), 40 GiB root disk, `--sandboxes 0` | release build needs at least 6 GiB available; node CLI omits EC2 provisioning SDKs |
 | Sandbox node | `m6id.4xlarge`, 100 GiB root disk, local NVMe | worker builds use instance-store scratch |
 | Sandboxes per sandbox node | 4 | one worker per lane |
 | Control plane | on the node (`--services node`) | the laptop can disconnect |
@@ -17,6 +17,15 @@ automate; every step here is a plain command.
 | Snapshots and collection | retention 3, collector grace 30 min, interval 10 min (set by provisioning) | build caches churn; ten snapshots and six hours of grace filled a 100 GB root disk in an hour |
 | Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | check current EC2 prices for both shapes, plus S3 and inference | separate control and sandbox nodes |
+
+The node build uses `swarmy-cli --no-default-features`: provisioning commands
+and the EC2, S3, IAM, and SSM clients belong on the laptop. A 6 GiB fleet
+sandbox measured 957,428 KiB peak resident memory for the release build without
+that feature. The default-feature build reached 6,123,248 KiB in the EC2
+compiler and was killed by its memory limit. The node checks for 6 GiB
+`MemAvailable` before building; use at least an 8 GiB instance so the OS and
+backing services have room too. Inference's Bedrock SDK remains part of the
+session binary; the node build omits the provisioning clients, not inference.
 
 Observed with three workers building at once: 3 GiB used, load 4. The root
 disk, which holds the node's object store, filled to 96 percent within an

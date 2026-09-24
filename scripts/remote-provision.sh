@@ -91,10 +91,20 @@ if [[ ! -f .swarmy/remote-tools-version || $(<.swarmy/remote-tools-version) != "
     bash scripts/install-dev-tools.sh
     printf '%s\n' "$tools_hash" > .swarmy/remote-tools-version
 fi
+# Check available memory after installing tools, before the expensive release build.
+# The node CLI excludes provisioning SDKs, but the services still need headroom.
+mem_available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+mem_total_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+if (( mem_available_kib < 6 * 1024 * 1024 )); then
+    printf 'Release build needs at least 6 GiB available memory; this instance has %s MiB total and %s MiB available. Use at least an 8 GiB control node (m6i.large), or free memory before provisioning.\n' \
+        "$((mem_total_kib / 1024))" "$((mem_available_kib / 1024))" >&2
+    exit 1
+fi
 build_started=$SECONDS
 if [[ $mode == stack ]]; then
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked --no-default-features -p swarmy-cli
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
+        -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
     sudo install -m 0755 target/release/{swarmy,swarmy-session,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker,swarmy-api} /usr/local/bin/
 else
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd

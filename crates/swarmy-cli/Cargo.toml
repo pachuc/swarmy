@@ -7,6 +7,10 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+default = ["remote"]
+remote = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm", "dep:aws-sdk-s3", "dep:aws-sdk-iam"]
+
 [lints]
 workspace = true
 
@@ -24,11 +28,11 @@ async-trait.workspace = true
 swarmy-gateway.workspace = true
 swarmy-version.workspace = true
 async-nats.workspace = true
-aws-config.workspace = true
-aws-sdk-ec2.workspace = true
-aws-sdk-ssm.workspace = true
-aws-sdk-s3.workspace = true
-aws-sdk-iam.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-sdk-ec2 = { workspace = true, optional = true }
+aws-sdk-ssm = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-iam = { workspace = true, optional = true }
 shell-words.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
