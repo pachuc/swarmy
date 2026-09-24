@@ -13,9 +13,10 @@ returns its original result rather than repeating the mutation.
   `expected_head`, and `idempotency_key`. The expected head must be the last
   sequence observed while the session was idle. The server atomically checks
   that head and idle state, appends the user message, marks the session runnable,
-  then nudges the scheduler. A stale or active session returns 409. Returns
-  `AppendedMessage` with `sequence` and `turn_id`. A retry of the same key
-  returns the original sequence even after the session has advanced.
+  then nudges the scheduler. A stale head returns 409 `stale_head` with the
+  actual head in the message; a non-idle session returns 409 `session_not_idle`.
+  Returns `AppendedMessage` with `sequence` and `turn_id`. A retry of the same
+  key returns the original sequence even after the session has advanced.
 - `POST /v1/sessions/{id}/interrupt`: `InterruptSession` JSON. Returns
   `{"result":"requested"}` or `{"result":"finished"}`. An idle session
   has no turn to interrupt.
@@ -24,11 +25,15 @@ returns its original result rather than repeating the mutation.
   closed, but a named main session cannot.
 - `GET /v1/sessions/{id}/wait-idle?after=N&timeout_ms=30000`: blocks until
   the session is idle and its head has passed `N`, or returns 408 on timeout.
-  The maximum wait is two minutes. Omit `after` to return immediately if the
-  session is already idle. This route is for clients that do not need SSE.
+  The maximum wait is two minutes. A Completed session returns immediately
+  with state `completed`. Omit `after` to return immediately if already idle.
+  The server listens for session state changes and falls back to a store check
+  every three seconds if a live notification is lost. This route is for clients
+  that do not need SSE.
 
 The append's durable Runnable index recovers from a missed bus nudge. Turn
-Submitted and Appended timing observations are published on the turn timeline.
+Submitted and Appended timing observations are published once for each fresh
+append, in that order; idempotent retries do not publish a second Submitted.
 
 The opt-in `api_first_fake_token_stays_within_five_ms_of_direct_append` test
 requires a running fake-provider stack and a registered image. On a node with

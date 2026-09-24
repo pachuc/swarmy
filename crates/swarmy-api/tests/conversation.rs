@@ -4,10 +4,10 @@ use std::{
 };
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{
-    AppendMessage, AppendedMessage, CloseSession, CreateSession, ImageRef, InterruptSession,
-    Session,
+    AppendMessage, AppendedMessage, CloseSession, CreateSession, ImageRef, InterruptOutcome,
+    InterruptSession, InterruptStatus, Session, SessionClosed,
 };
-use swarmy_bus::{Bus, Config};
+use swarmy_bus::{Bus, Config, LiveFeed};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId, SessionId, SessionState,
 };
@@ -18,6 +18,7 @@ static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     store: Store,
+    bus: Bus,
     client: reqwest::Client,
     base: String,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
@@ -59,7 +60,7 @@ impl Fixture {
         let bus = Bus::connect(&nats, Config::default()).await.unwrap();
         let state = AppState::new(
             store.clone(),
-            bus,
+            bus.clone(),
             "test-token".into(),
             swarmy_llm::catalog::Catalog::get().clone(),
         );
@@ -68,6 +69,7 @@ impl Fixture {
         let server = tokio::spawn(axum::serve(listener, router(state)).into_future());
         Some(Self {
             store,
+            bus,
             client: reqwest::Client::new(),
             base,
             server,
@@ -148,6 +150,8 @@ async fn create_append_replay_wait_interrupt_close() {
         "{}",
         interrupted.status()
     );
+    let outcome: InterruptOutcome = interrupted.json().await.unwrap();
+    assert_eq!(outcome.result, InterruptStatus::Requested);
     assert!(f.store.interrupt_requested(id).await.unwrap());
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
     let late_replay: AppendedMessage = append().send().await.unwrap().json().await.unwrap();
@@ -186,6 +190,7 @@ async fn create_append_replay_wait_interrupt_close() {
         .await
         .unwrap();
     assert_eq!(closed.status(), reqwest::StatusCode::OK);
+    assert!(closed.json::<SessionClosed>().await.unwrap().closed);
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Completed
@@ -282,4 +287,270 @@ async fn wait_idle_times_out_for_active_session() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::REQUEST_TIMEOUT);
+}
+
+fn ephemeral(key: &str, provider: Option<&str>, model: Option<&str>) -> CreateSession {
+    CreateSession {
+        idempotency_key: key.into(),
+        agent_id: None,
+        new: false,
+        image: Some(ImageRef {
+            name: "fixture".into(),
+            tag: "test".into(),
+        }),
+        provider: provider.map(str::to_owned),
+        model: model.map(str::to_owned),
+        effort: None,
+    }
+}
+
+#[tokio::test]
+async fn conversation_routes_require_authentication() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let session = f.create("auth", None, false).await;
+    let url = format!("{}/v1/sessions/{}", f.base, session.id);
+    let requests = [
+        f.client
+            .post(format!("{}/v1/sessions", f.base))
+            .json(&ephemeral("unauth", None, None)),
+        f.client
+            .post(format!("{url}/messages"))
+            .json(&AppendMessage {
+                idempotency_key: "a".into(),
+                expected_head: 0,
+                text: "hi".into(),
+            }),
+        f.client
+            .post(format!("{url}/interrupt"))
+            .json(&InterruptSession {
+                idempotency_key: "i".into(),
+            }),
+        f.client.delete(&url).json(&CloseSession {
+            idempotency_key: "c".into(),
+        }),
+        f.client.get(format!("{url}/wait-idle")),
+    ];
+    for request in requests {
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_selection_empty_message_and_stale_head_are_distinct() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    for (provider, model) in [
+        (Some("unknown-provider"), None),
+        (Some("openai"), Some("unknown-model")),
+    ] {
+        let response = f
+            .client
+            .post(format!("{}/v1/sessions", f.base))
+            .bearer_auth("test-token")
+            .json(&ephemeral(&Ulid::generate().to_string(), provider, model))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: swarmy_api_types::ApiError = response.json().await.unwrap();
+        assert_eq!(body.code, "invalid_selection");
+        assert!(body.message.contains("unknown provider/model"));
+    }
+    let session = f.create("errors", None, false).await;
+    let url = format!("{}/v1/sessions/{}/messages", f.base, session.id);
+    let empty = f
+        .client
+        .post(&url)
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "empty".into(),
+            expected_head: 0,
+            text: "  ".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), reqwest::StatusCode::BAD_REQUEST);
+    let valid = AppendMessage {
+        idempotency_key: "first".into(),
+        expected_head: 0,
+        text: "first".into(),
+    };
+    assert!(
+        f.client
+            .post(&url)
+            .bearer_auth("test-token")
+            .json(&valid)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    let stale = f
+        .client
+        .post(&url)
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "second".into(),
+            expected_head: 0,
+            text: "second".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), reqwest::StatusCode::CONFLICT);
+    let body: swarmy_api_types::ApiError = stale.json().await.unwrap();
+    assert_eq!(body.code, "stale_head");
+    assert!(body.message.contains('1'));
+}
+
+#[tokio::test]
+async fn close_runnable_session_returns_completed_and_prevents_append() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let session = f.create("close-runnable", None, false).await;
+    let id = SessionId::from_ulid(session.id.parse().unwrap());
+    let url = format!("{}/v1/sessions/{}", f.base, session.id);
+    let first = f
+        .client
+        .post(format!("{url}/messages"))
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "first".into(),
+            expected_head: 0,
+            text: "hello".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success());
+    let closed = f
+        .client
+        .delete(&url)
+        .bearer_auth("test-token")
+        .json(&CloseSession {
+            idempotency_key: "close".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), reqwest::StatusCode::OK);
+    assert!(closed.json::<SessionClosed>().await.unwrap().closed);
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Completed
+    );
+    let later = f
+        .client
+        .post(format!("{url}/messages"))
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "later".into(),
+            expected_head: 1,
+            text: "later".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(later.status(), reqwest::StatusCode::CONFLICT);
+    let error: swarmy_api_types::ApiError = later.json().await.unwrap();
+    assert!(matches!(
+        error.code.as_str(),
+        "stale_head" | "session_not_idle"
+    ));
+    let completed: Session = f
+        .client
+        .get(format!("{url}/wait-idle?timeout_ms=100"))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(completed.state, swarmy_api_types::SessionState::Completed);
+}
+
+#[tokio::test]
+async fn wait_idle_wakes_from_live_transition() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let session = f.create("live-wait", None, false).await;
+    let id = SessionId::from_ulid(session.id.parse().unwrap());
+    let _ = f
+        .client
+        .post(format!("{}/v1/sessions/{id}/messages", f.base))
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "turn".into(),
+            expected_head: 0,
+            text: "hello".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    let url = format!(
+        "{}/v1/sessions/{id}/wait-idle?after=1&timeout_ms=2000",
+        f.base
+    );
+    let client = f.client.clone();
+    let waiter = tokio::spawn(async move {
+        client
+            .get(url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    f.store.interrupt_session(id).await.unwrap();
+    assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
+    let event = swarmy_core::Event::StateChanged {
+        seq: 2,
+        from: SessionState::Runnable,
+        to: SessionState::Idle,
+    };
+    f.bus
+        .publish_live(LiveFeed::SessionEvents(id), &event)
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(1), waiter)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn invalid_effort_uses_cli_selection_error() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let response = f
+        .client
+        .post(format!("{}/v1/sessions", f.base))
+        .bearer_auth("test-token")
+        .json(&serde_json::json!({
+            "idempotency_key": "bad-effort", "image": {"name":"fixture", "tag":"test"},
+            "effort": "ultra"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: swarmy_api_types::ApiError = response.json().await.unwrap();
+    assert_eq!(body.code, "invalid_selection");
+    assert_eq!(
+        body.message,
+        "reasoning effort must be one of: none, minimal, low, medium, high, xhigh, max"
+    );
 }

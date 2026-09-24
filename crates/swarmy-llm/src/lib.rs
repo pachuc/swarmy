@@ -7,6 +7,7 @@ pub mod chatgpt;
 pub mod fake;
 pub mod responses;
 pub mod retry;
+pub mod selection;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};

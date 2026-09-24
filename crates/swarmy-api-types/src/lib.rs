@@ -293,6 +293,21 @@ pub struct CloseSession {
     pub idempotency_key: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptStatus {
+    Requested,
+    Finished,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct InterruptOutcome {
+    pub result: InterruptStatus,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SessionClosed {
+    pub closed: bool,
+}
+
 /// Register an already built image; image builds are not mutations of this resource.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateImage {
@@ -384,6 +399,7 @@ pub struct ApiError {
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
+    InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, Event, EventPayload, ApiError
 )))]
 pub struct ApiDocument;

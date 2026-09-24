@@ -63,6 +63,12 @@ async fn run() -> Result<()> {
     });
     let mut state = AppState::new(store, bus, token, settings.catalog()?);
     state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
+    state.default_image = settings.default_image.clone();
+    state.default_selection = swarmy_core::ResolvedSelection {
+        provider: settings.provider.clone(),
+        model: settings.model.clone(),
+        effort: settings.reasoning_effort.parse()?,
+    };
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .context("bind API listener")?;

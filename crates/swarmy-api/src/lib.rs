@@ -33,6 +33,8 @@ pub struct AppState {
     mutations: Arc<Mutex<()>>,
     pub stream_poll_interval: std::time::Duration,
     pub resend_interval: std::time::Duration,
+    pub default_image: Option<String>,
+    pub default_selection: swarmy_core::ResolvedSelection,
     stream_connections:
         Arc<std::sync::Mutex<std::collections::HashMap<String, stream::Connection>>>,
 }
@@ -48,6 +50,12 @@ impl AppState {
             mutations: Arc::new(Mutex::new(())),
             stream_poll_interval: std::time::Duration::from_secs(20),
             resend_interval: std::time::Duration::from_secs(5),
+            default_image: None,
+            default_selection: swarmy_core::ResolvedSelection {
+                provider: "fake".into(),
+                model: "scripted".into(),
+                effort: swarmy_core::ReasoningEffort::Medium,
+            },
             stream_connections: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }

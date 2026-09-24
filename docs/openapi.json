@@ -780,6 +780,17 @@
           }
         }
       },
+      "InterruptOutcome": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/InterruptStatus"
+          }
+        }
+      },
       "InterruptSession": {
         "type": "object",
         "required": [
@@ -790,6 +801,13 @@
             "type": "string"
           }
         }
+      },
+      "InterruptStatus": {
+        "type": "string",
+        "enum": [
+          "requested",
+          "finished"
+        ]
       },
       "LogId": {
         "oneOf": [
@@ -1061,6 +1079,17 @@
                 "$ref": "#/components/schemas/WaitingReason"
               }
             ]
+          }
+        }
+      },
+      "SessionClosed": {
+        "type": "object",
+        "required": [
+          "closed"
+        ],
+        "properties": {
+          "closed": {
+            "type": "boolean"
           }
         }
       },
