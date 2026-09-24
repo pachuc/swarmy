@@ -53,7 +53,10 @@ if unit_needs_restart swarmyd.service /usr/local/bin/swarmyd; then
             busy=$(sudo -n sh -c 'cd /home/ubuntu/swarmy && set -a && . /etc/swarmy/node.env && set +a && exec /home/ubuntu/swarmy/target/release/swarmyd --upgrade-processes')
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
-            (( SECONDS < deadline )) || { echo "Drain timed out after $drain_timeout seconds; swarmyd was not restarted" >&2; exit 1; }
+            if (( SECONDS >= deadline )); then
+                echo "Drain timed out after $drain_timeout seconds; restarting swarmyd anyway, interrupting: $busy" >&2
+                break
+            fi
             sleep 5
         done
         sudo -n systemctl restart swarmyd.service

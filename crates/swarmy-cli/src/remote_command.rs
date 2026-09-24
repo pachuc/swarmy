@@ -55,7 +55,7 @@ pub enum Command {
         #[arg(long)]
         allow_dirty: bool,
         /// Maximum seconds to wait for running sandbox commands
-        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(long, default_value_t = 600)]
         drain_timeout: u64,
     },
     /// Terminate all nodes and remove their key pairs and local state
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_flags_parse_with_positive_drain_timeout() {
+    fn upgrade_flags_parse_with_any_drain_timeout() {
         let Command::Upgrade {
             name,
             services_only,
@@ -190,8 +190,17 @@ mod tests {
         };
         assert!(services_only && allow_dirty);
         assert_eq!(drain_timeout, 17);
+        // Zero means restart the daemon without waiting for sandbox commands.
+        let Command::Upgrade { drain_timeout, .. } =
+            Cli::try_parse_from(["remote", "upgrade", "demo", "--drain-timeout", "0"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected upgrade")
+        };
+        assert_eq!(drain_timeout, 0);
         assert!(
-            Cli::try_parse_from(["remote", "upgrade", "demo", "--drain-timeout", "0"]).is_err()
+            Cli::try_parse_from(["remote", "upgrade", "demo", "--drain-timeout", "-1"]).is_err()
         );
     }
 

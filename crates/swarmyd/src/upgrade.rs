@@ -119,7 +119,24 @@ pub async fn run(loaded: &swarmy_config::Loaded) -> Result<()> {
                 .is_some_and(|status| {
                     status.holder_session_id.is_some() || status.queued_calls > 0
                 });
-            if occupied || process_list(&socket, placement.agent_id, placement.epoch).await? {
+            // A listing that fails (a sandbox evicted mid-query, a helper that
+            // exits non-zero) says nothing about idleness, so count it as busy
+            // and let the caller retry rather than abort the whole upgrade.
+            let running = if occupied {
+                true
+            } else {
+                match process_list(&socket, placement.agent_id, placement.epoch).await {
+                    Ok(running) => running,
+                    Err(error) => {
+                        eprintln!(
+                            "process listing for {} failed, treating it as busy: {error:#}",
+                            placement.agent_id
+                        );
+                        true
+                    }
+                }
+            };
+            if running {
                 busy.push(placement.agent_id.to_string());
             }
         }
