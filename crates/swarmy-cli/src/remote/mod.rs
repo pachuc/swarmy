@@ -165,7 +165,6 @@ struct Instance {
 /// Only this boundary knows about AWS. Missing resources are represented by None.
 trait Cloud {
     async fn prepare_bucket(&self, bucket: &str, region: &str, name: &str) -> Result<()>;
-    async fn delete_profile(&self, name: &str) -> Result<()>;
     async fn stock_image(&self) -> Result<String>;
     async fn import_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()>;
     async fn launch(&self, request: &Launch) -> Result<String>;
