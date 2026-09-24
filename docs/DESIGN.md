@@ -358,7 +358,10 @@ tool-call and result correlation.
 The tool set is `bash`, `process_start`, `process_list`, `process_log`,
 `process_stop`, `write_stdin`, `web_fetch`, `read`, `write`, `edit`, `glob`,
 `grep`, `ls`, `update_plan`, `checkpoint`, `set_timer`, `list_timers`, and
-`cancel_timer`, plus the remote `get_time` tool. The worker dispatches all calls
+`cancel_timer`, plus the remote `get_time` tool. Display images also get
+`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`,
+`browser_select`, `browser_scroll`, `browser_screenshot`, `browser_evaluate`,
+`screen_screenshot`, and `screen_windows`. The worker dispatches all calls
 returned in one response concurrently; dependencies require separate responses.
 Sandbox calls still queue on the agent's computer as described in section 3.1.
 `bash` can yield a managed process id; `process_log` observes output and

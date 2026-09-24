@@ -107,7 +107,7 @@ impl Store {
         manifest: ManifestId,
         scratch: &[String],
     ) -> Result<()> {
-        self.put_image_with_requirements(name, tag, manifest, scratch, None)
+        self.put_image_with_requirements(name, tag, manifest, scratch, None, false)
             .await
     }
 
@@ -121,6 +121,7 @@ impl Store {
         manifest: ManifestId,
         scratch: &[String],
         memory_mib: Option<u64>,
+        display: bool,
     ) -> Result<()> {
         if memory_mib == Some(0) {
             return Err(StoreError::InvalidState);
@@ -143,8 +144,33 @@ impl Store {
                     &trx,
                     &self.image_memory_key(name, tag, manifest),
                     &memory_mib,
-                )
+                )?;
+                write(&trx, &self.image_display_key(name, tag, manifest), &display)
             }
+        })
+        .await
+    }
+
+    fn image_display_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
+        self.root.pack(&(
+            "image_display",
+            name,
+            tag.0.as_str(),
+            manifest.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    /// Whether the immutable image exposes a graphical display.
+    /// # Errors
+    /// Returns database failures.
+    pub async fn image_display(&self, image: &ImageRecord) -> Result<bool> {
+        self.transaction(|trx| async move {
+            Ok(read::<bool>(
+                &trx,
+                &self.image_display_key(&image.name, &image.tag, image.manifest_id),
+            )
+            .await?
+            .unwrap_or(false))
         })
         .await
     }

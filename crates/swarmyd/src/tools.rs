@@ -121,6 +121,16 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
     let sandbox = swarmy_core::Sandbox {
         agent_id: claim.placement.agent_id,
     };
+    if claim.job.arguments.is_display_tool() {
+        let agent = store
+            .get_agent(claim.placement.agent_id)
+            .await?
+            .context("agent missing")?;
+        anyhow::ensure!(
+            store.image_display(&agent.image).await?,
+            "display tool requires a display image"
+        );
+    }
     let mut result = match &claim.job.arguments {
         SandboxArguments::Checkpoint(_) => {
             let manifest_id = runtime.checkpoint(&sandbox).await?;
@@ -153,7 +163,9 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
                 serde_json::from_str(&stdout)?
             } else {
                 let mut value: serde_json::Value = serde_json::from_str(&stdout)?;
-                if matches!(arguments, SandboxArguments::Bash(_)) {
+                if arguments.is_display_tool() {
+                    display_result(arguments.name(), value)?
+                } else if matches!(arguments, SandboxArguments::Bash(_)) {
                     value["manifest_id"] = serde_json::json!(
                         store
                             .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
@@ -228,6 +240,23 @@ async fn stop_result_process(
     Ok(())
 }
 
+fn display_result(name: &str, mut value: serde_json::Value) -> Result<ToolResult> {
+    let mut metadata = std::collections::BTreeMap::new();
+    if let Some(encoded) = value
+        .as_object_mut()
+        .context("display result is not an object")?
+        .remove("image_base64")
+    {
+        metadata.insert("image_base64".into(), encoded);
+        metadata.insert("image_media_type".into(), serde_json::json!("image/png"));
+    }
+    Ok(ToolResult::Completed {
+        title: name.into(),
+        output: value["output"].as_str().unwrap_or("Done").into(),
+        metadata,
+    })
+}
+
 fn completed(name: &str, value: &serde_json::Value) -> ToolResult {
     ToolResult::Completed {
         title: name.into(),
@@ -252,6 +281,17 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
             ],
             stdin: arguments.parameters().to_string().into_bytes(),
             timeout_ms: 120_000,
+        };
+    }
+    if arguments.is_display_tool() {
+        return ExecRequest {
+            args: vec![
+                "/usr/bin/python3".into(),
+                "/usr/local/libexec/swarmy-browser".into(),
+                arguments.name().into(),
+            ],
+            stdin: arguments.parameters().to_string().into_bytes(),
+            timeout_ms: 40_000,
         };
     }
     if let SandboxArguments::WebFetch(arguments) = arguments {
@@ -429,5 +469,31 @@ mod tests {
             processes.call("process_list", "", "", 1)[0]["status"],
             "exited"
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::display_result;
+    use swarmy_core::ToolResult;
+
+    #[test]
+    fn screenshot_payload_becomes_image_metadata() {
+        let result = display_result(
+            "browser_screenshot",
+            serde_json::json!({
+                "output": "PNG screenshot", "image_base64": "iVBORw0KGgo="
+            }),
+        )
+        .unwrap();
+        let ToolResult::Completed {
+            output, metadata, ..
+        } = result
+        else {
+            panic!("expected screenshot result");
+        };
+        assert_eq!(output, "PNG screenshot");
+        assert_eq!(metadata["image_media_type"], "image/png");
+        assert_eq!(metadata["image_base64"], "iVBORw0KGgo=");
     }
 }

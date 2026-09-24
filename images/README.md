@@ -96,6 +96,11 @@ an OCI layout; umoci applies its layers, including whiteouts and ownership.
 Use an image digest to keep the source fixed. Container entrypoints and
 runtime settings are not part of the filesystem image.
 
+A recipe may set `[sandbox] display = true` when its filesystem starts a
+virtual display. The image registration stores this flag with its immutable
+manifest. Browser and screen tools appear only in sessions using that image;
+see [base-desktop](base-desktop/README.md).
+
 ## Host requirements and repeat builds
 
 Builds require Linux, passwordless sudo, e2fsprogs (`mke2fs` and `debugfs`),

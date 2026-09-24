@@ -61,6 +61,7 @@ impl Config {
         let mut tools = ToolRegistry::default();
         tools.register(Box::new(GetTime));
         swarmy_tools::register(&mut tools);
+        swarmy_tools::register_display(&mut tools);
         Ok(Self {
             cluster: settings.fdb_cluster_file,
             directory,
