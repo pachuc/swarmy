@@ -7,6 +7,7 @@ effort = "medium"
 workers = 4
 # Sandbox memory requirement for each worker in MiB; cargo builds need this much.
 memory_mib = 6144
+# stall_minutes = 10  # status exits 2 after a wait or lease exceeds this age
 # kill_timeout_seconds = 60
 # image = "swarmy-dev:dev"  # for new workers; defaults to the remote's default image
 github_token = "replace-with-github-token"

@@ -169,6 +169,7 @@ impl Store {
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
+        write(trx, &self.session_state_since_key(id), &Timestamp::now())?;
         write(trx, &self.session_key(id), &session)?;
         Ok((lease, session))
     }
@@ -271,6 +272,7 @@ impl Store {
             write(trx, &self.session_idle_key(session.session_id), &now)?;
         }
         session.state = state;
+        write(trx, &self.session_state_since_key(session.session_id), &now)?;
         if state == SessionState::Runnable {
             self.write_runnable(
                 trx,

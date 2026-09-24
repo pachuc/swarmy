@@ -61,9 +61,14 @@ until scratch lands.
 ## Daily operation
 
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
-  model, state, elapsed time, and cost. A worker showing `waiting for
-  inference: ...` is parked behind a provider limit and holds no lease; it
-  resumes by itself when the limit clears. Nothing to do.
+  model, state and its age, task elapsed time, and cost. A recent wait can show
+  `waiting_inference 2m; waiting for inference: ...`. A session in
+  `waiting_inference` or `leased` longer than `stall_minutes` (default 10)
+  shows `STALLED` in the state column and makes status exit 2; an operator or
+  monitoring loop should investigate. Other statuses exit 0. The age is the
+  last durable state transition from `session ls --json`, not the task age.
+  Older sessions without that timestamp show `?` until their next transition.
+  A provider-limited worker holds no lease and resumes when the limit clears.
 - Launch: `scripts/fleet/fleet launch TASK --provider P --model M`. The
   driver prefers an idle worker created with that provider and creates one
   while the pool is below `workers`. Workers keep their disks, so the second

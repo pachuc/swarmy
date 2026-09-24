@@ -10,6 +10,7 @@ import unittest
 FLEET = Path(__file__).with_name("fleet")
 STUB = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ['STUB_STATE'])
@@ -17,6 +18,8 @@ with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
     print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}, 'status': os.environ.get('TASK_STATUS', 'todo')}))
+elif args[:2] == ['pr', 'list']:
+    print(os.environ.get('PR_LIST', '[]'))
 elif args[:2] == ['pr', 'view']:
     print(json.dumps({'url':args[2], 'state':os.environ.get('PR_STATE','OPEN'),
                       'baseRefName':'master', 'headRefName':os.environ.get('PR_BRANCH','swarmy/ewr2hd')}))
@@ -45,10 +48,12 @@ elif args[:2] == ['--remote', 'dev']:
             state = 'idle' if count else 'sleeping'
         else:
             state = 'sleeping'
-        print(json.dumps({'session_id':'01AAAA','state':state,'agent_name':'worker-1'}))
+        state = os.environ.get('SESSION_STATE', state)
+        since = (datetime.now(timezone.utc) - timedelta(minutes=float(os.environ.get('STATE_AGE_MINUTES', 1)))).isoformat()
+        print(json.dumps({'session_id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
     elif rest[:3] == ['session', 'show', '01AAAA']:
         if not (root / 'interrupted').exists():
-            print(json.dumps({'state':'waiting_for_inference','reasons':['429 rate limited']}))
+            print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '[\"429 rate limited\"]'))}))
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
             'Done https://github.com/pachuc/swarmy/pull/42')}}]}}}))
@@ -117,6 +122,8 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertIn(["task", "pr", "EWR2HD", "https://github.com/pachuc/swarmy/pull/42"], self.calls())
         self.assertIn(["task", "test", "EWR2HD"], self.calls())
+        self.assertEqual(json.loads((self.root / "state" / "ewr2hd.json").read_text())["pr_source"],
+                         "last_message")
         resume = self.call("resume", "EWR2HD", "Please address review")
         self.assertEqual(resume.returncode, 0, resume.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Please address review")
@@ -210,6 +217,78 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("not open", result.stderr)
         self.assertFalse(any(call[:2] == ["task", "pr"] for call in self.calls()))
+
+    def test_status_exposes_state_age_and_stalls_without_wait_reasons(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        old = dict(self.env, SESSION_STATE="waiting_inference", STATE_AGE_MINUTES="35", WAIT_REASONS="[]")
+        stalled = self.call("status", env=old)
+        self.assertEqual(stalled.returncode, 2, stalled.stderr)
+        self.assertIn("STALLED waiting_inference 35m", stalled.stdout)
+        self.assertNotIn("waiting for inference:", stalled.stdout)
+        fresh = dict(old, STATE_AGE_MINUTES="2")
+        running = self.call("status", env=fresh)
+        self.assertEqual(running.returncode, 0, running.stderr)
+        self.assertIn("waiting_inference 2m", running.stdout)
+        self.assertNotIn("STALLED", running.stdout)
+        leased = self.call("status", env=dict(old, SESSION_STATE="leased"))
+        self.assertEqual(leased.returncode, 2, leased.stderr)
+        self.assertIn("STALLED leased 35m", leased.stdout)
+        self.assertNotIn("waiting for inference:", leased.stdout)
+        self.config.write_text(self.config.read_text() + "stall_minutes = 3\n")
+        custom = self.call("status", env=dict(old, STATE_AGE_MINUTES="4"))
+        self.assertEqual(custom.returncode, 2, custom.stderr)
+        self.assertIn("STALLED waiting_inference 4m", custom.stdout)
+
+    def test_collect_uses_exactly_one_open_or_merged_branch_pr_when_message_has_no_url(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        url = "https://github.com/pachuc/swarmy/pull/42"
+        env = dict(self.env, LAST_MESSAGE="Finished without a link",
+                   PR_LIST=json.dumps([{"url": url, "state": "OPEN"}]))
+        result = self.call("collect", "EWR2HD", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(url, result.stdout)
+        lookup = next(call for call in self.calls() if call[:2] == ["pr", "list"])
+        self.assertIn("swarmy/ewr2hd", lookup)
+        saved = json.loads((self.root / "state" / "ewr2hd.json").read_text())
+        self.assertEqual((saved["pr_url"], saved["pr_source"]), (url, "branch_lookup"))
+        self.assertIn(["task", "pr", "EWR2HD", url], self.calls())
+
+    def test_collect_fallback_rejects_zero_or_multiple_prs(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        url = "https://github.com/pachuc/swarmy/pull/42"
+        for prs, expected in [([], "found 0"),
+                              ([{"url": url, "state": "OPEN"},
+                                {"url": url + "3", "state": "MERGED"}], "found 2")]:
+            env = dict(self.env, LAST_MESSAGE="Finished without a link", PR_LIST=json.dumps(prs))
+            result = self.call("collect", "EWR2HD", env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(expected, result.stderr)
+        self.assertFalse(any(call[:2] == ["task", "pr"] for call in self.calls()))
+
+    def test_collect_accepts_merged_pr_from_branch_lookup(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        url = "https://github.com/pachuc/swarmy/pull/42"
+        env = dict(self.env, LAST_MESSAGE="Finished without a link", PR_STATE="MERGED",
+                   PR_LIST=json.dumps([{"url": url, "state": "MERGED"}]))
+        result = self.call("collect", "EWR2HD", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.root / "state" / "ewr2hd.json").read_text())["pr_source"],
+                         "branch_lookup")
+
+    def test_release_and_kill_match_short_and_full_task_ids(self):
+        full = "01M38DCQ5BFPXNPNF0NWEWR2HD"
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        self.assertEqual(self.call("release", full, "--force").returncode, 0)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()),
+                         {"worker-1": None})
+        self.assertEqual(self.call("launch", full).returncode, 0)
+        self.assertEqual(self.call("release", "EWR2HD", "--force").returncode, 0)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()),
+                         {"worker-1": None})
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        self.assertEqual(self.call("kill", full, "--timeout-seconds", "2").returncode, 0)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()),
+                         {"worker-1": None})
 
     def test_config_requires_owner_only_permissions(self):
         self.config.chmod(0o644)
