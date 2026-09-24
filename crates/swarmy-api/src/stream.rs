@@ -24,7 +24,7 @@ use std::{
 };
 use swarmy_api_types::{self as api, LogId, Subscription};
 use swarmy_bus::LiveFeed;
-use swarmy_core::SessionId;
+use swarmy_core::{LiveTokenDelta, SessionId};
 use swarmy_store::MAX_SCAN_LIMIT;
 use tokio::{
     sync::{mpsc, watch},
@@ -35,7 +35,13 @@ use ulid::Ulid;
 const OUTBOUND_CAPACITY: usize = 64;
 const MAX_LOGS: usize = 32;
 type ApiError = (StatusCode, Json<api::ApiError>);
-type Registry = Arc<std::sync::Mutex<HashMap<String, watch::Sender<Subscription>>>>;
+type Registry = Arc<std::sync::Mutex<HashMap<String, Connection>>>;
+
+#[derive(Clone)]
+pub(crate) struct Connection {
+    sender: watch::Sender<Subscription>,
+    progress: Arc<std::sync::Mutex<Subscription>>,
+}
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -120,11 +126,23 @@ pub async fn subscribe(
     validate(&state, &subscription).await?;
     let connection_id = Ulid::generate().to_string();
     let (changes, receiver) = watch::channel(subscription.clone());
+    let progress = Arc::new(std::sync::Mutex::new(subscription.clone()));
     state
         .stream_connections
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(connection_id.clone(), changes);
+        .insert(
+            connection_id.clone(),
+            Connection {
+                sender: changes,
+                progress: progress.clone(),
+            },
+        );
+    let guard = ConnectionGuard {
+        id: connection_id.clone(),
+        registry: state.stream_connections.clone(),
+        progress,
+    };
     let (sender, mut outbound) = mpsc::channel(OUTBOUND_CAPACITY);
     let initial = Event::default()
         .event("connected")
@@ -132,13 +150,8 @@ pub async fn subscribe(
         .id(encode_cursor(&subscription)?)
         .data(serde_json::json!({"connection_id": connection_id}).to_string());
     let _ = sender.try_send(initial);
-    tokio::spawn(produce(state.clone(), receiver, sender));
-    let guard = ConnectionGuard {
-        id: connection_id.clone(),
-        registry: state.stream_connections.clone(),
-    };
+    tokio::spawn(produce(state.clone(), receiver, sender, guard));
     let body = async_stream::stream! {
-        let _guard = guard;
         while let Some(event) = outbound.recv().await { yield Ok::<Event, Infallible>(event); }
     };
     let mut response = Sse::new(body)
@@ -170,15 +183,44 @@ pub async fn update(
         .get(&connection_id)
         .cloned()
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "connection_not_found"))?;
+    let mut progress = sender
+        .progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous: HashMap<_, _> = progress
+        .cursors
+        .iter()
+        .map(|c| (key(&c.log_id), c.sequence))
+        .collect();
+    for cursor in &subscription.cursors {
+        if previous
+            .get(&key(&cursor.log_id))
+            .is_some_and(|old| cursor.sequence < *old)
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(api::ApiError {
+                    code: "cursor_rewind".into(),
+                    message: format!("cursor rewind for log {}", key(&cursor.log_id)),
+                    provider_text: None,
+                }),
+            ));
+        }
+    }
+    // The producer may already be delivering another event. Its progress is
+    // monotone, so it can safely catch up beyond this requested cursor.
     sender
-        .send(subscription)
+        .sender
+        .send(subscription.clone())
         .map_err(|_| error(StatusCode::NOT_FOUND, "connection_not_found"))?;
+    *progress = subscription;
     Ok(StatusCode::NO_CONTENT)
 }
 
 struct ConnectionGuard {
     id: String,
     registry: Registry,
+    progress: Arc<std::sync::Mutex<Subscription>>,
 }
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
@@ -191,7 +233,7 @@ impl Drop for ConnectionGuard {
 
 enum FeedItem {
     Durable(SessionId),
-    Token(LogId, api::LiveTokenDelta),
+    Token(LogId, LiveTokenDelta),
 }
 async fn feeds(
     state: &AppState,
@@ -213,7 +255,7 @@ async fn feeds(
             let log = cursor.log_id.clone();
             let mut tokens = state
                 .bus
-                .subscribe_live::<api::LiveTokenDelta>(LiveFeed::ApiTokenDeltas(id))
+                .subscribe_live::<LiveTokenDelta>(LiveFeed::ApiTokenDeltas(id))
                 .await?;
             all.push(Box::pin(async_stream::stream! {
                 while let Some(value) = tokens.next().await {
@@ -232,12 +274,20 @@ async fn deliver(sender: &mpsc::Sender<Event>, event: Event, deadline: Duration)
         .await
         .is_ok_and(|result| result.is_ok())
 }
+#[derive(PartialEq, Eq)]
+enum Replay {
+    Done,
+    Updated,
+    Failed,
+}
 async fn catch_up(
     state: &AppState,
     sub: &mut Subscription,
     index: usize,
     sender: &mpsc::Sender<Event>,
-) -> bool {
+    changes: &watch::Receiver<Subscription>,
+    progress: &Arc<std::sync::Mutex<Subscription>>,
+) -> Replay {
     let id = session_id(&sub.cursors[index].log_id).expect("validated subscription");
     loop {
         let after = sub.cursors[index].sequence;
@@ -245,11 +295,11 @@ async fn catch_up(
             Ok(page) => page,
             Err(error) => {
                 tracing::warn!(%error, "SSE replay failed");
-                return false;
+                return Replay::Failed;
             }
         };
         if page.is_empty() {
-            return true;
+            return Replay::Done;
         }
         for record in page {
             if record.seq() <= sub.cursors[index].sequence {
@@ -259,7 +309,7 @@ async fn catch_up(
                 Ok(record) => api::EventPayload::StoreRecord { record },
                 Err(error) => {
                     tracing::warn!(%error, "SSE event encoding failed");
-                    return false;
+                    return Replay::Failed;
                 }
             };
             // A cursor only advances when the corresponding event has entered
@@ -268,14 +318,14 @@ async fn catch_up(
             let mut upcoming = sub.clone();
             upcoming.cursors[index].sequence = next;
             let Ok(id_field) = encode_cursor(&upcoming) else {
-                return false;
+                return Replay::Failed;
             };
             let Ok(data) = serde_json::to_string(&api::Event {
                 log_id: sub.cursors[index].log_id.clone(),
                 sequence: next,
                 payload,
             }) else {
-                return false;
+                return Replay::Failed;
             };
             if !deliver(
                 sender,
@@ -284,28 +334,56 @@ async fn catch_up(
             )
             .await
             {
-                return false;
+                return Replay::Failed;
             }
             sub.cursors[index].sequence = next;
+            let mut seen = progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(cursor) = seen
+                .cursors
+                .iter_mut()
+                .find(|c| c.log_id == sub.cursors[index].log_id)
+            {
+                cursor.sequence = cursor.sequence.max(next);
+            }
+        }
+        if changes.has_changed().unwrap_or(false) {
+            return Replay::Updated;
         }
     }
 }
-async fn catch_all(state: &AppState, sub: &mut Subscription, sender: &mpsc::Sender<Event>) -> bool {
+async fn catch_all(
+    state: &AppState,
+    sub: &mut Subscription,
+    sender: &mpsc::Sender<Event>,
+    changes: &watch::Receiver<Subscription>,
+    progress: &Arc<std::sync::Mutex<Subscription>>,
+) -> Replay {
     for index in 0..sub.cursors.len() {
-        if !catch_up(state, sub, index, sender).await {
-            return false;
+        match catch_up(state, sub, index, sender, changes, progress).await {
+            Replay::Done => {}
+            other => return other,
         }
     }
-    true
+    Replay::Done
 }
 async fn produce(
     state: AppState,
     mut changes: watch::Receiver<Subscription>,
     sender: mpsc::Sender<Event>,
+    guard: ConnectionGuard,
 ) {
     let mut current = changes.borrow().clone();
     let mut pending_update = false;
-    loop {
+    let mut force_update = false;
+    'reconfigure: loop {
+        if force_update || changes.has_changed().unwrap_or(false) {
+            force_update = false;
+            let requested = changes.borrow_and_update().clone();
+            current = requested;
+            pending_update = true;
+        }
         // Register live feeds before reading the log. A notification is only a
         // nudge; rereading the store also repairs a dropped NATS publication.
         let mut live = match feeds(&state, &current).await {
@@ -315,8 +393,10 @@ async fn produce(
                 return;
             }
         };
-        if !catch_all(&state, &mut current, &sender).await {
-            return;
+        match catch_all(&state, &mut current, &sender, &changes, &guard.progress).await {
+            Replay::Done => {}
+            Replay::Updated => continue 'reconfigure,
+            Replay::Failed => return,
         }
         if pending_update {
             let Ok(id) = encode_cursor(&current) else {
@@ -333,30 +413,34 @@ async fn produce(
             }
             pending_update = false;
         }
-        let mut poll = interval(Duration::from_secs(2));
+        let mut poll = interval(state.stream_poll_interval);
         poll.tick().await;
         loop {
             tokio::select! {
                 () = sender.closed() => return,
                 updated = changes.changed() => {
                     if updated.is_err() { return; }
-                    let requested = changes.borrow_and_update().clone();
-                    let previous: HashMap<_, _> = current.cursors.iter().map(|c| (key(&c.log_id), c.sequence)).collect();
-                    current = requested;
-                    for cursor in &mut current.cursors {
-                        if let Some(old) = previous.get(&key(&cursor.log_id)) { cursor.sequence = cursor.sequence.max(*old); }
-                    }
-                    pending_update = true;
-                    break;
+                    force_update = true;
+                    continue 'reconfigure;
                 }
                 _ = poll.tick() => {
-                    if !catch_all(&state, &mut current, &sender).await { return; }
+                    match catch_all(&state, &mut current, &sender, &changes, &guard.progress).await {
+                        Replay::Done => {}
+                        Replay::Updated => continue 'reconfigure,
+                        Replay::Failed => return,
+                    }
                 }
                 item = live.next() => {
                     match item {
                         Some(FeedItem::Durable(id)) => {
                             if let Some(index) = current.cursors.iter().position(|c| session_id(&c.log_id).ok() == Some(id))
-                                && !catch_up(&state, &mut current, index, &sender).await { return; }
+                                {
+                                match catch_up(&state, &mut current, index, &sender, &changes, &guard.progress).await {
+                                    Replay::Done => {}
+                                    Replay::Updated => continue 'reconfigure,
+                                    Replay::Failed => return,
+                                }
+                            }
                         }
                         Some(FeedItem::Token(log, delta)) => {
                             let payload = api::EventPayload::TokenDelta {

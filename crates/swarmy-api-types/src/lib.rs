@@ -26,7 +26,6 @@ pub struct Subscription {
     pub token_deltas: bool,
 }
 
-/// An ephemeral token update has no durable sequence or SSE cursor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LiveTokenDelta {
     pub turn_id: String,
@@ -356,7 +355,7 @@ pub struct ApiError {
     info(title = "Swarmy API", version = "1.0.0"),
     servers((url = "/v1", description = "Version 1 control plane")),
     components(schemas(
-    LogId, Cursor, Subscription, LiveTokenDelta, TurnStatus, SessionKind, SessionState, ReasoningEffort,
+    LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,

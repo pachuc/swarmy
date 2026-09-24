@@ -3982,7 +3982,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",

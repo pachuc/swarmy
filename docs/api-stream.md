@@ -28,6 +28,8 @@ Change logs or token preference without reconnecting with
 `PUT /v1/events/CONNECTION_ID/subscription` and a JSON `Subscription` body.
 A `subscription` SSE event acknowledges the change after the new live feeds are
 registered and the new logs have caught up; it carries the new SSE id.
+A request that moves an existing log cursor backwards is rejected with HTTP
+400 (`cursor_rewind`); the error message names the log.
 `token_delta` events include the log id, turn id, byte position and text. They
 have no durable sequence and do not change the SSE id; lost tokens are not
 replayed. Only subscribed sessions with `token_deltas: true` receive them.

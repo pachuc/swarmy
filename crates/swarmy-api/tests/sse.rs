@@ -242,11 +242,29 @@ async fn replay_live_and_resume_from_full_cursor() {
     assert_eq!(second.log_id, LogId::Session(b.to_string()));
     assert_eq!((first.sequence, second.sequence), (1, 1));
     f.append(a, "a2").await;
-    let a_live: api::Event = serde_json::from_str(&reader.next().await.data).unwrap();
+    let a_live_item = tokio::time::timeout(Duration::from_millis(500), reader.next())
+        .await
+        .expect("live feed must deliver without store poll");
+    let a_live: api::Event = serde_json::from_str(&a_live_item.data).unwrap();
     assert_eq!(
         (a_live.log_id, a_live.sequence),
         (LogId::Session(a.to_string()), 2)
     );
+    let rewind = f
+        .client
+        .put(format!(
+            "{}/v1/events/{}/subscription",
+            f.base, reader.connection_id
+        ))
+        .bearer_auth("test-token")
+        .json(&sub)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rewind.status(), reqwest::StatusCode::BAD_REQUEST);
+    let error: api::ApiError = rewind.json().await.unwrap();
+    assert_eq!(error.code, "cursor_rewind");
+    assert!(error.message.contains(&a.to_string()));
     f.append(b, "b2").await;
     let live = reader.next().await;
     let event: api::Event = serde_json::from_str(&live.data).unwrap();
@@ -277,7 +295,7 @@ async fn subscription_changes_and_tokens_are_scoped() {
     let sub = subscription(&[a], false);
     let mut reader = f.connect(&sub, None).await;
     assert_eq!(reader.next().await.kind, "connected");
-    let token = api::LiveTokenDelta {
+    let token = swarmy_core::LiveTokenDelta {
         turn_id: "turn".into(),
         position: 0,
         text: "first".into(),
@@ -365,4 +383,49 @@ async fn replay_pages_past_the_output_capacity_without_losing_a_fast_reader() {
         let event: api::Event = serde_json::from_str(&next.data).unwrap();
         assert_eq!(event.sequence, sequence);
     }
+}
+
+#[tokio::test]
+async fn slow_http_client_is_closed_and_removed_from_registry() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = f.session("slow-client").await;
+    let text = "x".repeat(64 * 1024);
+    for _ in 0..140 {
+        f.append(id, &text).await;
+    }
+    let reader = f.connect(&subscription(&[id], false), None).await;
+    let url = format!("{}/v1/events/{}/subscription", f.base, reader.connection_id);
+    // Do not consume the response body: the HTTP transport must exert real
+    // backpressure, rather than just a bare channel in the producer test.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let status = f
+                .client
+                .put(&url)
+                .bearer_auth("test-token")
+                .json(&subscription(&[id], false))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                break;
+            }
+            assert!(matches!(
+                status,
+                reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::BAD_REQUEST
+            ));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("slow client was not disconnected");
+    let mut body = reader.response;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while body.chunk().await.unwrap().is_some() {}
+    })
+    .await
+    .expect("HTTP stream did not close");
 }

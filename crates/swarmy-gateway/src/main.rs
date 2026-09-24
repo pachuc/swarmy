@@ -345,6 +345,7 @@ impl Gateway {
         job: &InferenceJob,
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
+        turn: Option<MessageId>,
     ) -> Result<Response, swarmy_llm::Error> {
         let model = self
             .providers
@@ -359,14 +360,7 @@ impl Gateway {
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
-        let turn_id = match self.store.request_turn_id(job.request_id).await {
-            Ok(Some(id)) => id.to_string(),
-            Ok(None) => job.request_id.to_string(),
-            Err(error) => {
-                warn!(%error, "cannot resolve token turn; using request id");
-                job.request_id.to_string()
-            }
-        };
+        let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
         let mut token_position = 0_u64;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
@@ -383,7 +377,7 @@ impl Gateway {
                 warn!(%error, "live delta publication failed");
             }
             if let Delta::Text { text, .. } = &delta {
-                let live = swarmy_api_types::LiveTokenDelta {
+                let live = swarmy_core::LiveTokenDelta {
                     turn_id: turn_id.clone(),
                     position: token_position,
                     text: text.clone(),
@@ -403,6 +397,15 @@ impl Gateway {
         }
         response
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))
+    }
+
+    fn turn_id(job: &InferenceJob) -> Option<MessageId> {
+        job.request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.id)
     }
 
     async fn process(
@@ -428,13 +431,7 @@ impl Gateway {
                     let (used, clamped) = model.clamp_effort(requested);
                     (Some(used), clamped)
                 });
-        let turn = job
-            .request
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == MessageRole::User)
-            .map(|message| message.id);
+        let turn = Self::turn_id(job);
         if let Some(turn) = turn {
             self.bus
                 .record_turn(&Bus::turn_event(
@@ -445,7 +442,9 @@ impl Gateway {
                 ))
                 .await;
         }
-        let (result, blocked) = self.attempt_provider(job, provider, effort_used).await?;
+        let (result, blocked) = self
+            .attempt_provider(job, provider, effort_used, turn)
+            .await?;
         if let Some(turn) = turn {
             self.bus
                 .record_turn(&Bus::turn_event(
@@ -515,6 +514,7 @@ impl Gateway {
         job: &InferenceJob,
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
+        turn: Option<MessageId>,
     ) -> Result<(std::result::Result<Response, swarmy_llm::Error>, bool)> {
         let key = CredentialKey(provider.to_owned());
         if let Some(until) = self.store.claim_provider(&key, Timestamp::now()).await? {
@@ -534,7 +534,7 @@ impl Gateway {
                 true,
             ));
         }
-        Ok((self.infer(job, provider, effort).await, false))
+        Ok((self.infer(job, provider, effort, turn).await, false))
     }
 
     async fn record_breaker(

@@ -30,11 +30,9 @@ pub struct AppState {
     pub catalog: Catalog,
     // Serialize mutations so retries through this instance observe completed responses.
     mutations: Arc<Mutex<()>>,
-    stream_connections: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, tokio::sync::watch::Sender<api::Subscription>>,
-        >,
-    >,
+    pub stream_poll_interval: std::time::Duration,
+    stream_connections:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, stream::Connection>>>,
 }
 
 impl AppState {
@@ -46,6 +44,7 @@ impl AppState {
             token,
             catalog,
             mutations: Arc::new(Mutex::new(())),
+            stream_poll_interval: std::time::Duration::from_secs(20),
             stream_connections: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
