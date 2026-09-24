@@ -7,8 +7,6 @@ scratch=/tmp/swarmy-image-source
 git clone --no-checkout https://github.com/pachuc/swarmy.git "$scratch"
 git -C "$scratch" checkout --detach "$source_commit"
 
-# Reuse the base image's account, GitHub helper, and shell tools.
-/bin/sh -e "$scratch/images/base-ubuntu/setup.sh"
 chown -R agent:agent "$scratch"
 
 # Run the repository installer as the agent so its binaries and FDB library

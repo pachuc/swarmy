@@ -88,6 +88,34 @@ fn recipes_reject_typos_and_invalid_dimensions() {
     ));
 }
 
+#[test]
+fn debootstrap_setup_script_list_and_legacy_form() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("recipe.toml");
+    let base = "disk_size = 67108864\nsource_date_epoch = 1\n[source]\nkind = 'debootstrap'\nsuite = 'noble'\nmirror = 'http://archive.ubuntu.com/ubuntu'\npackages = ['bash']\n";
+    fs::write(
+        &path,
+        format!("{base}scripts = ['../common/agent-setup.sh', 'setup.sh']\n"),
+    )
+    .unwrap();
+    let (recipe, _, _) = Recipe::load(&path).unwrap();
+    assert!(
+        matches!(recipe.source, Source::Debootstrap { script: None, scripts, .. }
+        if scripts == [Path::new("../common/agent-setup.sh"), Path::new("setup.sh")])
+    );
+    fs::write(&path, format!("{base}script = 'setup.sh'\n")).unwrap();
+    let (recipe, _, _) = Recipe::load(&path).unwrap();
+    assert!(
+        matches!(recipe.source, Source::Debootstrap { script: Some(_), scripts, .. } if scripts.is_empty())
+    );
+    fs::write(
+        &path,
+        format!("{base}script = 'setup.sh'\nscripts = ['other.sh']\n"),
+    )
+    .unwrap();
+    assert!(Recipe::load(&path).is_err());
+}
+
 struct Mount<'a>(&'a Path);
 impl Drop for Mount<'_> {
     fn drop(&mut self) {

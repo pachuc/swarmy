@@ -43,10 +43,15 @@ packages = ["bash", "coreutils", "git", "curl", "ca-certificates", "python3", "b
 ```
 
 Debootstrap installs the minimal base system, then apt installs the listed
-packages without recommendations so virtual dependencies resolve correctly. Optional
-`components = ["main", "universe"]` selects additional archive components. An optional `script = "setup.sh"` in the source table runs through
+packages without recommendations so virtual dependencies resolve correctly.
+Optional `components = ["main", "universe"]` selects additional archive
+components. Use either `script = "setup.sh"` or
+`scripts = ["../common/agent-setup.sh", "setup.sh"]` in the source table.
+Paths are relative to the recipe directory. Scripts run in order through
 `/bin/sh -es` inside the installed system before cleanup. See
-[the developer image](base-ubuntu/README.md) for its tools and credential setup. The
+[the developer image](base-ubuntu/README.md) for its tools and credential setup,
+[the desktop image](base-desktop/README.md) for its supervised display and
+software renderers. The
 optional `source_commit = "..."` must be a full 40-digit Git hash and is passed
 to that script as `SWARMY_SOURCE_COMMIT`; the swarmy-dev recipe uses it to pin
 the checkout that warms Cargo.
@@ -155,3 +160,25 @@ sudo -E "$(cargo test -p swarmy-cli --test image --no-run --message-format=json 
 The volume root tests also exercise a chroot script and an OCI image with a
 deleted file in a later layer. The OCI test skips if skopeo or umoci is absent;
 it creates a local OCI layout and does not need a container registry.
+
+## Desktop acceptance on a node
+
+A fleet sandbox has no sudo or NBD devices, so it cannot build or validate the
+desktop image. The operator must use a node with sudo, debootstrap, and NBD:
+
+1. Start the dev stack (`scripts/dev-stack.sh start; source .dev/env`) and run
+   `swarmy image build images/base-ubuntu` and
+   `swarmy image build images/base-desktop`. Compare their build output's
+   nonzero chunk coverage, not just their sparse virtual disk sizes.
+2. Run the root-only `swarmy-cli --test image`, `swarmy-volume --test image`,
+   `swarmy-volume --test nbd`, and `swarmyd --test node` suites, followed by
+   the bash, continuity, and
+   coding chaos suites and `scripts/chaos-ci.sh`.
+3. In a session on `base-desktop:dev`, run `xdpyinfo`, `glxinfo -B`, and
+   `vulkaninfo --summary`. Check that the renderer names are llvmpipe and
+   lavapipe. Start `chromium about:blank` and request
+   `http://127.0.0.1:9222/json/version` inside the sandbox. Render a small
+   scene with `blender --background --python-expr` to a file. Kill Xvfb and
+   confirm that `xdpyinfo` succeeds again within a few seconds.
+
+See [the desktop image](base-desktop/README.md) for example commands.

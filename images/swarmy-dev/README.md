@@ -4,8 +4,8 @@
 pass `--tag NAME` for another tag, and `swarmy remote up NAME --image-recipe
 images/swarmy-dev` builds it on a node as that node's default image. The
 recipe uses the same Ubuntu Noble source and package set as `base-ubuntu`,
-plus Clang and libclang for the workspace's FoundationDB bindings. It runs the
-pinned checkout's `images/base-ubuntu/setup.sh` to keep the base image's
+plus Clang and libclang for the workspace's FoundationDB bindings. The builder runs
+`images/common/agent-setup.sh` before this image's setup script to install the
 `agent` account and GitHub credential helper. No credential is copied in.
 
 What the setup script adds, all owned by `agent`:
