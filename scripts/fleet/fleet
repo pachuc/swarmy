@@ -444,6 +444,17 @@ def reset(worker, config):
     print(f"deleted {worker}; the next launch recreates it from the image")
 
 
+def benchmark(args):
+    """Run one isolated benchmark session without tasky or a persistent worker."""
+    if not args.prompt_file.is_file():
+        raise RuntimeError(f"missing benchmark prompt: {args.prompt_file}")
+    cmd = ["swarmy", "--remote", args.remote, "run", "--json",
+           "--provider", args.provider, "--model", args.model,
+           "--effort", args.effort, args.prompt_file.read_text()]
+    result = subprocess.run(cmd, text=True, stdout=sys.stdout, stderr=sys.stderr, check=False)
+    return result.returncode
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -465,8 +476,16 @@ def main():
     kill_parser.add_argument("task_id")
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
+    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote")
+    bench.add_argument("--remote", required=True)
+    bench.add_argument("--provider", required=True)
+    bench.add_argument("--model", required=True)
+    bench.add_argument("--effort", required=True)
+    bench.add_argument("--prompt-file", required=True, type=Path)
     args = parser.parse_args()
     try:
+        if args.action == "benchmark":
+            return benchmark(args)
         config = load()
         if args.action == "launch":
             launch(args, config)
