@@ -33,6 +33,43 @@ impl Store {
         input: &T,
         before: &[Event],
     ) -> Result<Event> {
+        self.submit_inference_after_inner(expected_head, lease, record, input, None::<&T>, before)
+            .await
+    }
+
+    /// Commit the gateway request with the event and inflight outbox. A failed
+    /// transaction leaves only an uploaded blob, which the collector can reclaim.
+    /// # Errors
+    /// Rejects stale heads, expired or replaced leases, and invalid work.
+    pub async fn submit_inference_after_with_request<T: Serialize, R: Serialize>(
+        &self,
+        expected_head: u64,
+        lease: &Lease,
+        record: &InflightRecord,
+        input: &T,
+        request: &R,
+        before: &[Event],
+    ) -> Result<Event> {
+        self.submit_inference_after_inner(
+            expected_head,
+            lease,
+            record,
+            input,
+            Some(request),
+            before,
+        )
+        .await
+    }
+
+    async fn submit_inference_after_inner<T: Serialize, R: Serialize>(
+        &self,
+        expected_head: u64,
+        lease: &Lease,
+        record: &InflightRecord,
+        input: &T,
+        request: Option<&R>,
+        before: &[Event],
+    ) -> Result<Event> {
         let step = expected_head
             .checked_add(u64::try_from(before.len()).map_err(|_| StoreError::SequenceOverflow)?)
             .and_then(|head| head.checked_add(1))
@@ -52,6 +89,10 @@ impl Store {
             self.prepare(record).await?,
             self.prepare(&event).await?,
         );
+        let request = match request {
+            Some(request) => Some(self.prepare(request).await?),
+            None => None,
+        };
         let mut preceding = Vec::with_capacity(before.len());
         for (event, seq) in before.iter().zip(expected_head + 1..) {
             if !matches!(event, Event::MessageAppended { message, .. }
@@ -64,7 +105,8 @@ impl Store {
             preceding.push((seq, self.prepare(&event).await?));
         }
         self.transaction(|trx| {
-            let (input, inflight, value, preceding) = (&input, &inflight, &value, &preceding);
+            let (input, inflight, value, request, preceding) =
+                (&input, &inflight, &value, &request, &preceding);
             async move {
                 let now = Timestamp::now();
                 let turn_key = self.turn_key(id);
@@ -85,6 +127,9 @@ impl Store {
                         .pack(&("inference_input", request_id.as_bytes().as_slice())),
                     input,
                 );
+                if let Some(request) = request {
+                    trx.set(&self.inference_request_key(request_id), request);
+                }
                 trx.set(
                     &self
                         .root

@@ -9,7 +9,7 @@ use swarmy_core::{
     decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
-use swarmy_llm::InferenceJob;
+use swarmy_llm::{InferenceJob, InferenceJobRef};
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition};
 use tokio::{
     sync::Mutex,
@@ -139,9 +139,18 @@ impl Worker {
 
     async fn publish_events(&self, id: SessionId, events: &[Event]) -> Result<()> {
         for event in events {
-            self.bus
+            if let Err(error) = self
+                .bus
                 .publish_live(LiveFeed::SessionEvents(id), event)
-                .await?;
+                .await
+            {
+                if matches!(error, swarmy_bus::Error::PayloadTooLarge { .. }) {
+                    // The event is already durable. Live observers can read it by cursor.
+                    tracing::warn!(%id, seq = event.seq(), %error, "live event exceeds bus limit");
+                } else {
+                    return Err(error.into());
+                }
+            }
         }
         Ok(())
     }
@@ -654,7 +663,7 @@ impl Worker {
             let mut token = lease.lock().await;
             let event = self
                 .store
-                .submit_inference_after(
+                .submit_inference_after_with_request(
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &InflightRecord {
@@ -664,6 +673,7 @@ impl Worker {
                         key_id: String::new(),
                     },
                     &job,
+                    &job.request,
                     &preceding,
                 )
                 .await?;
@@ -679,13 +689,7 @@ impl Worker {
         if self.fail_unserved(&job).await? {
             return Ok(());
         }
-        self.bus
-            .publish_work(
-                &WorkQueue::Inference(SubjectToken::new(&job.provider)?),
-                &job,
-            )
-            .await?;
-        Ok(())
+        self.publish_inference(&job).await
     }
 
     async fn execute_pending(
@@ -1020,12 +1024,67 @@ impl Worker {
         if self.fail_unserved(job).await? {
             return Ok(());
         }
-        self.bus
+        self.publish_inference(job).await
+    }
+
+    async fn publish_inference(&self, job: &InferenceJob) -> Result<()> {
+        let published = self
+            .bus
             .publish_work(
                 &WorkQueue::Inference(SubjectToken::new(self.job_provider(job))?),
-                job,
+                &InferenceJobRef::from(job),
             )
-            .await?;
+            .await;
+        if let Err(error) = published {
+            if error.permanent_publish_failure() {
+                self.fail_publication(job, &error).await?;
+            } else {
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn fail_publication(&self, job: &InferenceJob, error: &swarmy_bus::Error) -> Result<()> {
+        let now = Timestamp::now();
+        let claim = swarmy_store::InferenceClaim {
+            session_id: job.session_id,
+            request_id: job.request_id,
+            owner: LeaseOwnerId::from_ulid(Ulid::generate()),
+            expires_at: now.checked_add(std::time::Duration::from_secs(30))?,
+        };
+        if self.store.start_inference(&claim, now).await? {
+            let session = self
+                .store
+                .fetch_session(job.session_id)
+                .await?
+                .context("session missing")?;
+            let event = Event::InferenceFailed {
+                seq: session
+                    .head_seq
+                    .checked_add(1)
+                    .context("sequence overflow")?,
+                request_id: job.request_id,
+                error: error.to_string(),
+                retryable: false,
+                retry_at: None,
+            };
+            if self
+                .store
+                .complete_inference(
+                    &swarmy_store::InferenceCompletion {
+                        claim,
+                        expected_head: session.head_seq,
+                        event: event.clone(),
+                        now,
+                    },
+                    &(),
+                )
+                .await?
+            {
+                self.publish_events(job.session_id, &[event]).await?;
+            }
+        }
         Ok(())
     }
 
@@ -1451,12 +1510,20 @@ impl Worker {
             if self.fail_unserved(&job).await? {
                 return Ok(());
             }
-            self.bus
+            let published = self
+                .bus
                 .publish_work(
                     &WorkQueue::Inference(SubjectToken::new(&record.provider)?),
-                    &job,
+                    &InferenceJobRef::from(&job),
                 )
-                .await?;
+                .await;
+            if let Err(error) = published {
+                if error.permanent_publish_failure() {
+                    self.fail_publication(&job, &error).await?;
+                } else {
+                    return Err(error.into());
+                }
+            }
         }
         Ok(())
     }

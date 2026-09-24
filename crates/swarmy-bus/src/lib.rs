@@ -54,8 +54,36 @@ pub enum Error {
     Encoding(#[from] EncodingError),
     #[error("NATS operation failed: {0}")]
     Nats(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("encoded bus message size {size} bytes exceeds server max_payload {limit} bytes")]
+    PayloadTooLarge { size: usize, limit: usize },
     #[error("scheduler wake request failed: {0}")]
     Scheduler(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl Error {
+    /// Whether retrying the same work publication cannot succeed without a
+    /// change to the request or server state.
+    #[must_use]
+    pub fn permanent_publish_failure(&self) -> bool {
+        match self {
+            Self::PayloadTooLarge { .. }
+            | Self::Encoding(_)
+            | Self::InvalidConfig(_)
+            | Self::ConfigMismatch(_) => true,
+            Self::Nats(error) => error
+                .downcast_ref::<jetstream::context::PublishError>()
+                .is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        jetstream::context::PublishErrorKind::StreamNotFound
+                            | jetstream::context::PublishErrorKind::WrongLastMessageId
+                            | jetstream::context::PublishErrorKind::WrongLastSequence
+                            | jetstream::context::PublishErrorKind::MaxPayloadExceeded
+                    )
+                }),
+            Self::Scheduler(_) => false,
+        }
+    }
 }
 
 fn nats(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Error {
@@ -437,8 +465,16 @@ impl Bus {
         queue: &WorkQueue,
         value: &T,
     ) -> Result<(), Error> {
+        let payload = encode(value)?;
+        let limit = self.client.max_payload();
+        if payload.len() > limit {
+            return Err(Error::PayloadTooLarge {
+                size: payload.len(),
+                limit,
+            });
+        }
         self.jetstream
-            .publish(self.config.subject(&queue.subject()), encode(value)?.into())
+            .publish(self.config.subject(&queue.subject()), payload.into())
             .await
             .map_err(nats)?
             .await
@@ -477,8 +513,16 @@ impl Bus {
         feed: LiveFeed,
         value: &T,
     ) -> Result<(), Error> {
+        let payload = encode(value)?;
+        let limit = self.client.max_payload();
+        if payload.len() > limit {
+            return Err(Error::PayloadTooLarge {
+                size: payload.len(),
+                limit,
+            });
+        }
         self.client
-            .publish(self.config.subject(&feed.subject()), encode(value)?.into())
+            .publish(self.config.subject(&feed.subject()), payload.into())
             .await
             .map_err(nats)?;
         Ok(())

@@ -111,6 +111,31 @@ async fn acknowledged_work_stays_acknowledged() {
 }
 
 #[tokio::test]
+async fn oversized_work_reports_advertised_limit() {
+    run(|f| async move {
+        let limit = f.admin.max_payload();
+        let encoded_overhead = swarmy_core::encode(&Vec::<u8>::new()).unwrap().len();
+        let value = vec![0_u8; limit + 1 - encoded_overhead];
+        let encoded_size = swarmy_core::encode(&value).unwrap().len();
+        let error = timeout(
+            Duration::from_secs(2),
+            f.bus.publish_work(&WorkQueue::RemoteTools, &value),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.permanent_publish_failure());
+        assert!(
+            matches!(&error, Error::PayloadTooLarge { size, limit: advertised }
+            if *size == encoded_size && *advertised == limit)
+        );
+        assert!(error.to_string().contains(&encoded_size.to_string()));
+        assert!(error.to_string().contains(&limit.to_string()));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn two_workers_share_one_durable_consumer() {
     run(|f| async move {
         let mut first = f.bus.consume::<u64>(&WorkQueue::RemoteTools).await.unwrap();
