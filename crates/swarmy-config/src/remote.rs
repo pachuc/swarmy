@@ -84,6 +84,10 @@ pub struct RemoteNode {
     pub name: String,
     pub region: String,
     pub instance_id: String,
+    /// New records mark whether EC2 launch could have happened before its id was saved.
+    /// Older records remain recoverable through their launch token.
+    #[serde(default = "legacy_launch_attempted")]
+    pub launch_attempted: bool,
     pub public_ip: String,
     pub private_ip: String,
     pub key_path: PathBuf,
@@ -115,6 +119,10 @@ impl RemoteNode {
 #[must_use]
 pub const fn default_sandboxes() -> u32 {
     64
+}
+
+fn legacy_launch_attempted() -> bool {
+    true
 }
 
 fn ssh_user() -> String {

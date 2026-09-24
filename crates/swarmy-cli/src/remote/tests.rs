@@ -24,6 +24,7 @@ struct FakeCloud {
     observations: RefCell<VecDeque<Option<Instance>>>,
     terminated: RefCell<Vec<String>>,
     deleted: RefCell<Vec<String>>,
+    key_delete_attempts: RefCell<Vec<String>>,
     stock_reads: Cell<usize>,
     find_tokens: RefCell<Vec<String>>,
     fail_delete: Cell<bool>,
@@ -97,6 +98,7 @@ impl Cloud for FakeCloud {
         std::future::ready(Ok(()))
     }
     fn delete_key(&self, name: &str) -> impl Future<Output = Result<()>> {
+        self.key_delete_attempts.borrow_mut().push(name.into());
         if self.fail_delete.get() {
             return std::future::ready(Err(anyhow::anyhow!("access denied")));
         }
@@ -354,14 +356,14 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
 }
 
 #[tokio::test]
-async fn down_missing_instance_and_retry_after_key_failure() {
+async fn down_removes_state_when_key_deletion_is_denied() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(dir.path()).unwrap();
     let cloud = FakeCloud::default();
     cloud
         .observations
         .borrow_mut()
-        .extend([Some(instance("running")), None, None]);
+        .extend([Some(instance("running")), None]);
     up::run(
         &cloud,
         &FakeHost::default(),
@@ -378,16 +380,11 @@ async fn down_missing_instance_and_retry_after_key_failure() {
     .unwrap();
     let node = state.read("demo").unwrap().unwrap();
     cloud.fail_delete.set(true);
-    assert!(
-        down::run(&cloud, &state, &node, Duration::ZERO)
-            .await
-            .is_err()
-    );
-    assert!(state.read("demo").unwrap().is_some());
-    cloud.fail_delete.set(false);
     down::run(&cloud, &state, &node, Duration::ZERO)
         .await
         .unwrap();
+    assert_eq!(cloud.key_delete_attempts.borrow().len(), 1);
+    assert!(cloud.deleted.borrow().is_empty());
     assert!(state.read("demo").unwrap().is_none());
 }
 
@@ -495,7 +492,7 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
     );
     assert!(node.key_path.is_file());
     assert!(state.read("demo").unwrap().is_some());
-    assert!(cloud.deleted.borrow().is_empty());
+    assert_eq!(cloud.deleted.borrow().len(), 1);
 }
 
 #[tokio::test]
@@ -1355,4 +1352,63 @@ async fn upgrade_json_has_one_complete_object_per_node() {
         assert!(value["restarted"].is_array());
         assert!(value["elapsed_seconds"].is_number());
     }
+}
+
+#[tokio::test]
+async fn bucket_profile_is_kept_when_key_deletion_is_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let settings = RemoteSettings {
+        bucket: Some("test-bucket".into()),
+        ..settings()
+    };
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &settings,
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    cloud.fail_delete.set(true);
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(&*cloud.terminated.borrow(), &["i-test"]);
+    assert!(cloud.profile_present.get());
+    assert_eq!(cloud.key_delete_attempts.borrow().len(), 1);
+    assert!(state.read("demo").unwrap().is_none());
+    assert!(!node.key_path.exists());
+    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
+}
+
+#[tokio::test]
+async fn never_launched_record_is_removed_without_cloud_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let node: RemoteNode = serde_json::from_value(serde_json::json!({
+        "name": "demo", "region": "us-east-1", "instance_id": "", "launch_attempted": false,
+        "public_ip": "", "private_ip": "", "key_path": state.directory.join("key"),
+        "launch_settings": { "bucket": "test-bucket" }, "created_at": "now"
+    }))
+    .unwrap();
+    state.save(&node).unwrap();
+    let cloud = FakeCloud::default();
+    down::run(&cloud, &state, &node, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(state.read("demo").unwrap().is_none());
+    assert!(cloud.find_tokens.borrow().is_empty());
+    assert!(cloud.terminated.borrow().is_empty());
+    assert!(cloud.deleted.borrow().is_empty());
 }

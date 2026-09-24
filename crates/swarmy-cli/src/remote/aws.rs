@@ -407,7 +407,7 @@ impl Cloud for Aws {
             {
                 return Ok(None);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error).context("ec2:DescribeInstances"),
         };
         Ok(output
             .reservations()
@@ -432,7 +432,8 @@ impl Cloud for Aws {
             .describe_instances()
             .filters(Filter::builder().name("client-token").values(token).build())
             .send()
-            .await?;
+            .await
+            .context("ec2:DescribeInstances")?;
         Ok(output
             .reservations()
             .iter()
@@ -459,7 +460,7 @@ impl Cloud for Aws {
             {
                 Ok(())
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error).context("ec2:TerminateInstances"),
         }
     }
 
@@ -469,7 +470,8 @@ impl Cloud for Aws {
             .describe_key_pairs()
             .filters(Filter::builder().name("key-name").values(name).build())
             .send()
-            .await?;
+            .await
+            .context("ec2:DescribeKeyPairs")?;
         if keys.key_pairs().is_empty() {
             return Ok(());
         }
@@ -483,7 +485,7 @@ impl Cloud for Aws {
             {
                 Ok(())
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error).context("ec2:DeleteKeyPair"),
         }
     }
 }
