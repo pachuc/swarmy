@@ -31,3 +31,11 @@ be forgotten. Do them opportunistically alongside related work.
   before it is trusted. Do it one provider at a time when someone asks for
   that provider, and record each in the live-verification table in
   `docs/providers.md`.
+
+- Intermittent failures seen by a fleet worker on 2026-09-24 during a full
+  `make check` with the dev stack running: the `swarmy-scheduler` test binary
+  aborted with `malloc(): unsorted double linked list corrupted` after all ten
+  tests passed (likely the FoundationDB client's network thread at process
+  exit), and `unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job`
+  in `swarmy-worker` failed once with "lease is absent, expired, or no longer
+  matches". Both passed on rerun. Worth a look if they recur in CI.
