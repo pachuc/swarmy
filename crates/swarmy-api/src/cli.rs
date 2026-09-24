@@ -14,7 +14,7 @@ use swarmy_store::{ServiceDetail, ServiceRole};
 use ulid::Ulid;
 
 /// One bounded API read gives doctor a consistent view of service heartbeats.
-pub async fn doctor(State(state): State<AppState>) -> ApiResult<Value> {
+pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot> {
     let services = state.store.list_services().await.map_err(storage)?;
     let services: Vec<_> = services
         .into_iter()
@@ -34,9 +34,19 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<Value> {
                 ServiceDetail::Capacity(value) => Some(value.clone()),
                 _ => None,
             };
-            json!({"role": role, "instance_id": service.heartbeat.instance_id,
-               "version": service.heartbeat.version, "alive": service.alive,
-               "providers": providers, "capacity": capacity})
+            api::DoctorService {
+                role: role.into(),
+                instance_id: service.heartbeat.instance_id,
+                version: service.heartbeat.version,
+                alive: service.alive,
+                providers,
+                capacity: capacity.map(|value| api::NodeCapacity {
+                    cpu_millis: value.cpu_millis,
+                    memory_bytes: value.memory_bytes,
+                    disk_bytes: value.disk_bytes,
+                    sandboxes: value.sandboxes,
+                }),
+            }
         })
         .collect();
     let mut images = Vec::new();
@@ -71,8 +81,12 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<Value> {
         ),
         Err(_) => None,
     };
-    Ok(Json(json!({"services": services, "images": images,
-                   "default_image": state.default_image, "credentials": credentials})))
+    Ok(Json(api::DoctorSnapshot {
+        services,
+        images,
+        default_image: state.default_image,
+        credentials,
+    }))
 }
 
 fn typed<T: serde::de::DeserializeOwned>(

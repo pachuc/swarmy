@@ -224,6 +224,25 @@ pub struct ServiceHealth {
     pub last_seen: String,
 }
 
+/// Protected diagnostic snapshot used by doctor; credential metadata contains no secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DoctorSnapshot {
+    pub services: Vec<DoctorService>,
+    pub images: Vec<String>,
+    pub default_image: Option<String>,
+    pub credentials: Option<Vec<Credential>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DoctorService {
+    pub role: String,
+    pub instance_id: String,
+    pub version: String,
+    pub alive: bool,
+    pub providers: Vec<String>,
+    pub capacity: Option<NodeCapacity>,
+}
+
 /// Every client mutation has a key that survives retries of the same intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateAgent {
@@ -475,10 +494,10 @@ pub struct CliCredentialInput {
 pub mod cli_paths {
     use super::{
         ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
-        CliSession, CliSessionDetail,
+        CliSession, CliSessionDetail, DoctorSnapshot,
     };
     #[utoipa::path(get, path = "/v1/cli/doctor",
-        responses((status = 200, body = serde_json::Value), (status = 503, body = ApiError)))]
+        responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
     pub fn cli_doctor() {}
     #[utoipa::path(get, path = "/v1/cli/sessions",
         responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
@@ -530,7 +549,7 @@ pub mod cli_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
-    Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
+    Node, ServiceHealth, DoctorSnapshot, DoctorService, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, Event, EventPayload, ApiError, CliSession, CliSessionDetail,

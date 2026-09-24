@@ -258,6 +258,36 @@
         }
       }
     },
+    "/v1/cli/doctor": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_doctor",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DoctorSnapshot"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/images/{name}/{tag}": {
       "get": {
         "tags": [
@@ -998,6 +1028,83 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "DoctorService": {
+        "type": "object",
+        "required": [
+          "role",
+          "instance_id",
+          "version",
+          "alive",
+          "providers"
+        ],
+        "properties": {
+          "alive": {
+            "type": "boolean"
+          },
+          "capacity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NodeCapacity"
+              }
+            ]
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "role": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "DoctorSnapshot": {
+        "type": "object",
+        "description": "Protected diagnostic snapshot used by doctor; credential metadata contains no secrets.",
+        "required": [
+          "services",
+          "images"
+        ],
+        "properties": {
+          "credentials": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Credential"
+            }
+          },
+          "default_image": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorService"
+            }
           }
         }
       },

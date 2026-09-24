@@ -70,11 +70,6 @@ enum Command {
         #[command(subcommand)]
         command: bench_command::Command,
     },
-    /// Bounded database probe used by doctor without linking its front end to `libfdb_c`.
-    #[command(hide = true)]
-    DoctorFdb,
-    #[command(hide = true)]
-    DoctorProviders,
     Remote {
         #[command(subcommand)]
         command: remote_command::Command,
@@ -146,15 +141,6 @@ fn main() -> anyhow::Result<()> {
             } => models_probe::run(args, cli.json).await,
             Command::Auth { command, auth_file } => auth::run(command, auth_file, cli.json).await,
             Command::Bench { command } => bench::run(command, cli.json).await,
-            Command::DoctorProviders => {
-                let rows = provider_runtime::report().await?;
-                println!("{}", serde_json::to_string(&rows)?);
-                Ok(())
-            }
-            Command::DoctorFdb => {
-                conversation::store().await?.list_sessions(None, 1).await?;
-                Ok(())
-            }
             Command::Remote {
                 command: remote_command::Command::Status,
             } => remote_status::run(cli.json).await,

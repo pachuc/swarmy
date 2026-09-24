@@ -6,7 +6,7 @@ use std::{path::Path, process::Stdio, time::Duration};
 
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, path::Path as ObjectPath};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 use swarmy_config::{Loaded, Settings};
 use tokio::{process::Command, time::timeout};
@@ -395,23 +395,8 @@ async fn bucket_list(bucket: &str, objects: Arc<dyn ObjectStore>) -> Result<Stri
     }
 }
 
-#[derive(Deserialize)]
-struct Snapshot {
-    services: Vec<Service>,
-    images: Vec<String>,
-    default_image: Option<String>,
-    credentials: Option<Vec<swarmy_api_types::Credential>>,
-}
-
-#[derive(Deserialize)]
-struct Service {
-    role: String,
-    instance_id: String,
-    version: String,
-    alive: bool,
-    providers: Vec<String>,
-    capacity: Option<swarmy_core::NodeCapacity>,
-}
+type Snapshot = swarmy_api_types::DoctorSnapshot;
+type Service = swarmy_api_types::DoctorService;
 
 async fn api_checks(
     checks: &mut Vec<Check>,
@@ -458,10 +443,7 @@ async fn api_checks(
     ));
     let snapshot = crate::api_client::call(&endpoint, client.doctor())
         .await
-        .map_err(|error| format!("{error:#}"))
-        .and_then(|value| {
-            serde_json::from_value::<Snapshot>(value).map_err(|_| "invalid doctor response".into())
-        });
+        .map_err(|error| format!("{error:#}"));
     match snapshot {
         Ok(snapshot) => snapshot_checks(checks, snapshot, &loaded.settings),
         Err(error) => {
@@ -572,7 +554,7 @@ fn snapshot_checks(
     service_checks(checks, &snapshot);
     let mut rows = settings
         .catalog()
-        .map(|catalog| crate::provider_report::local(&catalog, "API"))
+        .map(|catalog| crate::provider_report::local(&catalog, "absent"))
         .unwrap_or_default();
     let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {
@@ -595,6 +577,7 @@ fn snapshot_checks(
                 .find(|row| row.provider == credential.provider)
             {
                 row.credential = "store".into();
+                row.store = "present".into();
                 row.status = status;
             }
         }

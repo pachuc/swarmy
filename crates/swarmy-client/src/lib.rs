@@ -93,7 +93,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns transport, API, or response decoding failures.
-    pub async fn doctor(&self) -> Result<serde_json::Value, Error> {
+    pub async fn doctor(&self) -> Result<api::DoctorSnapshot, Error> {
         self.get("cli/doctor", &[]).await
     }
     /// Calls the corresponding API route.
