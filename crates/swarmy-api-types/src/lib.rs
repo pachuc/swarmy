@@ -410,7 +410,7 @@ pub struct CliSessionDetail {
     pub session: serde_json::Value,
     pub resolved: serde_json::Value,
     pub usage: serde_json::Value,
-    pub cost_dollars: f64,
+    pub cost_dollars: String,
     pub scratch: serde_json::Value,
     pub requirements: serde_json::Value,
     pub placement: serde_json::Value,
@@ -473,7 +473,10 @@ pub struct CliCredentialInput {
 
 /// CLI compatibility routes. These signatures are mirrored by the server router.
 pub mod cli_paths {
-    use super::*;
+    use super::{
+        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
+        CliSession, CliSessionDetail,
+    };
     #[utoipa::path(get, path = "/v1/cli/sessions",
         responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
     pub fn cli_sessions() {}

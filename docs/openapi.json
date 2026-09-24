@@ -722,8 +722,7 @@
             ]
           },
           "cost_dollars": {
-            "type": "number",
-            "format": "double"
+            "type": "string"
           },
           "events": {
             "type": "array",

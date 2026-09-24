@@ -1,5 +1,5 @@
-use anyhow::{Result, ensure};
-use swarmy_core::{InferenceField, InferenceSelection, ResolvedSelection};
+use anyhow::Result;
+use swarmy_core::{InferenceSelection, ResolvedSelection};
 use swarmy_llm::catalog::Catalog;
 
 pub fn defaults(settings: &swarmy_config::Settings) -> Result<ResolvedSelection> {
@@ -24,37 +24,6 @@ pub fn validate(
         selection,
         defaults,
     )?)
-}
-
-pub fn agent_selection(
-    provider: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    update: bool,
-) -> Result<(InferenceSelection, Vec<InferenceField>)> {
-    let mut resets = Vec::new();
-    let mut clear = |value: Option<String>, field| -> Result<Option<String>> {
-        if value.as_deref() == Some("default") {
-            ensure!(update, "default clears an override only with agent set");
-            resets.push(field);
-            Ok(None)
-        } else {
-            Ok(value)
-        }
-    };
-    let provider = clear(provider, InferenceField::Provider)?;
-    let model = clear(model, InferenceField::Model)?;
-    let effort = clear(effort, InferenceField::Effort)?
-        .map(|s| s.parse())
-        .transpose()?;
-    Ok((
-        normalize(InferenceSelection {
-            provider,
-            model,
-            effort,
-        })?,
-        resets,
-    ))
 }
 
 pub async fn resolved_session(

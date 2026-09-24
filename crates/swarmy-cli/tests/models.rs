@@ -6,6 +6,7 @@ use std::{
 
 struct Fixture {
     dir: tempfile::TempDir,
+    endpoint: String,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
 }
@@ -73,6 +74,7 @@ impl Fixture {
             .unwrap();
         Some(Self {
             dir: directory,
+            endpoint,
             shutdown: Some(shutdown),
             server: Some(server),
         })
@@ -207,6 +209,18 @@ context_window = 42
     ]);
     assert_eq!(rows.as_array().unwrap().len(), 1);
     assert_eq!(rows[0]["id"], "team/reasoner");
+    assert_eq!(
+        serde_json::json!({
+            "key": rows[0]["key"], "provider": rows[0]["provider"],
+            "id": rows[0]["id"], "effective_api": rows[0]["effective_api"],
+            "effective_base_url": rows[0]["effective_base_url"],
+        }),
+        serde_json::json!({
+            "key":"private/team/reasoner", "provider":"private", "id":"team/reasoner",
+            "effective_api":"OpenAiCompletions", "effective_base_url":"http://localhost:8000/v1"
+        })
+    );
+
     assert_eq!(rows[0]["effective_api"], "OpenAiCompletions");
     assert_eq!(rows[0]["effective_base_url"], "http://localhost:8000/v1");
     let shown = fixture.json(&["models", "show", "private/team/reasoner", "--json"]);
@@ -298,4 +312,16 @@ fn probe_missing_credential_names_auth_set() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("swarmy auth set openai"), "{error}");
+}
+
+#[test]
+fn stopped_api_error_names_endpoint() {
+    let Some(mut fixture) = Fixture::new("") else {
+        return;
+    };
+    fixture.shutdown.take().unwrap().send(()).unwrap();
+    fixture.server.take().unwrap().join().unwrap();
+    let output = fixture.run(&["models", "ls"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&fixture.endpoint));
 }

@@ -430,7 +430,7 @@ impl Client {
     /// Read credential metadata in the legacy CLI format.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_credential(&self, provider: &str) -> Result<serde_json::Value, Error> {
+    pub async fn cli_credential(&self, provider: &str) -> Result<api::CliCredential, Error> {
         self.get(&format!("cli/credentials/{}", segment(provider)), &[])
             .await
     }

@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use swarmy_core::{ImageTag, ManifestId};
 use swarmy_volume::image::{Recipe, build_ext4, upload_image_protected, validate_label};
 
 use crate::{conversation::store, image_command::Command};
@@ -11,7 +12,13 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             output,
         } => build(recipe, tag, name, output, json).await,
-        Command::Ls | Command::Show { .. } => unreachable!("image reads use the API"),
+        Command::Show { image } => {
+            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
+            validate_label(name)?;
+            validate_label(tag)?;
+            anyhow::bail!("image show is handled by the API client")
+        }
+        Command::Ls => unreachable!("image reads use the API"),
     }
 }
 

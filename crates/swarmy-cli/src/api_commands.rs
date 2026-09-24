@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 use swarmy_client::Client;
-use swarmy_volume::image::validate_label;
+
 use ulid::Ulid;
 
 use crate::{Command, agent_command, auth_command, image_command, session_command};
@@ -14,6 +14,19 @@ async fn projection<T: serde::Serialize>(
     future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
 ) -> Result<Value> {
     Ok(serde_json::to_value(request(endpoint, future).await?)?)
+}
+
+// Keep the volume image label rule here so the client does not link libfdb_c.
+fn validate_label(value: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
+        "names and tags must contain 1-128 ASCII letters, digits, dots, dashes, or underscores"
+    );
+    Ok(())
 }
 
 fn print(value: &Value, text: &str, json: bool) {
@@ -39,6 +52,38 @@ fn display_state(value: &Value) -> String {
 }
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
+    if let Command::Image {
+        command: image_command::Command::Show { image },
+    } = &command
+    {
+        let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
+        validate_label(name)?;
+        validate_label(tag)?;
+    }
+    if let Command::Agent {
+        command:
+            agent_command::Command::Set {
+                inference,
+                github_token,
+                clear_github_token,
+                ..
+            },
+    } = &command
+    {
+        ensure!(
+            inference.system_prompt.is_some()
+                || inference.system_prompt_file.is_some()
+                || inference.provider.is_some()
+                || inference.model.is_some()
+                || inference.effort.is_some()
+                || inference.memory.is_some()
+                || inference.gpu.is_some()
+                || github_token.is_some()
+                || *clear_github_token,
+            "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
+                 --memory, --gpu, --github-token, or --clear-github-token"
+        );
+    }
     let (client, endpoint) = crate::api_client::connect()?;
     match command {
         Command::Session { command } => session(&client, &endpoint, command, json).await?,
@@ -496,13 +541,6 @@ async fn agent(
             body["github_token"] = json!(github_token.clone());
             body["clear_github_token"] = json!(clear_github_token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            ensure!(
-                body.as_object().is_some_and(|value| value.len() > 3)
-                    || github_token.is_some()
-                    || clear_github_token,
-                "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
-                 --memory, --gpu, --github-token, or --clear-github-token"
-            );
             let updated = projection(
                 endpoint,
                 client.cli_update_agent(&name, &serde_json::from_value(body)?),

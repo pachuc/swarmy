@@ -175,6 +175,20 @@ async fn inspect_agents(
     assert_eq!(shown["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(shown["sessions"][0]["state"], "idle");
     assert!(shown["last_snapshot_at"].is_null());
+    // The expected projection is assembled from the fixture's store records, not the API.
+    let expected_agent = serde_json::json!({
+        "agent_id": agent.agent_id, "name": agent.name, "description": agent.description,
+        "main_session": first, "session_count": 2, "sandbox_state": "unknown",
+        "last_snapshot_at": null, "node_id": null,
+    });
+    let actual_agent = serde_json::json!({
+        "agent_id": shown["agent_id"], "name": shown["name"],
+        "description": shown["description"], "main_session": shown["main_session"],
+        "session_count": shown["session_count"], "sandbox_state": shown["sandbox_state"],
+        "last_snapshot_at": shown["last_snapshot_at"], "node_id": shown["node_id"],
+    });
+    assert_eq!(actual_agent, expected_agent);
+
     assert!(
         !fixture
             .output(&["agent", "show", "absent"])
@@ -191,6 +205,21 @@ async fn inspect_agents(
         .collect();
     assert_eq!(rows[0]["agent_name"], "tommy");
     assert_eq!(rows[0]["main"], true);
+    let stored_session = fixture.store.fetch_session(first).await.unwrap().unwrap();
+    let expected_session = serde_json::json!({
+        "session_id": first, "state": stored_session.state,
+        "head_seq": stored_session.head_seq, "agent_name": "tommy",
+        "main": true, "archived": false,
+        "resolved_inference": {"provider": "fake", "model": "scripted", "effort": "medium"},
+    });
+    let actual_session = serde_json::json!({
+        "session_id": rows[0]["session_id"], "state": rows[0]["state"],
+        "head_seq": rows[0]["head_seq"], "agent_name": rows[0]["agent_name"],
+        "main": rows[0]["main"], "archived": rows[0]["archived"],
+        "resolved_inference": rows[0]["resolved_inference"],
+    });
+    assert_eq!(actual_session, expected_session);
+
     assert_eq!(rows[1]["main"], false);
     assert_eq!(rows[2]["main"], false);
     assert_eq!(
