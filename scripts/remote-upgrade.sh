@@ -14,8 +14,9 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 # rsync preserves timestamps; a different commit can otherwise look older to cargo.
 find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
 if [[ $mode == stack ]]; then
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked --no-default-features -p swarmy-cli >&2
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api >&2
+        -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api >&2
     binaries=(swarmy swarmy-session swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api)
 else
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd >&2

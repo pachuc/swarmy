@@ -1,3 +1,7 @@
+#[cfg(feature = "remote")]
+use crate::remote::ssh as remote_ssh;
+#[cfg(not(feature = "remote"))]
+use crate::remote_ssh;
 use std::{path::Path, process::Stdio, time::Duration};
 
 use serde::Serialize;
@@ -177,7 +181,7 @@ async fn remote_checks(loaded: &Loaded) -> Vec<Check> {
                 .map_err(|error| error.to_string()),
             "Disconnect, free the advertised FoundationDB port, and reconnect.",
         ));
-        let result = if crate::remote::ssh::healthy(&profile).await {
+        let result = if remote_ssh::healthy(&profile).await {
             Ok(format!(
                 "{name}: SSH control master healthy (pid {})",
                 profile.pid

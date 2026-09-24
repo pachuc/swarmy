@@ -1,3 +1,7 @@
+#[cfg(feature = "remote")]
+use crate::remote::ssh as remote_ssh;
+#[cfg(not(feature = "remote"))]
+use crate::remote_ssh;
 mod process;
 
 use std::{
@@ -346,7 +350,7 @@ async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
             name,
         )?;
         ensure!(
-            crate::remote::ssh::healthy(&profile).await,
+            remote_ssh::healthy(&profile).await,
             "remote tunnel is down; run swarmy remote connect {name}"
         );
         write_private(&marker, name)?;

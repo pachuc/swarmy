@@ -7,8 +7,13 @@ mod image_command;
 mod models;
 mod models_probe_command;
 mod provider_report;
+#[cfg(feature = "remote")]
 mod remote;
 mod remote_command;
+#[cfg(not(feature = "remote"))]
+#[allow(dead_code)] // The node CLI only uses tunnel health checks from this shared module.
+#[path = "remote/ssh.rs"]
+mod remote_ssh;
 mod selection_command;
 mod session_command;
 mod tools;
@@ -127,6 +132,10 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
+    #[cfg(not(feature = "remote"))]
+    if matches!(cli.command, Command::Remote { .. }) {
+        anyhow::bail!("swarmy was built without remote support");
+    }
     remote_command::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -176,7 +185,10 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Models { command } => models::run(command, cli.json)?,
+        #[cfg(feature = "remote")]
         Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
+        #[cfg(not(feature = "remote"))]
+        Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Bench { .. }
         | Command::Run { .. }
