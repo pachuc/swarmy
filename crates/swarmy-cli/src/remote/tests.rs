@@ -841,6 +841,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &state,
         "demo",
         64,
+        super::NodeShape::default(),
         Duration::ZERO,
         Some(&options),
     )
@@ -1035,7 +1036,7 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
     assert_eq!(joining.region, first.region);
     assert_eq!(joining.subnet, first.subnet);
     assert_eq!(joining.security_group, first.security_group);
-    assert_eq!(joining.image, requests[0].settings.image);
+    assert_eq!(joining.image.as_deref(), Some(requests[0].image.as_str()));
     assert_eq!(joining.managed_by_tag, first.managed_by_tag);
     drop(requests);
     let saved = state.require("demo").unwrap();
