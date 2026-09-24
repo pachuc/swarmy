@@ -103,6 +103,13 @@ pub struct RemoteNode {
     pub created_at: String,
 }
 
+impl RemoteNode {
+    #[must_use]
+    pub fn bucket(&self) -> Option<&str> {
+        self.launch_settings.as_ref()?.bucket.as_deref()
+    }
+}
+
 fn ssh_user() -> String {
     "ubuntu".into()
 }

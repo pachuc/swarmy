@@ -22,7 +22,9 @@ pub async fn run(
             && !existing.instance_id.is_empty()
             && !existing.public_ip.is_empty()
         {
-            println!("Remote node {name} already exists; bucket resources and node are unchanged");
+            println!(
+                "Remote node {name} already exists; ignored --services, --copy-credential, and image recipe/build options. Use remote down before reprovisioning."
+            );
             return Ok(());
         }
         anyhow::bail!("remote node {name} already exists; run swarmy remote down {name} first");

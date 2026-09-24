@@ -13,4 +13,5 @@ local_store=$(swarmy_remote_s3_env '' '')
 [[ $local_store == *'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333'* ]]
 [[ $local_store == *'SWARMY_DEV_SKIP_S3=0'* ]]
 ! swarmy_remote_s3_env 'bad/bucket' eu-west-1 >/dev/null
+! swarmy_remote_s3_env 'bad.bucket' eu-west-1 >/dev/null
 printf 'remote S3 environment: ok\n'

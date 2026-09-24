@@ -138,47 +138,31 @@ pub(super) fn new_profile(
         remote_ports: node.ports,
         fdb_cluster_file: remote_path(state_dir, &node.name, "cluster")?,
         nats_url: format!("nats://127.0.0.1:{}", ports.nats),
-        s3_endpoint: if node
-            .launch_settings
-            .as_ref()
-            .and_then(|s| s.bucket.as_ref())
-            .is_some()
-        {
+        s3_endpoint: if node.bucket().is_some() {
             String::new()
         } else {
             format!("http://127.0.0.1:{}", ports.s3)
         },
-        s3_bucket: node.launch_settings.as_ref().and_then(|s| s.bucket.clone()),
-        s3_region: node
-            .launch_settings
-            .as_ref()
-            .and_then(|s| s.bucket.as_ref().map(|_| node.region.clone())),
+        s3_bucket: node.bucket().map(str::to_owned),
+        s3_region: node.bucket().map(|_| node.region.clone()),
         default_image: node.default_image.clone(),
     })
 }
 
-fn reserve_ports(node: &swarmy_config::RemoteNode) -> Result<([TcpListener; 3], RemotePorts)> {
-    // Reserve all three ports together so an ephemeral choice cannot be reused.
-    let reservations = [
-        reserve(node.ports.fdb)?,
-        reserve(node.ports.nats)?,
-        reserve(
-            if node
-                .launch_settings
-                .as_ref()
-                .and_then(|s| s.bucket.as_ref())
-                .is_some()
-            {
-                0
-            } else {
-                node.ports.s3
-            },
-        )?,
-    ];
+fn reserve_ports(node: &swarmy_config::RemoteNode) -> Result<(Vec<TcpListener>, RemotePorts)> {
+    let mut reservations = vec![reserve(node.ports.fdb)?, reserve(node.ports.nats)?];
+    let s3 = if node.bucket().is_some() {
+        0
+    } else {
+        let listener = reserve(node.ports.s3)?;
+        let port = listener.local_addr()?.port();
+        reservations.push(listener);
+        port
+    };
     let ports = RemotePorts {
         fdb: reservations[0].local_addr()?.port(),
         nats: reservations[1].local_addr()?.port(),
-        s3: reservations[2].local_addr()?.port(),
+        s3,
     };
     Ok((reservations, ports))
 }
@@ -375,6 +359,23 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert!(!args.iter().any(|arg| arg.contains(":8333:")));
+    }
+
+    #[test]
+    fn bucket_remote_reserves_only_database_and_bus_ports() {
+        let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "test", "region": "us-east-1", "instance_id": "i-test",
+            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
+            "key_path": "key", "created_at": "now"
+        }))
+        .unwrap();
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            bucket: Some("bucket-test".into()),
+            ..Default::default()
+        });
+        let (reservations, ports) = reserve_ports(&node).unwrap();
+        assert_eq!(reservations.len(), 2);
+        assert_eq!(ports.s3, 0);
     }
 
     #[test]

@@ -8,8 +8,10 @@ mode=${1:-stack}
 service_address=${2:-127.0.0.1}
 bucket=${3:-}
 bucket_region=${4:-}
-[[ -z $bucket || $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || exit 1
-[[ -z $bucket || $bucket_region =~ ^[a-z0-9-]+$ ]] || exit 1
+if [[ -n $bucket ]] && [[ ! $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ || ! $bucket_region =~ ^[a-z0-9-]+$ ]]; then
+    echo 'Invalid bucket name or region: use a 3-63 character lowercase DNS name without dots and a region.' >&2
+    exit 1
+fi
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 stack_dependency=''
@@ -142,6 +144,8 @@ else
 [[ -s .swarmy/tunnel-key && -s .swarmy/tunnel-known-hosts ]] || { echo 'Missing add-node tunnel identity' >&2; exit 1; }
 sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
 sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
+s3_forward=''
+if [[ -z $bucket ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
 sudo tee /etc/systemd/system/swarmy-tunnel.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy tunnel to first node backing services
@@ -151,7 +155,7 @@ Wants=network-online.target
 [Service]
 Type=exec
 User=ubuntu
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8333:127.0.0.1:8333 ubuntu@$service_address
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward ubuntu@$service_address
 ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5

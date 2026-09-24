@@ -7,6 +7,7 @@ use aws_sdk_ec2::{
         InstanceType, ResourceType, Tag, TagSpecification, VolumeType,
     },
 };
+use std::{future::Future, time::Duration};
 
 use super::{Cloud, Instance, Launch};
 
@@ -36,11 +37,10 @@ impl Aws {
 
     async fn ensure_bucket(&self, bucket: &str, region: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
+        let mut created = false;
         match location {
             Ok(output) => {
-                let found = output
-                    .location_constraint()
-                    .map_or("us-east-1", |v| v.as_str());
+                let found = bucket_region(output.location_constraint());
                 anyhow::ensure!(
                     found == region,
                     "bucket {bucket} is in {found}, not {region}"
@@ -66,31 +66,58 @@ impl Aws {
                     .send()
                     .await
                     .context("s3:CreateBucket (bucket may belong to another account)")?;
+                created = true;
             }
             Err(error) => {
                 return Err(error)
                     .context("s3:GetBucketLocation (bucket may belong to another account)");
             }
         }
-        self.s3
-            .put_bucket_encryption()
-            .bucket(bucket)
-            .server_side_encryption_configuration(
-                aws_sdk_s3::types::ServerSideEncryptionConfiguration::builder()
-                    .rules(
-                        aws_sdk_s3::types::ServerSideEncryptionRule::builder()
-                            .apply_server_side_encryption_by_default(
-                                aws_sdk_s3::types::ServerSideEncryptionByDefault::builder()
-                                    .sse_algorithm(aws_sdk_s3::types::ServerSideEncryption::Aes256)
-                                    .build()?,
-                            )
-                            .build(),
-                    )
-                    .build()?,
-            )
-            .send()
-            .await
-            .context("s3:PutBucketEncryption (bucket may belong to another account)")?;
+        let needs_encryption = if created {
+            true
+        } else {
+            match self.s3.get_bucket_encryption().bucket(bucket).send().await {
+                Ok(output) => output
+                    .server_side_encryption_configuration()
+                    .is_none_or(|configuration| configuration.rules().is_empty()),
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("ServerSideEncryptionConfigurationNotFoundError") =>
+                {
+                    true
+                }
+                Err(error) => {
+                    return Err(error).context(
+                        "s3:GetEncryptionConfiguration (bucket may belong to another account)",
+                    );
+                }
+            }
+        };
+        if needs_encryption {
+            self.s3
+                .put_bucket_encryption()
+                .bucket(bucket)
+                .server_side_encryption_configuration(
+                    aws_sdk_s3::types::ServerSideEncryptionConfiguration::builder()
+                        .rules(
+                            aws_sdk_s3::types::ServerSideEncryptionRule::builder()
+                                .apply_server_side_encryption_by_default(
+                                    aws_sdk_s3::types::ServerSideEncryptionByDefault::builder()
+                                        .sse_algorithm(
+                                            aws_sdk_s3::types::ServerSideEncryption::Aes256,
+                                        )
+                                        .build()?,
+                                )
+                                .build(),
+                        )
+                        .build()?,
+                )
+                .send()
+                .await
+                .context("s3:PutBucketEncryption (bucket may belong to another account)")?;
+        }
         self.s3
             .put_public_access_block()
             .bucket(bucket)
@@ -240,6 +267,48 @@ fn launch_input(
     )
 }
 
+fn bucket_region(location: Option<&aws_sdk_s3::types::BucketLocationConstraint>) -> &str {
+    match location.map(aws_sdk_s3::types::BucketLocationConstraint::as_str) {
+        None | Some("") => "us-east-1",
+        Some("EU") => "eu-west-1",
+        Some(region) => region,
+    }
+}
+
+fn profile_not_propagated(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("InvalidParameterValue") && message.contains("Invalid IAM Instance Profile")
+}
+
+pub(super) async fn retry_profile_propagation<T, F, Fut>(
+    mut attempt: F,
+    profile: bool,
+    pause: Duration,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if profile
+                    && profile_not_propagated(&error)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tracing::info!("waiting for IAM instance profile to propagate to EC2");
+                tokio::time::sleep(
+                    pause.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn bucket_policy(bucket: &str) -> serde_json::Value {
     serde_json::json!({"Version":"2012-10-17","Statement":[
         {"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":format!("arn:aws:s3:::{bucket}")},
@@ -356,23 +425,30 @@ impl Cloud for Aws {
             .first()
             .and_then(|image| image.root_device_name())
             .context("AMI has no root device")?;
-        let input = launch_input(request, root)?;
-        let output = self
-            .ec2
-            .run_instances()
-            .set_image_id(input.image_id)
-            .set_instance_type(input.instance_type)
-            .set_min_count(input.min_count)
-            .set_max_count(input.max_count)
-            .set_key_name(input.key_name)
-            .set_iam_instance_profile(input.iam_instance_profile)
-            .set_client_token(input.client_token)
-            .set_network_interfaces(input.network_interfaces)
-            .set_block_device_mappings(input.block_device_mappings)
-            .set_tag_specifications(input.tag_specifications)
-            .send()
-            .await
-            .context("ec2:RunInstances and iam:PassRole (when using a bucket profile)")?;
+        let output = retry_profile_propagation(
+            || async {
+                let input = launch_input(request, root)?;
+                self.ec2
+                    .run_instances()
+                    .set_image_id(input.image_id)
+                    .set_instance_type(input.instance_type)
+                    .set_min_count(input.min_count)
+                    .set_max_count(input.max_count)
+                    .set_key_name(input.key_name)
+                    .set_iam_instance_profile(input.iam_instance_profile)
+                    .set_client_token(input.client_token)
+                    .set_network_interfaces(input.network_interfaces)
+                    .set_block_device_mappings(input.block_device_mappings)
+                    .set_tag_specifications(input.tag_specifications)
+                    .send()
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            request.profile.is_some(),
+            Duration::from_secs(2),
+        )
+        .await
+        .context("ec2:RunInstances and iam:PassRole (when using a bucket profile)")?;
         Ok(output
             .instances()
             .first()
@@ -476,6 +552,18 @@ impl Cloud for Aws {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bucket_location_normalizes_legacy_and_empty_values() {
+        use aws_sdk_s3::types::BucketLocationConstraint as Location;
+        assert_eq!(bucket_region(None), "us-east-1");
+        assert_eq!(bucket_region(Some(&Location::from(""))), "us-east-1");
+        assert_eq!(bucket_region(Some(&Location::from("EU"))), "eu-west-1");
+        assert_eq!(
+            bucket_region(Some(&Location::from("ap-south-1"))),
+            "ap-south-1"
+        );
+    }
 
     #[test]
     fn bucket_policy_restricts_actions_to_one_bucket() {

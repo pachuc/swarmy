@@ -54,6 +54,7 @@ models:
 	python3 scripts/models/generate.py
 
 check:
+	bash scripts/test-remote-s3-env.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) test --workspace --locked
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
