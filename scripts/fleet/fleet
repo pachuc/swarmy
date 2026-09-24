@@ -201,6 +201,12 @@ def launch(args, config):
     if path.exists():
         raise RuntimeError(f"{args.task_id} already launched")
     task = one(command(tasky("show", args.task_id, json_output=True)))
+    status = task.get("status")
+    if status == "todo":
+        # Refuse a task whose dependencies are unfinished before a worker is spent.
+        command(tasky("start", args.task_id))
+    elif status != "in_progress":
+        raise RuntimeError(f"tasky task {args.task_id} is {status}; only todo or in-progress tasks launch")
     provider, model, effort, selection = selection_args(args, config)
     image = args.image or config.get("image")
     if image and ":" not in image:
@@ -233,11 +239,6 @@ def launch(args, config):
     save(path, {"task_id": args.task_id, "worker": worker, "branch": branch,
                 "session_id": session, "provider": provider, "model": model,
                 "effort": effort, "started_at": datetime.now(timezone.utc).isoformat()})
-    status = one(command(tasky("show", args.task_id, json_output=True))).get("status")
-    if status == "todo":
-        command(tasky("start", args.task_id))
-    elif status != "in_progress":
-        print(f"note: tasky task {args.task_id} is {status}; not changing it", file=sys.stderr)
     print(f"launched {args.task_id} on {worker} session={session}")
 
 
