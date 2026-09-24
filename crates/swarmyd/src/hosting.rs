@@ -73,6 +73,14 @@ pub struct Hosting {
 }
 
 impl Hosting {
+    async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
+        Ok(SandboxSpec {
+            agent_id: agent,
+            scratch: self.scratch_for_session(session).await?,
+            requirements: self.requirements_for_session(agent, session).await?,
+        })
+    }
+
     async fn requirements_for_session(
         &self,
         agent: AgentId,
@@ -241,18 +249,9 @@ impl Hosting {
                 .store
                 .agent_volume(first.job.session_id, &placement)
                 .await?;
-            let scratch = self.scratch_for_session(first.job.session_id).await?;
-            let requirements = self
-                .requirements_for_session(agent, first.job.session_id)
-                .await?;
             self.runtime
                 .create(
-                    SandboxSpec {
-                        agent_id: agent,
-                        scratch,
-
-                        requirements,
-                    },
+                    self.sandbox_spec(agent, first.job.session_id).await?,
                     BlockDevice { volume_id: volume },
                 )
                 .await?;
