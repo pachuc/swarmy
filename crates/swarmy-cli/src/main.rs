@@ -1,6 +1,7 @@
 mod agent_command;
 mod auth_command;
 mod bench_command;
+mod client_chat;
 mod client_commands;
 mod client_conversation;
 mod dev;
@@ -203,16 +204,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             new,
             selection,
         } => {
-            client_commands::chat(
-                api_client()?,
-                session_id,
-                image,
-                agent,
-                new,
-                selection,
-                cli.json,
-            )
-            .await?;
+            if cli.json {
+                client_commands::chat(
+                    api_client()?,
+                    session_id,
+                    image,
+                    agent,
+                    new,
+                    selection,
+                    true,
+                )
+                .await?;
+            } else {
+                client_chat::run(api_client()?, session_id, image, agent, new, selection).await?;
+            }
         }
         Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
