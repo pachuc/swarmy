@@ -493,6 +493,7 @@ impl Store {
         write(trx, &self.session_kind_key(id), &session.kind)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         write(trx, &self.session_idle_key(id), &now)?;
+        write(trx, &self.session_state_since_key(id), &now)?;
         write(
             trx,
             &key,

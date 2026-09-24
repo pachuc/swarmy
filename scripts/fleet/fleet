@@ -255,27 +255,52 @@ def session_events(config, session_id):
 
 
 def state_for(session, events, log):
-    wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
-    if wait:
-        return "waiting for inference: " + "; ".join(wait.get("reasons", []))
     state = session.get("state") if session else None
+    wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
+    if state == "sleeping" and wait:
+        state = "waiting_inference"
     if state is None:
-        return "unknown"
+        return "unknown", ""
     if state in ("idle", "completed"):
-        return "idle"
+        return "idle", ""
     outcomes = [item for item in log if item.get("event") == "run_outcome"]
     if outcomes and outcomes[-1].get("outcome") == "failed":
-        return "failed"
-    return "running"
+        return "failed", ""
+    reasons = "; ".join(wait.get("reasons", [])) if wait and state == "waiting_inference" else ""
+    return state, ("waiting for inference: " + reasons if reasons else "")
+
+
+def state_age(session):
+    # Events in the session log have sequence numbers but no timestamps. The
+    # session listing exposes the time of the last durable state transition.
+    since = session.get("state_since") if session else None
+    if not since:
+        return None
+    seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(since.replace("Z", "+00:00"))).total_seconds()
+    return max(0, int(seconds))
+
+
+def age_label(seconds):
+    if seconds is None:
+        return "?"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60}m"
 
 
 def status(config):
     workers = load_workers(config)
-    # session ls carries each session's state; session show prints selection, usage,
-    # a waiting record when parked, and then the events, but not the record itself.
+    # session ls carries the state and transition time; session show supplies
+    # optional wait reasons and the assistant messages used by collect.
     sessions = {item["session_id"]: item
                 for item in records(command(swarmy(config, "session", "ls", "--json")))
                 if "session_id" in item and "state" in item}
+    threshold = float(config.get("stall_minutes", 10)) * 60
+    if not math.isfinite(threshold) or threshold <= 0:
+        raise ValueError("stall_minutes must be positive")
+    stalled = False
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
         session_id = detail.get("main_session")
@@ -289,11 +314,20 @@ def status(config):
             data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
             run_log = state_path(config) / (suffix + ".jsonl")
             logged = records(run_log.read_text()) if run_log.exists() else []
-        state = state_for(session, events, logged) if task_id else "idle"
+        state, reasons = state_for(session, events, logged) if task_id else ("idle", "")
+        age = state_age(session)
+        if task_id and state in ("waiting_inference", "leased") and age is not None and age > threshold:
+            state_label = f"STALLED {state} {age_label(age)}"
+            stalled = True
+        else:
+            state_label = f"{state} {age_label(age)}"
+        if reasons:
+            state_label += "; " + reasons
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
-              f"{state}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+              f"{state_label}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+    return 2 if stalled else 0
 
 
 def last_message(events):
@@ -326,13 +360,25 @@ def collect(task_id, config):
     session_id = agent.get("main_session") or data["session_id"]
     message = last_message(session_events(config, session_id))
     match = URL.search(message)
-    if not match:
-        raise RuntimeError("worker's last message has no pull request URL")
-    url = match.group(0)
-    verify_pr(url, data, config)
+    if match:
+        url = match.group(0)
+        source = "last_message"
+        merged = False
+    else:
+        pull_requests = json.loads(command(["gh", "pr", "list", "--repo", config["repo"],
+                                            "--head", data["branch"], "--state", "all",
+                                            "--json", "url,state"]))
+        eligible = [pr for pr in pull_requests if pr.get("state") in ("OPEN", "MERGED")]
+        if len(eligible) != 1:
+            raise RuntimeError(f"expected exactly one open or merged pull request for {data['branch']}; found {len(eligible)}")
+        url = eligible[0]["url"]
+        source = "branch_lookup"
+        merged = eligible[0]["state"] == "MERGED"
+    verify_pr(url, data, config, merged=merged)
     command(tasky("pr", task_id, url))
     command(tasky("test", task_id))
     data["pr_url"] = url
+    data["pr_source"] = source
     save(path, data)
     print(url)
 
@@ -407,7 +453,7 @@ def main():
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
     launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
-    sub.add_parser("status", help="one line per worker: task, provider, model, state, elapsed, cost")
+    sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
     sub.add_parser("collect", help="record the worker's pull request in tasky").add_argument("task_id")
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
     resume_parser.add_argument("task_id")
@@ -425,7 +471,7 @@ def main():
         if args.action == "launch":
             launch(args, config)
         elif args.action == "status":
-            status(config)
+            return status(config)
         elif args.action == "collect":
             collect(args.task_id, config)
         elif args.action == "resume":

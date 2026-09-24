@@ -73,6 +73,8 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                         .is_some_and(|agent| agent.main_session == Some(session.session_id));
                     let name = agent.map(|agent| agent.name);
                     let mut value = serde_json::to_value(&session)?;
+                    value["state_since"] =
+                        serde_json::to_value(store.session_state_since(session.session_id).await?)?;
                     let successor = store.next_session(session.session_id).await?;
                     value["archived"] = successor.is_some().into();
                     value["next_session"] = serde_json::to_value(successor)?;

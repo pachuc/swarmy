@@ -121,6 +121,41 @@ async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
 }
 
 #[tokio::test]
+async fn session_state_since_tracks_claim_and_wait_transition() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    assert_eq!(
+        test.store.session_state_since(id).await.unwrap(),
+        Some(timestamp(0))
+    );
+    let before = Timestamp::now();
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(4_102_444_800))
+        .await
+        .unwrap();
+    let claimed = test.store.session_state_since(id).await.unwrap().unwrap();
+    assert!(claimed >= before && claimed <= Timestamp::now());
+    let waiting_since = timestamp(100);
+    test.store
+        .set_state(
+            id,
+            SessionState::WaitingInference,
+            Some(&lease),
+            waiting_since,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.session_state_since(id).await.unwrap(),
+        Some(waiting_since)
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
 async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
     let Some(f) = TestStore::memory() else { return };
     let id = f.create().await;

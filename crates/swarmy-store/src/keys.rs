@@ -59,6 +59,19 @@ impl Store {
             .pack(&("session", id.as_ulid().to_bytes().as_slice()))
     }
 
+    pub(crate) fn session_state_since_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session_state_since", id.as_ulid().to_bytes().as_slice()))
+    }
+
+    /// The last durable state transition, if it happened after this field was introduced.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn session_state_since(&self, id: SessionId) -> Result<Option<Timestamp>> {
+        self.transaction(|trx| async move { read(&trx, &self.session_state_since_key(id)).await })
+            .await
+    }
+
     pub(crate) fn event_space(&self, id: SessionId) -> Subspace {
         self.root
             .subspace(&("event", id.as_ulid().to_bytes().as_slice()))
