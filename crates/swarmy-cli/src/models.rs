@@ -1,65 +1,28 @@
 use anyhow::{Context, ensure};
 use clap::Subcommand;
-use serde::Serialize;
-use swarmy_core::ReasoningEffort;
-use swarmy_llm::catalog::{Api, ModelInfo, ProviderInfo};
+use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// List models, ordered by provider and model id
     Ls {
         #[arg(long)]
         provider: Option<String>,
-        /// Include only models supporting a reasoning effort other than none
         #[arg(long)]
         reasoning: bool,
     },
-    /// Show all metadata and compatibility flags for PROVIDER/MODEL
-    Show { model: String },
-    /// Find case-insensitive substrings in provider/model ids
-    Search { pattern: String },
-    /// List provider protocols, authentication kinds, and environment variables
+    Show {
+        model: String,
+    },
+    Search {
+        pattern: String,
+    },
     Providers,
-    /// Send a small request directly to a provider, bypassing gateway routing
     Probe(crate::models_probe_command::Args),
 }
 
-#[derive(Serialize)]
-struct ModelRow<'a> {
-    key: String,
-    provider: &'a str,
-    effective_api: Api,
-    effective_base_url: &'a str,
-    supported_efforts: Vec<ReasoningEffort>,
-    #[serde(flatten)]
-    model: &'a ModelInfo,
-}
-
-impl<'a> ModelRow<'a> {
-    fn new(provider: &'a ProviderInfo, model: &'a ModelInfo) -> Self {
-        Self {
-            key: format!("{}/{}", provider.id, model.id),
-            provider: &provider.id,
-            effective_api: model.api.unwrap_or(provider.api),
-            effective_base_url: model.base_url.as_deref().unwrap_or(&provider.base_url),
-            supported_efforts: model.supported_efforts(),
-            model,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ProviderRow<'a> {
-    id: &'a str,
-    api: Api,
-    auth_kinds: &'a [String],
-    env_keys: &'a [String],
-    credential: &'static str,
-}
-
-pub fn run(command: Command, json: bool) -> anyhow::Result<()> {
-    let catalog = swarmy_config::Settings::load()?.settings.catalog()?;
+pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
+    let (client, endpoint) = crate::api_client::connect()?;
     match command {
         Command::Probe(_) => unreachable!("probes run in swarmy-session"),
         Command::Ls {
@@ -67,74 +30,58 @@ pub fn run(command: Command, json: bool) -> anyhow::Result<()> {
             reasoning,
         } => {
             if let Some(id) = &provider {
-                ensure!(catalog.provider(id).is_some(), "unknown provider: {id}");
+                known_provider(&client, &endpoint, id).await?;
             }
-            let rows = catalog
-                .find("")
-                .into_iter()
-                .filter(|(info, model)| {
-                    provider.as_ref().is_none_or(|id| *id == info.id)
-                        && (!reasoning
-                            || model
-                                .supported_efforts()
-                                .iter()
-                                .any(|effort| *effort != ReasoningEffort::None))
-                })
-                .map(|(provider, model)| ModelRow::new(provider, model))
-                .collect::<Vec<_>>();
+            let rows = crate::api_client::call(
+                &endpoint,
+                client.cli_models(None, provider.as_deref(), reasoning),
+            )
+            .await?;
             print_models(&rows, json)?;
         }
         Command::Show { model } => {
-            let (provider_id, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
-            let provider = catalog
-                .provider(provider_id)
-                .with_context(|| format!("unknown provider: {provider_id}"))?;
-            let info = catalog
-                .model(provider_id, id)
+            let (provider, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
+            known_provider(&client, &endpoint, provider).await?;
+            let rows = crate::api_client::call(
+                &endpoint,
+                client.cli_models(Some(id), Some(provider), false),
+            )
+            .await?;
+            let row = rows
+                .iter()
+                .find(|row| row["key"] == model)
                 .with_context(|| format!("unknown model: {model}"))?;
-            let row = ModelRow::new(provider, info);
             if json {
-                println!("{}", serde_json::to_string(&row)?);
+                println!("{}", serde_json::to_string(row)?);
             } else {
-                println!("{}", serde_json::to_string_pretty(&row)?);
+                println!("{}", serde_json::to_string_pretty(row)?);
             }
         }
         Command::Search { pattern } => {
-            let rows = catalog
-                .find(&pattern)
-                .into_iter()
-                .map(|(provider, model)| ModelRow::new(provider, model))
-                .collect::<Vec<_>>();
+            let rows =
+                crate::api_client::call(&endpoint, client.cli_models(Some(&pattern), None, false))
+                    .await?;
             ensure!(!rows.is_empty(), "no models found matching {pattern:?}");
             print_models(&rows, json)?;
         }
         Command::Providers => {
-            let rows = catalog
-                .providers()
-                .map(|provider| ProviderRow {
-                    id: &provider.id,
-                    api: provider.api,
-                    auth_kinds: &provider.auth_kinds,
-                    env_keys: &provider.env_keys,
-                    credential: "unknown",
-                })
-                .collect::<Vec<_>>();
+            let rows = crate::api_client::call(&endpoint, client.cli_providers()).await?;
             if json {
                 println!("{}", serde_json::to_string(&rows)?);
             } else {
                 for row in rows {
+                    let api: swarmy_llm::catalog::Api = serde_json::from_value(row["api"].clone())?;
                     line(&format!(
                         "{}  {:?}  credential: {}",
-                        row.id, row.api, row.credential
+                        text(&row["id"]),
+                        api,
+                        text(&row["credential"])
                     ));
-                    line(&format!("  Auth: {}", row.auth_kinds.join(", ")));
+                    line(&format!("  Auth: {}", joined(&row["auth_kinds"])));
+                    let env = joined(&row["env_keys"]);
                     line(&format!(
                         "  Env: {}",
-                        if row.env_keys.is_empty() {
-                            "-".into()
-                        } else {
-                            row.env_keys.join(", ")
-                        }
+                        if env.is_empty() { "-" } else { &env }
                     ));
                 }
             }
@@ -142,38 +89,53 @@ pub fn run(command: Command, json: bool) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-fn print_models(rows: &[ModelRow<'_>], json: bool) -> anyhow::Result<()> {
+async fn known_provider(
+    client: &swarmy_client::Client,
+    endpoint: &str,
+    id: &str,
+) -> anyhow::Result<()> {
+    let providers = crate::api_client::call(endpoint, client.cli_providers()).await?;
+    ensure!(
+        providers.iter().any(|provider| provider["id"] == id),
+        "unknown provider: {id}"
+    );
+    Ok(())
+}
+fn text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
+}
+fn joined(value: &Value) -> String {
+    value
+        .as_array()
+        .map(|items| items.iter().map(text).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default()
+}
+fn print_models(rows: &[Value], json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string(rows)?);
         return Ok(());
     }
     for row in rows {
-        line(&row.key);
-        line(&format!("  {}", row.model.name));
+        line(&text(&row["key"]));
+        line(&format!("  {}", text(&row["name"])));
         line("  CONTEXT     OUTPUT      INPUT $/M    OUTPUT $/M");
         line(&format!(
             "  {:<11} {:<11} {:<12} {}",
-            row.model.limit.context,
-            row.model
-                .limit
-                .output
-                .map_or_else(|| "unknown".into(), |limit| limit.to_string()),
-            row.model.cost.input,
-            row.model.cost.output
+            row["limit"]["context"],
+            if row["limit"]["output"].is_null() {
+                "unknown".into()
+            } else {
+                row["limit"]["output"].to_string()
+            },
+            row["cost"]["input"],
+            row["cost"]["output"]
         ));
-        line(&format!(
-            "  Efforts: {}",
-            row.supported_efforts
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        line(&format!("  Efforts: {}", joined(&row["supported_efforts"])));
     }
     Ok(())
 }
-
 // Keep long catalog ids and environment lists readable on narrow terminals.
 fn line(value: &str) {
     let width = crossterm::terminal::size()

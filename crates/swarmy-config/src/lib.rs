@@ -125,12 +125,14 @@ impl GarbageCollection {
 #[serde(default, deny_unknown_fields)]
 pub struct ApiSettings {
     pub listen: String,
+    pub url: Option<String>,
     pub token: String,
 }
 impl Default for ApiSettings {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:8742".into(),
+            url: None,
             token: String::new(),
         }
     }
@@ -551,6 +553,18 @@ impl Settings {
         Ok(())
     }
 
+    fn apply_api_environment(&mut self, environment: &BTreeMap<String, String>) {
+        if let Some(value) = environment.get("SWARMY_API_URL") {
+            self.api.url = Some(value.clone());
+        }
+        if let Some(value) = environment.get("SWARMY_API_TOKEN") {
+            self.api.token.clone_from(value);
+        }
+        if let Some(value) = environment.get("SWARMY_API_LISTEN") {
+            self.api.listen.clone_from(value);
+        }
+    }
+
     /// Apply existing `SWARMY_*` names over file values.
     /// # Errors
     /// Fails if an override cannot be parsed or the S3 namespace is invalid.
@@ -565,6 +579,7 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_S3_ACCESS_KEY") {
             self.s3_access_key.clone_from(value);
         }
+        self.apply_api_environment(environment);
         if let Some(value) = environment.get("SWARMY_S3_SECRET_KEY") {
             self.s3_secret_key.clone_from(value);
         }

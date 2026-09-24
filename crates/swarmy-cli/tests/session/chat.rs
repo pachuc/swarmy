@@ -73,6 +73,8 @@ impl Terminal {
         command.env("SWARMY_BUS_PREFIX", &fixture.prefix);
         command.env("SWARMY_PROVIDER", "fake");
         command.env("SWARMY_DEFAULT_IMAGE", default);
+        command.env("SWARMY_API_URL", &fixture.api_url);
+        command.env("SWARMY_API_TOKEN", &fixture.api_token);
         command.env("TERM", "xterm-256color");
         command.env("TOKIO_WORKER_THREADS", "2");
         let child = pair.slave.spawn_command(command).unwrap();
