@@ -725,3 +725,22 @@ fn token_limit_uses_catalog_default_and_allows_unknown_model_limit() {
         3048
     );
 }
+
+#[test]
+fn image_request_body() {
+    let mut req = request("claude-sonnet-4-5");
+    req.messages = vec![message(
+        MessageRole::User,
+        vec![Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            object_key: None,
+            detail: None,
+        }],
+    )];
+    let body = request_json(&req, &model("claude-sonnet-4-5"), &direct()).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][0]["source"],
+        json!({"type":"base64", "media_type":"image/png", "data":"AQID"})
+    );
+}

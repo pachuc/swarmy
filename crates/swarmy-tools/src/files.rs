@@ -5,7 +5,7 @@ use swarmy_harness::Tool;
 sandbox_tool!(
     Read,
     "read",
-    "Read a UTF-8 text file. Path is relative to the sandbox working directory or absolute. Offset is a 1-indexed line number, default 1; limit defaults to 2000 lines. Output includes line numbers, truncates lines after 2000 characters, and gives the next offset when more remains. Files containing null bytes are rejected.",
+    "Read a UTF-8 text file or a PNG, JPEG, GIF, or WebP image (up to 5 MiB). Images are shown to vision-capable models; other models receive the filename and dimensions. Path is relative to the sandbox working directory or absolute. Offset is a 1-indexed line number, default 1; limit defaults to 2000 lines. Output includes line numbers, truncates lines after 2000 characters, and gives the next offset when more remains. Files containing null bytes are rejected.",
     json!({"type":"object", "properties":{
         "path":{"type":"string","minLength":1},
         "offset":{"type":"integer","minimum":1,"default":1},

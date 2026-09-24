@@ -1,4 +1,6 @@
+import base64
 import json
+import struct
 import os
 from pathlib import Path
 import shutil
@@ -30,6 +32,16 @@ class FileTools(unittest.TestCase):
         result = self.call(action, args, **kwargs)
         self.assertIn("completed", result, result)
         return result["completed"]
+
+    def test_read_png_returns_image_and_dimensions(self):
+        payload = b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + struct.pack(">II", 12, 34)
+        (self.root / "sample.png").write_bytes(payload)
+        result = self.done("read", {"path": "sample.png"})
+        self.assertIn("sample.png (12x34)", result["output"])
+        self.assertEqual(result["metadata"]["image_media_type"], "image/png")
+        self.assertEqual(base64.b64decode(result["metadata"]["image_base64"]), payload)
+        (self.root / "huge.png").write_bytes(payload + b"x" * (5 * 1024 * 1024))
+        self.assertIn("5 MiB", self.call("read", {"path": "huge.png"})["error"]["error"])
 
     def test_read_default_offset_limit_and_hint(self):
         (self.root / "text").write_text("\n".join(map(str, range(1, 2003))))

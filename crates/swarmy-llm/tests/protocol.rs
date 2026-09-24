@@ -292,3 +292,22 @@ fn empty_output_in_the_terminal_event_falls_back_to_streamed_items() {
         );
     }
 }
+
+#[test]
+fn responses_image_request_body() {
+    let mut req = request();
+    req.messages = vec![message(
+        MessageRole::User,
+        vec![Part::Image {
+            media_type: "image/png".into(),
+            bytes: vec![1, 2, 3],
+            object_key: None,
+            detail: Some("low".into()),
+        }],
+    )];
+    let body = request_json(&req).unwrap();
+    assert_eq!(
+        body["input"][0]["content"][0],
+        json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"})
+    );
+}
