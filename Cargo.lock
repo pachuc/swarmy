@@ -4082,6 +4082,7 @@ dependencies = [
  "serde_json",
  "swarmy-api-types",
  "swarmy-bus",
+ "swarmy-client",
  "swarmy-config",
  "swarmy-core",
  "swarmy-llm",
@@ -4191,6 +4192,23 @@ dependencies = [
  "unicode-width",
  "url",
  "vt100",
+]
+
+[[package]]
+name = "swarmy-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "swarmy-api-types",
+ "thiserror 2.0.20",
+ "tokio",
+ "ulid",
+ "url",
 ]
 
 [[package]]
