@@ -47,9 +47,7 @@ until scratch lands.
 5. Credentials go into the swarm's encrypted store, not into files:
    `swarmy auth import --remote dev` for the ChatGPT login,
    `swarmy auth set openrouter --file KEYFILE --remote dev` for OpenRouter.
-   Until the gateway learns to watch the store (a dev-fleet task), restart
-   the gateway on the node after adding a credential:
-   `ssh ... sudo systemctl restart swarmy-gateway`.
+   The gateway watches the credential store; no manual restart is needed.
 6. Check: `swarmy doctor --remote dev` shows each provider as
    `gateway=served`; `swarmy remote status` shows the node heartbeat and the
    image. A live turn: `swarmy --remote dev run --provider openrouter --model
@@ -117,21 +115,16 @@ not replicate the backing services: the first node holds the store.
 
 ## Updating the swarm in place
 
-There is no upgrade command yet (a swarm-model task). The manual procedure,
-which is what the automation will do:
-
-1. Ship the commit: `git archive --format=tar COMMIT | ssh NODE 'tar -x -C
-   ~/swarmy'`. The archive gives files the commit's timestamp, which can be
-   older than the last build's, so also `find ~/swarmy/crates -type f -exec
-   touch {} +` or cargo will skip the rebuild.
-2. On the node: `cargo build --release --locked -p swarmy-cli -p swarmyd -p
-   swarmy-scheduler -p swarmy-gateway -p swarmy-worker`, `sudo install` the
-   six binaries into `/usr/local/bin`, then `sudo systemctl restart
-   swarmy-scheduler swarmy-worker swarmy-gateway`. These three can restart
-   at any time; sessions resume from the store.
-3. Restart `swarmyd` only when no worker is mid-task: it tears down the
-   sandboxes it hosts, and a running command fails.
-4. `make install` on the laptop so the CLI matches.
+Commit and install the checkout you want to deploy, then run
+`swarmy remote upgrade dev`. The command prints the local and node versions,
+updates joining nodes before the first node, and copies the checkout with the
+same credential exclusions as `remote up`. It rebuilds changed binaries and
+restarts only the affected services. A changed `swarmyd` waits for managed
+sandbox commands to finish before restarting; this evicts every placement on
+that node (all idle after the drain).
+Use `--drain-timeout 1200` for long builds, or `--services-only` when node
+sandboxes must stay untouched. A dirty local checkout requires the explicit
+`--allow-dirty` acknowledgement. `--json` prints one summary per node.
 
 ## Recovery
 

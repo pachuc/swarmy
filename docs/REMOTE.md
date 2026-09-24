@@ -67,6 +67,25 @@ Both `remote up` and `remote add-node` accept `--sandboxes N` (default 64); zero
 the volume role and no disk capacity, so placement cannot select that node.
 `remote status` displays each saved node's sandbox count.
 
+### Upgrade a running remote
+
+From a clean local checkout, run `swarmy remote upgrade NAME`. It reports the
+local CLI version and every node's installed `swarmyd` version before copying
+anything. Joining nodes upgrade first; the first node, which owns the backing
+services, upgrades last. The upgrade uses the provisioning rsync exclusions and
+keeps instances, disks, node state, and `/etc/swarmy/node.env` unchanged. It
+rebuilds the release binaries, installs changed binaries, and restarts installed service units whose running executables differ from the
+installed binaries. A changed node daemon restarts last, after its managed
+sandbox commands finish; restarting it evicts every placement on that node,
+even though they are idle after the drain. `--drain-timeout SECONDS`
+defaults to 600. `--services-only` never restarts `swarmyd` even if its binary
+changed. `--allow-dirty` explicitly opts into deploying uncommitted source.
+Use `--json` to emit one machine-readable summary per node. A timeout leaves
+the upgraded binaries on disk but does not restart the busy node daemon; retry
+the command after its commands finish. The retry compares each running unit's
+executable with the installed binary, including previously installed upgrades. This command does not stop the backing
+FoundationDB, NATS, or object store.
+
 Use `--image-recipe images/custom` on `remote up` to select a recipe directory
 within the copied checkout. Relative paths are resolved from the checkout root;
 absolute paths must also be inside the checkout. The recipe must contain

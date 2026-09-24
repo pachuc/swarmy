@@ -1196,3 +1196,169 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
         .unwrap();
     assert!(state.read("demo").unwrap().is_none());
 }
+
+#[derive(Default)]
+struct FakeUpgradeHost {
+    events: RefCell<Vec<String>>,
+    versions: RefCell<Vec<String>>,
+    upgrades: RefCell<Vec<(String, bool, bool, Duration)>>,
+}
+
+impl super::upgrade::UpgradeHost for FakeUpgradeHost {
+    fn has_service_units(&self, node: &RemoteNode) -> impl Future<Output = Result<bool>> {
+        std::future::ready(Ok(node.name != "child-b"))
+    }
+
+    fn version(&self, node: &RemoteNode) -> impl Future<Output = Result<String>> {
+        self.versions.borrow_mut().push(node.name.clone());
+        self.events
+            .borrow_mut()
+            .push(format!("version:{}", node.name));
+        std::future::ready(Ok("swarmyd 0.1.0 (test)".into()))
+    }
+
+    fn upgrade(
+        &self,
+        node: &RemoteNode,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> impl Future<Output = Result<super::upgrade::Summary>> {
+        self.upgrades
+            .borrow_mut()
+            .push((node.name.clone(), services_only, stack, drain_timeout));
+        self.events
+            .borrow_mut()
+            .push(format!("upgrade:{}", node.name));
+        std::future::ready(Ok(super::upgrade::Summary {
+            node: node.name.clone(),
+            changed: vec!["swarmyd".into(), "swarmy-gateway".into()],
+            restarted: if services_only {
+                vec!["swarmy-gateway".into()]
+            } else {
+                vec!["swarmy-gateway".into(), "swarmyd".into()]
+            },
+            elapsed_seconds: 1.5,
+        }))
+    }
+}
+
+fn upgrade_fixture() -> RemoteNode {
+    serde_json::from_value(serde_json::json!({
+        "name": "primary", "region": "us-east-1", "instance_id": "i-first",
+        "public_ip": "203.0.113.1", "private_ip": "10.0.0.1", "key_path": "key",
+        "created_at": "now", "nodes": [
+            {"name":"child-a", "region":"us-east-1", "instance_id":"i-a", "public_ip":"203.0.113.2", "private_ip":"10.0.0.2", "key_path":"key-a", "created_at":"now"},
+            {"name":"child-b", "region":"us-east-1", "instance_id":"i-b", "public_ip":"203.0.113.3", "private_ip":"10.0.0.3", "key_path":"key-b", "created_at":"now"}
+        ]
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
+    let root = upgrade_fixture();
+    let host = FakeUpgradeHost::default();
+    let error = super::upgrade::run(
+        &host,
+        &root,
+        super::upgrade::Options {
+            dirty_paths: vec!["M src/main.rs".into()],
+            allow_dirty: false,
+            scope: super::upgrade::Scope::All,
+            drain_timeout: Duration::from_secs(600),
+            format: super::upgrade::Format::Human,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("src/main.rs"));
+    assert!(host.versions.borrow().is_empty());
+    assert!(host.upgrades.borrow().is_empty());
+    let clean = super::upgrade::Options::new(false, true, 17, true);
+    assert_eq!(
+        super::upgrade::run(&host, &root, clean)
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+    host.versions.borrow_mut().clear();
+    host.upgrades.borrow_mut().clear();
+    host.events.borrow_mut().clear();
+    let summaries = super::upgrade::run(
+        &host,
+        &root,
+        super::upgrade::Options {
+            dirty_paths: vec!["M src/main.rs".into()],
+            allow_dirty: true,
+            scope: super::upgrade::Scope::ServicesOnly,
+            drain_timeout: Duration::from_secs(17),
+            format: super::upgrade::Format::Human,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(&*host.versions.borrow(), &["child-a", "child-b", "primary"]);
+    assert_eq!(
+        &*host.events.borrow(),
+        &[
+            "version:child-a",
+            "version:child-b",
+            "version:primary",
+            "upgrade:child-a",
+            "upgrade:child-b",
+            "upgrade:primary",
+        ]
+    );
+    assert_eq!(
+        host.upgrades
+            .borrow()
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<Vec<_>>(),
+        ["child-a", "child-b", "primary"]
+    );
+    assert!(
+        host.upgrades
+            .borrow()
+            .iter()
+            .all(|row| row.1 && row.3 == Duration::from_secs(17))
+    );
+    assert_eq!(
+        host.upgrades
+            .borrow()
+            .iter()
+            .map(|row| row.2)
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    assert_eq!(summaries[0].changed, ["swarmyd", "swarmy-gateway"]);
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| !summary.restarted.contains(&"swarmyd".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn upgrade_json_has_one_complete_object_per_node() {
+    let root = upgrade_fixture();
+    // The same rendering used for JSON output emits one complete object per node.
+    let json_summaries = super::upgrade::run(
+        &FakeUpgradeHost::default(),
+        &root,
+        super::upgrade::Options::new(false, false, 17, true),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json_summaries.len(), 3);
+    for summary in &json_summaries {
+        let line = super::upgrade::json_line(summary).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(value.is_object());
+        assert!(value["changed"].is_array());
+        assert!(value["restarted"].is_array());
+        assert!(value["elapsed_seconds"].is_number());
+    }
+}

@@ -2,6 +2,7 @@ mod hosting;
 mod memory;
 mod service;
 mod tools;
+mod upgrade;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
@@ -12,8 +13,13 @@ use swarmy_volume::server::ServerConfig;
 use tokio::{net::UnixListener, task::JoinSet};
 
 fn main() -> Result<()> {
-    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
+    let upgrade_processes =
+        std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--upgrade-processes"));
+    if !upgrade_processes {
+        swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
+    }
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -21,7 +27,12 @@ fn main() -> Result<()> {
         .init();
     let loaded = swarmy_config::Settings::load()?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(loaded))
+    let runtime = tokio::runtime::Runtime::new()?;
+    if upgrade_processes {
+        runtime.block_on(upgrade::run(&loaded))
+    } else {
+        runtime.block_on(run(loaded))
+    }
 }
 
 async fn run(loaded: swarmy_config::Loaded) -> Result<()> {

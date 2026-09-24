@@ -55,6 +55,7 @@ models:
 
 check:
 	bash scripts/test-remote-s3-env.sh
+	bash scripts/test-remote-upgrade.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) test --workspace --locked
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings

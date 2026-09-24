@@ -175,16 +175,10 @@ impl Ssh {
         Ok(relative.to_owned())
     }
 
-    /// Copy the checkout and run the provisioning script; returns the reachable address.
-    pub async fn provision(
-        &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
-    ) -> Result<String> {
-        let address = wait_ssh(node).await?;
-        checked(base(node)?.arg(&address)
+    /// Copy the same filtered checkout used by initial provisioning.
+    pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<()> {
+        checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (sudo cloud-init status --wait && sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
-        println!("Copying repository checkout");
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         let settings = swarmy_config::Settings::load_base()?.settings;
@@ -216,6 +210,97 @@ impl Ssh {
             "copy checkout with rsync",
         )
         .await?;
+        Ok(())
+    }
+
+    /// Report uncommitted paths while ignoring Python bytecode caches.
+    pub fn checkout_changes(&self) -> Result<Vec<String>> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "cannot inspect checkout git status"
+        );
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !is_python_cache(line))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
+        let output = base(node)?
+            .arg(address)
+            .arg("systemctl list-unit-files 'swarmy-*.service' --no-legend --no-pager")
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "inspect installed service units failed with {}",
+            output.status
+        );
+        Ok(has_control_units(&String::from_utf8(output.stdout)?))
+    }
+
+    pub async fn node_version(&self, node: &RemoteNode, address: &str) -> Result<String> {
+        let output = base(node)?
+            .arg(address)
+            .arg("/usr/local/bin/swarmyd --version")
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "read node version failed with {}",
+            output.status
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+
+    pub async fn upgrade(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> Result<serde_json::Value> {
+        self.copy_checkout(node, address).await?;
+        let mode = if stack { "stack" } else { "node" };
+        let services = if services_only {
+            "services-only"
+        } else {
+            "all"
+        };
+        let script = format!(
+            "cd swarmy && bash scripts/remote-upgrade.sh {mode} {services} {}",
+            drain_timeout.as_secs()
+        );
+        let output = base(node)?
+            .arg(address)
+            .arg(script)
+            .stderr(Stdio::inherit())
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "remote upgrade failed with {}",
+            output.status
+        );
+        serde_json::from_slice(&output.stdout).context("parse remote upgrade summary")
+    }
+
+    /// Copy the checkout and run the provisioning script; returns the reachable address.
+    pub async fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> Result<String> {
+        let address = wait_ssh(node).await?;
+        println!("Copying repository checkout");
+        self.copy_checkout(node, &address).await?;
         let service_ip: std::net::Ipv4Addr = primary
             .unwrap_or(node)
             .private_ip
@@ -261,6 +346,30 @@ impl Ssh {
         .await?;
         Ok(address)
     }
+}
+
+fn is_python_cache(status_line: &str) -> bool {
+    status_line
+        .get(3..)
+        .unwrap_or(status_line)
+        .split('/')
+        .any(|part| part.trim_matches('"') == "__pycache__")
+}
+
+fn has_control_units(listing: &str) -> bool {
+    listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|unit| {
+            matches!(
+                unit,
+                "swarmy-stack.service"
+                    | "swarmy-scheduler.service"
+                    | "swarmy-worker.service"
+                    | "swarmy-gateway.service"
+                    | "swarmy-api.service"
+            )
+        })
 }
 
 fn provisioning_command(
@@ -423,6 +532,50 @@ mod tests {
         for path in [root.join("nested/../auth.json"), root.join("alias")] {
             assert!(super::credential_excludes(root, &path).contains(&"auth.json".into()));
         }
+    }
+
+    #[test]
+    fn python_caches_are_ignored_but_other_untracked_paths_are_reported() {
+        assert!(super::is_python_cache("?? __pycache__/module.pyc"));
+        assert!(super::is_python_cache("?? src/__pycache__/module.pyc"));
+        assert!(!super::is_python_cache("?? src/main.rs"));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg("-q")
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::create_dir(dir.path().join("__pycache__")).unwrap();
+        std::fs::write(dir.path().join("__pycache__/module.pyc"), "cache").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
+        std::fs::write(dir.path().join("ignored"), "ignored").unwrap();
+        std::fs::write(dir.path().join("untracked.rs"), "code").unwrap();
+        let changes = super::Ssh {
+            repo: dir.path().to_owned(),
+        }
+        .checkout_changes()
+        .unwrap();
+        assert!(changes.iter().any(|path| path.contains("untracked.rs")));
+        assert!(
+            !changes
+                .iter()
+                .any(|path| path.contains("__pycache__") || path.contains("ignored"))
+        );
+    }
+
+    #[test]
+    fn installed_units_select_the_full_package_set() {
+        assert!(super::has_control_units(
+            "swarmy-tunnel.service enabled\nswarmy-gateway.service enabled\n"
+        ));
+        assert!(super::has_control_units("swarmy-stack.service enabled\n"));
+        assert!(!super::has_control_units(
+            "swarmy-tunnel.service enabled\nswarmyd.service enabled\n"
+        ));
     }
 
     #[test]
