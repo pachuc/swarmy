@@ -9,8 +9,8 @@ mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
 pub use remote::{
-    RemoteNode, RemotePorts, RemoteProfile, RemoteServices, RemoteSettings, remote_path,
-    validate_remote_name,
+    RemoteNode, RemotePorts, RemoteProfile, RemoteServices, RemoteSettings, default_sandboxes,
+    remote_path, validate_remote_name,
 };
 use serde::{Deserialize, Serialize};
 use std::{

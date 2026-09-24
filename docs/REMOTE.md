@@ -37,16 +37,22 @@ managed_by_tag = "swarmy"
 
 The image defaults to Canonical's current Ubuntu 24.04 amd64 image, resolved
 through SSM in the configured region. Custom images must be compatible with
-Ubuntu 24.04, the `ubuntu` SSH user, cloud-init, and passwordless sudo. Use an
-instance type with local NVMe instance storage. Provisioning labels and mounts
-an unused instance-store disk at `/mnt/swarmy-local` and puts volume caches and
+Ubuntu 24.04, the `ubuntu` SSH user, cloud-init, and passwordless sudo.
+Sandbox nodes need an instance type with local NVMe instance storage. A
+control-only first node (`--sandboxes 0`) can start on an m6i.large without
+local NVMe; its volume server and scratch directories remain on its EBS root
+disk. Joining nodes currently reuse the first node's saved instance type, so
+keep an NVMe-backed type in the configuration when using `add-node` until a
+per-node type option is available. Provisioning mounts an unused instance-store
+disk at `/mnt/swarmy-local` for sandbox nodes and puts their volume caches and
 dirty data there. EBS holds the repository, backing databases, and node identity.
 The script refuses to format EBS disks or reuse unrecognized filesystems.
 
 ```sh
-swarmy remote up demo
-# up prints image build time, total elapsed time, and an SSH command
+swarmy remote up demo --services node --sandboxes 0
+# Add one or more NVMe-backed sandbox nodes after the control node is ready.
 swarmy remote add-node demo
+# up prints image build time, total elapsed time, and an SSH command
 swarmy remote connect demo
 # connect reports total, address probing, and tunnel startup seconds
 swarmy doctor --remote demo
@@ -57,6 +63,12 @@ swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo
 ```
+
+For a quick single-node setup, `swarmy remote up demo --services node`
+still runs services and sandboxes together on an NVMe-backed instance.
+Both `remote up` and `remote add-node` accept `--sandboxes N` (default 64); zero advertises only
+the volume role and no disk capacity, so placement cannot select that node.
+`remote status` displays each saved node's sandbox count.
 
 Use `--image-recipe images/custom` on `remote up` to select a recipe directory
 within the copied checkout. Relative paths are resolved from the checkout root;
@@ -86,7 +98,8 @@ Node records are JSON at `<state directory>/remote/<name>.json`. The state
 directory is the configuration file's parent, or `.swarmy` in the current
 directory when no configuration exists. Records include region, instance id,
 public/private IPs, SSH user and key path, ports, creation time, and joining
-instances in `nodes`. `launch_settings` retains the resolved AMI and launch
+instances in `nodes`, including each node's sandbox count.
+`launch_settings` retains the resolved AMI and launch
 configuration, so later config edits do not change the subnet, security group,
 instance type, disk size, region, or ownership tag used by `add-node`.
 Older records without saved launch settings still support connect and down;
@@ -107,9 +120,9 @@ On the node, `sudo systemctl status swarmy-stack swarmyd` shows the services,
 and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
-`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP` on the first
+`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES` on the first
 node. Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
-provisioning with `node FIRST_NODE_PRIVATE_IP` instead. Their cluster file is
+provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES` instead. Their cluster file is
 copied from the first node, preserving its cluster identity and loopback
 coordinator address. `add-node` generates a dedicated tunnel key on the joining
 node and authorizes it for service forwards on the first node. It pins the first

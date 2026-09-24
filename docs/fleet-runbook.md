@@ -33,9 +33,16 @@ until scratch lands.
    login` once), and `~/.swarmy/keyring` the cluster key.
 2. Build and install the CLI from the commit you want the swarm to run:
    `make install`. The version guard refuses a mismatch later.
-3. Launch: `swarmy remote up dev --services node --copy-credential
-   --image-recipe images/swarmy-dev --bucket YOUR-BUCKET`. About ten minutes: instance, backing
-   services, release build on the node, systemd units, the dev image.
+   For now, configure an NVMe-backed instance type for both the control and
+   sandbox nodes: `add-node` reuses the first node's instance type. The
+   control-only path works on m6i.large, but joining NVMe-backed nodes to it
+   needs the separate per-node type change.
+3. Launch: `swarmy remote up dev --services node --sandboxes 0 --copy-credential
+   --image-recipe images/swarmy-dev --bucket YOUR-BUCKET`, then
+   `swarmy remote add-node dev` for each sandbox node. The first node runs
+   backing and control services, swarmyd (for image registration), and no
+   sandboxes. The joining nodes host sandboxes with default capacity 64 each.
+   For a quick single-node setup, omit `--sandboxes 0` and the add-node commands.
 4. Connect: `swarmy remote connect dev`. FoundationDB and NATS use tunnels;
    S3 uses the laptop's AWS credentials directly.
 5. Credentials go into the swarm's encrypted store, not into files:

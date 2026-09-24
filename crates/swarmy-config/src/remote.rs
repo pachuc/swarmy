@@ -93,6 +93,8 @@ pub struct RemoteNode {
     pub ports: RemotePorts,
     #[serde(default)]
     pub nodes: Vec<RemoteNode>,
+    #[serde(default = "default_sandboxes")]
+    pub sandboxes: u32,
     /// Registered image built for this stack, set only after a successful build.
     #[serde(default)]
     pub default_image: Option<String>,
@@ -108,6 +110,11 @@ impl RemoteNode {
     pub fn bucket(&self) -> Option<&str> {
         self.launch_settings.as_ref()?.bucket.as_deref()
     }
+}
+
+#[must_use]
+pub const fn default_sandboxes() -> u32 {
+    64
 }
 
 fn ssh_user() -> String {

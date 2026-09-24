@@ -20,6 +20,7 @@ struct Status {
     name: String,
     instance_id: String,
     instance_state: String,
+    sandboxes: u32,
     tunnel: bool,
     registrations: Vec<Registration>,
     registration_error: Option<String>,
@@ -35,6 +36,7 @@ struct NodeStatus {
     instance_id: String,
     instance_state: String,
     private_ip: String,
+    sandboxes: u32,
 }
 
 async fn reachable(node: &RemoteNode) -> bool {
@@ -87,6 +89,7 @@ pub async fn run(json: bool) -> Result<()> {
                 name: child.name.clone(),
                 instance_id: child.instance_id.clone(),
                 private_ip: child.private_ip.clone(),
+                sandboxes: child.sandboxes,
                 instance_state: instance_state(reachable(child).await),
             });
             pending.extend(&child.nodes);
@@ -98,16 +101,21 @@ pub async fn run(json: bool) -> Result<()> {
     } else {
         for status in statuses {
             println!(
-                "{} instance={} state={} tunnel={}",
+                "{} instance={} state={} sandboxes={} tunnel={}",
                 status.name,
                 status.instance_id,
                 status.instance_state,
+                status.sandboxes,
                 if status.tunnel { "up" } else { "down" }
             );
             for node in status.nodes {
                 println!(
-                    "  {} instance={} state={} private_ip={}",
-                    node.name, node.instance_id, node.instance_state, node.private_ip
+                    "  {} instance={} state={} private_ip={} sandboxes={}",
+                    node.name,
+                    node.instance_id,
+                    node.instance_state,
+                    node.private_ip,
+                    node.sandboxes
                 );
             }
             for service in status.services {
@@ -161,6 +169,7 @@ where
         name: node.name.clone(),
         instance_id: node.instance_id.clone(),
         instance_state: instance_state(reachable),
+        sandboxes: node.sandboxes,
         nodes: Vec::new(),
         images: Vec::new(),
         services: Vec::new(),
@@ -290,6 +299,16 @@ mod tests {
             ))
         })
         .await;
+        assert_eq!(status.sandboxes, 64);
+        assert_eq!(serde_json::to_value(&status).unwrap()["sandboxes"], 64);
+        let child = NodeStatus {
+            name: "test-2".into(),
+            instance_id: "i-child".into(),
+            instance_state: "running".into(),
+            private_ip: "10.0.0.2".into(),
+            sandboxes: 4,
+        };
+        assert_eq!(serde_json::to_value(&child).unwrap()["sandboxes"], 4);
         assert_eq!(status.images[0].name, "base-ubuntu");
         assert_eq!(status.images[0].tag.0, "test");
         assert!(status.image_error.is_none());

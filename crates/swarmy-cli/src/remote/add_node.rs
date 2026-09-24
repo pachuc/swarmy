@@ -10,6 +10,7 @@ pub async fn run(
     host: &impl Host,
     state: &State,
     name: &str,
+    sandboxes: u32,
     delay: Duration,
     options: Option<&super::services::Options<'_>>,
 ) -> Result<()> {
@@ -45,6 +46,7 @@ pub async fn run(
         ssh_user: primary.ssh_user.clone(),
         ports: primary.ports,
         nodes: Vec::new(),
+        sandboxes,
         default_image: None,
         launch_settings: Some(settings.clone()),
         created_at: jiff::Timestamp::now().to_string(),

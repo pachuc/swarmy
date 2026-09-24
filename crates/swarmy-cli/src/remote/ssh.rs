@@ -249,16 +249,32 @@ impl Ssh {
         };
         println!("Provisioning node and building release binaries (this takes several minutes)");
         checked(
-            base(node)?.arg(&address).arg(format!(
-                "cd swarmy && bash scripts/remote-provision.sh {mode} {service_ip} {} {}",
-                shell_words::quote(node.bucket().unwrap_or("")),
-                shell_words::quote(&node.region)
+            base(node)?.arg(&address).arg(provisioning_command(
+                mode,
+                service_ip,
+                node.bucket().unwrap_or(""),
+                &node.region,
+                node.sandboxes,
             )),
             "provision remote node",
         )
         .await?;
         Ok(address)
     }
+}
+
+fn provisioning_command(
+    mode: &str,
+    service_ip: std::net::Ipv4Addr,
+    bucket: &str,
+    region: &str,
+    sandboxes: u32,
+) -> String {
+    format!(
+        "cd swarmy && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {sandboxes}",
+        shell_words::quote(bucket),
+        shell_words::quote(region)
+    )
 }
 
 /// Use the node's service environment, including its native `FoundationDB` library.
@@ -475,5 +491,23 @@ mod tests {
         ] {
             assert!(tunnel_authorization(key).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod provisioning_command_tests {
+    use super::provisioning_command;
+
+    #[test]
+    fn sandbox_limit_is_passed_to_both_node_modes() {
+        let ip = "10.0.0.1".parse().unwrap();
+        assert_eq!(
+            provisioning_command("stack", ip, "", "us-east-1", 0),
+            "cd swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0"
+        );
+        assert_eq!(
+            provisioning_command("node", ip, "", "us-east-1", 4),
+            "cd swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 4"
+        );
     }
 }
