@@ -110,6 +110,8 @@ async fn dev_up_run_recover_reconfigure_and_down() {
             "swarmy-worker",
             "-p",
             "swarmy-gateway",
+            "-p",
+            "swarmy-api",
         ])
         .status()
         .unwrap();
@@ -191,7 +193,7 @@ async fn check_uptime(fixture: &Fixture) {
     // A fast turn no longer guarantees that the uptime counter has advanced.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
-    assert_eq!(state.matches("uptime").count(), 7, "{state}");
+    assert_eq!(state.matches("uptime").count(), 8, "{state}");
     assert!(
         !state.contains("uptime 0s"),
         "uptime did not advance: {state}"
@@ -228,7 +230,7 @@ async fn check_startup(fixture: &Fixture) {
     assert!(check["detail"].as_str().unwrap().contains("mode 600"));
     let up = String::from_utf8(up.stdout).unwrap();
     assert!(up.contains("Generated cluster keyring"), "{up}");
-    for name in ["stack", "scheduler", "worker", "gateway"] {
+    for name in ["stack", "scheduler", "worker", "gateway", "api"] {
         assert!(up.contains(&format!("{name}: ready")), "{up}");
     }
 }
@@ -272,7 +274,7 @@ async fn signal(pid: u32, signal: &str) {
 }
 
 fn identities(state: &Path) -> BTreeMap<String, (u32, String)> {
-    ["supervisor", "scheduler", "worker", "gateway"]
+    ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
         .map(|name| {
             let file = fs::read_to_string(state.join(format!("{name}.pid"))).unwrap();

@@ -327,6 +327,10 @@ pub enum EventPayload {
     NodeStatusChanged {
         node: Node,
     },
+    /// Stored events without a dedicated public projection retain their original data.
+    StoreRecord {
+        record: serde_json::Value,
+    },
 }
 
 /// `provider_text` preserves the original provider error without rewriting it.

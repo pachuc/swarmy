@@ -21,6 +21,7 @@ use crate::{Result, Store, StoreError, read, scan, write};
 pub struct CredentialSummary {
     pub provider: String,
     pub kind: String,
+    pub label: String,
     pub status: CredentialStatus,
     pub updated_at: Timestamp,
     pub expires_at: Option<Timestamp>,
@@ -32,6 +33,11 @@ impl CredentialSummary {
         Self {
             provider,
             kind: record.kind_name().into(),
+            label: match &record.kind {
+                CredentialKind::ApiKey { extra, .. } | CredentialKind::OAuth { extra, .. } => {
+                    extra.get("label").cloned().unwrap_or_default()
+                }
+            },
             status: record.status(now),
             updated_at: record.updated_at,
             expires_at: match record.kind {

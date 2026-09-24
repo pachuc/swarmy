@@ -8,6 +8,7 @@ pub enum Kind {
     Scheduler,
     Worker,
     Gateway,
+    Api,
     Node,
 }
 
@@ -17,6 +18,7 @@ impl Kind {
             Self::Scheduler => "swarmy-scheduler",
             Self::Worker => "swarmy-worker",
             Self::Gateway => "swarmy-gateway",
+            Self::Api => "swarmy-api",
             Self::Node => "swarmyd",
         }
     }

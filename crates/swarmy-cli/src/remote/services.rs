@@ -72,6 +72,7 @@ impl<'a> Options<'a> {
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
         let remote = Settings {
+            api: settings.api.clone(),
             provider: settings.provider.clone(),
             model: settings.model.clone(),
             reasoning_effort: settings.reasoning_effort.clone(),

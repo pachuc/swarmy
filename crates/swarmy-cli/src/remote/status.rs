@@ -23,6 +23,7 @@ struct Status {
     registration_error: Option<String>,
     nodes: Vec<NodeStatus>,
     images: Vec<ImageRecord>,
+    services: Vec<swarmy_store::ServiceHealth>,
     image_error: Option<String>,
 }
 
@@ -107,6 +108,14 @@ pub async fn run(json: bool) -> Result<()> {
                     node.name, node.instance_id, node.instance_state, node.private_ip
                 );
             }
+            for service in status.services {
+                println!(
+                    "  service {:?} {} {}",
+                    service.heartbeat.role,
+                    service.heartbeat.instance_id,
+                    if service.alive { "live" } else { "stale" }
+                );
+            }
             for image in status.images {
                 println!(
                     "  image {}:{} {}",
@@ -135,7 +144,13 @@ pub async fn run(json: bool) -> Result<()> {
 async fn inspect<F, Fut>(node: &RemoteNode, tunnel: bool, reachable: bool, scan: F) -> Status
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(Vec<NodeRecord>, Vec<ImageRecord>)>>,
+    Fut: Future<
+        Output = Result<(
+            Vec<NodeRecord>,
+            Vec<ImageRecord>,
+            Vec<swarmy_store::ServiceHealth>,
+        )>,
+    >,
 {
     let mut status = Status {
         name: node.name.clone(),
@@ -143,6 +158,7 @@ where
         instance_state: instance_state(reachable),
         nodes: Vec::new(),
         images: Vec::new(),
+        services: Vec::new(),
         image_error: None,
         tunnel,
         registrations: Vec::new(),
@@ -154,8 +170,9 @@ where
         return status;
     }
     match timeout(Duration::from_secs(5), scan()).await {
-        Ok(Ok((records, images))) => {
+        Ok(Ok((records, images, services))) => {
             status.images = images;
+            status.services = services;
             let now = jiff::Timestamp::now().as_second();
             status.registrations = records
                 .into_iter()
@@ -185,7 +202,14 @@ where
     status
 }
 
-async fn inventory(base: &Settings, name: &str) -> Result<(Vec<NodeRecord>, Vec<ImageRecord>)> {
+async fn inventory(
+    base: &Settings,
+    name: &str,
+) -> Result<(
+    Vec<NodeRecord>,
+    Vec<ImageRecord>,
+    Vec<swarmy_store::ServiceHealth>,
+)> {
     use std::sync::Arc;
     use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore};
     let mut settings = base.clone();
@@ -217,7 +241,7 @@ async fn inventory(base: &Settings, name: &str) -> Result<(Vec<NodeRecord>, Vec<
         let after = images.last().map(|image| (image.name.as_str(), &image.tag));
         let page = store.list_images(after, MAX_SCAN_LIMIT).await?;
         if page.is_empty() {
-            return Ok((records, images));
+            return Ok((records, images, store.list_services().await?));
         }
         images.extend(page);
     }
@@ -247,6 +271,7 @@ mod tests {
                     tag: swarmy_core::ImageTag("test".into()),
                     manifest_id: swarmy_core::ManifestId::from_ulid(ulid::Ulid::generate()),
                 }],
+                vec![],
             ))
         })
         .await;
@@ -255,7 +280,7 @@ mod tests {
         assert!(status.image_error.is_none());
         assert!(status.registrations[0].heartbeating);
         assert!(!status.registrations[1].heartbeating);
-        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![])) }).await;
+        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![], vec![])) }).await;
         assert!(absent.images.is_empty());
         assert!(absent.image_error.is_none());
         assert!(absent.registration_error.unwrap().contains("no swarmyd"));
