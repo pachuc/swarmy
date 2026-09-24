@@ -242,6 +242,12 @@ Say in the pull request which root suites you ran and their results, or that
 the change touches none of the areas above. A reviewer treats a change in one
 of those areas with no root-suite result as unverified.
 
+A swarmy fleet worker cannot run them: its sandbox has no sudo and no NBD
+devices, and `swarmy image build` fails there. If you are such a worker and
+your change touches a covered area, say so plainly in the pull request and
+list the suites that need running; the operator runs them on the node before
+merging.
+
 ## Working as a fleet worker
 
 Development tasks run on long-lived swarmy agents named `worker-N`, driven

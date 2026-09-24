@@ -80,6 +80,24 @@ They continue when the limit clears; a turn gives up only after
 `[inference] max_wait_seconds` (default one hour). OpenRouter workers are
 unaffected. To stop waiting instead, `fleet kill TASK`.
 
+## Disk on the node
+
+Build output lives in scratch on the NVMe; only clones and home files reach
+the durable volume. Three workers running full test builds hold about 110 GB
+of scratch. The collector deletes unreferenced chunks ten minutes after
+their thirty-minute grace, but SeaweedFS returns the space only when it
+compacts a volume file, on its own schedule and threshold. To get space back
+now, ask its master to compact anything more than ten percent garbage:
+
+```sh
+curl -s "127.0.0.1:9333/vol/vacuum?garbageThreshold=0.1" >/dev/null
+```
+
+Watch `df -h /` for the root disk (the store), `df -h /mnt/swarmy-local` for
+scratch, and `curl -s 127.0.0.1:9333/vol/status` for deleted bytes awaiting
+compaction. The node daemon evicts the least recently hosted scratch when
+the NVMe passes 80 percent.
+
 ## Adding a node
 
 `swarmy remote add-node dev` joins a second node to the same backing

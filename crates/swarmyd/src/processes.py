@@ -24,7 +24,10 @@ def stop(signum, frame):
     stopping = True
 signal.signal(signal.SIGTERM, stop)
 with os.fdopen(os.open(directory / 'stdin', os.O_RDWR), 'rb', buffering=0) as stdin:
-    child = subprocess.Popen(['/bin/bash', '-c', sys.argv[2]], stdin=stdin,
+    # A login shell so the image's profile applies: it sets PATH for the
+    # toolchain and CARGO_TARGET_DIR to the scratch mount; a plain -c shell
+    # would build inside the clone on the durable volume.
+    child = subprocess.Popen(['/bin/bash', '-lc', sys.argv[2]], stdin=stdin,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     (directory / 'ready').touch()
     with selectors.DefaultSelector() as ready, (directory / 'stdout').open('wb', buffering=0) as out, (directory / 'stderr').open('wb', buffering=0) as err:
