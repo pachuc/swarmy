@@ -612,6 +612,19 @@ impl<T> WorkMessage<T> {
             .map_err(nats)
     }
 
+    /// Drop this delivery for good: the server never redelivers a terminated message.
+    /// Use it for work that can never be served, such as a job whose stored
+    /// request is gone, so it stops occupying a delivery slot.
+    ///
+    /// # Errors
+    /// Returns acknowledgement publication failures.
+    pub async fn terminate(&self) -> Result<(), Error> {
+        self.message
+            .ack_with(jetstream::AckKind::Term)
+            .await
+            .map_err(nats)
+    }
+
     /// Reset the acknowledgement deadline using an in-progress acknowledgement.
     ///
     /// # Errors
