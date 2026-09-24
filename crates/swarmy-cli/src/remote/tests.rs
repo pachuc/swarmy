@@ -116,6 +116,7 @@ struct FakeHost {
     provisioned: RefCell<Vec<RemoteNode>>,
     fail: bool,
     fail_image: bool,
+    nvme_failure: bool,
     images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
     services: Cell<usize>,
     credentials: RefCell<Vec<std::path::PathBuf>>,
@@ -172,6 +173,11 @@ impl Host for FakeHost {
         if self.fail {
             return std::future::ready(Err(anyhow::anyhow!("SSH failed")));
         }
+        if self.nvme_failure {
+            return std::future::ready(Err(anyhow::anyhow!(
+                "An instance with local NVMe storage is required"
+            )));
+        }
         std::future::ready(Ok(node.public_ip.clone()))
     }
 }
@@ -183,6 +189,13 @@ fn instance(status: &str) -> Instance {
         public_ip: "203.0.113.10".into(),
         private_ip: "10.0.0.10".into(),
     }
+}
+
+fn observe_running(cloud: &FakeCloud) {
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
 }
 
 fn settings() -> RemoteSettings {
@@ -523,9 +536,20 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
     )
     .await
     .unwrap();
-    super::add_node::run(&cloud, &host, &state, "demo", 4, Duration::ZERO, None)
-        .await
-        .unwrap();
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
     let node = state.require("demo").unwrap();
     assert_eq!(node.nodes.len(), 1);
     let child = &node.nodes[0];
@@ -599,9 +623,20 @@ async fn failed_join_retains_child_for_cleanup() {
         ..Default::default()
     };
     assert!(
-        super::add_node::run(&cloud, &host, &state, "demo", 64, Duration::ZERO, None)
-            .await
-            .is_err()
+        super::add_node::run(
+            &cloud,
+            &host,
+            &state,
+            super::add_node::NewNode {
+                name: "demo",
+                sandboxes: 64,
+                shape: super::NodeShape::default()
+            },
+            Duration::ZERO,
+            None
+        )
+        .await
+        .is_err()
     );
     let node = state.require("demo").unwrap();
     assert_eq!(node.nodes.len(), 1);
@@ -781,9 +816,20 @@ async fn add_node_copies_both_secrets_only_when_requested() {
     )
     .await
     .unwrap();
-    super::add_node::run(&cloud, &host, &state, "demo", 64, Duration::ZERO, None)
-        .await
-        .unwrap();
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 64,
+            shape: super::NodeShape::default(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(host.services.get(), 0);
     assert!(host.keyrings.borrow().is_empty());
     assert!(host.credentials.borrow().is_empty());
@@ -806,8 +852,11 @@ async fn add_node_copies_both_secrets_only_when_requested() {
         &cloud,
         &host,
         &state,
-        "demo",
-        64,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 64,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         Some(&options),
     )
@@ -823,10 +872,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
     let cloud = FakeCloud::default();
-    cloud
-        .observations
-        .borrow_mut()
-        .extend([Some(instance("running"))]);
+    observe_running(&cloud);
     let host = FakeHost::default();
     let request = up::NewNode {
         name: "bucket-test",
@@ -869,16 +915,16 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
     assert_eq!(cloud.role_creates.borrow().len(), 1);
     assert_eq!(cloud.profile_creates.borrow().len(), 1);
-    cloud
-        .observations
-        .borrow_mut()
-        .extend([Some(instance("running"))]);
+    observe_running(&cloud);
     super::add_node::run(
         &cloud,
         &host,
         &state,
-        "bucket-test",
-        4,
+        super::add_node::NewNode {
+            name: "bucket-test",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+        },
         Duration::ZERO,
         None,
     )
@@ -901,10 +947,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         .unwrap();
     assert_eq!(&*cloud.profiles_deleted.borrow(), &["swarmy-bucket-test"]);
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    cloud
-        .observations
-        .borrow_mut()
-        .extend([Some(instance("running"))]);
+    observe_running(&cloud);
     up::run(
         &cloud,
         &host,
@@ -938,4 +981,218 @@ async fn profile_propagation_retries_one_failed_fake_launch() {
         .unwrap();
     assert_eq!(id, "i-test");
     assert_eq!(cloud.requests.borrow().len(), 2);
+}
+
+#[tokio::test]
+async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let mut first = settings();
+    super::NodeShape {
+        instance_type: Some("m6i.large".into()),
+        disk_gb: Some(40),
+    }
+    .apply(&mut first)
+    .unwrap();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Instance {
+            id: "i-second".into(),
+            ..instance("running")
+        }),
+    ]);
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &first,
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cloud.requests.borrow()[0].settings.instance_type,
+        "m6i.large"
+    );
+    assert_eq!(cloud.requests.borrow()[0].settings.disk_gb, 40);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape {
+                instance_type: Some("m6id.4xlarge".into()),
+                disk_gb: Some(100),
+            },
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = cloud.requests.borrow();
+    let joining = &requests[1].settings;
+    assert_eq!(joining.instance_type, "m6id.4xlarge");
+    assert_eq!(joining.disk_gb, 100);
+    assert_eq!(joining.region, first.region);
+    assert_eq!(joining.subnet, first.subnet);
+    assert_eq!(joining.security_group, first.security_group);
+    assert_eq!(joining.image.as_deref(), Some(requests[0].image.as_str()));
+    assert_eq!(joining.managed_by_tag, first.managed_by_tag);
+    drop(requests);
+    let saved = state.require("demo").unwrap();
+    let primary_settings = saved.launch_settings.unwrap();
+    let child_settings = saved.nodes[0].launch_settings.as_ref().unwrap();
+    assert_eq!(
+        (
+            primary_settings.instance_type.as_str(),
+            primary_settings.disk_gb
+        ),
+        ("m6i.large", 40)
+    );
+    assert_eq!(
+        (
+            child_settings.instance_type.as_str(),
+            child_settings.disk_gb
+        ),
+        ("m6id.4xlarge", 100)
+    );
+}
+
+#[tokio::test]
+async fn invalid_join_shape_fails_before_launch_or_state_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    cloud
+        .observations
+        .borrow_mut()
+        .push_back(Some(instance("running")));
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    for shape in [
+        super::NodeShape {
+            instance_type: Some(String::new()),
+            disk_gb: None,
+        },
+        super::NodeShape {
+            instance_type: None,
+            disk_gb: Some(0),
+        },
+    ] {
+        assert!(
+            super::add_node::run(
+                &cloud,
+                &host,
+                &state,
+                super::add_node::NewNode {
+                    name: "demo",
+                    sandboxes: 4,
+                    shape
+                },
+                Duration::ZERO,
+                None
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(cloud.requests.borrow().len(), 1);
+        assert!(state.require("demo").unwrap().nodes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn nvme_provisioning_failure_keeps_join_for_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Instance {
+            id: "i-second".into(),
+            ..instance("running")
+        }),
+    ]);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let host = FakeHost {
+        nvme_failure: true,
+        ..Default::default()
+    };
+    let error = super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape {
+                instance_type: Some("m6i.large".into()),
+                disk_gb: Some(40),
+            },
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("local NVMe storage is required"));
+    let saved = state.require("demo").unwrap();
+    assert_eq!(saved.nodes.len(), 1);
+    assert_eq!(saved.nodes[0].instance_id, "i-second");
+    assert_eq!(
+        saved.nodes[0]
+            .launch_settings
+            .as_ref()
+            .unwrap()
+            .instance_type,
+        "m6i.large"
+    );
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &saved, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(state.read("demo").unwrap().is_none());
 }

@@ -21,6 +21,7 @@ struct Status {
     instance_id: String,
     instance_state: String,
     sandboxes: u32,
+    instance_type: Option<String>,
     tunnel: bool,
     registrations: Vec<Registration>,
     registration_error: Option<String>,
@@ -35,6 +36,7 @@ struct NodeStatus {
     name: String,
     instance_id: String,
     instance_state: String,
+    instance_type: Option<String>,
     private_ip: String,
     sandboxes: u32,
 }
@@ -88,6 +90,10 @@ pub async fn run(json: bool) -> Result<()> {
             status.nodes.push(NodeStatus {
                 name: child.name.clone(),
                 instance_id: child.instance_id.clone(),
+                instance_type: child
+                    .launch_settings
+                    .as_ref()
+                    .map(|settings| settings.instance_type.clone()),
                 private_ip: child.private_ip.clone(),
                 sandboxes: child.sandboxes,
                 instance_state: instance_state(reachable(child).await),
@@ -99,58 +105,64 @@ pub async fn run(json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&statuses)?);
     } else {
-        for status in statuses {
-            println!(
-                "{} instance={} state={} sandboxes={} tunnel={}",
-                status.name,
-                status.instance_id,
-                status.instance_state,
-                status.sandboxes,
-                if status.tunnel { "up" } else { "down" }
-            );
-            for node in status.nodes {
-                println!(
-                    "  {} instance={} state={} private_ip={} sandboxes={}",
-                    node.name,
-                    node.instance_id,
-                    node.instance_state,
-                    node.private_ip,
-                    node.sandboxes
-                );
-            }
-            for service in status.services {
-                println!(
-                    "  service {:?} {} {}",
-                    service.heartbeat.role,
-                    service.heartbeat.instance_id,
-                    if service.alive { "live" } else { "stale" }
-                );
-            }
-            for image in status.images {
-                println!(
-                    "  image {}:{} {}",
-                    image.name, image.tag.0, image.manifest_id
-                );
-            }
-            if let Some(error) = status.image_error {
-                println!("  images: {error}");
-            }
-            for record in status.registrations {
-                println!(
-                    "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
-                    record.node_id,
-                    record.heartbeat_age_seconds,
-                    if record.heartbeating { "live" } else { "stale" },
-                    record.committed_memory_mib,
-                    record.free_memory_mib
-                );
-            }
-            if let Some(error) = status.registration_error {
-                println!("  registration: {error}");
-            }
-        }
+        print_human(statuses);
     }
     Ok(())
+}
+
+fn print_human(statuses: Vec<Status>) {
+    for status in statuses {
+        println!(
+            "{} instance={} type={} state={} sandboxes={} tunnel={}",
+            status.name,
+            status.instance_id,
+            status.instance_type.as_deref().unwrap_or("unknown"),
+            status.instance_state,
+            status.sandboxes,
+            if status.tunnel { "up" } else { "down" }
+        );
+        for node in status.nodes {
+            println!(
+                "  {} instance={} type={} state={} private_ip={} sandboxes={}",
+                node.name,
+                node.instance_id,
+                node.instance_type.as_deref().unwrap_or("unknown"),
+                node.instance_state,
+                node.private_ip,
+                node.sandboxes
+            );
+        }
+        for service in status.services {
+            println!(
+                "  service {:?} {} {}",
+                service.heartbeat.role,
+                service.heartbeat.instance_id,
+                if service.alive { "live" } else { "stale" }
+            );
+        }
+        for image in status.images {
+            println!(
+                "  image {}:{} {}",
+                image.name, image.tag.0, image.manifest_id
+            );
+        }
+        if let Some(error) = status.image_error {
+            println!("  images: {error}");
+        }
+        for record in status.registrations {
+            println!(
+                "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
+                record.node_id,
+                record.heartbeat_age_seconds,
+                if record.heartbeating { "live" } else { "stale" },
+                record.committed_memory_mib,
+                record.free_memory_mib
+            );
+        }
+        if let Some(error) = status.registration_error {
+            println!("  registration: {error}");
+        }
+    }
 }
 
 async fn inspect<F, Fut>(node: &RemoteNode, tunnel: bool, reachable: bool, scan: F) -> Status
@@ -170,6 +182,10 @@ where
         instance_id: node.instance_id.clone(),
         instance_state: instance_state(reachable),
         sandboxes: node.sandboxes,
+        instance_type: node
+            .launch_settings
+            .as_ref()
+            .map(|settings| settings.instance_type.clone()),
         nodes: Vec::new(),
         images: Vec::new(),
         services: Vec::new(),
@@ -286,6 +302,12 @@ mod tests {
             .unwrap(),
             cached_images: vec![],
         };
+        let mut node = node;
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            instance_type: "m6i.large".into(),
+            disk_gb: 40,
+            ..Default::default()
+        });
         let status = inspect(&node, true, true, || async {
             Ok((
                 vec![record(1), record(90)],
@@ -305,6 +327,7 @@ mod tests {
             name: "test-2".into(),
             instance_id: "i-child".into(),
             instance_state: "running".into(),
+            instance_type: Some("m6id.4xlarge".into()),
             private_ip: "10.0.0.2".into(),
             sandboxes: 4,
         };
@@ -312,6 +335,7 @@ mod tests {
         assert_eq!(status.images[0].name, "base-ubuntu");
         assert_eq!(status.images[0].tag.0, "test");
         assert!(status.image_error.is_none());
+        assert_eq!(status.instance_type.as_deref(), Some("m6i.large"));
         assert!(status.registrations[0].heartbeating);
         assert!(!status.registrations[1].heartbeating);
         let absent = inspect(&node, true, true, || async {
