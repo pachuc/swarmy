@@ -332,7 +332,6 @@ impl Cloud for Aws {
         self.ensure_profile(bucket, name).await
     }
 
-
     async fn stock_image(&self) -> Result<String> {
         let output = self.ssm.get_parameter().name(UBUNTU_IMAGE).send().await?;
         Ok(output
