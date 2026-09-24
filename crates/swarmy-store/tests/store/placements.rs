@@ -16,7 +16,7 @@ async fn node(store: &Store, capacity: u32) -> NodeRecord {
         roles: vec![NodeRole::Sandbox],
         capacity: NodeCapacity {
             cpu_millis: 1000,
-            memory_bytes: 1024 * 1024 * 1024,
+            memory_bytes: 4 * 1024 * 1024 * 1024,
             disk_bytes: 1024,
             sandboxes: capacity,
         },
