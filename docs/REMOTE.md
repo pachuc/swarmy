@@ -74,14 +74,16 @@ local CLI version and every node's installed `swarmyd` version before copying
 anything. Joining nodes upgrade first; the first node, which owns the backing
 services, upgrades last. The upgrade uses the provisioning rsync exclusions and
 keeps instances, disks, node state, and `/etc/swarmy/node.env` unchanged. It
-rebuilds the release binaries, installs changed binaries, and restarts only
-installed service units whose binaries changed. A changed node daemon restarts
-last, after its managed sandbox commands finish; `--drain-timeout SECONDS`
+rebuilds the release binaries, installs changed binaries, and restarts installed service units whose running executables differ from the
+installed binaries. A changed node daemon restarts last, after its managed
+sandbox commands finish; restarting it evicts every placement on that node,
+even though they are idle after the drain. `--drain-timeout SECONDS`
 defaults to 600. `--services-only` never restarts `swarmyd` even if its binary
 changed. `--allow-dirty` explicitly opts into deploying uncommitted source.
 Use `--json` to emit one machine-readable summary per node. A timeout leaves
 the upgraded binaries on disk but does not restart the busy node daemon; retry
-the command after its commands finish. This command does not stop the backing
+the command after its commands finish. The retry compares each running unit's
+executable with the installed binary, including previously installed upgrades. This command does not stop the backing
 FoundationDB, NATS, or object store.
 
 Use `--image-recipe images/custom` on `remote up` to select a recipe directory

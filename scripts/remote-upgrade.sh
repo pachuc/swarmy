@@ -32,32 +32,36 @@ for binary in "${binaries[@]}"; do
         (( result == 1 )) || exit "$result"
     fi
 done
-pending="$repo_dir/.swarmy/upgrade-swarmyd-pending"
-if [[ " ${changed[*]} " == *' swarmyd '* ]]; then
-    mkdir -p "$repo_dir/.swarmy"
-    touch "$pending"
-fi
-if [[ $mode == stack ]]; then
-    for service in scheduler worker gateway api; do
-        binary="swarmy-$service"
-        if [[ " ${changed[*]} " == *" $binary "* ]] && systemctl cat "$binary.service" >/dev/null 2>&1; then
+for service in scheduler worker gateway api; do
+    binary="swarmy-$service"
+    if systemctl cat "$binary.service" >/dev/null 2>&1; then
+        if unit_needs_restart "$binary.service" "/usr/local/bin/$binary"; then
             sudo -n systemctl restart "$binary.service"
             restarted+=("$binary")
+        else
+            result=$?
+            (( result == 1 )) || exit "$result"
         fi
-    done
-fi
-if [[ -f $pending && $services == all ]]; then
-    deadline=$((SECONDS + drain_timeout))
-    while true; do
-        busy=$(sudo -n sh -c 'cd /home/ubuntu/swarmy && set -a && . /etc/swarmy/node.env && set +a && exec /home/ubuntu/swarmy/target/release/swarmyd --upgrade-processes')
-        [[ $busy == '[]' ]] && break
-        echo "Waiting for running sandbox commands: $busy" >&2
-        (( SECONDS < deadline )) || { echo "Drain timed out after $drain_timeout seconds; swarmyd was not restarted" >&2; exit 1; }
-        sleep 5
-    done
-    sudo -n systemctl restart swarmyd.service
-    rm -f "$pending"
-    restarted+=(swarmyd)
+    fi
+done
+if unit_needs_restart swarmyd.service /usr/local/bin/swarmyd; then
+    if [[ $services == services-only ]]; then
+        echo 'swarmyd is out of date but --services-only skips its restart' >&2
+    else
+        deadline=$((SECONDS + drain_timeout))
+        while true; do
+            busy=$(sudo -n sh -c 'cd /home/ubuntu/swarmy && set -a && . /etc/swarmy/node.env && set +a && exec /home/ubuntu/swarmy/target/release/swarmyd --upgrade-processes')
+            [[ $busy == '[]' ]] && break
+            echo "Waiting for running sandbox commands: $busy" >&2
+            (( SECONDS < deadline )) || { echo "Drain timed out after $drain_timeout seconds; swarmyd was not restarted" >&2; exit 1; }
+            sleep 5
+        done
+        sudo -n systemctl restart swarmyd.service
+        restarted+=(swarmyd)
+    fi
+else
+    result=$?
+    (( result == 1 )) || exit "$result"
 fi
 python3 - "${changed[*]}" "${restarted[*]}" "$((SECONDS - started))" <<'PY'
 import json, sys

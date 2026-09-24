@@ -11,6 +11,15 @@ use tokio::{
 };
 
 async fn process_list(socket: &Path, agent: AgentId, epoch: u64) -> Result<bool> {
+    process_list_with_timeout(socket, agent, epoch, Duration::from_secs(20)).await
+}
+
+async fn process_list_with_timeout(
+    socket: &Path,
+    agent: AgentId,
+    epoch: u64,
+    frame_timeout: Duration,
+) -> Result<bool> {
     let mut stream = UnixStream::connect(socket)
         .await
         .context("connect running swarmyd control socket")?;
@@ -38,10 +47,13 @@ async fn process_list(socket: &Path, agent: AgentId, epoch: u64) -> Result<bool>
     let mut output = Vec::new();
     loop {
         line.clear();
+        let read =
+            match tokio::time::timeout(frame_timeout, reader.read_until(b'\n', &mut line)).await {
+                Ok(read) => read?,
+                Err(_) => return Ok(true), // A foreground command can hold the exec lock.
+            };
         ensure!(
-            tokio::time::timeout(Duration::from_secs(20), reader.read_until(b'\n', &mut line))
-                .await??
-                > 0,
+            read > 0,
             "swarmyd closed the process listing before returning a result"
         );
         match serde_json::from_slice::<swarmyd::Response>(&line)? {
@@ -155,6 +167,75 @@ mod tests {
             }
         });
         assert!(process_list(&path, agent, 7).await.unwrap());
+        server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    use swarmy_core::ExecResult;
+    use tokio::net::UnixListener;
+
+    async fn response(value: swarmyd::Response) -> Result<bool> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let mut bytes = serde_json::to_vec(&value).unwrap();
+            bytes.push(b'\n');
+            write.write_all(&bytes).await.unwrap();
+        });
+        let result = process_list(&path, AgentId::from_ulid(ulid::Ulid::generate()), 7).await;
+        server.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn missing_sandbox_is_idle_but_failed_listing_is_not() {
+        assert!(
+            !response(swarmyd::Response::Error(
+                "sandbox is missing or already exists".into()
+            ))
+            .await
+            .unwrap()
+        );
+        assert!(
+            response(swarmyd::Response::Exited(ExecResult {
+                exit_code: 1,
+                timed_out: false
+            }))
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn held_exec_lock_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, _write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        });
+        assert!(
+            process_list_with_timeout(
+                &path,
+                AgentId::from_ulid(ulid::Ulid::generate()),
+                7,
+                Duration::from_millis(10)
+            )
+            .await
+            .unwrap()
+        );
         server.await.unwrap();
     }
 }

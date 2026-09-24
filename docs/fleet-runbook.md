@@ -47,9 +47,7 @@ until scratch lands.
 5. Credentials go into the swarm's encrypted store, not into files:
    `swarmy auth import --remote dev` for the ChatGPT login,
    `swarmy auth set openrouter --file KEYFILE --remote dev` for OpenRouter.
-   Until the gateway learns to watch the store (a dev-fleet task), restart
-   the gateway on the node after adding a credential:
-   `ssh ... sudo systemctl restart swarmy-gateway`.
+   The gateway watches the credential store; no manual restart is needed.
 6. Check: `swarmy doctor --remote dev` shows each provider as
    `gateway=served`; `swarmy remote status` shows the node heartbeat and the
    image. A live turn: `swarmy --remote dev run --provider openrouter --model
@@ -122,7 +120,8 @@ Commit and install the checkout you want to deploy, then run
 updates joining nodes before the first node, and copies the checkout with the
 same credential exclusions as `remote up`. It rebuilds changed binaries and
 restarts only the affected services. A changed `swarmyd` waits for managed
-sandbox commands to finish before restarting; this evicts idle placements.
+sandbox commands to finish before restarting; this evicts every placement on
+that node (all idle after the drain).
 Use `--drain-timeout 1200` for long builds, or `--services-only` when node
 sandboxes must stay untouched. A dirty local checkout requires the explicit
 `--allow-dirty` acknowledgement. `--json` prints one summary per node.
