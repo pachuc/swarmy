@@ -163,6 +163,9 @@ class CDP:
         elif length == 127:
             length = struct.unpack('!Q', self.read(8))[0]
         if length > 16 * 1024 * 1024:
+            # Drain the frame so a shallower tree can be requested on this socket.
+            for _ in range(0, length, 65536):
+                self.read(min(65536, length - _))
             raise ValueError('DevTools reply too large')
         data = self.read(length)
         if first & 15 == 8:
@@ -191,7 +194,7 @@ class CDP:
         result = self.call('Runtime.evaluate', {'expression': expression,
                            'returnByValue': True, 'awaitPromise': True})
         if 'exceptionDetails' in result:
-            raise ValueError('JavaScript exception: ' + str(result['exceptionDetails'].get('text')))
+            raise ValueError('JavaScript exception: ' + str(result['exceptionDetails'].get('exception', {}).get('description') or result['exceptionDetails'].get('text')))
         return result.get('result', {}).get('value')
 
     def element(self, ref):
@@ -203,34 +206,60 @@ class CDP:
         return self.call('DOM.resolveNode', {'backendNodeId': state['refs'][ref]})['object']['objectId']
 
     def on_element(self, ref, function, arguments=None):
-        return self.call('Runtime.callFunctionOn', {'objectId': self.element(ref),
+        result = self.call('Runtime.callFunctionOn', {'objectId': self.element(ref),
                          'functionDeclaration': function, 'arguments':
                          [{'value': arg} for arg in (arguments or [])],
                          'returnByValue': True})
+        if 'exceptionDetails' in result:
+            raise ValueError('JavaScript exception: ' + str(result['exceptionDetails'].get('exception', {}).get('description') or result['exceptionDetails'].get('text')))
+        return result.get('result', {}).get('value')
 
 
 def snapshot(cdp):
     cdp.call('Accessibility.enable')
-    nodes = cdp.call('Accessibility.getFullAXTree')['nodes']
+    for depth in (8, 4, 2, 1):
+        try:
+            nodes = cdp.call('Accessibility.getFullAXTree', {'depth': depth})['nodes']
+            break
+        except ValueError as error:
+            if str(error) != 'DevTools reply too large' or depth == 1:
+                raise
     by_parent = {}
     for node in nodes:
         by_parent.setdefault(node.get('parentId'), []).append(node)
+    url = cdp.evaluate('location.href')
+    try:
+        with open(REFS, encoding='utf8') as source:
+            previous = json.load(source)
+        old_refs = previous['refs'] if previous['url'] == url else {}
+    except (OSError, ValueError, KeyError):
+        old_refs = {}
     refs = {}
+    old_by_node = {node: ref for ref, node in old_refs.items()}
+    next_ref = max((int(ref[1:]) for ref in old_refs if ref.startswith('e') and ref[1:].isdigit()), default=0)
     lines = []
     def visit(node, depth):
+        nonlocal next_ref
         if not node.get('ignored'):
             role = node.get('role', {}).get('value', '')
             name = node.get('name', {}).get('value', '')
             value = node.get('value', {}).get('value')
             reference = ''
             if node.get('backendDOMNodeId') and role not in ('StaticText', 'InlineTextBox'):
-                reference = 'e' + str(len(refs) + 1)
-                refs[reference] = node['backendDOMNodeId']
+                backend = node['backendDOMNodeId']
+                reference = old_by_node.get(backend)
+                if reference is None:
+                    next_ref += 1
+                    reference = 'e' + str(next_ref)
+                refs[reference] = backend
             label = ('[%s] ' % reference if reference else '') + str(role)
             if name:
                 label += ' ' + json.dumps(name, ensure_ascii=False)
             if value is not None:
                 label += ' value=' + json.dumps(value, ensure_ascii=False)
+            for prop in node.get('properties', []):
+                if prop.get('name') in ('checked', 'disabled', 'focused', 'expanded', 'url'):
+                    label += ' %s=%s' % (prop['name'], json.dumps(prop.get('value', {}).get('value'), ensure_ascii=False))
             lines.append('  ' * min(depth, 20) + label)
             depth += 1
         for child in by_parent.get(node.get('nodeId'), []):
@@ -238,12 +267,11 @@ def snapshot(cdp):
     roots = by_parent.get(None, [])
     for root in roots:
         visit(root, 0)
-    url = cdp.evaluate('location.href')
     title = cdp.evaluate('document.title')
     with open(REFS, 'w', encoding='utf8') as destination:
         json.dump({'url': url, 'refs': refs}, destination)
-    return {'output': preview('URL: %s\nTitle: %s\n%s' %
-                              (url, title, '\n'.join(lines)))}
+    return {'output': preview('URL: %s\nTitle: %s\nRefs like [e3] are stable within a page and expire on navigation.\nTree limited to depth %d (truncated).\n%s' %
+                              (url, title, depth, '\n'.join(lines)))}
 
 
 def run(action, args):
@@ -258,11 +286,17 @@ def run(action, args):
     if action == 'browser_navigate':
         if not args['url'].startswith(('http://', 'https://')):
             raise ValueError('only HTTP and HTTPS navigation is allowed')
-        previous = cdp.evaluate('location.href')
-        cdp.call('Page.navigate', {'url': args['url']})
-        for _ in range(50):
-            if cdp.evaluate('location.href') != previous and cdp.evaluate('document.readyState') == 'complete':
-                break
+        navigation = cdp.call('Page.navigate', {'url': args['url']})
+        if navigation.get('errorText'):
+            raise ValueError('Navigation failed: ' + navigation['errorText'])
+        try:
+            os.unlink(REFS)
+        except FileNotFoundError:
+            pass
+        deadline = time.monotonic() + 20
+        while cdp.evaluate('document.readyState') != 'complete':
+            if time.monotonic() >= deadline:
+                raise ValueError('Navigation timed out waiting for page load')
             time.sleep(0.1)
         return snapshot(cdp)
     if action == 'browser_snapshot':
@@ -270,10 +304,13 @@ def run(action, args):
     if action == 'browser_click':
         cdp.on_element(args['ref'], 'function() { this.click(); }')
     elif action == 'browser_type':
-        cdp.on_element(args['ref'], 'function(text, submit) { this.focus(); this.value = text; this.dispatchEvent(new Event("input", {bubbles:true})); this.dispatchEvent(new Event("change", {bubbles:true})); if (submit && this.form) this.form.requestSubmit(); }',
-                       [args['text'], args.get('submit', False)])
+        cdp.on_element(args['ref'], 'function() { if (!("value" in this) && !this.isContentEditable) throw new Error("element is not editable"); this.focus(); if ("value" in this) this.select?.(); else { const selection = window.getSelection(); selection.selectAllChildren(this); selection.deleteFromDocument(); } }')
+        cdp.call('Input.insertText', {'text': args['text']})
+        cdp.on_element(args['ref'], 'function(text) { const actual = ("value" in this) ? this.value : this.textContent; if (actual !== text) throw new Error("typing did not update the element"); }', [args['text']])
+        if args.get('submit', False):
+            cdp.on_element(args['ref'], 'function() { if (this.form) this.form.requestSubmit(); }')
     elif action == 'browser_select':
-        cdp.on_element(args['ref'], 'function(value) { this.value = value; this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
+        cdp.on_element(args['ref'], 'function(value) { this.value = value; if (this.value !== value) throw new Error("selection failed"); this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
     elif action == 'browser_scroll':
         if args.get('ref'):
             cdp.on_element(args['ref'], 'function() { this.scrollIntoView({block:"center"}); }')

@@ -91,7 +91,7 @@ sandbox_tool!(
 sandbox_tool!(
     BrowserSnapshot,
     "browser_snapshot",
-    "Read the current page's accessibility tree, URL, title, and short element references. Prefer this to a screenshot for interacting with web pages.",
+    "Read the current page's accessibility tree, URL, title, and short element references. Prefer this to a screenshot for interacting with web pages. Refs look like [e3], are stable within a page, and expire on navigation.",
     empty_parameters()
 );
 sandbox_tool!(

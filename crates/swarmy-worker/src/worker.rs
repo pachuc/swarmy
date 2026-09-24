@@ -28,6 +28,7 @@ pub struct Worker {
     config: Config,
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
+    display_by_session: Mutex<HashMap<SessionId, bool>>,
     pub owner: LeaseOwnerId,
 }
 
@@ -40,6 +41,7 @@ impl Worker {
             config,
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
+            display_by_session: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         }
     }
@@ -560,10 +562,19 @@ impl Worker {
     }
 
     async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
-            return Ok(false);
+        let mut cache = self.display_by_session.lock().await;
+        if let Some(display) = cache.get(&session.session_id) {
+            return Ok(*display);
+        }
+        let display = if let Some(agent) = self.store.get_agent(session.agent_id).await? {
+            self.store.image_display(&agent.image).await?
+        } else {
+            false
         };
-        Ok(self.store.image_display(&agent.image).await?)
+        // Session images do not change during a worker lifetime. A worker restart
+        // drops this cache; restart workers after changing an agent's image.
+        cache.insert(session.session_id, display);
+        Ok(display)
     }
 
     async fn prepare_request(
