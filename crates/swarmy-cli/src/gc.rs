@@ -4,7 +4,7 @@ use swarmy_store::{Store, blob::ObjectBlobStore};
 
 pub async fn run(dry_run: bool, json: bool) -> anyhow::Result<()> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let blobs = Arc::new(ObjectBlobStore::from_env()?);
+    let blobs = Arc::new(ObjectBlobStore::new(settings.object_store()?));
     let objects = blobs.object_store();
     let directory: Vec<_> = settings
         .store_directory
