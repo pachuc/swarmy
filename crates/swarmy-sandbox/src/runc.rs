@@ -723,14 +723,16 @@ impl SandboxRuntime for RuncRuntime {
             self.sweep_scratch().await?;
         }
         let _lifecycle = self.lifecycle.lock().await;
-        let id = spec.agent_id;
-        let scratch = spec.scratch.clone();
+        let (id, scratch, memory_mib) = (
+            spec.agent_id,
+            spec.scratch.clone(),
+            spec.requirements.memory_mib,
+        );
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
-        let memory_mib = spec.requirements.memory_mib;
         let journal = Journal { spec, disk };
         // Persist ownership before attaching so SIGKILL at any later step leaves
         // enough information to clean up on the next daemon start.

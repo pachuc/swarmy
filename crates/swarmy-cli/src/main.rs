@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Models { command } => models::run(command, cli.json)?,
-        Command::Remote { command } => remote::run(command, cli.json).await?,
+        Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Bench { .. }
         | Command::Run { .. }

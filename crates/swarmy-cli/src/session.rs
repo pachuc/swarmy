@@ -118,10 +118,10 @@ async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) ->
     } else if let Some(image) = store.pinned_image(id).await? {
         swarmy_core::SandboxRequirements {
             memory_mib: store.image_memory(&image).await?.unwrap_or(768),
-            gpu: Default::default(),
+            gpu: swarmy_core::GpuRequirement::default(),
         }
     } else {
-        Default::default()
+        swarmy_core::SandboxRequirements::default()
     };
     crate::vol::output(
         &serde_json::json!({"sandbox_requirements": requirements, "memory_limit_mib": requirements.memory_mib}),
