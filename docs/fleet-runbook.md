@@ -9,7 +9,7 @@ automate; every step here is a plain command.
 
 | Piece | Value | Why |
 |---|---|---|
-| Control node | `m6i.large`, 40 GiB root disk, `--sandboxes 0` | keep the control plane on a small EBS-backed node |
+| Control node | minimum `m6i.large` (8 GiB RAM), 40 GiB root disk, `--sandboxes 0` | release build needs at least 6 GiB available; node CLI omits EC2 provisioning SDKs |
 | Sandbox node | `m6id.4xlarge`, 100 GiB root disk, local NVMe | worker builds use instance-store scratch |
 | Sandboxes per sandbox node | 4 | one worker per lane |
 | Control plane | on the node (`--services node`) | the laptop can disconnect |
@@ -17,6 +17,15 @@ automate; every step here is a plain command.
 | Snapshots and collection | retention 3, collector grace 30 min, interval 10 min (set by provisioning) | build caches churn; ten snapshots and six hours of grace filled a 100 GB root disk in an hour |
 | Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | check current EC2 prices for both shapes, plus S3 and inference | separate control and sandbox nodes |
+
+The node build uses `swarmy-cli --no-default-features`: provisioning commands
+and the EC2, S3, IAM, and SSM clients belong on the laptop. A 6 GiB fleet
+sandbox measured 957,428 KiB peak resident memory for the release build without
+that feature. The default-feature build reached 6,123,248 KiB in the EC2
+compiler and was killed by its memory limit. The node checks for 6 GiB
+`MemAvailable` before building; use at least an 8 GiB instance so the OS and
+backing services have room too. Inference's Bedrock SDK remains part of the
+session binary; the node build omits the provisioning clients, not inference.
 
 Observed with three workers building at once: 3 GiB used, load 4. The root
 disk, which holds the node's object store, filled to 96 percent within an
@@ -55,6 +64,32 @@ until scratch lands.
 7. Fleet config: copy `scripts/fleet/fleet.example.toml` to
    `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod
    600`. The file is ignored by git.
+
+## The split layout in practice
+
+The first split swarm (`dev2`, 2026-09-24) runs a control node on an
+m6i.xlarge (FoundationDB, NATS, scheduler, worker, gateway, API, no
+sandboxes) and a sandbox node on an m6id.4xlarge with four sandboxes on its
+870 GB local NVMe, with chunks in a real bucket. Bring-up took 28 minutes for
+the control node (16 of them building and uploading the dev image) and 10
+minutes for the sandbox node. A live turn takes two to three seconds.
+
+Things learned on the way, all fixed in code or documented here:
+
+- The control node needs at least 8 GiB; the node CLI is now built without
+  the provisioning SDKs (which needed 5.8 GiB to compile), and provisioning
+  refuses early when less than 6 GiB is available.
+- The instance role and profile stay with the bucket across `remote down`;
+  recreating them seconds before a launch bound the instance to a stale
+  profile whose credentials were rejected.
+- The laptop can hold a tunnel to only one remote at a time, because
+  FoundationDB advertises port 4500 and refuses a remapped port. Run
+  `swarmy remote disconnect OLD` before `swarmy remote connect NEW`. While
+  the tunnel points elsewhere the fleet keeps running on its nodes; only
+  the driver's status, collect, and launch need the tunnel.
+- `swarmy doctor` still reports the S3 endpoint of a bucket remote as
+  invalid (a dev-fleet task fixes the check); the nodes and the image
+  build use the bucket correctly.
 
 ## Daily operation
 
