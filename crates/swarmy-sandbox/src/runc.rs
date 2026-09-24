@@ -714,6 +714,8 @@ impl RuncRuntime {
 
 #[async_trait]
 impl SandboxRuntime for RuncRuntime {
+    // Creation keeps attachment cleanup and journal publication in one fenced path.
+    #[allow(clippy::too_many_lines)]
     async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total > 0
