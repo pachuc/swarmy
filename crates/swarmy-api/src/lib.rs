@@ -269,6 +269,9 @@ async fn create_agent(
             .and_then(|v| serde_json::to_value(v).ok())
             .and_then(|v| serde_json::from_value(v).ok()),
         system_prompt: body.system_prompt,
+        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
+        memory_mib: None,
+        gpu: None,
     };
     if body.idempotency_key.is_empty() || body.idempotency_key.len() > 256 {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_idempotency_key"));
@@ -306,6 +309,9 @@ async fn update_agent(
             .and_then(|v| serde_json::to_value(v).ok())
             .and_then(|v| serde_json::from_value(v).ok()),
         system_prompt: body.system_prompt,
+        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
+        memory_mib: None,
+        gpu: None,
     };
     let store = state.store.clone();
     replay(
