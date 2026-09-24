@@ -19,7 +19,6 @@ struct FakeCloud {
     profile_creates: RefCell<Vec<String>>,
     profile_present: Cell<bool>,
     fail_profile_launch_once: Cell<bool>,
-    profiles_deleted: RefCell<Vec<String>>,
     launch_ids: RefCell<VecDeque<String>>,
     keys: RefCell<Vec<(String, Vec<u8>, String)>>,
     observations: RefCell<VecDeque<Option<Instance>>>,
@@ -48,11 +47,6 @@ impl Cloud for FakeCloud {
             self.role_creates.borrow_mut().push(name.into());
             self.profile_creates.borrow_mut().push(name.into());
         }
-        std::future::ready(Ok(()))
-    }
-    fn delete_profile(&self, name: &str) -> impl Future<Output = Result<()>> {
-        self.profiles_deleted.borrow_mut().push(name.into());
-        self.profile_present.set(false);
         std::future::ready(Ok(()))
     }
 
@@ -945,7 +939,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     down::run(&cloud, &state, &node, Duration::ZERO)
         .await
         .unwrap();
-    assert_eq!(&*cloud.profiles_deleted.borrow(), &["swarmy-bucket-test"]);
+    // The role and profile stay with the bucket; a later up reuses them.
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
     observe_running(&cloud);
     up::run(
@@ -961,8 +955,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     .unwrap();
     assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 2);
-    assert_eq!(cloud.profile_creates.borrow().len(), 2);
+    assert_eq!(cloud.role_creates.borrow().len(), 1);
+    assert_eq!(cloud.profile_creates.borrow().len(), 1);
 }
 
 #[tokio::test]

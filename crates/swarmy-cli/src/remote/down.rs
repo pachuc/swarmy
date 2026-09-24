@@ -21,18 +21,20 @@ pub async fn run(
     for current in nodes.iter().rev() {
         terminate(cloud, current, delay).await?;
     }
-    if node.bucket().is_some() {
-        cloud
-            .delete_profile(&format!("swarmy-{}", node.name))
-            .await?;
-    }
+    // The instance role and profile stay with the bucket they guard. Deleting
+    // and recreating them within seconds of a launch attached an instance to a
+    // stale profile whose role no longer existed, and its credentials were
+    // rejected until the instance was replaced.
     for current in nodes {
         state.remove_key(current)?;
     }
     state.remove(node)?;
     println!("Removed remote {}", node.name);
     if let Some(bucket) = node.bucket() {
-        println!("Bucket {bucket} and its objects were kept");
+        println!(
+            "Bucket {bucket} and its objects were kept, with the swarmy-{} role and instance profile",
+            node.name
+        );
     }
     Ok(())
 }

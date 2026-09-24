@@ -137,6 +137,7 @@ impl Aws {
 
     async fn ensure_profile(&self, bucket: &str, name: &str) -> Result<()> {
         let role = format!("swarmy-{name}");
+        let mut created = false;
         let existing = self.iam.get_role().role_name(&role).send().await;
         if let Err(error) = existing {
             if error
@@ -149,6 +150,7 @@ impl Aws {
             self.iam.create_role().role_name(&role)
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
                 .send().await.context("iam:CreateRole")?;
+            created = true;
         }
         let policy = bucket_policy(bucket);
         self.iam
@@ -181,6 +183,7 @@ impl Aws {
                     .send()
                     .await
                     .context("iam:CreateInstanceProfile")?;
+                created = true;
                 false
             }
             Err(error) => return Err(error).context("iam:GetInstanceProfile"),
@@ -193,6 +196,13 @@ impl Aws {
                 .send()
                 .await
                 .context("iam:AddRoleToInstanceProfile")?;
+        }
+        if created {
+            // A role or profile is visible to EC2 and STS only after IAM has
+            // propagated it. Launching sooner can bind the instance to stale
+            // identity data whose credentials are then rejected.
+            println!("Waiting for the new IAM role and instance profile to propagate");
+            tokio::time::sleep(Duration::from_secs(20)).await;
         }
         Ok(())
     }
@@ -320,77 +330,6 @@ impl Cloud for Aws {
     async fn prepare_bucket(&self, bucket: &str, region: &str, name: &str) -> Result<()> {
         self.ensure_bucket(bucket, region).await?;
         self.ensure_profile(bucket, name).await
-    }
-
-    async fn delete_profile(&self, name: &str) -> Result<()> {
-        let profile = self
-            .iam
-            .get_instance_profile()
-            .instance_profile_name(name)
-            .send()
-            .await;
-        match profile {
-            Ok(output) => {
-                if output
-                    .instance_profile()
-                    .is_some_and(|p| p.roles().iter().any(|r| r.role_name() == name))
-                {
-                    self.iam
-                        .remove_role_from_instance_profile()
-                        .instance_profile_name(name)
-                        .role_name(name)
-                        .send()
-                        .await
-                        .context("iam:RemoveRoleFromInstanceProfile")?;
-                }
-                self.iam
-                    .delete_instance_profile()
-                    .instance_profile_name(name)
-                    .send()
-                    .await
-                    .context("iam:DeleteInstanceProfile")?;
-            }
-            Err(error)
-                if error
-                    .as_service_error()
-                    .and_then(ProvideErrorMetadata::code)
-                    == Some("NoSuchEntity") => {}
-            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
-        }
-        let role = self.iam.get_role().role_name(name).send().await;
-        match role {
-            Ok(_) => {
-                match self
-                    .iam
-                    .delete_role_policy()
-                    .role_name(name)
-                    .policy_name("swarmy-bucket")
-                    .send()
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(error)
-                        if error
-                            .as_service_error()
-                            .and_then(ProvideErrorMetadata::code)
-                            == Some("NoSuchEntity") => {}
-                    Err(error) => return Err(error).context("iam:DeleteRolePolicy"),
-                }
-                self.iam
-                    .delete_role()
-                    .role_name(name)
-                    .send()
-                    .await
-                    .context("iam:DeleteRole")?;
-            }
-            Err(error)
-                if error
-                    .as_service_error()
-                    .and_then(ProvideErrorMetadata::code)
-                    == Some("NoSuchEntity") => {}
-            Err(error) => return Err(error).context("iam:GetRole"),
-        }
-        Ok(())
     }
 
     async fn stock_image(&self) -> Result<String> {
