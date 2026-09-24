@@ -299,6 +299,12 @@ keep its own disk in order. The rules, which the task prompt repeats:
 
 ## Operating notes
 
+- The operator's laptop is a control plane only: it runs the fleet driver,
+  tasky, gh, ssh, and short swarmy CLI calls. Cargo builds, clippy, and tests
+  run on fleet workers, on the swarm nodes, or in CI, never on the laptop.
+  To update the laptop CLI, build it on the dev node with full features and
+  copy the binary back, or use a CI-built binary.
+
 - The Codex fleet's lanes share one ChatGPT usage limit; when it trips every
   running agent stops at once and the instances are retained for resume. The
   provider quota goal removes this.
