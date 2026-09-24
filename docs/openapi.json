@@ -101,6 +101,56 @@
           }
         }
       },
+      "AppendMessage": {
+        "type": "object",
+        "description": "Append a user message at the observed log head.",
+        "required": [
+          "idempotency_key",
+          "expected_head",
+          "text"
+        ],
+        "properties": {
+          "expected_head": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "AppendedMessage": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "turn_id"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CloseSession": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
       "CreateAgent": {
         "type": "object",
         "description": "Every client mutation has a key that survives retries of the same intent.",
@@ -264,6 +314,10 @@
               "string",
               "null"
             ]
+          },
+          "new": {
+            "type": "boolean",
+            "description": "Open a side conversation rather than the named agent's main session."
           },
           "provider": {
             "type": [
@@ -722,6 +776,17 @@
             "type": "string"
           },
           "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "InterruptSession": {
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
             "type": "string"
           }
         }

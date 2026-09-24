@@ -61,7 +61,8 @@ async fn run() -> Result<()> {
             }
         }
     });
-    let state = AppState::new(store, bus, token, settings.catalog()?);
+    let mut state = AppState::new(store, bus, token, settings.catalog()?);
+    state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .context("bind API listener")?;

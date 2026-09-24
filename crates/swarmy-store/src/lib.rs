@@ -521,6 +521,65 @@ impl Store {
         .await
     }
 
+    /// Atomically deduplicate an API append with the user message and Runnable transition.
+    /// # Errors
+    /// Rejects non-user messages, stale heads, non-idle sessions, or storage failures.
+    pub async fn append_user_message_idempotent(
+        &self,
+        id: SessionId,
+        expected_head: u64,
+        message: &swarmy_core::Message,
+        key: &str,
+    ) -> Result<(u64, bool)> {
+        if message.role != swarmy_core::MessageRole::User {
+            return Err(StoreError::InvalidState);
+        }
+        let head = expected_head
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        let event = Event::MessageAppended {
+            seq: head,
+            message: message.clone(),
+        };
+        let value = self.prepare(&event).await?;
+        if value.len() > MAX_BATCH_BYTES {
+            return Err(StoreError::TooLarge);
+        }
+        let replay_key = self.root.pack(&("api_append", key));
+        self.transaction(|trx| {
+            let replay_key = &replay_key;
+            let value = &value;
+            async move {
+                if let Some(previous) = read::<u64>(&trx, replay_key).await? {
+                    return Ok((previous, false));
+                }
+                let mut session = self.session(&trx, id).await?;
+                if session.head_seq != expected_head {
+                    return Err(StoreError::StaleSequence {
+                        expected: expected_head,
+                        actual: session.head_seq,
+                    });
+                }
+                if session.state != SessionState::Idle {
+                    return Err(StoreError::InvalidState);
+                }
+                trx.set(&self.event_space(id).pack(&(head,)), value);
+                write(&trx, &self.turn_key(id), &message.id)?;
+                write(&trx, replay_key, &head)?;
+                session.head_seq = head;
+                self.transition(
+                    &trx,
+                    session,
+                    SessionState::Runnable,
+                    jiff::Timestamp::now(),
+                )
+                .await?;
+                Ok((head, true))
+            }
+        })
+        .await
+    }
+
     async fn append_events_inner(
         &self,
         id: SessionId,

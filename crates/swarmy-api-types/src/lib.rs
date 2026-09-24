@@ -243,6 +243,9 @@ pub struct UpdateAgent {
 pub struct CreateSession {
     pub idempotency_key: String,
     pub agent_id: Option<String>,
+    /// Open a side conversation rather than the named agent's main session.
+    #[serde(default)]
+    pub new: bool,
     pub image: Option<ImageRef>,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -269,6 +272,27 @@ pub struct CreateMessage {
     pub role: MessageRole,
     pub text: String,
 }
+/// Append a user message at the observed log head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AppendMessage {
+    pub idempotency_key: String,
+    pub expected_head: u64,
+    pub text: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AppendedMessage {
+    pub sequence: u64,
+    pub turn_id: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct InterruptSession {
+    pub idempotency_key: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CloseSession {
+    pub idempotency_key: String,
+}
+
 /// Register an already built image; image builds are not mutations of this resource.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateImage {
@@ -359,7 +383,8 @@ pub struct ApiError {
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
-    CreateTurn, CreateMessage, CreateImage, CreateCredential, Event, EventPayload, ApiError
+    CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
+    CreateImage, CreateCredential, Event, EventPayload, ApiError
 )))]
 pub struct ApiDocument;
 

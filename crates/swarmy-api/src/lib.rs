@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+mod conversation;
 mod stream;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
@@ -31,6 +32,7 @@ pub struct AppState {
     // Serialize mutations so retries through this instance observe completed responses.
     mutations: Arc<Mutex<()>>,
     pub stream_poll_interval: std::time::Duration,
+    pub resend_interval: std::time::Duration,
     stream_connections:
         Arc<std::sync::Mutex<std::collections::HashMap<String, stream::Connection>>>,
 }
@@ -45,6 +47,7 @@ impl AppState {
             catalog,
             mutations: Arc::new(Mutex::new(())),
             stream_poll_interval: std::time::Duration::from_secs(20),
+            resend_interval: std::time::Duration::from_secs(5),
             stream_connections: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -151,8 +154,20 @@ pub fn router(state: AppState) -> Router {
             "/v1/agents/{id}",
             get(show_agent).patch(update_agent).delete(delete_agent),
         )
-        .route("/v1/sessions", get(sessions))
-        .route("/v1/sessions/{id}", get(show_session))
+        .route("/v1/sessions", get(sessions).post(conversation::create))
+        .route(
+            "/v1/sessions/{id}",
+            get(show_session).delete(conversation::close),
+        )
+        .route(
+            "/v1/sessions/{id}/messages",
+            axum::routing::post(conversation::append),
+        )
+        .route(
+            "/v1/sessions/{id}/interrupt",
+            axum::routing::post(conversation::interrupt),
+        )
+        .route("/v1/sessions/{id}/wait-idle", get(conversation::wait_idle))
         .route("/v1/sessions/{id}/events", get(events))
         .route("/v1/events", get(stream::subscribe))
         .route(

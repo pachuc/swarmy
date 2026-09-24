@@ -2,6 +2,8 @@
 use crate::{Result, Store, StoreError, read, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use swarmy_core::SessionId;
+use ulid::Ulid;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ApiReplay {
@@ -10,6 +12,24 @@ pub(crate) struct ApiReplay {
 }
 
 impl Store {
+    /// Reserve a real, time-ordered session id before creating its computer.
+    /// Retrying after an unknown create outcome reuses the same id on any API host.
+    /// # Errors
+    /// Returns database or encoding failures.
+    pub async fn api_session_id(&self, key: &str) -> Result<SessionId> {
+        let fresh = SessionId::from_ulid(Ulid::generate());
+        self.transaction(|trx| async move {
+            let storage_key = self.root.pack(&("api_session_id", key));
+            if let Some(id) = read::<SessionId>(&trx, &storage_key).await? {
+                Ok(id)
+            } else {
+                write(&trx, &storage_key, &fresh)?;
+                Ok(fresh)
+            }
+        })
+        .await
+    }
+
     /// Read a non-expired API response for a scoped idempotency key.
     /// # Errors
     /// Returns database and decoding errors.
