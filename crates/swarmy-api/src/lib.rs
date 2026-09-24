@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+mod cli;
 mod conversation;
 mod stream;
 use swarmy_api_types as api;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub store: Store,
     pub bus: Bus,
     pub token: String,
+    pub credential_keyring: Option<Keyring>,
     pub catalog: Catalog,
     // Serialize mutations so retries through this instance observe completed responses.
     mutations: Arc<Mutex<()>>,
@@ -46,6 +48,7 @@ impl AppState {
             store,
             bus,
             token,
+            credential_keyring: None,
             catalog,
             mutations: Arc::new(Mutex::new(())),
             stream_poll_interval: std::time::Duration::from_secs(20),
@@ -157,6 +160,22 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
+        .route("/v1/cli/models", get(cli::models))
+        .route("/v1/cli/providers", get(cli::providers))
+        .route("/v1/cli/sessions", get(cli::sessions))
+        .route("/v1/cli/sessions/{id}", get(cli::session_show))
+        .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
+        .route(
+            "/v1/cli/agents/{name}/settings",
+            axum::routing::patch(cli::agent_update),
+        )
+        .route(
+            "/v1/cli/credentials",
+            get(cli::credentials).post(cli::credential_set),
+        )
+        .route("/v1/cli/credentials/{provider}", get(cli::credential))
+        .route("/v1/cli/agents/{name}", get(cli::agent_show))
+        .route("/v1/cli/images/{name}/{tag}", get(cli::image_show))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",
@@ -566,7 +585,10 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
 fn credential_store(
     state: &AppState,
 ) -> Result<swarmy_store::credentials::CredentialStore, (StatusCode, Json<api::ApiError>)> {
-    let keyring = Keyring::load()
+    let keyring = state
+        .credential_keyring
+        .clone()
+        .map_or_else(Keyring::load, Ok)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "keyring_unavailable"))?;
     Ok(state.store.credentials(keyring))
 }

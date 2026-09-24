@@ -594,6 +594,8 @@ async fn new_commands_use_the_selected_remote_profile() {
                 .unwrap()
                 .settings
                 .s3_endpoint,
+            api_url: Some(fixture.api_url.clone()),
+            api_token: Some(fixture.api_token.clone()),
             s3_bucket: None,
             s3_region: None,
             default_image: Some("fixture:test".into()),

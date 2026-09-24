@@ -4,14 +4,110 @@ use std::{
     process::{Command, Output},
 };
 
-struct Fixture(tempfile::TempDir);
+struct Fixture {
+    dir: tempfile::TempDir,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
+#[derive(serde::Deserialize)]
+struct Search {
+    q: Option<String>,
+    provider: Option<String>,
+    reasoning: Option<bool>,
+}
+async fn models(
+    axum::extract::State(catalog): axum::extract::State<swarmy_llm::catalog::Catalog>,
+    axum::extract::Query(search): axum::extract::Query<Search>,
+) -> axum::Json<Vec<Value>> {
+    let rows = catalog
+        .find(search.q.as_deref().unwrap_or(""))
+        .into_iter()
+        .filter(|(provider, model)| {
+            search.provider.as_ref().is_none_or(|id| id == &provider.id)
+                && (!search.reasoning.unwrap_or(false)
+                    || model
+                        .supported_efforts()
+                        .iter()
+                        .any(|effort| *effort != swarmy_core::ReasoningEffort::None))
+        })
+        .map(|(provider, model)| {
+            let mut row = serde_json::to_value(model).unwrap();
+            row["key"] = serde_json::json!(format!("{}/{}", provider.id, model.id));
+            row["provider"] = serde_json::json!(provider.id);
+            row["effective_api"] = serde_json::json!(model.api.unwrap_or(provider.api));
+            row["effective_base_url"] =
+                serde_json::json!(model.base_url.as_deref().unwrap_or(&provider.base_url));
+            row["supported_efforts"] = serde_json::json!(model.supported_efforts());
+            row
+        })
+        .collect();
+    axum::Json(rows)
+}
+async fn providers(
+    axum::extract::State(catalog): axum::extract::State<swarmy_llm::catalog::Catalog>,
+) -> axum::Json<Vec<Value>> {
+    axum::Json(
+        catalog
+            .providers()
+            .map(|provider| {
+                serde_json::json!({"id":provider.id,"api":provider.api,
+        "auth_kinds":provider.auth_kinds,"env_keys":provider.env_keys,"credential":"unknown"})
+            })
+            .collect(),
+    )
+}
 
 impl Fixture {
     fn new(config: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join(".swarmy")).unwrap();
-        fs::write(directory.path().join(".swarmy/config.toml"), config).unwrap();
-        Self(directory)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let config = format!("{config}\n[api]\nurl = '{endpoint}'\ntoken = 'fixture-token'\n");
+        let config_path = directory.path().join(".swarmy/config.toml");
+        fs::write(&config_path, config).unwrap();
+        let catalog = swarmy_config::Settings::read(&config_path)
+            .unwrap()
+            .catalog()
+            .unwrap();
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (ready, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let app = axum::Router::new()
+                    .route("/v1/cli/models", axum::routing::get(models))
+                    .route("/v1/cli/providers", axum::routing::get(providers))
+                    .with_state(catalog);
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                ready.send(()).unwrap();
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
+            });
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        Self {
+            dir: directory,
+            shutdown: Some(shutdown),
+            server: Some(server),
+        }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -22,10 +118,10 @@ impl Fixture {
             }
         }
         command
-            .current_dir(self.0.path())
+            .current_dir(self.dir.path())
             .env_remove("OPENAI_API_KEY")
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path())
+            .env("HOME", self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path())
             .args(args)
             .output()
             .unwrap()
@@ -176,7 +272,7 @@ fn probe_streams_fake_and_completes_tool_round_trip() {
     let fixture = Fixture::new(
         "model = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
     );
-    let script = fixture.0.path().join("script.json");
+    let script = fixture.dir.path().join("script.json");
     fs::write(
         &script,
         r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"ready"}}"#,

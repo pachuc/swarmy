@@ -4,17 +4,45 @@ use std::{
     process::{Command, Output},
 };
 
-struct Fixture(tempfile::TempDir);
+static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
+    std::sync::OnceLock::new();
+
+struct Fixture {
+    dir: tempfile::TempDir,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+    }
+}
 impl Fixture {
     fn new() -> Option<Self> {
         let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
             eprintln!("skipping auth integration: SWARMY_FDB_CLUSTER_FILE unset");
             return None;
         };
+        let Ok(nats) = std::env::var("SWARMY_NATS_URL") else {
+            return None;
+        };
         let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
         fs::create_dir(dir.path().join(".swarmy")).unwrap();
         let settings = swarmy_config::Settings {
-            fdb_cluster_file: cluster,
+            fdb_cluster_file: cluster.clone(),
+            api: swarmy_config::ApiSettings {
+                url: Some(endpoint),
+                token: "auth-test-token".into(),
+                ..Default::default()
+            },
             store_directory: format!("auth-test-{}", ulid::Ulid::generate()),
             credential_file: dir.path().join("auth.json").to_string_lossy().into_owned(),
             ..Default::default()
@@ -24,13 +52,55 @@ impl Fixture {
             settings.to_toml().unwrap(),
         )
         .unwrap();
-        swarmy_config::Keyring::generate_at(&dir.path().join(".swarmy/keyring")).unwrap();
+        let keyring =
+            swarmy_config::Keyring::generate_at(&dir.path().join(".swarmy/keyring")).unwrap();
         fs::write(
             dir.path().join("auth.json"),
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),
         )
         .unwrap();
-        Some(Self(dir))
+        NETWORK.get_or_init(swarmy_store::boot);
+        let directory = settings.store_directory;
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (ready, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let store = swarmy_store::Store::open(
+                    Some(&cluster),
+                    Some(&[directory]),
+                    std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+                )
+                .await
+                .unwrap();
+                let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
+                    .await
+                    .unwrap();
+                let mut state = swarmy_api::AppState::new(
+                    store,
+                    bus,
+                    "auth-test-token".into(),
+                    swarmy_llm::catalog::Catalog::get().clone(),
+                );
+                state.credential_keyring = Some(keyring);
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                ready.send(()).unwrap();
+                axum::serve(listener, swarmy_api::router(state))
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
+            });
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        Some(Self {
+            dir,
+            shutdown: Some(shutdown),
+            server: Some(server),
+        })
     }
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
@@ -40,9 +110,9 @@ impl Fixture {
             }
         }
         command
-            .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .current_dir(self.dir.path())
+            .env("HOME", self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .args(args);
         command
     }
@@ -87,13 +157,13 @@ fn set_list_check_remove_and_import() {
     let missing = f.run(&["auth", "check", "anthropic"]);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("does not exist"));
-    let original = fs::read(f.0.path().join("auth.json")).unwrap();
+    let original = fs::read(f.dir.path().join("auth.json")).unwrap();
     f.success(&["auth", "import", "--json"]);
     let rows = f.success(&["auth", "ls", "--json"]);
     let row: Value = serde_json::from_str(rows.trim()).unwrap();
     assert_eq!(row["provider"], "chatgpt");
     assert_eq!(row["kind"], "oauth");
-    assert_eq!(fs::read(f.0.path().join("auth.json")).unwrap(), original);
+    assert_eq!(fs::read(f.dir.path().join("auth.json")).unwrap(), original);
     let check = f.run(&["auth", "check", "chatgpt", "--json"]);
     let row: Value = serde_json::from_slice(&check.stdout).unwrap();
     assert!(row["expires_in_seconds"].is_number());
@@ -127,7 +197,7 @@ fn key_sources_are_exclusive_and_support_files_and_environment() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    fs::write(f.0.path().join("key"), "sk-test\n").unwrap();
+    fs::write(f.dir.path().join("key"), "sk-test\n").unwrap();
     f.success(&["auth", "set", "anthropic", "--file", "key"]);
     assert_eq!(f.success(&["auth", "ls", "--json"]).lines().count(), 2);
 }
@@ -139,7 +209,7 @@ fn azure_login_saves_to_cluster_and_missing_cli_reports_login_needed() {
     let Some(f) = Fixture::new() else {
         return;
     };
-    let bin = f.0.path().join("bin");
+    let bin = f.dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let az = bin.join("az");
     fs::write(&az, r#"#!/bin/sh
@@ -147,7 +217,7 @@ fn azure_login_saves_to_cluster_and_missing_cli_reports_login_needed() {
 printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:04:05Z"}'
 "#).unwrap();
     fs::set_permissions(&az, fs::Permissions::from_mode(0o700)).unwrap();
-    let original = fs::read(f.0.path().join("auth.json")).unwrap();
+    let original = fs::read(f.dir.path().join("auth.json")).unwrap();
     let result = f
         .command(&["auth", "login", "azure", "--resource", "fixture", "--json"])
         .env("PATH", &bin)
@@ -163,7 +233,7 @@ printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:
         serde_json::from_str(&f.success(&["auth", "check", "azure", "--json"])).unwrap();
     assert_eq!(row["kind"], "oauth");
     assert_eq!(row["status"], "ready");
-    assert_eq!(fs::read(f.0.path().join("auth.json")).unwrap(), original);
+    assert_eq!(fs::read(f.dir.path().join("auth.json")).unwrap(), original);
     fs::remove_file(az).unwrap();
     let result = f
         .command(&["auth", "login", "azure", "--resource", "fixture"])

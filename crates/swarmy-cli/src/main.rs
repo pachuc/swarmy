@@ -1,4 +1,7 @@
 mod agent_command;
+mod api_client;
+mod api_commands;
+mod auth;
 mod auth_command;
 mod bench_command;
 mod dev;
@@ -144,6 +147,36 @@ fn main() -> anyhow::Result<()> {
         return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
     }
     if matches!(
+        &cli.command,
+        Command::Auth {
+            command: auth_command::Command::Login { .. } | auth_command::Command::Import { .. },
+            ..
+        }
+    ) {
+        let Command::Auth { command, auth_file } = cli.command else {
+            unreachable!()
+        };
+        return tokio::runtime::Runtime::new()?.block_on(auth::run(command, auth_file, cli.json));
+    }
+    if matches!(
+        &cli.command,
+        Command::Session {
+            command: session_command::Command::List | session_command::Command::Show { .. }
+        } | Command::Agent { .. }
+            | Command::Image {
+                command: image_command::Command::Ls | image_command::Command::Show { .. }
+            }
+            | Command::Auth {
+                command: auth_command::Command::Set(_)
+                    | auth_command::Command::Ls
+                    | auth_command::Command::Rm { .. }
+                    | auth_command::Command::Check { .. },
+                ..
+            }
+    ) {
+        return tokio::runtime::Runtime::new()?.block_on(api_commands::run(cli.command, cli.json));
+    }
+    if matches!(
         cli.command,
         Command::Auth { .. }
             | Command::Models {
@@ -175,7 +208,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Models { command } => models::run(command, cli.json)?,
+        Command::Models { command } => models::run(command, cli.json).await?,
         Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Bench { .. }

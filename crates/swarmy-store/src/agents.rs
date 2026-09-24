@@ -137,6 +137,33 @@ impl Store {
         .await
     }
 
+    /// Create an agent with a private token and a replay marker in one transaction.
+    /// # Errors
+    /// Rejects invalid names, credentials, missing images, and storage failures.
+    pub async fn create_agent_with_token_replay(
+        &self,
+        name: &str,
+        image: &str,
+        description: &str,
+        settings: &AgentSettings,
+        github_token: Option<&str>,
+        now: Timestamp,
+        key: &str,
+    ) -> Result<AgentRecord> {
+        self.create_agent_with_replay(
+            name,
+            image,
+            description,
+            settings,
+            now,
+            CreationOptions {
+                github_token,
+                replay_key: Some(key),
+            },
+        )
+        .await
+    }
+
     async fn create_agent_with_replay(
         &self,
         name: &str,
