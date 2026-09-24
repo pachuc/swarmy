@@ -145,6 +145,12 @@ fn inference_settings(
     args: InferenceArgs,
     update: bool,
 ) -> Result<(AgentSettings, Vec<swarmy_core::InferenceField>)> {
+    let memory_mib = args.memory;
+    let gpu = args.gpu.as_deref().map(|value| match value {
+        "shared" => swarmy_core::GpuRequirement::Shared,
+        "dedicated" => swarmy_core::GpuRequirement::Dedicated,
+        _ => swarmy_core::GpuRequirement::None,
+    });
     let (selection, resets) =
         crate::selection::agent_selection(args.provider, args.model, args.effort, update)?;
     let system_prompt = match args.system_prompt_file {
@@ -160,6 +166,8 @@ fn inference_settings(
             provider: selection.provider,
             model: selection.model,
             reasoning_effort: selection.effort,
+            memory_mib,
+            gpu,
         },
         resets,
     ))
@@ -167,13 +175,15 @@ fn inference_settings(
 
 fn settings_text(agent: &AgentRecord) -> String {
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nsandbox_memory_mib={}\nsandbox_gpu={:?}",
         agent.provider.as_deref().unwrap_or("(stack default)"),
         agent.system_prompt.as_deref().unwrap_or("(stack default)"),
         agent.model.as_deref().unwrap_or("(stack default)"),
         agent
             .reasoning_effort
             .map_or("(stack default)", swarmy_core::ReasoningEffort::as_str),
+        agent.requirements.memory_mib,
+        agent.requirements.gpu,
     )
 }
 
@@ -350,7 +360,7 @@ async fn update(
     ensure!(
         settings != AgentSettings::default() || !resets.is_empty() || token_change,
         "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
-                 --github-token, or --clear-github-token"
+                 --memory, --gpu, --github-token, or --clear-github-token"
     );
     let mut agent = resolve(store, name).await?;
     if settings != AgentSettings::default() || !resets.is_empty() {

@@ -50,6 +50,7 @@ impl Store {
         // Reading the current epoch conflicts with renewal, takeover, dispatch and
         // publication. No holder of an earlier token can commit after this deletion.
         self.release_deleted_computer(trx, agent).await?;
+        trx.clear(&self.computer_memory_key(agent));
         write(trx, &self.computer_deleted_key(agent), &true)?;
         let volume = VolumeId::from_ulid(agent.as_ulid());
         trx.clear(&self.volume_key(volume));

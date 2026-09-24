@@ -483,11 +483,17 @@ impl RuncRuntime {
         Ok(process)
     }
 
-    async fn start(&self, id: AgentId, scratch: &[String]) -> Result<()> {
+    async fn start(&self, id: AgentId, scratch: &[String], memory_mib: u64) -> Result<()> {
         let bundle = self.bundle(id);
         checked(self.command().args(["spec", "--bundle"]).arg(&bundle)).await?;
         let path = bundle.join("config.json");
         let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let bytes = memory_mib
+            .checked_mul(1024 * 1024)
+            .and_then(|bytes| i64::try_from(bytes).ok())
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| Error::Operation("invalid sandbox memory limit".into()))?;
+        config["linux"]["resources"]["memory"]["limit"] = serde_json::json!(bytes);
         config["root"]["path"] = serde_json::json!(bundle.join("rootfs"));
         config["root"]["readonly"] = false.into();
         config["process"]["terminal"] = false.into();
@@ -724,6 +730,7 @@ impl SandboxRuntime for RuncRuntime {
         }
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
+        let memory_mib = spec.requirements.memory_mib;
         let journal = Journal { spec, disk };
         // Persist ownership before attaching so SIGKILL at any later step leaves
         // enough information to clean up on the next daemon start.
@@ -789,7 +796,7 @@ impl SandboxRuntime for RuncRuntime {
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch)?;
-            self.start(id, &scratch).await?;
+            self.start(id, &scratch, memory_mib).await?;
             if !scratch.is_empty() {
                 self.config
                     .store

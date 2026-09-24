@@ -225,11 +225,23 @@ impl Hosting {
                 .agent_volume(first.job.session_id, &placement)
                 .await?;
             let scratch = self.scratch_for_session(first.job.session_id).await?;
+            let requirements = if let Some(agent_record) = self.store.get_agent(agent).await? {
+                agent_record.requirements
+            } else if let Some(image) = self.store.pinned_image(first.job.session_id).await? {
+                swarmy_core::SandboxRequirements {
+                    memory_mib: self.store.image_memory(&image).await?.unwrap_or(768),
+                    gpu: Default::default(),
+                }
+            } else {
+                Default::default()
+            };
             self.runtime
                 .create(
                     SandboxSpec {
                         agent_id: agent,
                         scratch,
+
+                        requirements,
                     },
                     BlockDevice { volume_id: volume },
                 )

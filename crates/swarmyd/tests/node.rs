@@ -107,6 +107,7 @@ impl Node {
                 spec: SandboxSpec {
                     agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
                     scratch: Vec::new(),
+                    requirements: Default::default(),
                 },
                 disk: BlockDevice { volume_id },
             })
@@ -383,6 +384,8 @@ async fn scratch_mounts(
     let spec = SandboxSpec {
         agent_id: agent.agent_id,
         scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
+
+        requirements: Default::default(),
     };
     let sandbox = match node
         .request(Request::Create {
@@ -529,6 +532,7 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
                 spec: SandboxSpec {
                     agent_id: agent.agent_id,
                     scratch: vec!["/tmp".into()],
+                    requirements: Default::default(),
                 },
                 disk: BlockDevice { volume_id: volume },
             })
@@ -600,6 +604,8 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
             spec: SandboxSpec {
                 agent_id: third.agent_id,
                 scratch: vec!["/tmp".into()],
+
+                requirements: Default::default(),
             },
             disk: BlockDevice {
                 volume_id: third_volume,
@@ -713,6 +719,8 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
             spec: SandboxSpec {
                 agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
                 scratch: Vec::new(),
+
+                requirements: Default::default(),
             },
             disk: BlockDevice { volume_id: missing },
         })

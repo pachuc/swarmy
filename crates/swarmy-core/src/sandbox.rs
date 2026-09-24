@@ -1,4 +1,29 @@
 use crate::{AgentId, VolumeId};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuRequirement {
+    #[default]
+    None,
+    Shared,
+    Dedicated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxRequirements {
+    pub memory_mib: u64,
+    pub gpu: GpuRequirement,
+}
+
+impl Default for SandboxRequirements {
+    fn default() -> Self {
+        Self {
+            memory_mib: 768,
+            gpu: GpuRequirement::None,
+        }
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -6,6 +31,8 @@ pub struct SandboxSpec {
     pub agent_id: AgentId,
     #[serde(default)]
     pub scratch: Vec<String>,
+    #[serde(default)]
+    pub requirements: SandboxRequirements,
 }
 
 /// A volume to attach through the node's block device service.

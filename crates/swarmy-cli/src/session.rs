@@ -113,6 +113,24 @@ async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) ->
         .fetch_session(id)
         .await?
         .context("session not found")?;
+    let requirements = if let Some(agent) = store.get_agent(session.agent_id).await? {
+        agent.requirements
+    } else if let Some(image) = store.pinned_image(id).await? {
+        swarmy_core::SandboxRequirements {
+            memory_mib: store.image_memory(&image).await?.unwrap_or(768),
+            gpu: Default::default(),
+        }
+    } else {
+        Default::default()
+    };
+    crate::vol::output(
+        &serde_json::json!({"sandbox_requirements": requirements, "memory_limit_mib": requirements.memory_mib}),
+        &format!(
+            "Sandbox memory requirement and limit: {} MiB; GPU: {:?}",
+            requirements.memory_mib, requirements.gpu
+        ),
+        json,
+    )?;
     if let Some(placement) = store.get_by_agent(session.agent_id).await? {
         let address = store.placement_address(&placement).await?;
         crate::vol::output(
@@ -121,6 +139,12 @@ async fn show_session(store: &swarmy_store::Store, id: SessionId, json: bool) ->
                 "Sandbox address: {}",
                 address.map_or_else(|| "-".into(), |address| address.to_string())
             ),
+            json,
+        )?;
+    } else {
+        crate::vol::output(
+            &serde_json::json!({"placement": null, "sandbox_status": "waiting_for_capacity_or_first_tool"}),
+            "Sandbox not placed; pending tools wait for node memory capacity",
             json,
         )?;
     }

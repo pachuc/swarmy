@@ -98,6 +98,7 @@ pub async fn verify(
                 SandboxSpec {
                     agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
                     scratch: Vec::new(),
+                    requirements: Default::default(),
                 },
                 BlockDevice { volume_id },
             )

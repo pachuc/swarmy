@@ -107,6 +107,24 @@ impl Store {
         manifest: ManifestId,
         scratch: &[String],
     ) -> Result<()> {
+        self.put_image_with_requirements(name, tag, manifest, scratch, None)
+            .await
+    }
+
+    /// Register image defaults atomically with the immutable image manifest.
+    /// # Errors
+    /// Rejects missing manifests, oversized keys, and database failures.
+    pub async fn put_image_with_requirements(
+        &self,
+        name: &str,
+        tag: &ImageTag,
+        manifest: ManifestId,
+        scratch: &[String],
+        memory_mib: Option<u64>,
+    ) -> Result<()> {
+        if memory_mib == Some(0) {
+            return Err(StoreError::InvalidState);
+        }
         let key = self.image_key(name, tag);
         if key.len() > 10_000 {
             return Err(StoreError::TooLarge);
@@ -120,8 +138,42 @@ impl Store {
                     &trx,
                     &self.image_scratch_key(name, tag, manifest),
                     &scratch.to_vec(),
+                )?;
+                write(
+                    &trx,
+                    &self.image_memory_key(name, tag, manifest),
+                    &memory_mib,
                 )
             }
+        })
+        .await
+    }
+
+    pub(crate) fn image_memory_key(
+        &self,
+        name: &str,
+        tag: &ImageTag,
+        manifest: ManifestId,
+    ) -> Vec<u8> {
+        self.root.pack(&(
+            "image_memory",
+            name,
+            tag.0.as_str(),
+            manifest.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
+    /// Image default, if its recipe supplied one.
+    /// # Errors
+    /// Returns database failures.
+    pub async fn image_memory(&self, image: &ImageRecord) -> Result<Option<u64>> {
+        self.transaction(|trx| async move {
+            Ok(read::<Option<u64>>(
+                &trx,
+                &self.image_memory_key(&image.name, &image.tag, image.manifest_id),
+            )
+            .await?
+            .flatten())
         })
         .await
     }

@@ -3,6 +3,7 @@ source_date_epoch = 1714003200
 
 [sandbox]
 scratch = ["/tmp"]
+memory_mib = 768
 
 [source]
 kind = "debootstrap"

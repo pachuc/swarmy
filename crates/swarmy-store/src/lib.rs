@@ -97,6 +97,8 @@ pub enum StoreError {
     NodeMissing,
     #[error("node has no computer capacity available")]
     NodeAtCapacity,
+    #[error("sandbox requirements can only change after the current placement is evicted")]
+    ActiveSandboxRequirements,
     #[error("placement already exists")]
     PlacementExists,
     #[error("volume does not exist")]

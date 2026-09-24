@@ -16,7 +16,7 @@ async fn node(store: &Store, capacity: u32) -> NodeRecord {
         roles: vec![NodeRole::Sandbox],
         capacity: NodeCapacity {
             cpu_millis: 1000,
-            memory_bytes: 1024,
+            memory_bytes: 1024 * 1024 * 1024,
             disk_bytes: 1024,
             sandboxes: capacity,
         },
@@ -506,5 +506,105 @@ async fn legacy_placements_without_hosting_metadata_still_report_loss() {
             .unwrap(),
         None
     );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn placement_memory_budget_is_atomic_and_released() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let mut record = node(&test.store, 8).await;
+    // The default sandbox reserves 768 MiB. One fits, but a second does not.
+    record.capacity.memory_bytes = 1280 * 1024 * 1024;
+    test.store.put_node(&record).await.unwrap();
+    let first = test
+        .store
+        .place(session().agent_id, record.node_id, future(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.committed_memory(record.node_id).await.unwrap(),
+        768 * 1024 * 1024
+    );
+    let second_agent = session().agent_id;
+    assert!(matches!(
+        test.store
+            .place(second_agent, record.node_id, future(60))
+            .await,
+        Err(StoreError::NodeAtCapacity)
+    ));
+    test.store.release(&first).await.unwrap();
+    assert_eq!(
+        test.store.committed_memory(record.node_id).await.unwrap(),
+        0
+    );
+    test.store
+        .place(second_agent, record.node_id, future(60))
+        .await
+        .unwrap();
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let mut record = node(&test.store, 32).await;
+    record.capacity.memory_bytes = 12 * 1024 * 1024 * 1024;
+    test.store.put_node(&record).await.unwrap();
+    let mut defaults = Vec::new();
+    for _ in 0..16 {
+        defaults.push(
+            test.store
+                .place(session().agent_id, record.node_id, future(60))
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        test.store.committed_memory(record.node_id).await.unwrap(),
+        record.capacity.memory_bytes
+    );
+    assert!(matches!(
+        test.store
+            .place(session().agent_id, record.node_id, future(60))
+            .await,
+        Err(StoreError::NodeAtCapacity)
+    ));
+    for placed in &defaults {
+        test.store.release(placed).await.unwrap();
+    }
+    let mut large = Vec::new();
+    for _ in 0..5 {
+        let agent = session().agent_id;
+        let key = test
+            .root
+            .pack(&("computer_memory", agent.as_ulid().to_bytes().as_slice()));
+        let bytes = encode(&3072_u64).unwrap();
+        test.db
+            .run(|trx, _| {
+                let key = &key;
+                let bytes = &bytes;
+                async move {
+                    trx.set(key, bytes);
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        large.push(agent);
+    }
+    for agent in large.iter().take(4) {
+        test.store
+            .place(*agent, record.node_id, future(60))
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        test.store.place(large[4], record.node_id, future(60)).await,
+        Err(StoreError::NodeAtCapacity)
+    ));
     test.cleanup().await;
 }

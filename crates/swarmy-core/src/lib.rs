@@ -37,8 +37,8 @@ mod node;
 pub use node::{NodeCapacity, NodeRecord, NodeRole};
 mod sandbox;
 pub use sandbox::{
-    BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
-    SandboxSpec,
+    BlockDevice, ExecOutput, ExecRequest, ExecResult, GpuRequirement, PauseHandle, RuntimeCaps,
+    Sandbox, SandboxRequirements, SandboxSpec,
 };
 
 mod tool;

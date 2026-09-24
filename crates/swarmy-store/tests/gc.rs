@@ -842,7 +842,7 @@ async fn computer_session(
         capacity: NodeCapacity {
             sandboxes: 1,
             cpu_millis: 4000,
-            memory_bytes: 1024 * 1024,
+            memory_bytes: 1024 * 1024 * 1024,
             disk_bytes: 1024 * 1024,
         },
         last_heartbeat: Timestamp::now(),

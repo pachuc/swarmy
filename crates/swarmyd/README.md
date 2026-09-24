@@ -17,14 +17,18 @@ sudo -E target/debug/swarmyd
 
 Configuration comes from `swarmy-config`. The existing `node_id` setting or
 `SWARMY_NODE_ID` selects a stable ULID; otherwise `.swarmy/node-id` persists it.
-Set capacity to the resources reserved for swarmy on this machine. Defaults
-advertise one CPU, 1 GiB memory, 32 GiB disk, and one sandbox.
+Set capacity to the resources reserved for swarmy on this machine. The memory
+figure is the sandbox budget after reserving RAM for the daemon and caches;
+`node_memory_reserve_mib` derives it from host RAM at registration. Defaults
+advertise one CPU, 1 GiB sandbox memory, 32 GiB disk, and one sandbox as a
+secondary count cap.
 
 | TOML setting | Environment override | Default |
 | --- | --- | --- |
 | `node_roles` | `SWARMY_NODE_ROLES` (comma-separated) | `["sandbox", "volume"]` |
 | `node_capacity.cpu_millis` | `SWARMY_NODE_CPU_MILLIS` | `1000` |
-| `node_capacity.memory_bytes` | `SWARMY_NODE_MEMORY_BYTES` | `1073741824` |
+| `node_capacity.memory_bytes` (sandbox budget) | `SWARMY_NODE_MEMORY_BYTES` | `1073741824` |
+| `node_memory_reserve_mib` (derive budget from host RAM) | `SWARMY_NODE_MEMORY_RESERVE_MIB` | unset |
 | `node_capacity.disk_bytes` | `SWARMY_NODE_DISK_BYTES` | `34359738368` |
 | `node_capacity.sandboxes` | `SWARMY_NODE_SANDBOXES` | `1` |
 | `node_heartbeat_interval_ms` | `SWARMY_NODE_HEARTBEAT_INTERVAL_MS` | `5000` |
