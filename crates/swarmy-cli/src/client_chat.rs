@@ -70,10 +70,12 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
     Ok(result)
 }
 
-async fn picker(client: &Client) -> Result<Option<Option<String>>> {
+async fn picker(
+    client: &Client,
+    terminal: &mut DefaultTerminal,
+    keys: &mut EventStream,
+) -> Result<Option<Option<String>>> {
     let sessions = recent(client).await?;
-    let (mut terminal, _restore) = terminal()?;
-    let mut keys = EventStream::new();
     let mut selection = ListState::default().with_selected(Some(0));
     loop {
         terminal.draw(|frame| {
@@ -119,13 +121,15 @@ pub async fn run(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "chat requires an interactive terminal"
     );
+    let (mut terminal, _restore) = terminal()?;
+    let mut keys = EventStream::new();
     let choice = if id.is_none()
         && agent.is_none()
         && selection.provider.is_none()
         && selection.model.is_none()
         && selection.effort.is_none()
     {
-        let Some(choice) = picker(&client).await? else {
+        let Some(choice) = picker(&client, &mut terminal, &mut keys).await? else {
             return Ok(());
         };
         choice
@@ -134,10 +138,15 @@ pub async fn run(
     };
     let mut conversation =
         Conversation::open(client.clone(), choice, image, agent, new, selection.into()).await?;
+    // Health warnings belong on the ordinary terminal, not behind the alternate screen.
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
     conversation
         .wait_healthy(conversation.provider.as_deref())
         .await?;
-    let (mut terminal, _restore) = terminal()?;
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
     let mut view = View::new(&conversation);
     // History is read after subscribing, so a concurrent append cannot be lost.
     let mut after = 0;
@@ -152,7 +161,6 @@ pub async fn run(
         }
     }
     view.ready = conversation.session.state == api::SessionState::Idle;
-    let mut keys = EventStream::new();
     let mut input = Input::default();
     loop {
         terminal.draw(|frame| {
