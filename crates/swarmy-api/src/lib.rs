@@ -137,6 +137,12 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
         computer_deleted: record.computer_deleted,
         waiting: None,
         provider: record.inference.provider.clone(),
+        model: record.inference.model.clone(),
+        effort: record
+            .inference
+            .effort
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| serde_json::from_value(v).ok()),
     }
 }
 async fn authorize(

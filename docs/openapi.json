@@ -1059,6 +1059,16 @@
           "created_at": {
             "type": "string"
           },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -1072,6 +1082,12 @@
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": [

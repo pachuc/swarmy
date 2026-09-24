@@ -214,9 +214,30 @@ struct View {
     assistants: HashSet<String>,
     ready: bool,
     state: String,
+    selection: String,
 }
 impl View {
     fn new(conversation: &Conversation) -> Self {
+        let settings = swarmy_config::Settings::load().ok().map(|v| v.settings);
+        let provider = conversation
+            .provider
+            .as_deref()
+            .or_else(|| settings.as_ref().map(|v| v.provider.as_str()))
+            .unwrap_or("default");
+        let model = conversation
+            .session
+            .model
+            .as_deref()
+            .or_else(|| settings.as_ref().map(|v| v.model.as_str()))
+            .unwrap_or("default");
+        let effort = conversation.session.effort.as_ref().map_or_else(
+            || {
+                settings
+                    .as_ref()
+                    .map_or_else(|| "default".into(), |v| v.reasoning_effort.clone())
+            },
+            |v| format!("{v:?}").to_lowercase(),
+        );
         Self {
             entries: Vec::new(),
             partial: String::new(),
@@ -224,6 +245,7 @@ impl View {
             assistants: HashSet::new(),
             ready: false,
             state: format!("{:?}", conversation.session.state),
+            selection: format!("{provider}/{model} {effort}"),
         }
     }
     fn body(&self) -> String {
@@ -245,7 +267,7 @@ impl View {
             conversation.agent_name.as_deref().unwrap_or("ephemeral"),
             conversation.id,
             self.state,
-            conversation.provider.as_deref().unwrap_or("default")
+            self.selection
         )
     }
     fn event(&mut self, item: StreamItem) {
@@ -263,7 +285,7 @@ impl View {
                     .and_then(|s| s.get("to"))
                     .and_then(serde_json::Value::as_str)
                 {
-                    self.state = state.into();
+                    self.state = format!("{}{}", state[..1].to_uppercase(), &state[1..]);
                     self.ready = state == "idle";
                     if self.ready {
                         self.partial.clear();
