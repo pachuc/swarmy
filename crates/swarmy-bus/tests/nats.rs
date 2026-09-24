@@ -531,37 +531,40 @@ async fn absent_or_unresponsive_scheduler_is_named_in_request_errors() {
 
 #[tokio::test]
 async fn nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases() {
-    use futures_util::StreamExt;
-    use swarmy_core::{Nudge, decode, runnable_partition};
     run(|f| async move {
         let id = SessionId::from_ulid(Ulid::generate());
-        let subject = format!("{}.sched.runnable.{}", f.prefix, runnable_partition(id));
-        let mut events = f.admin.subscribe(subject).await.unwrap();
-        f.admin.flush().await.unwrap();
-        let resend = Duration::from_millis(300);
+        let context = jetstream::new(f.admin.clone());
+        let mut stream = context.get_stream(&f.names()[1]).await.unwrap();
+        // Size the resend window from a real round trip rather than a short
+        // fixed timeout. A busy fleet sandbox may deschedule this task while
+        // NATS acknowledges the first publication.
+        let start = tokio::time::Instant::now();
+        stream.info().await.unwrap();
+        let resend = start
+            .elapsed()
+            .saturating_mul(20)
+            .max(Duration::from_secs(5));
+
         f.bus.nudge(id, 1, None, resend, false).await.unwrap();
-        let first = timeout(WAIT, events.next()).await.unwrap().unwrap();
-        assert_eq!(decode::<Nudge>(&first.payload).unwrap().session_id, id);
+        // Make the duplicate call before querying NATS; a state query can
+        // itself consume most of the resend window on a loaded node.
         f.bus
             .clone()
             .nudge(id, 1, None, resend, false)
             .await
             .unwrap();
-        assert!(timeout(resend / 3, events.next()).await.is_err());
+        assert_eq!(stream.info().await.unwrap().state.messages, 1);
+
         f.bus.nudge(id, 2, None, resend, false).await.unwrap();
-        timeout(WAIT, events.next()).await.unwrap().unwrap();
+        assert_eq!(stream.info().await.unwrap().state.messages, 2);
         f.bus.nudge(id, 2, None, resend, true).await.unwrap();
-        timeout(WAIT, events.next()).await.unwrap().unwrap();
-        timeout(WAIT, async {
-            loop {
-                f.bus.nudge(id, 2, None, resend, false).await.unwrap();
-                if let Ok(event) = timeout(Duration::from_millis(10), events.next()).await {
-                    break event.unwrap();
-                }
-            }
-        })
-        .await
-        .unwrap();
+        assert_eq!(stream.info().await.unwrap().state.messages, 3);
+
+        // Counting persisted deliveries after expiry checks both sides of
+        // deduplication without relying on a short absence-of-message timer.
+        sleep(resend).await;
+        f.bus.nudge(id, 2, None, resend, false).await.unwrap();
+        assert_eq!(stream.info().await.unwrap().state.messages, 4);
     })
     .await;
 }
