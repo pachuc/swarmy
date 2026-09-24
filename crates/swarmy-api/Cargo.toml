@@ -34,5 +34,6 @@ futures.workspace = true
 async-stream.workspace = true
 
 [dev-dependencies]
+swarmy-client.workspace = true
 reqwest.workspace = true
 foundationdb.workspace = true

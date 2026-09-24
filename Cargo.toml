@@ -40,6 +40,7 @@ anyhow = "1"
 axum = "0.8"
 tower = "0.5"
 swarmy-api-types = { path = "crates/swarmy-api-types" }
+swarmy-client = { path = "crates/swarmy-client" }
 async-nats = "0.49"
 async-stream = "0.3"
 async-trait = "0.1"

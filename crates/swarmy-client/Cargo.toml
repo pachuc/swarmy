@@ -1,0 +1,25 @@
+[package]
+name = "swarmy-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+swarmy-api-types.workspace = true
+reqwest.workspace = true
+url.workspace = true
+bytes.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+ulid.workspace = true
+axum.workspace = true
