@@ -284,16 +284,11 @@ impl Worker {
                         .await;
                 }
                 Action::DispatchTools(calls) => {
+                    let display = self.session_display(&session).await?;
                     if self.store.ensure_session_computer(id).await.is_ok()
-                        && calls.iter().all(|call| {
-                            self.config
-                                .harness
-                                .tools
-                                .get(&call.tool)
-                                .is_some_and(swarmy_harness::Tool::sandbox_bound)
-                                && SandboxArguments::parse(&call.tool, call.arguments.clone())
-                                    .is_ok()
-                        })
+                        && calls
+                            .iter()
+                            .all(|call| self.can_dispatch_tool(call, display))
                     {
                         return self.dispatch_calls(&session, lease, &calls, turn).await;
                     }
@@ -553,6 +548,24 @@ impl Worker {
             .await
     }
 
+    fn can_dispatch_tool(&self, call: &ToolCallRecord, display: bool) -> bool {
+        (!swarmy_tools::is_display_name(&call.tool) || display)
+            && self
+                .config
+                .harness
+                .tools
+                .get(&call.tool)
+                .is_some_and(swarmy_harness::Tool::sandbox_bound)
+            && SandboxArguments::parse(&call.tool, call.arguments.clone()).is_ok()
+    }
+
+    async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
+        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
+            return Ok(false);
+        };
+        Ok(self.store.image_display(&agent.image).await?)
+    }
+
     async fn prepare_request(
         &self,
         session: &SessionRecord,
@@ -580,6 +593,9 @@ impl Worker {
             {
                 request.system_prompt = prompt;
             }
+        }
+        if !summarizing {
+            apply_display_tools(request, self.session_display(session).await?);
         }
         let selection = session.inference.resolve(&defaults);
         request.settings.model.clone_from(&selection.model);
@@ -767,10 +783,14 @@ impl Worker {
     ) -> Result<bool> {
         let mut jobs = Vec::new();
         let id = session.session_id;
+        let display = self.session_display(session).await?;
         for (request_id, call) in pending_tools(events) {
             let result = match self.store.ensure_session_computer(id).await {
                 Err(StoreError::ComputerDeleted) => Err(StoreError::ComputerDeleted.to_string()),
                 Err(error) => return Err(error.into()),
+                Ok(()) if swarmy_tools::is_display_name(&call.tool) && !display => {
+                    Err("display tools require a display image".into())
+                }
                 Ok(()) => match self.config.harness.tools.get(&call.tool) {
                     Some(tool) if tool.sandbox_bound() => {
                         match SandboxArguments::parse(&call.tool, call.arguments.clone()) {
@@ -1654,6 +1674,17 @@ fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)> {
     }).collect()
 }
 
+fn apply_display_tools(request: &mut swarmy_llm::Request, display: bool) {
+    if display {
+        request.system_prompt.push_str("\n\n");
+        request.system_prompt.push_str(swarmy_tools::DISPLAY_PROMPT);
+    } else {
+        request
+            .tools
+            .retain(|tool| !swarmy_tools::is_display_name(&tool.name));
+    }
+}
+
 fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
     for message in &mut request.messages {
         for part in &mut message.parts {
@@ -1662,6 +1693,19 @@ fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
                     text: "[An image was omitted because this model does not accept images.]"
                         .into(),
                 };
+            } else if let swarmy_core::Part::ToolResult {
+                result:
+                    swarmy_core::ToolResult::Completed {
+                        output, metadata, ..
+                    },
+                ..
+            } = part
+                && metadata.contains_key("image_object_key")
+            {
+                output
+                    .push_str(" [An image was omitted because this model does not accept images.]");
+                metadata.remove("image_object_key");
+                metadata.remove("image_media_type");
             }
         }
     }
@@ -1671,6 +1715,39 @@ fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
 mod image_tests {
     use super::*;
     use swarmy_core::{Message, MessageRole, Part};
+
+    #[test]
+    fn display_image_controls_tool_schema_and_prompt() {
+        use swarmy_llm::ToolDefinition;
+        let request = || swarmy_llm::Request {
+            system_prompt: "Base prompt".into(),
+            messages: Vec::new(),
+            tools: ["bash", "browser_snapshot", "screen_screenshot"]
+                .into_iter()
+                .map(|name| ToolDefinition {
+                    name: name.into(),
+                    description: String::new(),
+                    parameters: serde_json::json!({"type":"object","properties":{}}),
+                })
+                .collect(),
+            settings: swarmy_llm::GenerationSettings::default(),
+        };
+        let mut coding = request();
+        apply_display_tools(&mut coding, false);
+        assert_eq!(
+            coding
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["bash"]
+        );
+        assert_eq!(coding.system_prompt, "Base prompt");
+        let mut desktop = request();
+        apply_display_tools(&mut desktop, true);
+        assert_eq!(desktop.tools.len(), 3);
+        assert!(desktop.system_prompt.contains("prefer browser_snapshot"));
+    }
 
     #[test]
     fn unsupported_model_gets_a_note_instead_of_image_bytes() {
@@ -1689,9 +1766,23 @@ mod image_tests {
             tools: Vec::new(),
             settings: swarmy_llm::GenerationSettings::default(),
         };
+        request.messages[0].parts.push(Part::ToolResult {
+            call_id: swarmy_core::ToolCallId("shot".into()),
+            result: swarmy_core::ToolResult::Completed {
+                title: "browser_screenshot".into(),
+                output: "PNG screenshot".into(),
+                metadata: std::collections::BTreeMap::from([
+                    ("image_object_key".into(), serde_json::json!("blob")),
+                    ("image_media_type".into(), serde_json::json!("image/png")),
+                ]),
+            },
+        });
         omit_unsupported_images(&mut request);
         assert!(
             matches!(&request.messages[0].parts[0], Part::Text { text } if text.contains("image was omitted"))
+        );
+        assert!(
+            matches!(&request.messages[0].parts[1], Part::ToolResult { result: swarmy_core::ToolResult::Completed { output, metadata, .. }, .. } if output.contains("image was omitted") && !metadata.contains_key("image_object_key"))
         );
     }
 }

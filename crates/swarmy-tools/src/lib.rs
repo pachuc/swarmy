@@ -82,6 +82,91 @@ sandbox_tool!(
     json!({"type":"object", "properties":{"url":{"type":"string", "minLength":1}}, "required":["url"], "additionalProperties":false})
 );
 
+sandbox_tool!(
+    BrowserNavigate,
+    "browser_navigate",
+    "Navigate the headed Chromium page to an HTTP or HTTPS URL.",
+    json!({"type":"object","properties":{"url":{"type":"string","minLength":1}},"required":["url"],"additionalProperties":false})
+);
+sandbox_tool!(
+    BrowserSnapshot,
+    "browser_snapshot",
+    "Read the current page's accessibility tree, URL, title, and short element references. Prefer this to a screenshot for interacting with web pages.",
+    empty_parameters()
+);
+sandbox_tool!(
+    BrowserClick,
+    "browser_click",
+    "Click an element from the most recent accessibility snapshot by its short ref.",
+    ref_parameters()
+);
+sandbox_tool!(
+    BrowserType,
+    "browser_type",
+    "Type text into an element from the latest snapshot; optionally submit its form.",
+    json!({"type":"object","properties":{"ref":{"type":"string","minLength":1},"text":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["ref","text"],"additionalProperties":false})
+);
+sandbox_tool!(
+    BrowserSelect,
+    "browser_select",
+    "Select a value in a dropdown from the latest snapshot.",
+    json!({"type":"object","properties":{"ref":{"type":"string","minLength":1},"value":{"type":"string","minLength":1}},"required":["ref","value"],"additionalProperties":false})
+);
+sandbox_tool!(
+    BrowserScroll,
+    "browser_scroll",
+    "Scroll the page by direction (up, down, left, right) or scroll a snapshot ref into view.",
+    json!({"type":"object","properties":{"direction":{"type":"string","enum":["up","down","left","right"]},"ref":{"type":"string","minLength":1}},"additionalProperties":false})
+);
+sandbox_tool!(
+    BrowserScreenshot,
+    "browser_screenshot",
+    "Capture the browser viewport as a bounded PNG image part. Use browser_snapshot for text and controls.",
+    empty_parameters()
+);
+sandbox_tool!(
+    BrowserEvaluate,
+    "browser_evaluate",
+    "Evaluate JavaScript on the current page and return a bounded JSON result.",
+    json!({"type":"object","properties":{"js":{"type":"string","minLength":1}},"required":["js"],"additionalProperties":false})
+);
+sandbox_tool!(
+    ScreenScreenshot,
+    "screen_screenshot",
+    "Capture the whole virtual display as a bounded PNG image part, including non-browser programs.",
+    empty_parameters()
+);
+sandbox_tool!(
+    ScreenWindows,
+    "screen_windows",
+    "List the virtual display's open windows by title.",
+    empty_parameters()
+);
+
+fn ref_parameters() -> Value {
+    json!({"type":"object","properties":{"ref":{"type":"string","minLength":1}},"required":["ref"],"additionalProperties":false})
+}
+
+#[must_use]
+pub fn is_display_name(name: &str) -> bool {
+    name.starts_with("browser_") || name.starts_with("screen_")
+}
+
+pub const DISPLAY_PROMPT: &str = "## Browser and screen tools\nFor browser pages, prefer browser_snapshot and its element refs over screenshots: accessibility text is faster and more reliable for navigation. Use browser_screenshot when visual layout matters. Use screen_screenshot and screen_windows for non-browser applications.";
+
+pub fn register_display(tools: &mut ToolRegistry) {
+    tools.register(Box::new(BrowserNavigate));
+    tools.register(Box::new(BrowserSnapshot));
+    tools.register(Box::new(BrowserClick));
+    tools.register(Box::new(BrowserType));
+    tools.register(Box::new(BrowserSelect));
+    tools.register(Box::new(BrowserScroll));
+    tools.register(Box::new(BrowserScreenshot));
+    tools.register(Box::new(BrowserEvaluate));
+    tools.register(Box::new(ScreenScreenshot));
+    tools.register(Box::new(ScreenWindows));
+}
+
 fn empty_parameters() -> Value {
     json!({"type":"object", "properties":{}, "additionalProperties":false})
 }
@@ -121,6 +206,7 @@ mod tests {
     fn tool_schemas_are_plain_objects_at_the_top_level() {
         let mut registry = ToolRegistry::default();
         register(&mut registry);
+        register_display(&mut registry);
         let definitions = registry.definitions();
         assert!(definitions.len() >= 16);
         for tool in definitions {

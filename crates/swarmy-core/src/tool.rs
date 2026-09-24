@@ -58,6 +58,37 @@ pub struct WebFetchArguments {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BrowserRefArguments {
+    pub r#ref: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserTypeArguments {
+    pub r#ref: String,
+    pub text: String,
+    #[serde(default)]
+    pub submit: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserSelectArguments {
+    pub r#ref: String,
+    pub value: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserScrollArguments {
+    pub direction: Option<String>,
+    pub r#ref: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserEvaluateArguments {
+    pub js: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmptyArguments {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +108,16 @@ pub enum SandboxArguments {
     Glob(crate::SearchArguments),
     Grep(crate::SearchArguments),
     Ls(crate::LsArguments),
+    BrowserNavigate(WebFetchArguments),
+    BrowserSnapshot(EmptyArguments),
+    BrowserClick(BrowserRefArguments),
+    BrowserType(BrowserTypeArguments),
+    BrowserSelect(BrowserSelectArguments),
+    BrowserScroll(BrowserScrollArguments),
+    BrowserScreenshot(EmptyArguments),
+    BrowserEvaluate(BrowserEvaluateArguments),
+    ScreenScreenshot(EmptyArguments),
+    ScreenWindows(EmptyArguments),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +155,16 @@ impl SandboxArguments {
             Self::Edit(a) => !a.path.is_empty() && !a.old_string.is_empty(),
             Self::Glob(a) | Self::Grep(a) => !a.path.is_empty() && !a.pattern.is_empty(),
             Self::Ls(a) => !a.path.is_empty(),
+            Self::BrowserNavigate(a) => !a.url.is_empty(),
+            Self::BrowserClick(a) => !a.r#ref.is_empty(),
+            Self::BrowserType(a) => !a.r#ref.is_empty(),
+            Self::BrowserSelect(a) => !a.r#ref.is_empty() && !a.value.is_empty(),
+            Self::BrowserScroll(a) => match (a.direction.as_deref(), a.r#ref.as_deref()) {
+                (Some(direction), None) => matches!(direction, "up" | "down" | "left" | "right"),
+                (None, Some(reference)) => !reference.is_empty(),
+                _ => false,
+            },
+            Self::BrowserEvaluate(a) => !a.js.is_empty(),
             _ => true,
         }
     }
@@ -135,7 +186,34 @@ impl SandboxArguments {
             Self::Glob(_) => "glob",
             Self::Grep(_) => "grep",
             Self::Ls(_) => "ls",
+            Self::BrowserNavigate(_) => "browser_navigate",
+            Self::BrowserSnapshot(_) => "browser_snapshot",
+            Self::BrowserClick(_) => "browser_click",
+            Self::BrowserType(_) => "browser_type",
+            Self::BrowserSelect(_) => "browser_select",
+            Self::BrowserScroll(_) => "browser_scroll",
+            Self::BrowserScreenshot(_) => "browser_screenshot",
+            Self::BrowserEvaluate(_) => "browser_evaluate",
+            Self::ScreenScreenshot(_) => "screen_screenshot",
+            Self::ScreenWindows(_) => "screen_windows",
         }
+    }
+
+    #[must_use]
+    pub const fn is_display_tool(&self) -> bool {
+        matches!(
+            self,
+            Self::BrowserNavigate(_)
+                | Self::BrowserSnapshot(_)
+                | Self::BrowserClick(_)
+                | Self::BrowserType(_)
+                | Self::BrowserSelect(_)
+                | Self::BrowserScroll(_)
+                | Self::BrowserScreenshot(_)
+                | Self::BrowserEvaluate(_)
+                | Self::ScreenScreenshot(_)
+                | Self::ScreenWindows(_)
+        )
     }
 
     #[must_use]
@@ -161,10 +239,20 @@ impl SandboxArguments {
             Self::Ls(value) => serde_json::json!(value),
             Self::Bash(value) => serde_json::json!(value),
             Self::WriteStdin(value) => serde_json::json!(value),
-            Self::WebFetch(value) => serde_json::json!(value),
+            Self::WebFetch(value) | Self::BrowserNavigate(value) => serde_json::json!(value),
             Self::ProcessStart(value) => serde_json::json!(value),
             Self::ProcessLog(value) | Self::ProcessStop(value) => serde_json::json!(value),
-            Self::ProcessList(value) | Self::Checkpoint(value) => serde_json::json!(value),
+            Self::ProcessList(value)
+            | Self::Checkpoint(value)
+            | Self::BrowserSnapshot(value)
+            | Self::BrowserScreenshot(value)
+            | Self::ScreenScreenshot(value)
+            | Self::ScreenWindows(value) => serde_json::json!(value),
+            Self::BrowserClick(value) => serde_json::json!(value),
+            Self::BrowserType(value) => serde_json::json!(value),
+            Self::BrowserSelect(value) => serde_json::json!(value),
+            Self::BrowserScroll(value) => serde_json::json!(value),
+            Self::BrowserEvaluate(value) => serde_json::json!(value),
         }
     }
 }

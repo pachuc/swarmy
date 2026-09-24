@@ -72,6 +72,10 @@ fn recipes_reject_typos_and_invalid_dimensions() {
     assert_eq!(name, "base-ubuntu");
     assert_eq!(recipe.disk_size, 8 * 1024 * 1024 * 1024);
     assert_eq!(recipe.sandbox.scratch, vec!["/tmp".to_string()]);
+    assert!(!recipe.sandbox.display);
+    let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-desktop");
+    let (desktop_recipe, _, _) = Recipe::load(&desktop).unwrap();
+    assert!(desktop_recipe.sandbox.display);
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/swarmy-dev");
     let (recipe, _, name) = Recipe::load(&dev).unwrap();
     assert_eq!(name, "swarmy-dev");

@@ -88,6 +88,7 @@ async fn build(
     let (recipe, directory, directory_name) = Recipe::load(&path)?;
     let scratch = recipe.sandbox.scratch.clone();
     let memory_mib = recipe.sandbox.memory_mib;
+    let recipe_display = recipe.sandbox.display;
     anyhow::ensure!(
         memory_mib.is_none_or(|m| m > 0),
         "sandbox memory_mib must be positive"
@@ -126,6 +127,7 @@ async fn build(
             manifest_id,
             &scratch,
             memory_mib,
+            recipe_display,
         )
         .await?;
     if json {

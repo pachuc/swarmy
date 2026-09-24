@@ -47,3 +47,30 @@ xdpyinfo | head  # the supervisor restarted Xvfb
 The root-only image and node acceptance suites must also be run on that node
 for recipe or sandbox runtime changes. Build output reports the nonzero chunk
 coverage and uploaded blocks for comparing size with `base-ubuntu`.
+
+## Browser and screen tools
+
+The recipe sets `[sandbox] display = true`. This stores an immutable image flag
+used by the worker to advertise browser and screen tools only for desktop
+sessions. Images without it keep the ordinary coding-tool schema. The image
+installs a small Python DevTools client at `/usr/local/libexec/swarmy-browser`;
+requests reach Chromium on the sandbox-local port 9222. `browser_navigate`,
+`browser_snapshot`, `browser_click`, `browser_type`, `browser_select`,
+`browser_scroll`, `browser_screenshot`, and `browser_evaluate` use this client.
+Snapshots include URL, title, accessibility roles and names, and short refs
+valid until navigation. They are limited to 32 KiB with a truncation note.
+Viewport screenshots are PNG images capped at 5 MiB. `screen_screenshot` uses
+scrot for the whole Xvfb display and `screen_windows` uses wmctrl to list
+window titles, including non-browser programs such as Blender. Images are
+stored as tool blobs and passed to image-capable models; other models get an
+omission note. Browser JavaScript evaluation runs in the page context, so only
+use it for pages the agent is authorized to control.
+
+`python3 images/base-desktop/tests/browser-helper.py` exercises the navigation,
+login-form references, type/click flow, screenshot metadata, and bounds against
+a fake DevTools endpoint without needing a root-only image build. Live Xvfb,
+Chromium, and Blender checks still require a node with sudo and NBD support.
+
+On a real desktop sandbox, run `python3 images/base-desktop/tests/live-smoke.py`
+from a checkout to verify headed Chromium against a local HTTP login form,
+selection and evaluation, both screenshots, and a visible Blender window.
