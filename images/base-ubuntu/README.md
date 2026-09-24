@@ -7,7 +7,7 @@ has `/home/agent/work`. Packages come from Ubuntu Noble main and universe;
 versions follow the configured archive. Use a frozen mirror to reproduce builds
 across archive updates.
 
-`setup.sh` runs after debootstrap and installs the credential helper and gh
+`../common/agent-setup.sh` runs after debootstrap and installs the credential helper and gh
 wrapper. The node applies the same script when opening an existing image.
 The sandbox inherits `HOME=/home/agent` and a PATH preferring `/usr/local/bin`.
 

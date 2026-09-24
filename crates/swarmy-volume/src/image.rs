@@ -64,6 +64,9 @@ pub enum Source {
         source_commit: Option<String>,
         /// Optional setup script run inside the installed system.
         script: Option<PathBuf>,
+        /// Setup scripts run in order in the same chroot.
+        #[serde(default)]
+        scripts: Vec<PathBuf>,
     },
     Directory {
         path: PathBuf,
@@ -108,6 +111,17 @@ impl Recipe {
         {
             return Err(ImageError::Invalid(
                 "source_commit must be a 40-digit Git commit hash".into(),
+            ));
+        }
+        if let Source::Debootstrap {
+            script: Some(_),
+            scripts,
+            ..
+        } = &recipe.source
+            && !scripts.is_empty()
+        {
+            return Err(ImageError::Invalid(
+                "use script or scripts, not both".into(),
             ));
         }
         Manifest::empty(recipe.disk_size)?;
@@ -242,23 +256,30 @@ fn populate(source: &Source, directory: &Path, root: &Path, scratch: &Path) -> R
             components,
             source_commit,
             script,
+            scripts,
         } => {
             bootstrap_packages(suite, packages, mirror, components.as_deref(), root)?;
-            if let Some(script) = script {
-                let mut command = privileged("env");
-                if let Some(commit) = source_commit {
-                    command.arg(format!("SWARMY_SOURCE_COMMIT={commit}"));
-                }
+            let scripts: Vec<&PathBuf> = script.iter().chain(scripts.iter()).collect();
+            if !scripts.is_empty() {
                 // rustup and other installers inspect /proc/self/exe. Keep
                 // proc mounted only while the setup script runs.
                 let proc = root.join("proc");
-                let input = File::open(directory.join(script))?;
                 run(privileged("mount").args(["-t", "proc", "proc"]).arg(&proc))?;
-                let script_result = run(command
-                    .arg("chroot")
-                    .arg(root)
-                    .args(["/bin/sh", "-es"])
-                    .stdin(input));
+                let script_result: Result<()> = (|| {
+                    for script in scripts {
+                        let input = File::open(directory.join(script))?;
+                        let mut command = privileged("env");
+                        if let Some(commit) = source_commit {
+                            command.arg(format!("SWARMY_SOURCE_COMMIT={commit}"));
+                        }
+                        run(command
+                            .arg("chroot")
+                            .arg(root)
+                            .args(["/bin/sh", "-es"])
+                            .stdin(input))?;
+                    }
+                    Ok(())
+                })();
                 let unmount_result = run(privileged("umount").arg(&proc));
                 script_result?;
                 unmount_result?;

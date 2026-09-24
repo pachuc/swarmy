@@ -44,6 +44,52 @@ impl Drop for ServerTask {
     }
 }
 
+// The file is image data, not a shell script. Reject malformed entries instead
+// of passing surprising strings to runc or expanding them in the host.
+fn parse_image_environment(content: &str) -> Result<Vec<String>> {
+    let mut variables = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            Error::Operation(format!("invalid image environment line {}", index + 1))
+        })?;
+        if key.is_empty()
+            || !key.bytes().enumerate().all(|(i, byte)| {
+                byte == b'_' || byte.is_ascii_alphabetic() || (i > 0 && byte.is_ascii_digit())
+            })
+            || value.contains('\0')
+        {
+            return Err(Error::Operation(format!(
+                "invalid image environment line {}",
+                index + 1
+            )));
+        }
+        variables.push(format!("{key}={value}"));
+    }
+    Ok(variables)
+}
+
+#[cfg(test)]
+mod image_environment_tests {
+    use super::parse_image_environment;
+
+    #[test]
+    fn parses_literal_values_and_rejects_malformed_lines() {
+        assert_eq!(
+            parse_image_environment(
+                "# display settings\n\nDISPLAY=:99\n  GALLIUM_DRIVER=llvmpipe\nVALUE=$HOME=a\n"
+            )
+            .unwrap(),
+            ["DISPLAY=:99", "GALLIUM_DRIVER=llvmpipe", "VALUE=$HOME=a"]
+        );
+        assert!(parse_image_environment("DISPLAY=:99\nnot-an-assignment\n").is_err());
+        assert!(parse_image_environment("9BAD=value\n").is_err());
+    }
+}
+
 /// One runtime per node state directory. An exclusive lock fences local daemons.
 pub struct RuncRuntime {
     root: PathBuf,
@@ -521,19 +567,22 @@ impl RuncRuntime {
         for set in ["bounding", "effective", "permitted"] {
             config["process"]["capabilities"][set] = caps.clone();
         }
-        let mut env = vec![
+        let mut env: Vec<String> = [
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME=/home/agent",
             "GH_CONFIG_DIR=/run/swarmy-gh",
             "TERM=xterm",
-        ];
-        if init.is_file() {
-            env.extend([
-                "DISPLAY=:99",
-                "LIBGL_ALWAYS_SOFTWARE=1",
-                "GALLIUM_DRIVER=llvmpipe",
-                "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
-            ]);
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let environment = bundle.join("rootfs/etc/swarmy/environment");
+        if environment.is_file() {
+            for variable in parse_image_environment(&std::fs::read_to_string(environment)?)? {
+                let key = variable.split_once('=').ok_or(Error::State)?.0;
+                env.retain(|existing| !existing.starts_with(&format!("{key}=")));
+                env.push(variable);
+            }
         }
         config["process"]["env"] = serde_json::json!(env);
         config["process"]["rlimits"]
@@ -806,7 +855,7 @@ impl SandboxRuntime for RuncRuntime {
             checked(Command::new("chroot").arg(bundle.join("rootfs")).args([
                 "/bin/sh",
                 "-ec",
-                include_str!("../../../images/base-ubuntu/setup.sh"),
+                include_str!("../../../images/common/agent-setup.sh"),
             ]))
             .await?;
             let credentials = crate::credentials::Credentials::start(

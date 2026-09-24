@@ -16,9 +16,10 @@ reachable from inside the sandbox. A fresh browser profile is stored under
 
 The sandbox starts `/usr/local/libexec/swarmy-init` as PID 1. It starts Xvfb
 and Openbox and restarts the display within a few seconds if Xvfb dies.
-`DISPLAY=:99`, `LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`, and the
-lavapipe ICD path are set on container processes. The default memory limit is
-3 GiB and `/tmp` is scratch space. The recipe reserves a 12 GiB sparse virtual
+`/etc/swarmy/environment` sets `DISPLAY=:99`, `LIBGL_ALWAYS_SOFTWARE=1`,
+`GALLIUM_DRIVER=llvmpipe`, and the lavapipe ICD path on container processes.
+The pinned Chromium snapshot's SHA-256 is checked before extraction. The
+default memory limit is 3 GiB and `/tmp` is scratch space. The recipe reserves a 12 GiB sparse virtual
 disk (12,884,901,888 bytes), compared with base-ubuntu's 8 GiB
 (8,589,934,592 bytes). Actual nonzero chunk coverage must be measured on a
 node with sudo, debootstrap, and the development object store; it cannot be

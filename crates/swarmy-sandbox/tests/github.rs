@@ -7,7 +7,7 @@ use std::{
 #[test]
 fn credential_helpers_fetch_on_use_and_never_cache() {
     let directory = tempfile::tempdir().unwrap();
-    let script = include_str!("../../../images/base-ubuntu/setup.sh")
+    let script = include_str!("../../../images/common/agent-setup.sh")
         .split("<<'PY'\n")
         .nth(1)
         .unwrap()
