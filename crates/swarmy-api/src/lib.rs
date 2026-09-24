@@ -182,6 +182,7 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
+        .route("/v1/cli/doctor", get(cli::doctor))
         .route("/v1/cli/sessions", get(cli::sessions))
         .route("/v1/cli/sessions/{id}", get(cli::session_show))
         .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
@@ -260,7 +261,7 @@ async fn health(State(state): State<AppState>) -> ApiResult<Value> {
         })
         .collect();
     Ok(Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "services": services, "node_count": node_count, "default_provider": state.default_selection.provider}),
+        json!({"version": swarmy_version::VERSION, "git_commit": swarmy_version::GIT_COMMIT, "services": services, "node_count": node_count, "default_provider": state.default_selection.provider}),
     ))
 }
 async fn openapi() -> Json<Value> {

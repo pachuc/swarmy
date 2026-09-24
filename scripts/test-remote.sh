@@ -87,8 +87,8 @@ result = json.load(open('doctor.json'))
 assert result['ok'], result
 checks = {c['name']: c for c in result['checks']}
 assert checks['remote tunnel']['ok']
-for name in ['FoundationDB', 'NATS', 'S3']:
-    assert checks['remote ' + name]['ok']
+for name in ['API', 'scheduler', 'worker', 'gateway', 'remote S3']:
+    assert checks[name]['ok'], checks[name]
 assert 'fdbserver' not in checks
 PY
 # This fake-provider session never materializes a computer, but still needs a registered image.
