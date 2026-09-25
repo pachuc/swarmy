@@ -967,10 +967,14 @@ pub mod api_paths {
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota,
+        api_paths::list_routes, api_paths::set_route, api_paths::show_route,
+        api_paths::delete_route, api_paths::set_session_route,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
-        cli_paths::cli_credential
+        cli_paths::cli_credential,
+        cli_paths::cli_routes, cli_paths::cli_route, cli_paths::cli_set_route,
+        cli_paths::cli_remove_route, cli_paths::cli_set_session_route
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
@@ -983,7 +987,9 @@ pub mod api_paths {
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
-    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput
+    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute,
+    CliRoute, CliRouteInput, CliRouteDeleted
 )))]
 pub struct ApiDocument;
 
