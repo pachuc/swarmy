@@ -120,17 +120,18 @@ Summarization preserves conversation context; it does not replace these files.
 
 `set_timer` stores a note and either a positive `delay_seconds` or an absolute
 RFC 3339 `at` timestamp. Past absolute times are eligible immediately. Timers
-belong to named agents, including timers set from side conversations, and always
-deliver to the current main conversation, opening it if absent. Each agent can
+belong to named agents, including timers set from side conversations, and
+deliver to the idle session that set them, falling back to the current main
+conversation, opening it if absent. Each agent can
 have 32 pending timers; notes are bounded to 1,024 UTF-8 bytes. `list_timers` returns pending timers and
 `cancel_timer` cancels one by its ULID. Cancellation is idempotent and cannot
 retract a delivered note. Timer mutations and their tool completions commit
 under the same worker head and lease fence, so replay cannot create duplicates.
 
-The scheduler pages the durable due-time index on its scan tick. Busy main
-conversations leave due timers pending until they become idle; summarization
-therefore cannot strand a note in an archived session. Delivery resolves the
-main pointer, appends the note as a system message, makes the session runnable,
+The scheduler pages the durable due-time index on its scan tick. Busy
+conversations leave due timers pending until they become idle; a closed or
+summarized origin therefore cannot strand a note, which falls back to the
+main conversation. Delivery appends the note as a system message, makes the session runnable,
 and records the fired status with the session and event sequence in one
 transaction. Competing schedulers cannot deliver twice. A failed append leaves
 the timer pending for the next tick. A lost publication after a successful
@@ -455,6 +456,7 @@ Values over 100KB are stored in object storage with a pointer in the value.
 ("cursor", principal_id, channel_id)        -> seq
 ("inbox", agent_id, seq)                    -> {channel_id, msg_seq}
 ("timer", agent_id, timer_id)                -> TimerRecord {due_at, note, status}
+("timer_origin", agent_id, timer_id)         -> SessionId that set the timer
 ("timer_active", agent_id, timer_id)         -> pending TimerRecord
 ("timer_due", due_millis, agent_id, timer_id) -> pending TimerRecord
 ```

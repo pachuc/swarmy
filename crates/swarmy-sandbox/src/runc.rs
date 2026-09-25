@@ -1112,7 +1112,13 @@ fn pasta_arguments(netns: &str, pid_file: &Path) -> Vec<String> {
     arguments
 }
 
-fn pasta_pid_file(id: AgentId) -> PathBuf {
+/// Location of the pasta helper's PID file for one computer.
+///
+/// The file lives under `/run` because the sandbox bundle path is rejected by
+/// the host `AppArmor` profile for pasta. Tests must read the PID here rather
+/// than from the bundle directory.
+#[must_use]
+pub fn pasta_pid_file(id: AgentId) -> PathBuf {
     Path::new("/run/swarmy/pasta").join(format!("{id}.pid"))
 }
 

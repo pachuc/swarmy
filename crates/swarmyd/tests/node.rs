@@ -198,21 +198,27 @@ impl Drop for Node {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                let pid_path = bundle.path().join("pasta.pid");
-                if let Ok(pid) = std::fs::read_to_string(&pid_path)
-                    && let Ok(pid) = pid.trim().parse::<u32>()
-                {
-                    let command = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-                    if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
-                        && command
-                            .windows(pid_path.as_os_str().as_encoded_bytes().len())
-                            .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
+                // The runtime writes the pasta PID under /run (see
+                // swarmy_sandbox::pasta_pid_file); resolve it through that
+                // accessor rather than the bundle directory.
+                if let Ok(ulid) = bundle.file_name().to_string_lossy().parse::<ulid::Ulid>() {
+                    let pid_path = swarmy_sandbox::pasta_pid_file(AgentId::from_ulid(ulid));
+                    if let Ok(pid) = std::fs::read_to_string(&pid_path)
+                        && let Ok(pid) = pid.trim().parse::<u32>()
                     {
-                        let _ = Command::new("kill")
-                            .arg(pid.to_string())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .status();
+                        let command =
+                            std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                        if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
+                            && command
+                                .windows(pid_path.as_os_str().as_encoded_bytes().len())
+                                .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
+                        {
+                            let _ = Command::new("kill")
+                                .arg(pid.to_string())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .status();
+                        }
                     }
                 }
                 let _ = Command::new("ip")
@@ -799,11 +805,7 @@ async fn network_cycles(node: &Node, store: &Store, head: ManifestId) {
         store.create_volume(cycle, head).await.unwrap();
         let sandbox = node.create(cycle).await;
         let agent = sandbox.agent_id;
-        let pid_file = node
-            .root
-            .path()
-            .join(format!(".swarmy/node/bundles/{agent}/pasta.pid"));
-        let pid = std::fs::read_to_string(pid_file).unwrap();
+        let pid = std::fs::read_to_string(swarmy_sandbox::pasta_pid_file(agent)).unwrap();
         node.destroy(sandbox).await;
         assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
         assert!(
@@ -928,11 +930,8 @@ async fn pause_resume_timeout(node: &Node, sandbox: Sandbox) {
 async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     let sandbox = node.create(volume).await;
     let network_name = format!("swarmy-{}-{}", node.id, sandbox.agent_id);
-    let old_pasta = std::fs::read_to_string(node.root.path().join(format!(
-        ".swarmy/node/bundles/{}/pasta.pid",
-        sandbox.agent_id
-    )))
-    .unwrap();
+    let old_pasta =
+        std::fs::read_to_string(swarmy_sandbox::pasta_pid_file(sandbox.agent_id)).unwrap();
     let mut reader = connect(
         &node.socket(),
         exec(

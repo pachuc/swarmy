@@ -18,8 +18,8 @@ use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_core::{
-    AgentId, LeaseOwnerId, Nudge, RunnableEntry, SessionId, SessionRecord, SessionState, WakeReply,
-    decode,
+    AgentId, Event, LeaseOwnerId, MessageRole, Nudge, RequestId, RunnableEntry, SessionId,
+    SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
 use tokio::time::{Instant, sleep, timeout};
@@ -608,6 +608,100 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
                 .unwrap()
                 .unwrap()
                 .computer_deleted
+        );
+    })
+    .await;
+}
+
+/// A timer set from a side session wakes that idle session through a full
+/// scheduler scan: the due note is appended, the session turns runnable, and
+/// the nudge names the side session. This covers the 2026-09-25 report where
+/// a side session stayed idle past its timer because delivery always resolved
+/// the main conversation.
+#[tokio::test]
+async fn due_side_timer_nudges_its_idle_session() {
+    run(|f| async move {
+        let agent = f
+            .store
+            .create_agent(
+                "timer-side",
+                image_fixture::image(&f.store).await,
+                "",
+                Timestamp::now(),
+            )
+            .await
+            .unwrap()
+            .agent_id;
+        let (main, _) = f
+            .store
+            .open_main_session(agent, Timestamp::now())
+            .await
+            .unwrap();
+        let side = std::iter::repeat_with(id)
+            .find(|&session| runnable_partition(session) == 7)
+            .unwrap();
+        f.store
+            .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+            .await
+            .unwrap();
+        f.store.wake_session(side, Timestamp::now()).await.unwrap();
+        let lease = f
+            .store
+            .claim_lease(
+                side,
+                LeaseOwnerId::from_ulid(Ulid::generate()),
+                Timestamp::now()
+                    .checked_add(Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let head = f
+            .store
+            .fetch_session(side)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        f.store
+            .complete_timer_tool(
+                side,
+                head,
+                &lease,
+                RequestId::for_step(side, head),
+                &ToolCallRecord {
+                    call_id: ToolCallId("timer".into()),
+                    tool: "set_timer".into(),
+                    arguments: serde_json::json!({"at": "2026-01-01T00:00:00Z", "note": "side wake"}),
+                    result: None,
+                },
+            )
+            .await
+            .unwrap();
+        f.store
+            .set_state(side, SessionState::Idle, Some(&lease), Timestamp::now())
+            .await
+            .unwrap();
+        let mut observer = f.observe(&f.prefix).await;
+        f.start("7", &f.prefix).await;
+        timeout(WAIT, async {
+            loop {
+                if next(&mut observer).await == side {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("scheduler never nudged the side session for its due timer");
+        assert_eq!(f.state(side).await, SessionState::Runnable);
+        assert_eq!(f.state(main).await, SessionState::Idle);
+        assert!(
+            f.store
+                .read_events(side, 0, 64)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::System))
         );
     })
     .await;
