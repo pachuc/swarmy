@@ -60,3 +60,11 @@ jobs:
         run: |
           scripts/dev-stack.sh stop
           scripts/dev-stack.sh status
+  openapi-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check OpenAPI compatibility
+        run: scripts/check-openapi-compat.sh origin/master
