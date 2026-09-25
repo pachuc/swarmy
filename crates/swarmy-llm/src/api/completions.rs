@@ -127,10 +127,6 @@ impl Provider for CompletionsProvider {
 
 /// Build a request using the selected model's compatibility flags.
 ///
-/// Durable history is provider neutral, but old sessions can hold a tool
-/// result whose call was never stored as a neutral part. The missing call is
-/// synthesized from the result so switching providers never fails.
-///
 /// # Errors
 /// Rejects mismatched models or invalid temperatures.
 pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Result<Value, Error> {
@@ -144,19 +140,14 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
     } else {
         "system"
     };
-    let mut durable = request.messages.clone();
-    if crate::transcript::synthesize_missing_tool_calls(&mut durable, &request.tools) {
-        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
-    }
-    let call_tools = call_tool_names(&durable, &request.tools);
     let mut messages = Vec::new();
     if !request.system_prompt.is_empty() {
         messages.push(json!({"role": system_role, "content": [{"type": "text", "text": request.system_prompt}]}));
     }
-    for message in &durable {
+    for message in &request.messages {
         messages.extend(convert_message(message, provider, model, system_role)?);
     }
-    let mut messages = repair_tool_results(messages, &call_tools, &request.tools);
+    let mut messages = repair_tool_results(messages);
     if model.compat.cache_control_format() == Some("anthropic") {
         cache_messages(&mut messages);
     }
@@ -323,115 +314,95 @@ fn convert_message(
     Ok(messages)
 }
 
-fn call_tool_names(
-    messages: &[swarmy_core::Message],
-    tools: &[crate::ToolDefinition],
-) -> std::collections::BTreeMap<String, String> {
-    let mut names = std::collections::BTreeMap::new();
-    for message in messages {
-        for part in &message.parts {
-            match part {
-                swarmy_core::Part::ToolCall { call_id, tool, .. } => {
-                    names.insert(call_id.0.clone(), tool.clone());
+/// Reorder wire messages so every tool result immediately follows the
+/// assistant message holding its call.
+///
+/// A system notice or a late user prompt can sit between a call and its
+/// result in the durable log; those messages are emitted after the results
+/// with their relative order preserved. A result whose call id appears
+/// nowhere in the history gets a neutral placeholder call so switching
+/// providers never fails.
+fn repair_tool_results(messages: Vec<Value>) -> Vec<Value> {
+    let mut call_sites: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    call_sites.entry(id.to_owned()).or_insert(index);
                 }
-                swarmy_core::Part::ToolResult { call_id, result } => {
-                    if let swarmy_core::ToolResult::Completed { title, .. } = result
-                        && !title.is_empty()
-                    {
-                        names
-                            .entry(call_id.0.clone())
-                            .or_insert_with(|| title.clone());
-                    }
-                }
-                _ => {}
             }
         }
     }
-    for tool in tools {
-        names
-            .entry(tool.name.clone())
-            .or_insert_with(|| tool.name.clone());
-    }
-    names
-}
-
-fn repair_tool_name(
-    id: &str,
-    call_tools: &std::collections::BTreeMap<String, String>,
-    tools: &[crate::ToolDefinition],
-) -> String {
-    call_tools.get(id).cloned().unwrap_or_else(|| {
-        tools
-            .first()
-            .map_or_else(|| "unknown_tool".to_owned(), |tool| tool.name.clone())
-    })
-}
-
-fn repair_tool_results(
-    mut messages: Vec<Value>,
-    call_tools: &std::collections::BTreeMap<String, String>,
-    tools: &[crate::ToolDefinition],
-) -> Vec<Value> {
-    let mut output = Vec::new();
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut repaired = false;
+    let mut taken = vec![false; messages.len()];
+    let mut messages = messages;
+    let mut repaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut output = Vec::with_capacity(messages.len() * 2);
     for index in 0..messages.len() {
+        if taken[index] {
+            continue;
+        }
         let message = std::mem::take(&mut messages[index]);
         if message.is_null() {
             continue;
         }
-        if message["role"] == "tool" {
-            let id = message["tool_call_id"]
-                .as_str()
+        if message.get("role").and_then(Value::as_str) == Some("tool") {
+            let id = message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if !seen.contains(&id) {
-                let tool = repair_tool_name(&id, call_tools, tools);
-                output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": tool, "arguments": "{}"}}]}));
-                seen.insert(id);
-                repaired = true;
+            if call_sites.contains_key(&id) {
+                // The result is pulled forward to its assistant message below,
+                // or was already emitted there; never emit it twice.
+                continue;
             }
+            taken[index] = true;
+            output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": "unknown_tool", "arguments": "{}"}}]}));
+            repaired.insert(id);
             output.push(message);
-            if let Some(id) = output
-                .last()
-                .and_then(|m| m["tool_call_id"].as_str())
-                .map(str::to_owned)
-            {
-                seen.insert(id);
-            }
             continue;
         }
-        let calls = message["tool_calls"]
-            .as_array()
-            .cloned()
+        let calls: Vec<String> = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default();
         output.push(message);
-        for call in calls {
-            let mut result = None;
-            // Rebuild notices can separate calls from results in the durable log.
-            // Wire messages must keep every result next to its assistant turn.
-            for candidate in &mut messages[index + 1..] {
-                if candidate["role"] == "assistant" || candidate["role"] == "user" {
-                    break;
+        for id in calls {
+            let mut found = None;
+            for (candidate, message) in messages.iter().enumerate() {
+                if taken[candidate] {
+                    continue;
                 }
-                if candidate["role"] == "tool" && candidate["tool_call_id"] == call["id"] {
-                    result = Some(std::mem::take(candidate));
+                if message.get("role").and_then(Value::as_str) == Some("tool")
+                    && message.get("tool_call_id").and_then(Value::as_str) == Some(&id)
+                {
+                    found = Some(candidate);
                     break;
                 }
             }
-            output.push(result.unwrap_or_else(|| {
-                json!({
-                    "role": "tool", "tool_call_id": call["id"],
+            if let Some(candidate) = found {
+                taken[candidate] = true;
+                output.push(std::mem::take(&mut messages[candidate]));
+            } else {
+                output.push(json!({
+                    "role": "tool", "tool_call_id": id,
                     "content": json!({"error": "No result provided"}).to_string()
-                })
-            }));
-            if let Some(id) = call["id"].as_str() {
-                seen.insert(id.to_owned());
+                }));
             }
         }
     }
-    if repaired {
-        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
+    if !repaired.is_empty() {
+        tracing::warn!(
+            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
+            "repaired tool result without a stored tool call; synthesized unknown_tool call"
+        );
     }
     output
 }

@@ -943,7 +943,33 @@ fn switch_tool_result() -> swarmy_core::Message {
     }
 }
 
-fn switch_history_order(messages: &[swarmy_core::Message]) {
+fn switch_notice() -> swarmy_core::Message {
+    swarmy_core::Message {
+        id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+        role: swarmy_core::MessageRole::System,
+        parts: vec![Part::Text {
+            text: "Your computer was evicted while idle. Recovery began; check external side effects before retrying.".into(),
+        }],
+    }
+}
+
+fn logged_histories(f: &Fixture) -> Vec<Vec<swarmy_core::Message>> {
+    std::fs::read_to_string(f.files.path().join("calls"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            serde_json::from_value(entry["messages"].clone()).unwrap()
+        })
+        .collect()
+}
+
+fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
+    // The fake provider bypasses both wire adapters, so the gateway must
+    // forward the interleaved history intact: the call stays before its
+    // result, the notice stays present, and neither is duplicated. Wire
+    // pairing for real providers is covered by the protocol and completions
+    // suites in swarmy-llm.
     let call = messages
         .iter()
         .position(|m| {
@@ -951,7 +977,7 @@ fn switch_history_order(messages: &[swarmy_core::Message]) {
                 matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
             })
         })
-        .expect("call in history");
+        .expect("call in logged history");
     let result = messages
         .iter()
         .position(|m| {
@@ -959,8 +985,41 @@ fn switch_history_order(messages: &[swarmy_core::Message]) {
                 matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
             })
         })
-        .expect("result in history");
-    assert!(call < result);
+        .expect("result in logged history");
+    assert!(call < result, "logged call must precede its result");
+    assert!(
+        messages.iter().any(|m| m.parts.iter().any(|p| matches!(
+            p,
+            Part::Text { text } if text.contains("Your computer was evicted")
+        ))),
+        "logged history must keep the notice"
+    );
+    for (kind, count) in [
+        (
+            "call",
+            messages
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
+            })
+                })
+                .count(),
+        ),
+        (
+            "result",
+            messages
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
+            })
+                })
+                .count(),
+        ),
+    ] {
+        assert_eq!(count, 1, "logged history must not duplicate the {kind}");
+    }
 }
 
 async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
@@ -993,7 +1052,12 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
             .iter()
             .any(|p| matches!(p, swarmy_core::Part::ToolCall { .. }))
     );
-    let history = vec![switch_user(), message.clone(), switch_tool_result()];
+    let history = vec![
+        switch_user(),
+        message.clone(),
+        switch_notice(),
+        switch_tool_result(),
+    ];
     let mut second = f
         .job_for_agent_with_request(
             agent,
@@ -1014,7 +1078,9 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         f.terminal(&second).await,
         Event::InferenceCompleted { .. }
     ));
-    switch_history_order(&second.request.messages);
+    let histories = logged_histories(f);
+    assert_eq!(histories.len(), 2, "one log entry per turn so far");
+    assert_logged_history_order(&histories[1]);
     let mut back = f
         .job_for_agent_with_request(
             agent,
@@ -1035,6 +1101,9 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         f.terminal(&back).await,
         Event::InferenceCompleted { .. }
     ));
+    let histories = logged_histories(f);
+    assert_eq!(histories.len(), 3, "one log entry per turn");
+    assert_logged_history_order(&histories[2]);
 }
 
 #[tokio::test]

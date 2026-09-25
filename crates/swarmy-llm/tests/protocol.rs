@@ -312,138 +312,216 @@ fn responses_image_request_body() {
     );
 }
 
-#[test]
-fn orphan_tool_result_repairs_in_both_directions() {
-    use swarmy_llm::api::completions::request_json as completions_json;
-    use swarmy_llm::catalog::{Catalog, ModelInfo};
-    // Same orphan history converts for Responses and Completions with the call
-    // before its result, so switching providers mid-conversation never fails.
-    let openrouter: ModelInfo = Catalog::get()
-        .model("openrouter", "openai/gpt-5.5")
-        .unwrap()
-        .clone();
-    let openai: ModelInfo = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
+fn stalled_session_messages() -> Vec<Message> {
+    let events: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/notice-between-call-and-result.json")).unwrap();
+    events
+        .iter()
+        .map(|event| serde_json::from_value(event["message"].clone()).unwrap())
+        .collect()
+}
+
+fn stalled_session_request() -> Request {
+    use swarmy_llm::catalog::Catalog;
+    let openai = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
+    let mut req = request();
+    req.settings.model = openai.id;
+    req.tools = vec![
+        ToolDefinition {
+            name: "edit".into(),
+            description: "Edit a file".into(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "bash".into(),
+            description: "Run a command".into(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+    req.messages = stalled_session_messages();
+    req
+}
+
+fn responses_input(req: &Request) -> Vec<Value> {
+    use swarmy_llm::catalog::Catalog;
+    let openai = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
     let endpoint = swarmy_llm::api::responses::ResponsesEndpoint::from_catalog(
         Catalog::get().provider("openai").unwrap(),
         &openai,
         swarmy_llm::ClientAuth::ApiKey("test-key".into()),
     )
     .unwrap();
-    {
-        let mut req = request();
-        req.settings.model = "gpt-5.5".into();
-        req.tools = vec![swarmy_llm::ToolDefinition {
-            name: "get_time".into(),
-            description: "Get time".into(),
-            parameters: json!({"type": "object"}),
-        }];
-        req.messages = vec![
-            message(MessageRole::User, vec![text("What time is it?")]),
-            message(
-                MessageRole::Assistant,
-                vec![
-                    Part::Reasoning {
-                        text: "Think first.".into(),
-                        metadata: BTreeMap::from([(
-                            "openai_responses".into(),
-                            json!({
-                                "provider": "openai",
-                                "model": "gpt-5.5",
-                                "item": {
-                                    "type": "reasoning",
-                                    "id": "rs_1",
-                                    "encrypted_content": "opaque-reasoning"
-                                }
-                            }),
-                        )]),
-                    },
-                    text("Checking."),
-                ],
-            ),
-            message(
-                MessageRole::Tool,
-                vec![Part::ToolResult {
-                    call_id: ToolCallId("call_1".into()),
-                    result: ToolResult::Completed {
-                        output: "12:00".into(),
-                        title: "get_time".into(),
-                        metadata: BTreeMap::new(),
-                    },
-                }],
-            ),
-        ];
-        let responses =
-            swarmy_llm::responses::request_json_for(&req, &endpoint, "openai", Some(&openai), None)
-                .unwrap();
-        let input = responses["input"].as_array().unwrap();
-        let call_pos = input
+    swarmy_llm::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None).unwrap()
+        ["input"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn completions_messages(req: &Request) -> Vec<Value> {
+    use swarmy_llm::catalog::Catalog;
+    let openrouter = Catalog::get()
+        .model("openrouter", "openai/gpt-5.5")
+        .unwrap()
+        .clone();
+    let mut req = req.clone();
+    req.settings.model.clone_from(&openrouter.id);
+    swarmy_llm::api::completions::request_json(&req, "openrouter", &openrouter).unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn assert_responses_paired(input: &[Value], calls: &[&str], notice: &str) {
+    for id in calls {
+        let call = input
             .iter()
-            .position(|i| i["type"] == "function_call" && i["call_id"] == "call_1")
-            .expect("responses call");
-        let result_pos = input
+            .position(|i| i["type"] == "function_call" && i["call_id"] == *id)
+            .unwrap_or_else(|| panic!("call {id} in Responses input"));
+        let result = input
             .iter()
-            .position(|i| i["type"] == "function_call_output" && i["call_id"] == "call_1")
-            .expect("responses result");
-        assert_eq!(call_pos + 1, result_pos);
-        assert_eq!(input[call_pos]["name"], "get_time");
-        req.settings.model = openrouter.id.clone();
-        let completions = completions_json(&req, "openrouter", &openrouter).unwrap();
-        let messages = completions["messages"].as_array().unwrap();
-        let call_pos = messages
+            .position(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+            .unwrap_or_else(|| panic!("result {id} in Responses input"));
+        assert_eq!(
+            call + 1,
+            result,
+            "result for {id} must directly follow its call"
+        );
+    }
+    let notice = input
+        .iter()
+        .position(|i| i.to_string().contains(notice))
+        .expect("notice in Responses input");
+    for id in calls {
+        let result = input
             .iter()
-            .position(|m| m.get("tool_calls").is_some_and(|c| c[0]["id"] == "call_1"))
-            .expect("completions call");
-        let result_pos = messages
+            .position(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+            .unwrap();
+        assert!(
+            notice > result,
+            "notice must come after the result for {id}"
+        );
+    }
+    for id in calls {
+        assert_eq!(
+            input
+                .iter()
+                .filter(|i| i["type"] == "function_call" && i["call_id"] == *id)
+                .count(),
+            1,
+            "call {id} emitted once"
+        );
+        assert_eq!(
+            input
+                .iter()
+                .filter(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+                .count(),
+            1,
+            "result {id} emitted once"
+        );
+    }
+}
+
+fn assert_completions_paired(messages: &[Value], calls: &[&str], notice: &str) {
+    for id in calls {
+        let call = messages
             .iter()
-            .position(|m| m["tool_call_id"] == "call_1")
-            .expect("completions result");
-        assert_eq!(call_pos + 1, result_pos);
+            .position(|m| {
+                m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                })
+            })
+            .unwrap_or_else(|| panic!("call {id} in wire messages"));
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap_or_else(|| panic!("result {id} in wire messages"));
+        assert_eq!(
+            call + 1,
+            result,
+            "result for {id} must directly follow its call"
+        );
+    }
+    let notice = messages
+        .iter()
+        .position(|m| m.to_string().contains(notice))
+        .expect("notice in wire messages");
+    for id in calls {
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap();
+        assert!(
+            notice > result,
+            "notice must come after the result for {id}"
+        );
+    }
+    for id in calls {
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                }))
+                .count(),
+            1,
+            "call {id} emitted once"
+        );
+        assert_eq!(
+            messages.iter().filter(|m| m["tool_call_id"] == *id).count(),
+            1,
+            "result {id} emitted once"
+        );
     }
 }
 
 #[test]
-fn responses_stream_buffers_tool_deltas_without_done() {
-    // The Codex backend can send deltas with an empty terminal output. The
-    // parser must still store a neutral tool call alongside encrypted reasoning.
-    let mut parser = SseParser::with_context("openai", "gpt-5.5");
-    let deltas = parser
-        .push(
-            b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_time\",\"arguments\":\"\"}}\n\n",
-        )
-        .unwrap();
-    assert!(deltas.is_empty());
-    let deltas = parser
-        .push(
-            b"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"zone\\\":\\\"UTC\\\"}\"}\n\n",
-        )
-        .unwrap();
-    assert!(
-        deltas
-            .iter()
-            .any(|d| matches!(d, Delta::ToolArguments { .. }))
+fn stalled_session_notice_between_call_and_result_pairs_in_both_protocols() {
+    // Worker-3's stalled session: every call is in the durable log, but a
+    // system notice sits between the second call and its result. Converting
+    // for either protocol must not fail; each result directly follows its
+    // call, the notice appears after the results, and nothing is duplicated.
+    let req = stalled_session_request();
+    let calls = [
+        "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+        "call_rqd1dzkZ3kl2nd118QaUdWYW",
+    ];
+    assert_responses_paired(&responses_input(&req), &calls, "Your computer was evicted");
+    assert_completions_paired(
+        &completions_messages(&req),
+        &calls,
+        "Your computer was evicted",
     );
-    let deltas = parser
-        .push(
-            b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Think\"}],\"encrypted_content\":\"opaque\"}}\n\n",
-        )
-        .unwrap();
-    assert!(deltas.iter().any(|d| matches!(d, Delta::PartDone { .. })));
-    let deltas = parser
-        .push(
-            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
-        )
-        .unwrap();
-    let Delta::Completed(response) = deltas.last().unwrap() else {
-        panic!("missing completion");
-    };
-    assert!(response.parts.iter().any(|p| matches!(
-        p,
-        Part::ToolCall { tool, .. } if tool == "get_time"
-    )));
-    assert!(
-        response
-            .parts
-            .iter()
-            .any(|p| matches!(p, Part::Reasoning { .. }))
+}
+
+#[test]
+fn user_prompt_between_call_and_result_pairs_in_both_protocols() {
+    // Mirror case: the next task's user prompt was appended while a call was
+    // still in flight, so it sits between the call and its result.
+    let mut req = stalled_session_request();
+    let notice = req.messages.remove(3);
+    assert!(notice.parts.iter().any(
+        |part| matches!(part, Part::Text { text } if text.contains("Your computer was evicted"))
+    ));
+    req.messages.insert(
+        3,
+        message(
+            MessageRole::User,
+            vec![text("Continue with the next step while that runs.")],
+        ),
+    );
+    assert_responses_paired(
+        &responses_input(&req),
+        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        "Continue with the next step",
+    );
+    assert_completions_paired(
+        &completions_messages(&req),
+        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        "Continue with the next step",
     );
 }

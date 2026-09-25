@@ -230,8 +230,15 @@ impl Provider for FileFake {
             .and_then(|_| self.failures.get(&call))
             .cloned();
         Box::pin(async_stream::try_stream! {
+            // One JSON entry per line so provider-switch tests can assert on
+            // the exact history each provider received; line counters elsewhere
+            // keep working unchanged.
+            let logged = serde_json::json!({"messages": request.messages});
+            let mut line =
+                serde_json::to_string(&logged).unwrap_or_else(|_| "{\"messages\":[]}".into());
+            line.push('\n');
             let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(log).await?;
-            file.write_all(b"call\n").await?;
+            file.write_all(line.as_bytes()).await?;
             file.sync_data().await?;
             if let Some(failure) = failure {
                 Err(failure.error())?;
