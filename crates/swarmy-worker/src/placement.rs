@@ -101,7 +101,9 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
         }
     }
     match rejection {
-        Some(rejection) => bail!("no live sandbox node has available computer capacity: {rejection}"),
+        Some(rejection) => {
+            bail!("no live sandbox node has available computer capacity: {rejection}")
+        }
         None => bail!("no live sandbox node has available computer capacity"),
     }
 }
