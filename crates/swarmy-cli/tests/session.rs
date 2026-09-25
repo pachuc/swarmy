@@ -181,6 +181,11 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         swarmy_llm::catalog::Catalog::get().clone(),
     );
     api.default_image = Some("fixture:test".into());
+    // Several terminal tests append events directly to the store without a
+    // live publication, so the stream's store poll is the only repair path.
+    // Keep it below the 15 second test wait but above the 3 second client
+    // poll tick the missed-event test measures against.
+    api.stream_poll_interval = Duration::from_secs(5);
     let api_server = tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
     let fixture = Fixture {
         store: store.clone(),
