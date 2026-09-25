@@ -1,7 +1,12 @@
 use anyhow::{Context, Result, bail};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, SandboxSpec, SessionId, ToolJob,
+    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
+    SessionId, ToolJob,
 };
 use swarmy_sandbox::{RuncRuntime, SandboxRuntime};
 use swarmy_store::Store;
@@ -9,6 +14,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 struct Call {
     job: ToolJob,
+    turn: Option<MessageId>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
 }
@@ -69,6 +75,13 @@ pub struct Hosting {
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
     previous: Mutex<BTreeMap<AgentId, u64>>,
+    /// The turn whose first-tool computer re-sample already landed, per
+    /// agent. The boot sample is taken before the first command runs; only
+    /// the first completion per turn carries the re-sample, so later tools
+    /// skip the volume stat read and the extra transaction. One entry per
+    /// agent bounds the map for the life of the node process; entries leave
+    /// with the hosting entry when the agent is evicted or shuts down.
+    computer_sampled: Mutex<BTreeMap<AgentId, MessageId>>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -131,11 +144,14 @@ impl Hosting {
             idle: Duration::from_secs(settings.sandbox_idle_seconds.get()),
             entries: Mutex::new(BTreeMap::new()),
             previous: Mutex::new(previous),
+            computer_sampled: Mutex::new(BTreeMap::new()),
             shutdown: watch::channel(false).0,
         }))
     }
 
-    pub async fn call(self: &Arc<Self>, job: ToolJob) -> Result<()> {
+    /// Serve one tool call with its durable turn already resolved by the
+    /// caller, so the execution path needs no `request_turn_id` lookup.
+    pub async fn call(self: &Arc<Self>, job: ToolJob, turn: Option<MessageId>) -> Result<()> {
         let Some(agent) = self.store.tool_agent(&job, self.node).await? else {
             return Ok(());
         };
@@ -146,6 +162,13 @@ impl Hosting {
                 bail!("node is shutting down");
             }
             entries.retain(|_, entry| !entry.task.is_finished());
+            // Drop samples for agents with no hosting entry so the map
+            // holds at most one turn per live agent.
+            let live: Vec<AgentId> = entries.keys().copied().collect();
+            self.computer_sampled
+                .lock()
+                .await
+                .retain(|agent, _| live.contains(agent));
             let entry = entries.entry(agent).or_insert_with(|| {
                 let (calls, receive) = mpsc::channel(16);
                 let hosting = self.clone();
@@ -168,6 +191,7 @@ impl Hosting {
         calls
             .send(Call {
                 job,
+                turn,
                 reply,
                 activity,
             })
@@ -224,11 +248,72 @@ impl Hosting {
         Ok(placement)
     }
 
+    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
+    #[allow(clippy::cast_precision_loss)]
+    fn observe_computer_boot(
+        &self,
+        session: SessionId,
+        turn: Option<MessageId>,
+        volume: swarmy_core::VolumeId,
+        elapsed: f64,
+    ) {
+        let Some(turn) = turn else { return };
+        let store = self.store.clone();
+        let runtime = self.runtime.clone();
+        tokio::spawn(async move {
+            if let Ok(stats) = runtime.volume_stats(volume).await {
+                store.observe_turn_metric(
+                    session,
+                    turn,
+                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                        placement_ms: Some(elapsed),
+                        cold: Some(stats.fetched_chunks > 0),
+                        chunks_fetched: stats.fetched_chunks,
+                        bytes_fetched: stats.fetched_bytes,
+                        fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                        fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                        ..Default::default()
+                    }),
+                );
+            }
+        });
+    }
+
+    async fn boot_computer(
+        &self,
+        agent: AgentId,
+        placement: &PlacementRecord,
+        first: &Call,
+        placement_started: Instant,
+    ) -> Result<()> {
+        let volume = self
+            .store
+            .agent_volume(first.job.session_id, placement)
+            .await?;
+        self.runtime
+            .create(
+                self.sandbox_spec(agent, first.job.session_id).await?,
+                BlockDevice { volume_id: volume },
+            )
+            .await?;
+        self.store
+            .set_placement_address(placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+            .await?;
+        self.observe_computer_boot(
+            first.job.session_id,
+            first.turn,
+            volume,
+            placement_started.elapsed().as_secs_f64() * 1_000.0,
+        );
+        Ok(())
+    }
+
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let Some(mut first) = calls.recv().await else {
             return Ok(());
         };
         first.activity.start(first.job.session_id);
+        let placement_started = Instant::now();
         let placement = match self.placement(agent, &first.job).await {
             Ok(placement) => placement,
             Err(error) => {
@@ -245,18 +330,7 @@ impl Hosting {
         let mut shutdown = self.shutdown.subscribe();
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            let volume = self
-                .store
-                .agent_volume(first.job.session_id, &placement)
-                .await?;
-            self.runtime
-                .create(
-                    self.sandbox_spec(agent, first.job.session_id).await?,
-                    BlockDevice { volume_id: volume },
-                )
-                .await?;
-            self.store
-                .set_placement_address(&placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+            self.boot_computer(agent, &placement, &first, placement_started)
                 .await?;
             self.execute(&placement, first).await?;
             loop {
@@ -301,6 +375,7 @@ impl Hosting {
                     .await?;
                 self.store.release(&placement).await?;
                 self.previous.lock().await.remove(&agent);
+                self.computer_sampled.lock().await.remove(&agent);
                 tracing::info!(%agent, epoch = placement.epoch, reason = "eviction", "placement released");
             } else {
                 self.runtime.discard_if_present(agent).await?;
@@ -325,10 +400,36 @@ impl Hosting {
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
+        // Only the first completion per turn carries the computer re-sample;
+        // later tools skip the volume stat read entirely. One entry per
+        // agent keeps the map bounded for the life of the node process.
+        let needs_sample = match call.turn {
+            Some(turn) => {
+                self.computer_sampled.lock().await.get(&placement.agent_id) != Some(&turn)
+            }
+            None => false,
+        };
+        let turn = call.turn;
         let result = tokio::select! {
-            result = crate::tools::execute(&self.store, &self.runtime, placement, call.job) => result,
+            result = crate::tools::execute(
+                &self.store,
+                self.runtime.clone(),
+                placement,
+                call.job,
+                turn,
+                needs_sample,
+            ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };
+        if needs_sample
+            && let Some(turn) = turn
+            && result.is_ok()
+        {
+            self.computer_sampled
+                .lock()
+                .await
+                .insert(placement.agent_id, turn);
+        }
         let failed = result.is_err();
         let _ = call.reply.send(result);
         if failed {
@@ -417,5 +518,6 @@ impl Hosting {
         for (_, entry) in entries {
             let _ = entry.task.await;
         }
+        self.computer_sampled.lock().await.clear();
     }
 }

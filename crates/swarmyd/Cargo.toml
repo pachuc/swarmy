@@ -18,6 +18,7 @@ anyhow.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
 swarmy-store.workspace = true
+swarmy-api-types.workspace = true
 swarmy-volume.workspace = true
 swarmy-sandbox.workspace = true
 serde.workspace = true

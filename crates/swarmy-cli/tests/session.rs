@@ -940,3 +940,133 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
     })
     .await;
 }
+
+/// Drive one turn through the real API append path and the production
+/// stage observation path, returning the session and turn ids.
+async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
+    let agent = fixture
+        .store
+        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now())
+        .await
+        .unwrap();
+    let (session, _) = fixture
+        .store
+        .open_main_session(agent.agent_id, Timestamp::now())
+        .await
+        .unwrap();
+    // The turn id and appended stage come from the real API append path.
+    let client = swarmy_client::Client::new(&fixture.api_url, fixture.api_token.clone()).unwrap();
+    let appended = client
+        .append_message(
+            &session.to_string(),
+            &swarmy_api_types::AppendMessage {
+                idempotency_key: "metrics-turn".into(),
+                expected_head: 0,
+                text: "hello".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let turn = MessageId::from_ulid(appended.turn_id.parse::<Ulid>().unwrap());
+    let request = RequestId::for_step(session, 2);
+    // The remaining stages travel the production observation path with real
+    // clocks, the way the gateway, worker, and node emit them. Each write is
+    // awaited: spawned writes race under millisecond timing, while production
+    // staggers stages over seconds.
+    for stage in [
+        swarmy_core::TurnStage::InferenceStarted,
+        swarmy_core::TurnStage::FirstToken,
+        swarmy_core::TurnStage::InferenceFinished,
+        swarmy_core::TurnStage::Idle,
+    ] {
+        let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
+        timeout(
+            WAIT,
+            fixture.store.record_turn_metric(
+                session,
+                turn,
+                swarmy_store::MetricPatch::Stage(event),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        sleep(Duration::from_millis(2)).await;
+    }
+    timeout(
+        WAIT,
+        fixture.store.record_turn_metric(
+            session,
+            turn,
+            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+                request_id: request.to_string(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                input_tokens: 8,
+                output_tokens: 4,
+                ..Default::default()
+            }),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // The spawned stage writes land shortly after; wait for the record.
+    timeout(WAIT, async {
+        loop {
+            let rows = fixture
+                .store
+                .list_turn_metrics(session, None, 64)
+                .await
+                .unwrap();
+            if rows.len() == 1
+                && rows[0].stages.iter().any(|row| row.stage == "first_token")
+                && rows[0].stages.iter().any(|row| row.stage == "idle")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    (session.to_string(), appended.turn_id)
+}
+
+#[tokio::test]
+async fn session_and_agent_metrics_json_use_the_persisted_turn() {
+    run(|fixture| async move {
+        let (session_id, turn_id) = record_metrics_turn(&fixture).await;
+        let output = fixture
+            .output(&["session", "metrics", &session_id, "--json"])
+            .await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["turn_id"], turn_id);
+        assert!(rows[0]["append_to_first_token_ms"].as_f64().unwrap() >= 0.0);
+        assert!(rows[0]["append_to_idle_ms"].as_f64().unwrap() >= 0.0);
+        let output = fixture
+            .output(&["agent", "metrics", "metrics-agent", "--json"])
+            .await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rollup: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(rollup["turns"], 1);
+        assert_eq!(rollup["output_tokens"], 4);
+        assert!(
+            rollup["latencies"]["append_to_idle"]["p50_ms"]
+                .as_f64()
+                .unwrap()
+                >= 0.0
+        );
+    })
+    .await;
+}

@@ -119,6 +119,12 @@ impl RequestScript {
             return Err(swarmy_llm::Error::UnscriptedTurn(step));
         }
         let tool = self.tool_steps.contains(&step);
+        // Scripted answers carry non-zero usage so derived throughput
+        // (output tokens over streaming duration) is populated in durable
+        // turn metrics; zero usage would leave it null.
+        let output_tokens = u64::try_from(self.final_answer.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
         Ok(Response {
             parts: vec![if tool {
                 Part::ToolCall {
@@ -144,7 +150,12 @@ impl RequestScript {
             } else {
                 StopReason::EndTurn
             },
-            usage: TokenUsage::default(),
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens,
+                total_tokens: 10 + output_tokens,
+                ..TokenUsage::default()
+            },
         })
     }
 }

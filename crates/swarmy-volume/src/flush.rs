@@ -62,6 +62,11 @@ impl VolumeWriter {
     }
 
     #[must_use]
+    pub fn device_stats(&self) -> crate::DeviceStats {
+        self.device.stats()
+    }
+
+    #[must_use]
     pub fn with_retention(
         device: Arc<VolumeDevice>,
         store: Store,

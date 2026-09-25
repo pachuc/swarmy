@@ -230,6 +230,66 @@
         }
       }
     },
+    "/v1/agents/{id}/metrics": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "agent_metrics",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Agent id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum recent turns to roll up",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Roll up turns after this turn id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMetrics"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/agents": {
       "get": {
         "tags": [
@@ -1620,6 +1680,69 @@
         }
       }
     },
+    "/v1/sessions/{id}/metrics": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "session_metrics",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return turns after this turn id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum turns to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TurnMetrics"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/wait-idle": {
       "get": {
         "tags": [
@@ -1744,6 +1867,88 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "AgentMetrics": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "turns",
+          "latencies",
+          "input_tokens",
+          "cached_input_tokens",
+          "output_tokens",
+          "reasoning_tokens",
+          "retries",
+          "errors",
+          "cost_micros"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "cached_input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "latencies": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LatencyPercentiles"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "main_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mean_output_tokens_per_second": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reasoning_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -2092,6 +2297,86 @@
         "properties": {
           "idempotency_key": {
             "type": "string"
+          }
+        }
+      },
+      "ComputerMetric": {
+        "type": "object",
+        "required": [
+          "chunks_fetched",
+          "bytes_fetched"
+        ],
+        "properties": {
+          "bytes_fetched": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "chunks_fetched": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cold": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "fetch_p50_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "fetch_p95_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "first_tool_bytes_fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Total bytes re-sampled after the first tool call completes.",
+            "minimum": 0
+          },
+          "first_tool_chunks_fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Volume counters re-sampled after the first tool call of the turn\ncompletes. The boot sample above is taken before the first command\nruns, so lazy chunk hydration during that command is invisible in it.",
+            "minimum": 0
+          },
+          "first_tool_fetch_p50_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Fetch p50 re-sampled after the first tool call completes."
+          },
+          "first_tool_fetch_p95_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Fetch p95 re-sampled after the first tool call completes."
+          },
+          "placement_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
           }
         }
       },
@@ -2872,6 +3157,106 @@
           }
         }
       },
+      "InferenceMetric": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "provider",
+          "model",
+          "input_tokens",
+          "cached_input_tokens",
+          "output_tokens",
+          "reasoning_tokens",
+          "cost_micros",
+          "retries",
+          "rate_limit_waits",
+          "gateway_waits",
+          "provider_failures"
+        ],
+        "properties": {
+          "cached_input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gateway_waits": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_tokens_per_second": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_failures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rate_limit_waits": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "reasoning_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "streaming_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "time_to_first_token_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
       "InterruptOutcome": {
         "type": "object",
         "required": [
@@ -2900,6 +3285,23 @@
           "requested",
           "finished"
         ]
+      },
+      "LatencyPercentiles": {
+        "type": "object",
+        "required": [
+          "p50_ms",
+          "p95_ms"
+        ],
+        "properties": {
+          "p50_ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "p95_ms": {
+            "type": "number",
+            "format": "double"
+          }
+        }
       },
       "LogId": {
         "oneOf": [
@@ -3240,6 +3642,38 @@
           "completed"
         ]
       },
+      "StageTiming": {
+        "type": "object",
+        "required": [
+          "stage",
+          "clock_id",
+          "monotonic_ns",
+          "unix_ns"
+        ],
+        "properties": {
+          "clock_id": {
+            "type": "string"
+          },
+          "monotonic_ns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "unix_ns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Subscription": {
         "type": "object",
         "description": "One connection may replay and follow several logs at once.",
@@ -3256,6 +3690,71 @@
           },
           "token_deltas": {
             "type": "boolean"
+          }
+        }
+      },
+      "ToolMetric": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "name"
+        ],
+        "properties": {
+          "completed_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "dispatched_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "exit_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "process_wall_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "queue_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "started_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },
@@ -3285,6 +3784,97 @@
           },
           "status": {
             "$ref": "#/components/schemas/TurnStatus"
+          }
+        }
+      },
+      "TurnMetrics": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "turn_id",
+          "stages",
+          "inference",
+          "tools"
+        ],
+        "properties": {
+          "append_to_first_token_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "append_to_idle_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "computer": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ComputerMetric"
+              }
+            ]
+          },
+          "dropped_inference": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Model requests dropped when the 16-entry cap is hit.",
+            "minimum": 0
+          },
+          "dropped_stages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stages dropped when the 64-entry cap is hit.",
+            "minimum": 0
+          },
+          "dropped_tools": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tool calls dropped when the 64-entry cap is hit.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inference": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InferenceMetric"
+            }
+          },
+          "inference_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StageTiming"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolMetric"
+            }
+          },
+          "turn_id": {
+            "type": "string"
           }
         }
       },

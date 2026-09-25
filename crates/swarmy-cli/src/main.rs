@@ -178,7 +178,9 @@ fn main() -> anyhow::Result<()> {
     if matches!(
         &cli.command,
         Command::Session {
-            command: session_command::Command::List | session_command::Command::Show { .. }
+            command: session_command::Command::List
+                | session_command::Command::Show { .. }
+                | session_command::Command::Metrics { .. }
         } | Command::Agent { .. }
             | Command::Image {
                 command: image_command::Command::Ls | image_command::Command::Show { .. }

@@ -142,9 +142,61 @@ async fn session(
         session_command::Command::Show { session_id } => {
             show_session(client, endpoint, session_id, json).await?;
         }
+        session_command::Command::Metrics { session_id } => {
+            session_metrics(client, endpoint, session_id, json).await?;
+        }
         _ => unreachable!("session close and interrupt run in swarmy-session"),
     }
     Ok(())
+}
+/// Print durable per-turn records. Human output renders missing latencies as
+/// `-` rather than `None` so columns stay readable. JSON output is a single
+/// array across all pages so `jq` sees one document.
+async fn session_metrics(
+    client: &Client,
+    endpoint: &str,
+    session_id: ulid::Ulid,
+    json: bool,
+) -> Result<()> {
+    let mut after: Option<String> = None;
+    let mut rows = Vec::new();
+    loop {
+        let page = request(
+            endpoint,
+            client.session_metrics(&session_id.to_string(), after.as_deref(), 64),
+        )
+        .await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|row| row.turn_id.clone());
+        let last = page.len() < 64;
+        if json {
+            rows.extend(page);
+        } else {
+            for row in &page {
+                println!(
+                    "{} append_to_first_token_ms={} inference_ms={} append_to_idle_ms={} tools={} error={}",
+                    row.turn_id,
+                    ms_or_dash(row.append_to_first_token_ms),
+                    ms_or_dash(row.inference_duration_ms),
+                    ms_or_dash(row.append_to_idle_ms),
+                    row.tools.len(),
+                    row.error.as_deref().unwrap_or("-"),
+                );
+            }
+        }
+        if last {
+            break;
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+    }
+    Ok(())
+}
+fn ms_or_dash(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".into(), |ms| format!("{ms:.1}"))
 }
 async fn show_session(
     client: &Client,
@@ -559,6 +611,41 @@ async fn agent(
         }
         agent_command::Command::Delete { name, yes } => {
             delete_agent(client, endpoint, &name, yes, json).await?;
+        }
+        agent_command::Command::Metrics { name } => {
+            agent_metrics(client, endpoint, &name, json).await?;
+        }
+    }
+    Ok(())
+}
+/// Print the rollup for an agent's main session. Missing throughput renders
+/// as `-` rather than `None`.
+async fn agent_metrics(client: &Client, endpoint: &str, name: &str, json: bool) -> Result<()> {
+    let record = request(endpoint, client.agent_metrics(name, 200, None)).await?;
+    if json {
+        println!("{}", serde_json::to_string(&record)?);
+    } else {
+        println!(
+            "agent={} turns={} input_tokens={} output_tokens={} mean_tps={} errors={} retries={} cost_micros={}",
+            name,
+            record.turns,
+            record.input_tokens,
+            record.output_tokens,
+            record
+                .mean_output_tokens_per_second
+                .map_or_else(|| "-".into(), |tps| format!("{tps:.1}")),
+            record.errors,
+            record.retries,
+            record.cost_micros
+        );
+        let mut names: Vec<_> = record.latencies.keys().collect();
+        names.sort();
+        for latency in names {
+            let percentiles = &record.latencies[latency];
+            println!(
+                "latency_{latency}_ms p50={:.1} p95={:.1}",
+                percentiles.p50_ms, percentiles.p95_ms
+            );
         }
     }
     Ok(())

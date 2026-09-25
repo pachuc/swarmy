@@ -77,6 +77,51 @@ fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
     }
 }
 
+/// The fake provider yields whole parts without streaming text deltas, so a
+/// completed part is the first observable content for those turns.
+fn part_has_content(part: &swarmy_core::Part) -> bool {
+    match part {
+        swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
+        swarmy_core::Part::ToolCall { .. } | swarmy_core::Part::Image { .. } => true,
+        swarmy_core::Part::ToolResult { .. } => false,
+    }
+}
+
+/// First observable model content in a stream delta. Text, reasoning, and
+/// tool-argument deltas count when nonempty; completed parts count too so the
+/// fake provider's `PartDone` stream starts the first-token clock.
+fn is_first_content(delta: &swarmy_llm::Delta) -> bool {
+    match delta {
+        swarmy_llm::Delta::Text { text, .. } | swarmy_llm::Delta::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
+        swarmy_llm::Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+        swarmy_llm::Delta::PartDone { part, .. } => part_has_content(part),
+        swarmy_llm::Delta::Completed(_) => false,
+    }
+}
+
+/// A 5xx, 408, or 409 is a provider failure, not a rate limit. Only 429 or an
+/// explicit retry-after means the provider asked for a slower pace.
+fn rate_limited(error: &swarmy_llm::Error) -> bool {
+    use swarmy_llm::Error;
+    match error {
+        Error::Retryable {
+            status,
+            retry_after,
+        }
+        | Error::ProviderResponse {
+            status,
+            retry_after,
+            ..
+        } => *status == reqwest::StatusCode::TOO_MANY_REQUESTS || retry_after.is_some(),
+        Error::Status(status) => *status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+        _ => false,
+    }
+}
+
 fn permanent_error(error: &swarmy_llm::Error) -> bool {
     use swarmy_llm::Error;
     if retryable_error(error).0 {
@@ -383,8 +428,26 @@ impl Gateway {
         let mut response = None;
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
         let mut token_position = 0_u64;
+        let mut first_token = false;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
+            let content = is_first_content(&delta);
+            if content && !first_token {
+                first_token = true;
+                if let Some(turn) = turn {
+                    let event = Bus::turn_event(
+                        job.session_id,
+                        turn,
+                        swarmy_core::TurnStage::FirstToken,
+                        Some(job.request_id),
+                    );
+                    self.store.observe_turn_stage(event.clone());
+                    let bus = self.bus.clone();
+                    tokio::spawn(async move {
+                        bus.record_turn(&event).await;
+                    });
+                }
+            }
             if response.is_some() {
                 return Err(swarmy_llm::Error::Protocol("delta after completion".into()));
             }
@@ -430,6 +493,96 @@ impl Gateway {
             .map(|message| message.id)
     }
 
+    async fn observe_inference_stage(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        stage: swarmy_core::TurnStage,
+    ) {
+        if let Some(turn) = turn {
+            let event = Bus::turn_event(job.session_id, turn, stage, Some(job.request_id));
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
+        }
+    }
+
+    fn observe_wait(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        kind: swarmy_store::WaitKind,
+    ) {
+        if let Some(turn) = turn {
+            self.store.observe_turn_metric(
+                job.session_id,
+                turn,
+                swarmy_store::MetricPatch::Wait {
+                    request_id: job.request_id.to_string(),
+                    kind,
+                },
+            );
+        }
+    }
+
+    fn observe_terminal_metric(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        provider: &str,
+        event: &Event,
+    ) {
+        let Some(turn) = turn else { return };
+        let patch = match event {
+            Event::InferenceCompleted {
+                usage, cost_micros, ..
+            } => Some(swarmy_store::MetricPatch::Inference(
+                swarmy_api_types::InferenceMetric {
+                    request_id: job.request_id.to_string(),
+                    provider: provider.to_owned(),
+                    model: job.request.settings.model.clone(),
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    reasoning_tokens: usage.reasoning_output_tokens,
+                    cost_micros: *cost_micros,
+                    ..Default::default()
+                },
+            )),
+            Event::InferenceFailed {
+                error,
+                retryable: false,
+                ..
+            } => Some(swarmy_store::MetricPatch::Inference(
+                swarmy_api_types::InferenceMetric {
+                    request_id: job.request_id.to_string(),
+                    provider: provider.to_owned(),
+                    model: job.request.settings.model.clone(),
+                    error: Some(error.chars().take(512).collect()),
+                    ..Default::default()
+                },
+            )),
+            Event::InferenceFailed { .. } => None,
+            _ => unreachable!("gateway terminal event"),
+        };
+        if let Some(patch) = patch {
+            self.store.observe_turn_metric(job.session_id, turn, patch);
+        }
+        // The turn-level error drives the session rollup alongside the
+        // per-request error above; both land as independent patches.
+        if let Event::InferenceFailed {
+            error,
+            retryable: false,
+            ..
+        } = event
+        {
+            self.store.observe_turn_metric(
+                job.session_id,
+                turn,
+                swarmy_store::MetricPatch::Error(error.clone()),
+            );
+        }
+    }
+
     async fn process(
         &self,
         message: &WorkMessage<InferenceJobRef>,
@@ -454,29 +607,13 @@ impl Gateway {
                     (Some(used), clamped)
                 });
         let turn = Self::turn_id(job);
-        if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    swarmy_core::TurnStage::InferenceStarted,
-                    Some(job.request_id),
-                ))
-                .await;
-        }
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
+            .await;
         let (result, blocked, entry) = self
             .attempt_provider(job, provider, effort_used, turn)
             .await?;
-        if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    swarmy_core::TurnStage::InferenceFinished,
-                    Some(job.request_id),
-                ))
-                .await;
-        }
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
+            .await;
         let result = match result {
             Ok(response) => Ok(response),
             Err(error)
@@ -486,6 +623,8 @@ impl Gateway {
                     && message.delivery_count()? < self.max_deliver =>
             {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
+                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
+                self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
                 self.store.release_inference(claim).await?;
                 let exponent = u32::try_from(message.delivery_count()?.saturating_sub(1).min(5))?;
                 message
@@ -496,6 +635,17 @@ impl Gateway {
             Err(error) => Err(error),
         };
         let (retryable, retry_at) = self.record_breaker(provider, job, &result, blocked).await?;
+        if let Err(error) = &result {
+            let kind = if rate_limited(error) {
+                swarmy_store::WaitKind::RateLimit
+            } else {
+                swarmy_store::WaitKind::ProviderFailure
+            };
+            self.observe_wait(job, turn, kind);
+            if retryable {
+                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
+            }
+        }
         let event = match &result {
             Ok(response) => Event::InferenceCompleted {
                 provider: provider.clone(),
@@ -526,8 +676,9 @@ impl Gateway {
             self.record_entry_usage(job.request_id, provider, entry.as_deref())
                 .await;
         }
-        self.persist_response(job, claim, event, &stored_result, turn)
+        self.persist_response(job, claim, event.clone(), &stored_result, turn)
             .await?;
+        self.observe_terminal_metric(job, turn, provider, &event);
         if stored_result.is_ok() {
             self.store.clear_inference_wait(job.session_id).await?;
         }
@@ -824,5 +975,95 @@ mod retry_tests {
         assert!(permanent_error(&swarmy_llm::Error::ContextOverflow(
             "too long".into()
         )));
+    }
+
+    #[test]
+    fn only_429_or_retry_after_counts_as_rate_limit() {
+        let limited = swarmy_llm::Error::ProviderResponse {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            message: "slow down".into(),
+            retry_after: None,
+        };
+        assert!(rate_limited(&limited));
+        let delayed = swarmy_llm::Error::ProviderResponse {
+            status: reqwest::StatusCode::BAD_GATEWAY,
+            message: "outage".into(),
+            retry_after: Some(Duration::from_secs(1)),
+        };
+        assert!(rate_limited(&delayed));
+        let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
+        assert!(retryable_error(&outage).0);
+        assert!(!rate_limited(&outage));
+        let conflict = swarmy_llm::Error::Status(reqwest::StatusCode::from_u16(409).unwrap());
+        assert!(retryable_error(&conflict).0);
+        assert!(!rate_limited(&conflict));
+    }
+
+    #[test]
+    fn completed_parts_count_as_first_content() {
+        use futures::StreamExt as _;
+        use swarmy_core::Part;
+        assert!(part_has_content(&Part::Text { text: "hi".into() }));
+        assert!(!part_has_content(&Part::Text {
+            text: String::new()
+        }));
+        assert!(part_has_content(&Part::ToolCall {
+            call_id: swarmy_core::ToolCallId("c".into()),
+            tool: "bash".into(),
+            input: serde_json::json!({}),
+        }));
+        // Drive the real fake provider: its stream yields PartDone deltas
+        // without any text deltas, so the first delta must start the
+        // first-token clock or append-to-first-token stays null on the dev
+        // stack.
+        let provider = swarmy_llm::fake::FakeProvider::default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let request = swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            };
+            let mut stream = {
+                use swarmy_llm::Provider as _;
+                provider.request(request)
+            };
+            // An unscripted turn errors before yielding content.
+            assert!(stream.next().await.unwrap().is_err());
+        });
+        let mut scripted = swarmy_llm::fake::FakeProvider::default();
+        scripted.responses.insert(
+            0,
+            swarmy_llm::Response {
+                parts: vec![Part::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: swarmy_llm::StopReason::EndTurn,
+                usage: swarmy_llm::TokenUsage::default(),
+            },
+        );
+        runtime.block_on(async {
+            use swarmy_llm::Provider as _;
+            let request = swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            };
+            let deltas: Vec<_> = scripted
+                .request(request)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|result| result.unwrap())
+                .collect();
+            assert!(matches!(deltas[0], Delta::PartDone { .. }));
+            let first = deltas.iter().position(is_first_content);
+            assert_eq!(first, Some(0));
+        });
     }
 }
