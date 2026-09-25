@@ -40,7 +40,7 @@ pub enum Command {
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(required = false, multiple = false)]
 pub struct Source {
     #[arg(long)]
     pub api_key: Option<String>,
@@ -65,6 +65,12 @@ pub struct Set {
     /// Provider setting in name=value form (repeatable)
     #[arg(long, value_parser = extra)]
     pub extra: Vec<(String, String)>,
+    /// Configured quota limit for entries without published quotas.
+    #[arg(long)]
+    pub limit: Option<u64>,
+    /// Configured quota window like `5h`, `30m`, or `7d`.
+    #[arg(long)]
+    pub window: Option<String>,
 }
 
 fn extra(value: &str) -> Result<(String, String), String> {

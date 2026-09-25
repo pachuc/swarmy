@@ -337,6 +337,10 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         expected_head: completion.expected_head,
         event: completion.event.clone(),
         now: completion.now,
+        entry: completion.entry.clone(),
+        entry_kind: completion.entry_kind.clone(),
+        quota_remaining: completion.quota_remaining.clone(),
+        quota_resets: completion.quota_resets.clone(),
     };
     assert!(matches!(
         store
@@ -438,6 +442,10 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
     message.role = swarmy_core::MessageRole::Assistant;
     swarmy_store::InferenceCompletion {
         expected_head: 1,
+        entry: Some("primary".into()),
+        entry_kind: None,
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
         event: Event::InferenceCompleted {
             provider: String::new(),
             model: String::new(),

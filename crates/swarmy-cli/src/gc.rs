@@ -17,6 +17,25 @@ pub async fn run(dry_run: bool, json: bool) -> anyhow::Result<()> {
     );
     let store = Store::open(Some(&settings.fdb_cluster_file), Some(&directory), blobs).await?;
     let run = swarmy_volume::gc::collect(&store, objects, settings.gc, dry_run).await?;
+    if !dry_run {
+        let days = settings.metering.raw_retention_days.get();
+        if let Some(cutoff) = jiff::Timestamp::now()
+            .as_second()
+            .checked_sub(
+                i64::try_from(days)
+                    .unwrap_or(i64::MAX)
+                    .saturating_mul(86_400),
+            )
+            .and_then(|second| jiff::Timestamp::from_second(second).ok())
+        {
+            let pruned = store
+                .prune_metering_raw(cutoff, swarmy_store::MAX_SCAN_LIMIT)
+                .await?;
+            if pruned > 0 {
+                tracing::info!(pruned, "metering raw records pruned");
+            }
+        }
+    }
     if json {
         println!("{}", serde_json::to_string(&run)?);
     } else {

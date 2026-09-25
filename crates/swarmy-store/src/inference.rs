@@ -17,12 +17,18 @@ pub struct InferenceClaim {
 }
 
 /// Inputs to the atomic terminal update. Both success and exhausted retries wake
-/// the session; the next worker reads the corresponding event.
+/// the session; the next worker reads the corresponding event. The entry
+/// label, kind, and observed quota ride in the same transaction as the usage
+/// record and rollups, so the hot path needs no extra round trips.
 pub struct InferenceCompletion {
     pub claim: InferenceClaim,
     pub expected_head: u64,
     pub event: Event,
     pub now: Timestamp,
+    pub entry: Option<String>,
+    pub entry_kind: Option<String>,
+    pub quota_remaining: std::collections::BTreeMap<String, u64>,
+    pub quota_resets: std::collections::BTreeMap<String, u64>,
 }
 
 struct PreparedCompletion {
@@ -279,23 +285,13 @@ impl Store {
             if session.state != SessionState::WaitingInference {
                 return Err(StoreError::InvalidState);
             }
-            if let Event::InferenceCompleted {
-                usage,
-                cost_micros,
-                provider,
-                ..
-            } = &completion.event
-            {
-                self.record_usage(
+            if matches!(&completion.event, Event::InferenceCompleted { .. }) {
+                self.record_completion_metering(
                     &trx,
+                    completion,
                     session.session_id,
                     session.agent_id,
-                    crate::usage::UsageAttribution {
-                        request: claim.request_id,
-                        provider,
-                    },
-                    usage,
-                    *cost_micros,
+                    now,
                 )
                 .await?;
             }
@@ -347,6 +343,55 @@ impl Store {
     ) -> Result<Option<T>> {
         self.get_payload(self.inference_key("inference_result", id))
             .await
+    }
+
+    async fn record_completion_metering(
+        &self,
+        trx: &foundationdb::Transaction,
+        completion: &InferenceCompletion,
+        session_id: SessionId,
+        agent_id: swarmy_core::AgentId,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Event::InferenceCompleted {
+            usage,
+            cost_micros,
+            provider,
+            model,
+            ..
+        } = &completion.event
+        else {
+            return Ok(());
+        };
+        self.record_usage(
+            trx,
+            session_id,
+            agent_id,
+            &crate::usage::UsageAttribution {
+                request: completion.claim.request_id,
+                provider,
+                model,
+                recorded_at: now,
+                entry: completion.entry.as_deref(),
+                entry_kind: completion.entry_kind.as_deref(),
+            },
+            usage,
+            *cost_micros,
+        )
+        .await?;
+        if let (Some(label), remaining) = (completion.entry.as_deref(), &completion.quota_remaining)
+            && !remaining.is_empty()
+        {
+            self.write_observed(
+                trx,
+                provider,
+                label,
+                remaining,
+                &completion.quota_resets,
+                now,
+            )?;
+        }
+        Ok(())
     }
 }
 

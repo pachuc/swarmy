@@ -240,6 +240,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}/{label}",
             get(check_credential_entry).delete(remove_credential_entry),
         )
+        .route(
+            "/v1/credentials/{provider}/{label}/quota",
+            get(entry_quota).post(set_entry_quota),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
     // every swarm documents itself at its own version without a token.
@@ -848,6 +852,81 @@ async fn check_credential_entry(
         .find(|entry| entry.provider == provider && entry.label == label)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
     Ok(Json(credential(summary)))
+}
+fn quota_view(quota: swarmy_store::EntryQuota) -> api::EntryQuotaView {
+    api::EntryQuotaView {
+        source: match quota.source {
+            swarmy_store::QuotaSource::Observed => "observed".into(),
+            swarmy_store::QuotaSource::Configured => "configured".into(),
+        },
+        used: quota.used,
+        free: quota.free,
+        limit: quota.limit,
+        window_seconds: quota.window_seconds,
+        observed_at: quota.observed_at.map(|at| at.to_string()),
+        remaining: quota.remaining,
+        requests_remaining: quota.requests_remaining,
+        tokens_remaining: quota.tokens_remaining,
+    }
+}
+
+async fn require_entry(
+    state: &AppState,
+    provider: &str,
+    label: &str,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    let exists = credential_store(state)?
+        .list_entries(CredentialScope::Cluster)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .any(|entry| entry.provider == provider && entry.label == label);
+    if exists {
+        Ok(())
+    } else {
+        Err(error(StatusCode::NOT_FOUND, "credential_not_found"))
+    }
+}
+
+async fn entry_quota(
+    State(state): State<AppState>,
+    Path((provider, label)): Path<(String, String)>,
+) -> ApiResult<api::EntryQuotaView> {
+    require_entry(&state, &provider, &label).await?;
+    let quota = state
+        .store
+        .entry_quota(&provider, &label)
+        .await
+        .map_err(storage)?;
+    Ok(Json(quota_view(quota)))
+}
+async fn set_entry_quota(
+    State(state): State<AppState>,
+    Path((provider, label)): Path<(String, String)>,
+    Json(body): Json<api::SetEntryQuota>,
+) -> ApiResult<api::EntryQuotaView> {
+    if body.limit == 0 || body.window_seconds == 0 {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_quota"));
+    }
+    require_entry(&state, &provider, &label).await?;
+    let store = state.store.clone();
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("credentials:{provider}:{label}:quota"),
+        async move {
+            store
+                .set_entry_quota_config(&provider, &label, body.limit, body.window_seconds)
+                .await
+                .map_err(storage)?;
+            let quota = store
+                .entry_quota(&provider, &label)
+                .await
+                .map_err(storage)?;
+            Ok(Json(quota_view(quota)))
+        },
+    )
+    .await
 }
 async fn remove_credential_entry(
     State(state): State<AppState>,
