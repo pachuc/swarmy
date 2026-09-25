@@ -55,6 +55,20 @@ fn build_input(
     request: &Request,
     context: Option<&RequestContext<'_>>,
 ) -> Result<Vec<Value>, Error> {
+    let mut durable = request.messages.clone();
+    // The legacy codec without catalog context preserves existing fixtures.
+    // Transports repair old sessions so provider switches never fail.
+    if context.is_some()
+        && crate::transcript::synthesize_missing_tool_calls(&mut durable, &request.tools)
+    {
+        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
+    }
+    let call_tools = call_tool_names(&durable, &request.tools);
+    let fallback = request
+        .tools
+        .first()
+        .map_or("unknown_tool", |tool| tool.name.as_str())
+        .to_owned();
     let mut input = Vec::new();
     let developer = context.is_none_or(|ctx| ctx.compat.supports_developer_role() == Some(true));
     if context.is_some_and(|ctx| !ctx.codex) && !request.system_prompt.is_empty() {
@@ -64,7 +78,7 @@ fn build_input(
             &request.system_prompt,
         ));
     }
-    for message in &request.messages {
+    for message in &durable {
         for part in &message.parts {
             if let Part::Reasoning { text, metadata } = part {
                 let saved = metadata
@@ -112,7 +126,7 @@ fn build_input(
         }
     }
     if context.is_some() {
-        normalize_calls(&mut input);
+        normalize_calls(&mut input, &call_tools, &fallback);
     }
     Ok(input)
 }
@@ -223,7 +237,70 @@ fn text_item(role: &str, kind: &str, text: &str) -> Value {
     json!({"type": "message", "role": role, "content": [{"type": kind, "text": text}]})
 }
 
-fn normalize_calls(input: &mut Vec<Value>) {
+fn call_tool_names(
+    messages: &[swarmy_core::Message],
+    _tools: &[crate::ToolDefinition],
+) -> std::collections::BTreeMap<String, String> {
+    let mut names = std::collections::BTreeMap::new();
+    for message in messages {
+        for part in &message.parts {
+            match part {
+                swarmy_core::Part::ToolCall { call_id, tool, .. } => {
+                    names.insert(call_id.0.clone(), tool.clone());
+                }
+                swarmy_core::Part::ToolResult { call_id, result } => {
+                    if let swarmy_core::ToolResult::Completed { title, .. } = result
+                        && !title.is_empty()
+                    {
+                        names
+                            .entry(call_id.0.clone())
+                            .or_insert_with(|| title.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
+fn normalize_calls(
+    input: &mut Vec<Value>,
+    call_tools: &std::collections::BTreeMap<String, String>,
+    fallback: &str,
+) {
+    // Old sessions can hold a result whose call was never stored neutrally.
+    // Synthesize the missing call from the result so provider switches succeed.
+    let mut calls: std::collections::BTreeSet<String> = input
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
+        .collect();
+    let mut repaired = false;
+    let mut with_calls = Vec::with_capacity(input.len() * 2);
+    for item in input.drain(..) {
+        if item["type"] == "function_call_output"
+            && let Some(id) = item["call_id"].as_str()
+            && !calls.contains(id)
+        {
+            let tool = call_tools
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| fallback.to_owned());
+            with_calls.push(
+                json!({"type": "function_call", "call_id": id, "name": tool, "arguments": "{}"}),
+            );
+            calls.insert(id.to_owned());
+            repaired = true;
+        }
+        if item["type"] == "function_call"
+            && let Some(id) = item["call_id"].as_str()
+        {
+            calls.insert(id.to_owned());
+        }
+        with_calls.push(item);
+    }
+    *input = with_calls;
     // Hash unsupported ids so replacements remain stable across calls and results
     // without colliding with another id after punctuation is removed.
     for item in input.iter_mut() {
@@ -255,10 +332,20 @@ fn normalize_calls(input: &mut Vec<Value>) {
         }
     }
     *input = normalized;
+    if repaired {
+        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
+    }
 }
 
 /// Incremental SSE parser, including CRLF, multiline data, comments, and UTF-8
 /// split across arbitrary network chunks. Unknown event types are ignored.
+#[derive(Default, Clone, Debug)]
+struct PendingTool {
+    call_id: String,
+    name: String,
+    arguments: String,
+}
+
 #[derive(Default)]
 pub struct SseParser {
     line: Vec<u8>,
@@ -266,6 +353,7 @@ pub struct SseParser {
     previous_cr: bool,
     output: BTreeMap<usize, Vec<Part>>,
     text_content: BTreeMap<usize, BTreeMap<usize, String>>,
+    pending_tools: BTreeMap<usize, PendingTool>,
     context: Option<(String, String)>,
     completed: bool,
 }
@@ -367,6 +455,18 @@ impl SseParser {
         part
     }
 
+    fn pending_part(pending: &PendingTool) -> Result<Part, Error> {
+        if pending.call_id.is_empty() || pending.name.is_empty() {
+            return Err(Error::Protocol("incomplete tool call".into()));
+        }
+        Ok(Part::ToolCall {
+            call_id: ToolCallId(pending.call_id.clone()),
+            tool: pending.name.clone(),
+            input: serde_json::from_str(&pending.arguments)
+                .map_err(|error| Error::Protocol(format!("invalid tool arguments: {error}")))?,
+        })
+    }
+
     fn streamed_parts(&mut self) -> Vec<Part> {
         // Build unfinished text only at completion; copying it on every delta
         // makes long responses unnecessarily expensive.
@@ -379,6 +479,21 @@ impl SseParser {
         for index in unfinished {
             self.save_text(index);
         }
+        // Every tool call is stored as a neutral part, even when the terminal
+        // output is empty (Codex) or an output_item.done was never observed.
+        // Encrypted reasoning never replaces the separate function call item.
+        let pending: Vec<(usize, PendingTool)> = self
+            .pending_tools
+            .iter()
+            .filter(|(index, _)| !self.output.contains_key(*index))
+            .map(|(index, pending)| (*index, pending.clone()))
+            .collect();
+        for (index, pending) in pending {
+            if let Ok(part) = Self::pending_part(&pending) {
+                self.output.insert(index, vec![part]);
+            }
+        }
+        self.pending_tools.clear();
         std::mem::take(&mut self.output)
             .into_values()
             .flatten()
@@ -404,10 +519,35 @@ impl SseParser {
                     output_index: index(event)?,
                     text: string(event, "delta")?.to_owned(),
                 }),
-            "response.function_call_arguments.delta" => deltas.push(Delta::ToolArguments {
-                output_index: index(event)?,
-                arguments: string(event, "delta")?.to_owned(),
-            }),
+            "response.output_item.added" => {
+                let output_index = index(event)?;
+                let item = &event["item"];
+                if item["type"] == "function_call" {
+                    let pending = self.pending_tools.entry(output_index).or_default();
+                    if let Some(call_id) = item["call_id"].as_str() {
+                        pending.call_id = call_id.into();
+                    }
+                    if let Some(name) = item["name"].as_str() {
+                        pending.name = name.into();
+                    }
+                    if let Some(arguments) = item["arguments"].as_str() {
+                        pending.arguments = arguments.into();
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let output_index = index(event)?;
+                let delta = string(event, "delta")?.to_owned();
+                self.pending_tools
+                    .entry(output_index)
+                    .or_default()
+                    .arguments
+                    .push_str(&delta);
+                deltas.push(Delta::ToolArguments {
+                    output_index,
+                    arguments: delta,
+                });
+            }
             "response.output_text.done" => {
                 let output_index = index(event)?;
                 let content_index = content_index(event);
@@ -427,60 +567,91 @@ impl SseParser {
                         part: part.clone(),
                     });
                 }
+                // An authoritative item replaces any delta-buffered fragments.
+                self.pending_tools.remove(&output_index);
                 self.output.insert(output_index, parts);
             }
             "response.completed" | "response.incomplete" => {
-                let response = &event["response"];
-                if !response.is_object() {
-                    return Err(Error::Protocol("missing completed response".into()));
-                }
-                if response["status"] == "failed" {
-                    return Err(provider_error(&response["error"]));
-                }
-                // The Codex backend sends an empty output array in the terminal
-                // event; the items already collected from output_item.done are
-                // authoritative in that case.
-                let parts: Vec<Part> = match response["output"].as_array() {
-                    Some(output) if !output.is_empty() => output
-                        .iter()
-                        .map(|item| self.item_parts(item))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                    _ => self.streamed_parts(),
-                };
-                let stop_reason = if event["type"] == "response.incomplete"
-                    || response["status"] == "incomplete"
-                {
-                    match response["incomplete_details"]["reason"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                    {
-                        "max_output_tokens" => StopReason::MaxOutputTokens,
-                        "content_filter" => StopReason::ContentFilter,
-                        reason => StopReason::Incomplete(reason.to_owned()),
-                    }
-                } else if parts
-                    .iter()
-                    .any(|part| matches!(part, Part::ToolCall { .. }))
-                {
-                    StopReason::ToolCalls
-                } else {
-                    StopReason::EndTurn
-                };
-                deltas.push(Delta::Completed(Response {
-                    parts,
-                    stop_reason,
-                    usage: usage(&response["usage"]),
-                }));
-                self.completed = true;
+                self.complete_event(event, deltas)?;
             }
             "response.failed" => return Err(provider_error(&event["response"]["error"])),
             "error" => return Err(provider_error(event.get("error").unwrap_or(event))),
             _ => (),
         }
         Ok(())
+    }
+
+    fn complete_event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        let response = &event["response"];
+        if !response.is_object() {
+            return Err(Error::Protocol("missing completed response".into()));
+        }
+        if response["status"] == "failed" {
+            return Err(provider_error(&response["error"]));
+        }
+        let parts = self.terminal_parts(response)?;
+        let stop_reason = terminal_stop(event, response, &parts);
+        deltas.push(Delta::Completed(Response {
+            parts,
+            stop_reason,
+            usage: usage(&response["usage"]),
+        }));
+        self.completed = true;
+        Ok(())
+    }
+
+    fn terminal_parts(&mut self, response: &Value) -> Result<Vec<Part>, Error> {
+        // The Codex backend sends an empty output array in the terminal
+        // event; the items already collected from output_item.done are
+        // authoritative in that case.
+        match response["output"].as_array() {
+            Some(output) if !output.is_empty() => {
+                let mut parts: Vec<Part> = output
+                    .iter()
+                    .map(|item| self.item_parts(item))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let seen: std::collections::BTreeSet<_> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::ToolCall { call_id, .. } => Some(call_id.0.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                for pending in std::mem::take(&mut self.pending_tools).into_values() {
+                    if !pending.call_id.is_empty()
+                        && !seen.contains(&pending.call_id)
+                        && let Ok(part) = Self::pending_part(&pending)
+                    {
+                        parts.push(part);
+                    }
+                }
+                Ok(parts)
+            }
+            _ => Ok(self.streamed_parts()),
+        }
+    }
+}
+
+fn terminal_stop(event: &Value, response: &Value, parts: &[Part]) -> StopReason {
+    if event["type"] == "response.incomplete" || response["status"] == "incomplete" {
+        match response["incomplete_details"]["reason"]
+            .as_str()
+            .unwrap_or("unknown")
+        {
+            "max_output_tokens" => StopReason::MaxOutputTokens,
+            "content_filter" => StopReason::ContentFilter,
+            reason => StopReason::Incomplete(reason.to_owned()),
+        }
+    } else if parts
+        .iter()
+        .any(|part| matches!(part, Part::ToolCall { .. }))
+    {
+        StopReason::ToolCalls
+    } else {
+        StopReason::EndTurn
     }
 }
 

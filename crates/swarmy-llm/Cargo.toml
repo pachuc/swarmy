@@ -29,6 +29,7 @@ serde_json.workspace = true
 swarmy-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]

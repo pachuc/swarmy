@@ -468,6 +468,72 @@ async fn tool_history_repairs_orphans_and_moves_results_before_notices() {
     assert_eq!(messages[6]["role"], "developer");
 }
 
+#[test]
+fn orphan_tool_result_from_a_responses_turn_is_repaired() {
+    // Worker-3 stalled after switching from ChatGPT (Responses) to OpenRouter
+    // (Chat Completions): the stored assistant turn holds encrypted reasoning
+    // and text but no neutral tool call, while the following tool message holds
+    // the result. The converter must synthesize the missing call.
+    let model = model();
+    let mut req = request(&model);
+    req.tools.push(ToolDefinition {
+        name: "get_time".into(),
+        description: "Read time".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    });
+    req.messages.extend([
+        message(
+            MessageRole::Assistant,
+            vec![
+                Part::Reasoning {
+                    text: "Think first.".into(),
+                    metadata: BTreeMap::from([(
+                        "openai_responses".into(),
+                        serde_json::json!({
+                            "provider": "openrouter",
+                            "model": MODEL,
+                            "item": {
+                                "type": "reasoning",
+                                "id": "rs_1",
+                                "encrypted_content": "opaque-reasoning"
+                            }
+                        }),
+                    )]),
+                },
+                text("Checking."),
+            ],
+        ),
+        message(
+            MessageRole::Tool,
+            vec![Part::ToolResult {
+                call_id: ToolCallId("call_1".into()),
+                result: ToolResult::Completed {
+                    output: "12:00".into(),
+                    title: "get_time".into(),
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        ),
+    ]);
+    let body = request_json(&req, "openrouter", &model).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+        .expect("synthesized assistant tool call");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+    assert_eq!(assistant["tool_calls"][0]["function"]["name"], "get_time");
+    let positions: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            (m.get("tool_calls").is_some() || m["tool_call_id"] == "call_1").then_some(i)
+        })
+        .collect();
+    assert_eq!(positions.len(), 2);
+    assert_eq!(positions[0] + 1, positions[1]);
+}
+
 #[tokio::test]
 async fn errors_in_bodies_and_streams_are_classified_without_retrying_streams() {
     for (status, body, mime, overflow) in [

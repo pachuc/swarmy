@@ -311,3 +311,139 @@ fn responses_image_request_body() {
         json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"})
     );
 }
+
+#[test]
+fn orphan_tool_result_repairs_in_both_directions() {
+    use swarmy_llm::api::completions::request_json as completions_json;
+    use swarmy_llm::catalog::{Catalog, ModelInfo};
+    // Same orphan history converts for Responses and Completions with the call
+    // before its result, so switching providers mid-conversation never fails.
+    let openrouter: ModelInfo = Catalog::get()
+        .model("openrouter", "openai/gpt-5.5")
+        .unwrap()
+        .clone();
+    let openai: ModelInfo = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
+    let endpoint = swarmy_llm::api::responses::ResponsesEndpoint::from_catalog(
+        Catalog::get().provider("openai").unwrap(),
+        &openai,
+        swarmy_llm::ClientAuth::ApiKey("test-key".into()),
+    )
+    .unwrap();
+    {
+        let mut req = request();
+        req.settings.model = "gpt-5.5".into();
+        req.tools = vec![swarmy_llm::ToolDefinition {
+            name: "get_time".into(),
+            description: "Get time".into(),
+            parameters: json!({"type": "object"}),
+        }];
+        req.messages = vec![
+            message(MessageRole::User, vec![text("What time is it?")]),
+            message(
+                MessageRole::Assistant,
+                vec![
+                    Part::Reasoning {
+                        text: "Think first.".into(),
+                        metadata: BTreeMap::from([(
+                            "openai_responses".into(),
+                            json!({
+                                "provider": "openai",
+                                "model": "gpt-5.5",
+                                "item": {
+                                    "type": "reasoning",
+                                    "id": "rs_1",
+                                    "encrypted_content": "opaque-reasoning"
+                                }
+                            }),
+                        )]),
+                    },
+                    text("Checking."),
+                ],
+            ),
+            message(
+                MessageRole::Tool,
+                vec![Part::ToolResult {
+                    call_id: ToolCallId("call_1".into()),
+                    result: ToolResult::Completed {
+                        output: "12:00".into(),
+                        title: "get_time".into(),
+                        metadata: BTreeMap::new(),
+                    },
+                }],
+            ),
+        ];
+        let responses =
+            swarmy_llm::responses::request_json_for(&req, &endpoint, "openai", Some(&openai), None)
+                .unwrap();
+        let input = responses["input"].as_array().unwrap();
+        let call_pos = input
+            .iter()
+            .position(|i| i["type"] == "function_call" && i["call_id"] == "call_1")
+            .expect("responses call");
+        let result_pos = input
+            .iter()
+            .position(|i| i["type"] == "function_call_output" && i["call_id"] == "call_1")
+            .expect("responses result");
+        assert_eq!(call_pos + 1, result_pos);
+        assert_eq!(input[call_pos]["name"], "get_time");
+        req.settings.model = openrouter.id.clone();
+        let completions = completions_json(&req, "openrouter", &openrouter).unwrap();
+        let messages = completions["messages"].as_array().unwrap();
+        let call_pos = messages
+            .iter()
+            .position(|m| m.get("tool_calls").is_some_and(|c| c[0]["id"] == "call_1"))
+            .expect("completions call");
+        let result_pos = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == "call_1")
+            .expect("completions result");
+        assert_eq!(call_pos + 1, result_pos);
+    }
+}
+
+#[test]
+fn responses_stream_buffers_tool_deltas_without_done() {
+    // The Codex backend can send deltas with an empty terminal output. The
+    // parser must still store a neutral tool call alongside encrypted reasoning.
+    let mut parser = SseParser::with_context("openai", "gpt-5.5");
+    let deltas = parser
+        .push(
+            b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_time\",\"arguments\":\"\"}}\n\n",
+        )
+        .unwrap();
+    assert!(deltas.is_empty());
+    let deltas = parser
+        .push(
+            b"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"zone\\\":\\\"UTC\\\"}\"}\n\n",
+        )
+        .unwrap();
+    assert!(
+        deltas
+            .iter()
+            .any(|d| matches!(d, Delta::ToolArguments { .. }))
+    );
+    let deltas = parser
+        .push(
+            b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Think\"}],\"encrypted_content\":\"opaque\"}}\n\n",
+        )
+        .unwrap();
+    assert!(deltas.iter().any(|d| matches!(d, Delta::PartDone { .. })));
+    let deltas = parser
+        .push(
+            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+        )
+        .unwrap();
+    let Delta::Completed(response) = deltas.last().unwrap() else {
+        panic!("missing completion");
+    };
+    assert!(response.parts.iter().any(|p| matches!(
+        p,
+        Part::ToolCall { tool, .. } if tool == "get_time"
+    )));
+    assert!(
+        response
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::Reasoning { .. }))
+    );
+}

@@ -8,6 +8,7 @@ pub mod fake;
 pub mod responses;
 pub mod retry;
 pub mod selection;
+pub mod transcript;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};

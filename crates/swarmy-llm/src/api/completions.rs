@@ -127,8 +127,12 @@ impl Provider for CompletionsProvider {
 
 /// Build a request using the selected model's compatibility flags.
 ///
+/// Durable history is provider neutral, but old sessions can hold a tool
+/// result whose call was never stored as a neutral part. The missing call is
+/// synthesized from the result so switching providers never fails.
+///
 /// # Errors
-/// Rejects mismatched models, invalid temperatures, or uncorrelated tool results.
+/// Rejects mismatched models or invalid temperatures.
 pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Result<Value, Error> {
     if !request.settings.model.is_empty() && request.settings.model != model.id {
         return Err(Error::Protocol(
@@ -140,14 +144,19 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
     } else {
         "system"
     };
+    let mut durable = request.messages.clone();
+    if crate::transcript::synthesize_missing_tool_calls(&mut durable, &request.tools) {
+        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
+    }
+    let call_tools = call_tool_names(&durable, &request.tools);
     let mut messages = Vec::new();
     if !request.system_prompt.is_empty() {
         messages.push(json!({"role": system_role, "content": [{"type": "text", "text": request.system_prompt}]}));
     }
-    for message in &request.messages {
+    for message in &durable {
         messages.extend(convert_message(message, provider, model, system_role)?);
     }
-    let mut messages = repair_tool_results(messages)?;
+    let mut messages = repair_tool_results(messages, &call_tools, &request.tools);
     if model.compat.cache_control_format() == Some("anthropic") {
         cache_messages(&mut messages);
     }
@@ -314,17 +323,83 @@ fn convert_message(
     Ok(messages)
 }
 
-fn repair_tool_results(mut messages: Vec<Value>) -> Result<Vec<Value>, Error> {
+fn call_tool_names(
+    messages: &[swarmy_core::Message],
+    tools: &[crate::ToolDefinition],
+) -> std::collections::BTreeMap<String, String> {
+    let mut names = std::collections::BTreeMap::new();
+    for message in messages {
+        for part in &message.parts {
+            match part {
+                swarmy_core::Part::ToolCall { call_id, tool, .. } => {
+                    names.insert(call_id.0.clone(), tool.clone());
+                }
+                swarmy_core::Part::ToolResult { call_id, result } => {
+                    if let swarmy_core::ToolResult::Completed { title, .. } = result
+                        && !title.is_empty()
+                    {
+                        names
+                            .entry(call_id.0.clone())
+                            .or_insert_with(|| title.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for tool in tools {
+        names
+            .entry(tool.name.clone())
+            .or_insert_with(|| tool.name.clone());
+    }
+    names
+}
+
+fn repair_tool_name(
+    id: &str,
+    call_tools: &std::collections::BTreeMap<String, String>,
+    tools: &[crate::ToolDefinition],
+) -> String {
+    call_tools.get(id).cloned().unwrap_or_else(|| {
+        tools
+            .first()
+            .map_or_else(|| "unknown_tool".to_owned(), |tool| tool.name.clone())
+    })
+}
+
+fn repair_tool_results(
+    mut messages: Vec<Value>,
+    call_tools: &std::collections::BTreeMap<String, String>,
+    tools: &[crate::ToolDefinition],
+) -> Vec<Value> {
     let mut output = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut repaired = false;
     for index in 0..messages.len() {
         let message = std::mem::take(&mut messages[index]);
         if message.is_null() {
             continue;
         }
         if message["role"] == "tool" {
-            return Err(Error::Protocol(
-                "tool result has no preceding tool call".into(),
-            ));
+            let id = message["tool_call_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if !seen.contains(&id) {
+                let tool = repair_tool_name(&id, call_tools, tools);
+                output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": tool, "arguments": "{}"}}]}));
+                seen.insert(id);
+                repaired = true;
+            }
+            output.push(message);
+            if let Some(id) = output
+                .last()
+                .and_then(|m| m["tool_call_id"].as_str())
+                .map(str::to_owned)
+            {
+                seen.insert(id);
+            }
+            continue;
         }
         let calls = message["tool_calls"]
             .as_array()
@@ -350,9 +425,15 @@ fn repair_tool_results(mut messages: Vec<Value>) -> Result<Vec<Value>, Error> {
                     "content": json!({"error": "No result provided"}).to_string()
                 })
             }));
+            if let Some(id) = call["id"].as_str() {
+                seen.insert(id.to_owned());
+            }
         }
     }
-    Ok(output)
+    if repaired {
+        tracing::warn!("repaired orphan tool result; synthesized assistant tool call");
+    }
+    output
 }
 
 fn cache_messages(messages: &mut [Value]) {
