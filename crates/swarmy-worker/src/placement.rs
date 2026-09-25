@@ -45,6 +45,8 @@ impl Cache {
 }
 
 pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<PlacementRecord> {
+    // The last rejection explains a placement that never succeeds.
+    let mut rejection = None;
     // Contention can change the winner while capacity is being reserved. Re-read
     // instead of treating another session's successful placement as an error.
     for _ in 0..8 {
@@ -87,13 +89,21 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
             };
             match result {
                 Ok(placement) => return Ok(placement),
-                Err(StoreError::NodeAtCapacity | StoreError::NodeMissing) => {}
-                Err(StoreError::PlacementExists | StoreError::LeaseMismatch) => break,
+                Err(error @ (StoreError::NodeAtCapacity { .. } | StoreError::NodeMissing)) => {
+                    rejection = Some(error.to_string());
+                }
+                Err(error @ (StoreError::PlacementExists | StoreError::LeaseMismatch)) => {
+                    rejection = Some(error.to_string());
+                    break;
+                }
                 Err(error) => return Err(error.into()),
             }
         }
     }
-    bail!("no live sandbox node has available computer capacity")
+    match rejection {
+        Some(rejection) => bail!("no live sandbox node has available computer capacity: {rejection}"),
+        None => bail!("no live sandbox node has available computer capacity"),
+    }
 }
 
 fn order_candidates(
