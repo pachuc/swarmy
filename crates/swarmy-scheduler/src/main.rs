@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         result = scheduler.run() => result?,
         () = health => {},
-        () = gc::run(&store, objects, settings.gc) => {},
+        () = gc::run(&store, objects, settings.gc, settings.metering) => {},
         () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => {},
         result = tokio::signal::ctrl_c() => result?,
     }

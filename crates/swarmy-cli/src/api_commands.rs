@@ -738,6 +738,70 @@ fn auth_report(event: &str, provider: &str, json: bool) {
         json,
     );
 }
+
+async fn set_credential_key(
+    client: &Client,
+    endpoint: &str,
+    args: &auth_command::Set,
+    provider: &str,
+    json: bool,
+) -> Result<()> {
+    let key = key_from_source(args, provider)?;
+    ensure!(!key.trim().is_empty(), "API key must not be empty");
+    let mut extra: std::collections::BTreeMap<String, String> =
+        args.extra.clone().into_iter().collect();
+    if provider == "azure" && args.source.from_env {
+        for (env, name) in [
+            ("AZURE_OPENAI_BASE_URL", "base_url"),
+            ("AZURE_RESOURCE_NAME", "resource_name"),
+        ] {
+            if let Ok(value) = std::env::var(env)
+                && !value.is_empty()
+            {
+                extra.entry(name.into()).or_insert(value);
+            }
+        }
+    }
+    let record = swarmy_core::CredentialRecord {
+        kind: swarmy_core::CredentialKind::ApiKey { key, extra },
+        updated_at: jiff::Timestamp::now(),
+    };
+    let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":provider,"label":args.label,"record":record});
+    projection(
+        endpoint,
+        client.cli_set_credential(&serde_json::from_value(body)?),
+    )
+    .await?;
+    auth_report("saved", provider, json);
+    Ok(())
+}
+
+async fn set_entry_quota(
+    client: &Client,
+    endpoint: &str,
+    provider: &str,
+    label: Option<&str>,
+    limit: u64,
+    window: &str,
+) -> Result<()> {
+    let window_seconds = swarmy_store::quota::parse_window(window)
+        .with_context(|| "--window must look like 30m, 5h, or 7d")?;
+    let label = label.unwrap_or("default");
+    request(
+        endpoint,
+        client.set_entry_quota(
+            provider,
+            label,
+            &serde_json::from_value(json!({
+                "idempotency_key": Ulid::generate().to_string(),
+                "limit": limit,
+                "window_seconds": window_seconds,
+            }))?,
+        ),
+    )
+    .await?;
+    Ok(())
+}
 fn auth_display(summary: &Value, json: bool, expiry: bool) {
     let mut value = summary.clone();
     let seconds = summary["expires_at"]
@@ -764,6 +828,80 @@ fn auth_display(summary: &Value, json: bool, expiry: bool) {
         println!();
     }
 }
+async fn auth_set(
+    client: &Client,
+    endpoint: &str,
+    args: auth_command::Set,
+    json: bool,
+) -> Result<()> {
+    let provider = args
+        .provider_flag
+        .as_ref()
+        .or(args.provider.as_ref())
+        .context("auth set requires a provider (positional or --provider)")?;
+    ensure!(
+        !provider.is_empty()
+            && provider
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+        "invalid provider id"
+    );
+    validate_auth_set_sources(&args)?;
+    let has_source = auth_set_has_source(&args);
+    let has_quota = args.limit.is_some() || args.window.is_some();
+    if has_source {
+        ensure!(
+            provider != "chatgpt",
+            "chatgpt requires OAuth; use auth login chatgpt"
+        );
+        set_credential_key(client, endpoint, &args, provider, json).await?;
+    }
+    if let (Some(limit), Some(window)) = (args.limit, args.window) {
+        set_entry_quota(
+            client,
+            endpoint,
+            provider,
+            args.label.as_deref(),
+            limit,
+            &window,
+        )
+        .await?;
+    }
+    if !has_source && has_quota {
+        auth_report("saved", provider, json);
+    }
+    Ok(())
+}
+
+fn auth_set_has_source(args: &auth_command::Set) -> bool {
+    args.source.api_key.is_some()
+        || args.source.from_env
+        || args.source.file.is_some()
+        || !args.extra.is_empty()
+}
+
+fn validate_auth_set_sources(args: &auth_command::Set) -> Result<()> {
+    let has_source = auth_set_has_source(args);
+    let has_quota = args.limit.is_some() || args.window.is_some();
+    ensure!(
+        has_source || has_quota,
+        "auth set requires a key source (--api-key, --from-env, --file, --extra) or quota flags (--limit, --window)"
+    );
+    if let (Some(limit), Some(window)) = (args.limit, args.window.clone()) {
+        ensure!(limit > 0, "--limit must be positive");
+        ensure!(
+            swarmy_store::quota::parse_window(&window).is_some(),
+            "--window must look like 30m, 5h, or 7d"
+        );
+    } else {
+        ensure!(
+            args.limit.is_none() && args.window.is_none(),
+            "--limit and --window must be set together"
+        );
+    }
+    Ok(())
+}
+
 async fn auth(
     client: &Client,
     endpoint: &str,
@@ -772,49 +910,7 @@ async fn auth(
 ) -> Result<()> {
     match command {
         auth_command::Command::Set(args) => {
-            let provider = args
-                .provider_flag
-                .as_ref()
-                .or(args.provider.as_ref())
-                .context("auth set requires a provider (positional or --provider)")?;
-            ensure!(
-                !provider.is_empty()
-                    && provider
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
-                "invalid provider id"
-            );
-            ensure!(
-                provider != "chatgpt",
-                "chatgpt requires OAuth; use auth login chatgpt"
-            );
-            let key = key_from_source(&args, provider)?;
-            ensure!(!key.trim().is_empty(), "API key must not be empty");
-            let mut extra: std::collections::BTreeMap<String, String> =
-                args.extra.into_iter().collect();
-            if provider == "azure" && args.source.from_env {
-                for (env, name) in [
-                    ("AZURE_OPENAI_BASE_URL", "base_url"),
-                    ("AZURE_RESOURCE_NAME", "resource_name"),
-                ] {
-                    if let Ok(value) = std::env::var(env)
-                        && !value.is_empty()
-                    {
-                        extra.entry(name.into()).or_insert(value);
-                    }
-                }
-            }
-            let record = swarmy_core::CredentialRecord {
-                kind: swarmy_core::CredentialKind::ApiKey { key, extra },
-                updated_at: jiff::Timestamp::now(),
-            };
-            let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":provider,"label":args.label,"record":record});
-            projection(
-                endpoint,
-                client.cli_set_credential(&serde_json::from_value(body)?),
-            )
-            .await?;
-            auth_report("saved", provider, json);
+            auth_set(client, endpoint, args, json).await?;
         }
         auth_command::Command::Ls => {
             for summary in request(endpoint, client.cli_credentials())

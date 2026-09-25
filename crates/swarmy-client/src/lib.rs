@@ -411,6 +411,36 @@ impl Client {
         )
         .await
     }
+    /// Read one entry's quota view.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn entry_quota(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<api::EntryQuotaView, Error> {
+        self.get(
+            &format!("credentials/{}/{}/quota", segment(provider), segment(label)),
+            &[],
+        )
+        .await
+    }
+    /// Configure one entry's quota limit and window.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_entry_quota(
+        &self,
+        provider: &str,
+        label: &str,
+        body: &api::SetEntryQuota,
+    ) -> Result<api::EntryQuotaView, Error> {
+        self.send(
+            Method::POST,
+            &format!("credentials/{}/{}/quota", segment(provider), segment(label)),
+            body,
+        )
+        .await
+    }
     /// Read a CLI compatibility projection without linking the store.
     /// # Errors
     /// Returns transport, API, or decoding failures.

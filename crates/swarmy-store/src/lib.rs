@@ -28,6 +28,10 @@ pub use services::{
 };
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
+pub mod metering;
+pub mod quota;
+pub use metering::{MeteringDimension, UsageGroup, UsageGroupBy};
+pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
 mod routes;
@@ -873,3 +877,4 @@ mod compatibility_tests {
 }
 
 mod usage;
+pub use usage::{UsageAttribution, UsageRecord};

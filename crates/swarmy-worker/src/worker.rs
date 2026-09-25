@@ -1332,6 +1332,10 @@ impl Worker {
                         expected_head: session.head_seq,
                         event: event.clone(),
                         now,
+                        entry: None,
+                        entry_kind: None,
+                        quota_remaining: std::collections::BTreeMap::new(),
+                        quota_resets: std::collections::BTreeMap::new(),
                     },
                     &(),
                 )
@@ -1689,6 +1693,10 @@ impl Worker {
                         expected_head: session.head_seq,
                         event: event.clone(),
                         now,
+                        entry: None,
+                        entry_kind: None,
+                        quota_remaining: std::collections::BTreeMap::new(),
+                        quota_resets: std::collections::BTreeMap::new(),
                     },
                     &(),
                 )

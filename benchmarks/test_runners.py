@@ -64,19 +64,30 @@ class BenchmarkTests(unittest.TestCase):
             prompt_file.write_text("test task")
             workspace = root / "workspace"
             workspace.mkdir()
-            command = [str(ROOT / "daytona-lane.sh"), "--provider", "chatgpt",
-                       "--model", "gpt-6-sol", "--effort", "medium", "--workspace",
-                       str(workspace), "--json", "--prompt-file", str(prompt_file)]
-            env = dict(os.environ, BENCH_DRY_RUN="1", CODEX_LANE_STATE=str(root / "state"),
-                       CARGO_TARGET_DIR=str(root / "empty-target"), CARGO_HOME=str(root / "cargo"))
-            result = subprocess.run(command, env=env, text=True, capture_output=True, check=True)
-            self.assertIn('"cold":true', result.stdout)
-            self.assertIn("XDG_STATE_HOME=" + str(root / "state"), result.stdout)
-            self.assertIn("codex exec --json -m gpt-6-sol -c model_reasoning_effort=medium --cd", result.stdout)
-            refused = subprocess.run(command[:2] + ["openrouter"] + command[3:], env=env,
+            for provider in ("chatgpt", "openrouter"):
+                command = [str(ROOT / "daytona-lane.sh"), "--provider", provider,
+                           "--model", "gpt-6-sol", "--effort", "medium", "--workspace",
+                           str(workspace), "--json", "--prompt-file", str(prompt_file)]
+                env = dict(os.environ, BENCH_DRY_RUN="1", CODEX_DAYTONA_DIR=str(root / "launcher"))
+                result = subprocess.run(command, env=env, text=True, capture_output=True, check=True)
+                self.assertIn('"cold": true', result.stdout)
+                self.assertIn("src/cli.mjs run --provider " + provider, result.stdout)
+                self.assertIn("--no-publish", result.stdout)
+                self.assertIn("--model gpt-6-sol --effort medium", result.stdout)
+            refused = subprocess.run(command[:2] + ["openai"] + command[3:], env=env,
                                      text=True, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
-            self.assertIn("requires chatgpt", refused.stderr)
+
+    def test_daytona_adapter_filters_terminal_output(self):
+        spec = importlib.util.spec_from_file_location("daytona_lane", ROOT / "daytona_lane.py")
+        lane = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lane)
+        output = "exec bash -lc ...\r\n{\"type\":\"item.completed\",\"item\":{\"text\":\"BENCH_COLD=false\"}}\r\nnoise\r\n{\"type\":\"turn.completed\"}\r\n"
+        events = lane.events_from(output)
+        self.assertEqual([event["type"] for event in events], ["item.completed", "turn.completed"])
+        self.assertIs(lane.cold_from(events), False)
+        with self.assertRaises(ValueError):
+            lane.cold_from([{"type": "turn.completed"}])
 
     def test_daytona_runner_with_fixture_lane(self):
         with tempfile.TemporaryDirectory() as directory:

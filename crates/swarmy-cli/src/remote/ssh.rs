@@ -193,20 +193,15 @@ impl Ssh {
         {
             copy.arg(format!("--exclude=/{}", relative.display()));
         }
+        copy.arg("-az");
+        for filter in checkout_filters() {
+            copy.arg(filter);
+        }
         checked(
-            copy.args([
-                "-az",
-                "--exclude=target/",
-                "--exclude=.dev/",
-                "--exclude=.swarmy/",
-                "--exclude=.git/",
-                "--exclude=.env",
-                "--exclude=.env.*",
-                "-e",
-            ])
-            .arg(shell_words::join(transport))
-            .arg(format!("{}/", self.repo.display()))
-            .arg(format!("{address}:swarmy/")),
+            copy.args(["-e"])
+                .arg(shell_words::join(transport))
+                .arg(format!("{}/", self.repo.display()))
+                .arg(format!("{address}:swarmy/")),
             "copy checkout with rsync",
         )
         .await?;
@@ -476,6 +471,27 @@ fn tunnel_authorization(key: &str) -> Result<String> {
     ))
 }
 
+// Rsync filters for the copied checkout, in first-match-wins order. The fleet
+// example stays usable on the node while every other fleet TOML never leaves
+// the laptop: `fleet.toml` holds the fleet's GitHub token and is gitignored
+// precisely because it is a secret.
+fn checkout_filters() -> Vec<String> {
+    [
+        "--include=scripts/fleet/fleet.example.toml",
+        "--exclude=scripts/fleet/fleet.toml",
+        "--exclude=scripts/fleet/*.toml",
+        "--exclude=target/",
+        "--exclude=.dev/",
+        "--exclude=.swarmy/",
+        "--exclude=.git/",
+        "--exclude=.env",
+        "--exclude=.env.*",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
 // Exclude both the configured name and its target. A path containing `..` or
 // a symlink must not let the ordinary checkout copy export credential contents.
 fn credential_excludes(repo: &Path, credential: &Path) -> Vec<PathBuf> {
@@ -626,6 +642,62 @@ mod tests {
         ] {
             assert!(host.image_recipe(&recipe).is_err());
         }
+    }
+
+    #[test]
+    fn fleet_secrets_are_excluded_from_the_copied_checkout() {
+        let filters = super::checkout_filters();
+        let position = |flag: &str| {
+            filters
+                .iter()
+                .position(|filter| filter == flag)
+                .unwrap_or_else(|| panic!("missing rsync filter: {flag}"))
+        };
+        // Rsync uses first-match-wins order, so the example must precede the
+        // wildcard that keeps every other fleet TOML off the node.
+        assert!(
+            position("--include=scripts/fleet/fleet.example.toml")
+                < position("--exclude=scripts/fleet/*.toml")
+        );
+        assert!(filters.contains(&"--exclude=scripts/fleet/fleet.toml".to_owned()));
+        if std::process::Command::new("rsync")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping fleet rsync copy: rsync is not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src");
+        for path in [
+            "scripts/fleet/fleet",
+            "scripts/fleet/fleet.toml",
+            "scripts/fleet/other.toml",
+            "scripts/fleet/fleet.example.toml",
+        ] {
+            let full = source.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, "fixture").unwrap();
+        }
+        let destination = dir.path().join("dest");
+        std::fs::create_dir_all(&destination).unwrap();
+        let mut copy = std::process::Command::new("rsync");
+        copy.arg("-a");
+        for filter in &filters {
+            copy.arg(filter);
+        }
+        copy.arg(format!("{}/", source.display()));
+        copy.arg(&destination);
+        assert!(copy.status().unwrap().success());
+        assert!(destination.join("scripts/fleet/fleet").is_file());
+        assert!(
+            destination
+                .join("scripts/fleet/fleet.example.toml")
+                .is_file()
+        );
+        assert!(!destination.join("scripts/fleet/fleet.toml").exists());
+        assert!(!destination.join("scripts/fleet/other.toml").exists());
     }
 
     #[test]

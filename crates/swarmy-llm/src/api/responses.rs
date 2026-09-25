@@ -190,8 +190,12 @@ impl ResponsesProvider {
             if let Some(mime) = content_type.filter(|mime| mime != "text/event-stream") {
                 Err(Error::Protocol(format!("expected text/event-stream, got {mime}")))?;
             }
+            let quota = crate::quota::openai_remaining(response.headers());
+            let resets = crate::quota::openai_resets(response.headers());
             let mut bytes = response.bytes_stream();
             let mut parser = SseParser::with_context(&provider.provider_id, &request.settings.model);
+            parser.set_quota(quota);
+            parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {
                 for delta in parser.push(&chunk?)? { yield delta; }
                 if parser.is_completed() { break; }

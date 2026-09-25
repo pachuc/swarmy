@@ -65,6 +65,32 @@ until scratch lands.
    `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod
    600`. The file is ignored by git.
 
+## Running the driver on a control node
+
+`scripts/fleet/fleet` normally talks to a swarm through a saved tunnel profile
+(`remote = "dev"` in `fleet.toml`). The laptop holds one tunnel at a time, so a
+benchmark against a second swarm would blind the driver for the fleet it is
+operating. Leave `remote` empty in a `fleet.toml` on the swarm's own control
+node instead: the driver then calls `swarmy` with the node's local API
+configuration and no tunnel, which is how `benchmarks/run-swarm.sh` runs for
+each environment during the perf baseline.
+
+## Perf baseline runners
+
+`benchmarks/run-swarm.sh REMOTE LABEL` runs the three fixed tasks twice each
+through `fleet benchmark` and writes `.dev/benchmarks/LABEL-*`; run it on each
+swarm's control node with an empty `remote` (previous section).
+`benchmarks/run-daytona.py LABEL` runs the same prompts through codex-daytona
+in disposable remote sandboxes with `--no-publish`; Codex never runs on the
+laptop. Both read `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_EFFORT`. The
+baseline uses the same OpenRouter model everywhere so it compares
+infrastructure, not models: `BENCH_PROVIDER=openrouter
+BENCH_MODEL=meta/muse-spark-1.3-contributor BENCH_EFFORT=medium`. The
+codex-daytona leg needs `OPENROUTER_API_KEY` in the launcher's `.env` (it is
+placed in the sandbox as a private file) and `CODEX_DAYTONA_DIR` when the
+launcher is not at `~/code/codex-daytona`. Compare the results with
+`scripts/fleet/fleet report --label LABEL --session ID ...`.
+
 ## The split layout in practice
 
 The first split swarm (`dev2`, 2026-09-24) runs a control node on an

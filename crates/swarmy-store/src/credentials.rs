@@ -522,7 +522,11 @@ impl CredentialStore {
                 trx.clear(&self.entry_key("credential_entry_lease", scope, provider, label));
                 Ok(())
             })
-            .await
+            .await?;
+        if scope == CredentialScope::Cluster {
+            self.store.clear_entry_quota(provider, label).await?;
+        }
+        Ok(())
     }
 
     /// # Errors
