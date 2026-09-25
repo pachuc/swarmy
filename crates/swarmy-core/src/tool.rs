@@ -1,5 +1,6 @@
 use crate::{LeaseOwnerId, ManifestId, NodeId, RequestId, SessionId, ToolCallId, VolumeId};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +42,26 @@ pub struct ProcessStartArguments {
 #[serde(deny_unknown_fields)]
 pub struct ProcessArguments {
     pub process_id: crate::ProcessId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessListArguments {
+    #[serde(default = "default_process_list_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub all: bool,
+}
+
+const fn default_process_list_limit() -> usize {
+    20
+}
+
+impl ProcessListArguments {
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        (1..=200).contains(&self.limit)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +117,7 @@ pub struct EmptyArguments {}
 pub enum SandboxArguments {
     Bash(BashArguments),
     ProcessStart(ProcessStartArguments),
-    ProcessList(EmptyArguments),
+    ProcessList(ProcessListArguments),
     ProcessLog(ProcessArguments),
     ProcessStop(ProcessArguments),
     Checkpoint(EmptyArguments),
@@ -125,7 +146,7 @@ pub enum SandboxArgumentError {
     #[error("{0}")]
     Decode(#[from] serde_json::Error),
     #[error(
-        "invalid tool arguments: paths, patterns, commands, URLs, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be 1..=3600000, yield_seconds 0..=3600, and output_budget_bytes 1024..=32768"
+        "invalid tool arguments: paths, patterns, commands, URLs, and old_string must be nonempty; read offset and limit must be positive; timeout_ms must be 1..=3600000, yield_seconds 0..=3600, output_budget_bytes 1024..=32768, and process_list limit 1..=200"
     )]
     Invalid,
 }
@@ -149,6 +170,7 @@ impl SandboxArguments {
         match self {
             Self::Bash(arguments) => arguments.valid(),
             Self::ProcessStart(arguments) => !arguments.command.is_empty(),
+            Self::ProcessList(arguments) => arguments.valid(),
             Self::WebFetch(arguments) => !arguments.url.is_empty(),
             Self::Read(a) => !a.path.is_empty() && a.offset > 0 && a.limit > 0,
             Self::Write(a) => !a.path.is_empty(),
@@ -242,8 +264,8 @@ impl SandboxArguments {
             Self::WebFetch(value) | Self::BrowserNavigate(value) => serde_json::json!(value),
             Self::ProcessStart(value) => serde_json::json!(value),
             Self::ProcessLog(value) | Self::ProcessStop(value) => serde_json::json!(value),
-            Self::ProcessList(value)
-            | Self::Checkpoint(value)
+            Self::ProcessList(value) => serde_json::json!(value),
+            Self::Checkpoint(value)
             | Self::BrowserSnapshot(value)
             | Self::BrowserScreenshot(value)
             | Self::ScreenScreenshot(value)
@@ -331,4 +353,54 @@ impl BashResult {
             metadata,
         }
     }
+}
+
+/// Ceiling for any single tool result stored in a `ToolCallCompleted` event.
+/// The `bash`, `process_log`, and `read` tools enforce smaller budgets, so
+/// this only bites on tools that would otherwise return unbounded output.
+pub const MAX_TOOL_OUTPUT_BYTES: usize = 128 * 1024;
+
+/// Spill path for a truncated tool result, matching the bash log location.
+/// Tool call ids are provider strings, so percent-encode them for the filesystem.
+#[must_use]
+pub fn tool_spill_path(call_id: &str) -> String {
+    let mut encoded = String::with_capacity(call_id.len());
+    for byte in call_id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    if encoded.is_empty() {
+        encoded.push_str("output");
+    }
+    if encoded.len() > 160 {
+        encoded.truncate(160);
+    }
+    format!("/home/agent/.swarmy/output/{encoded}.log")
+}
+
+/// Cap a tool result's output at [`MAX_TOOL_OUTPUT_BYTES`], keeping the first
+/// and last halves so both the start and the end remain visible. The marker
+/// names the tool, the dropped byte count, and the spill path holding the full
+/// output. Inputs at or under the ceiling are returned unchanged.
+#[must_use]
+pub fn cap_tool_output(tool: &str, call_id: &str, output: String) -> String {
+    if output.len() <= MAX_TOOL_OUTPUT_BYTES {
+        return output;
+    }
+    let dropped = output.len() - MAX_TOOL_OUTPUT_BYTES;
+    let mut head_len = MAX_TOOL_OUTPUT_BYTES.div_ceil(2);
+    while head_len > 0 && !output.is_char_boundary(head_len) {
+        head_len -= 1;
+    }
+    let mut tail_start = output.len() - MAX_TOOL_OUTPUT_BYTES / 2;
+    while tail_start < output.len() && !output.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let spill = tool_spill_path(call_id);
+    let marker =
+        format!("\n[... {dropped} bytes elided from {tool} output; full output at {spill} ...]\n");
+    format!("{}{marker}{}", &output[..head_len], &output[tail_start..])
 }

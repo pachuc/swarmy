@@ -45,8 +45,11 @@ sandbox_tool!(
 sandbox_tool!(
     ProcessList,
     "process_list",
-    "List managed processes, including bash commands backgrounded at yield or timeout, with their command, start time, log path, and running or exited status. Records from an earlier sandbox lifetime report restarted.",
-    empty_parameters()
+    "List managed processes, including bash commands backgrounded at yield or timeout, with their command, start time, log path, and running or exited status. The list is capped: running processes come first, followed by the 20 most recently started other records, newest first. Pass limit (1-200) to change how many non-running records to include, or all true to include every record. Each command is truncated to 512 characters with a trailing ... marker. Records from an earlier sandbox lifetime report restarted.",
+    json!({"type":"object", "properties": {
+        "limit": {"type":"integer", "minimum":1, "maximum":200, "default":20, "description":"How many non-running records to include besides running ones."},
+        "all": {"type":"boolean", "default":false, "description":"Include every record regardless of the limit."}
+    }, "additionalProperties":false})
 );
 sandbox_tool!(
     ProcessLog,
@@ -249,6 +252,20 @@ mod tests {
             json!({"command":"true", "output_budget_bytes":32769}),
         ] {
             assert!(SandboxArguments::parse("bash", arguments).is_err());
+        }
+        assert!(ProcessList.description().contains("capped"));
+        assert!(ProcessList.description().contains("limit"));
+        let parsed = SandboxArguments::parse("process_list", json!({})).unwrap();
+        assert_eq!(parsed.name(), "process_list");
+        assert!(parsed.valid());
+        assert!(SandboxArguments::parse("process_list", json!({"limit": 5})).is_ok());
+        assert!(SandboxArguments::parse("process_list", json!({"all": true})).is_ok());
+        for arguments in [
+            json!({"limit": 0}),
+            json!({"limit": 201}),
+            json!({"limit": -1}),
+        ] {
+            assert!(SandboxArguments::parse("process_list", arguments).is_err());
         }
     }
 

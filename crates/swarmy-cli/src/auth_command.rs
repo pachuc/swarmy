@@ -7,6 +7,10 @@ pub enum Command {
     Login {
         #[arg(default_value = "chatgpt")]
         provider: String,
+        /// Entry label. Without one the provider's default entry is replaced;
+        /// pass `--label` to keep a second entry.
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         resource: Option<String>,
         #[arg(long)]
@@ -17,13 +21,21 @@ pub enum Command {
     /// List credential metadata without printing secrets
     Ls,
     /// Remove a credential
-    Rm { provider: String },
+    Rm { provider: String, label: String },
     /// Decrypt and inspect one or all credentials
-    Check { provider: Option<String> },
+    Check {
+        provider: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Import the configured `ChatGPT` credential file without deleting it
     Import {
         #[arg(long)]
         file: Option<PathBuf>,
+        /// Entry label. Without one the provider's default entry is replaced;
+        /// pass `--label` to keep a second entry.
+        #[arg(long)]
+        label: Option<String>,
     },
 }
 
@@ -40,7 +52,14 @@ pub struct Source {
 
 #[derive(Args)]
 pub struct Set {
-    pub provider: String,
+    /// Provider id (also accepted as --provider).
+    pub provider: Option<String>,
+    #[arg(long = "provider", conflicts_with = "provider")]
+    pub provider_flag: Option<String>,
+    /// Entry label. Without one the provider's default entry is replaced;
+    /// pass `--label` to keep a second entry.
+    #[arg(long)]
+    pub label: Option<String>,
     #[command(flatten)]
     pub source: Source,
     /// Provider setting in name=value form (repeatable)

@@ -697,7 +697,7 @@ async fn delete_agent(
     Ok(())
 }
 
-fn key_from_source(args: &auth_command::Set) -> Result<String> {
+fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
     if let Some(key) = &args.source.api_key {
         return Ok(key.clone());
     }
@@ -707,7 +707,7 @@ fn key_from_source(args: &auth_command::Set) -> Result<String> {
             .trim()
             .to_owned());
     }
-    let names: &[&str] = match args.provider.as_str() {
+    let names: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
         "xai" => &["XAI_API_KEY"],
@@ -746,9 +746,10 @@ fn auth_display(summary: &Value, json: bool, expiry: bool) {
         println!("{value}");
     } else {
         print!(
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             str_field(summary, "provider"),
             str_field(summary, "kind"),
+            str_field(summary, "label"),
             str_field(summary, "status"),
             str_field(summary, "updated_at")
         );
@@ -766,23 +767,27 @@ async fn auth(
 ) -> Result<()> {
     match command {
         auth_command::Command::Set(args) => {
+            let provider = args
+                .provider_flag
+                .as_ref()
+                .or(args.provider.as_ref())
+                .context("auth set requires a provider (positional or --provider)")?;
             ensure!(
-                !args.provider.is_empty()
-                    && args
-                        .provider
+                !provider.is_empty()
+                    && provider
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
                 "invalid provider id"
             );
             ensure!(
-                args.provider != "chatgpt",
+                provider != "chatgpt",
                 "chatgpt requires OAuth; use auth login chatgpt"
             );
-            let key = key_from_source(&args)?;
+            let key = key_from_source(&args, provider)?;
             ensure!(!key.trim().is_empty(), "API key must not be empty");
             let mut extra: std::collections::BTreeMap<String, String> =
                 args.extra.into_iter().collect();
-            if args.provider == "azure" && args.source.from_env {
+            if provider == "azure" && args.source.from_env {
                 for (env, name) in [
                     ("AZURE_OPENAI_BASE_URL", "base_url"),
                     ("AZURE_RESOURCE_NAME", "resource_name"),
@@ -798,13 +803,13 @@ async fn auth(
                 kind: swarmy_core::CredentialKind::ApiKey { key, extra },
                 updated_at: jiff::Timestamp::now(),
             };
-            let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":args.provider,"record":record});
+            let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":provider,"label":args.label,"record":record});
             projection(
                 endpoint,
                 client.cli_set_credential(&serde_json::from_value(body)?),
             )
             .await?;
-            auth_report("saved", &args.provider, json);
+            auth_report("saved", provider, json);
         }
         auth_command::Command::Ls => {
             for summary in request(endpoint, client.cli_credentials())
@@ -816,19 +821,21 @@ async fn auth(
                 auth_display(&summary, json, false);
             }
         }
-        auth_command::Command::Check { provider } => {
-            let rows = if let Some(provider) = provider {
-                let summary = request(endpoint, client.cli_credential(&provider))
-                    .await
-                    .with_context(|| format!("credential for {provider} does not exist"))?;
-                vec![serde_json::to_value(summary)?]
-            } else {
-                request(endpoint, client.cli_credentials())
-                    .await?
-                    .into_iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?
-            };
+        auth_command::Command::Check { provider, label } => {
+            let rows: Vec<_> = request(endpoint, client.cli_credentials())
+                .await?
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|row| {
+                    provider
+                        .as_ref()
+                        .is_none_or(|provider| row["provider"] == *provider)
+                        && label.as_ref().is_none_or(|label| row["label"] == *label)
+                })
+                .collect();
+            ensure!(!rows.is_empty(), "credential does not exist");
             let ready = rows.iter().all(|row| row["status"] == "ready");
             let expired_bedrock = rows
                 .iter()
@@ -845,10 +852,10 @@ async fn auth(
                 }
             );
         }
-        auth_command::Command::Rm { provider } => {
+        auth_command::Command::Rm { provider, label } => {
             request(
                 endpoint,
-                client.remove_credential(&provider, &Ulid::generate().to_string()),
+                client.remove_credential_entry(&provider, &label, &Ulid::generate().to_string()),
             )
             .await?;
             auth_report("removed", &provider, json);

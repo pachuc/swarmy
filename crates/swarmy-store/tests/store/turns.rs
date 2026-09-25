@@ -345,12 +345,23 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         Err(StoreError::LeaseMismatch)
     ));
     assert_eq!(store.read_events(id, 0, 64).await.unwrap().len(), 1);
+    store
+        .set_inference_entry(completion.claim.request_id, Some("primary"))
+        .await
+        .unwrap();
     assert!(
         store
             .complete_inference_and_idle(&completion, &"answer", &snapshot)
             .await
             .unwrap()
     );
+    let attribution = store
+        .inference_usage_record(completion.claim.request_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attribution.entry.as_deref(), Some("primary"));
+    assert_eq!(attribution.provider, "");
     assert!(
         !store
             .complete_inference_and_idle(&completion, &"duplicate", &snapshot)

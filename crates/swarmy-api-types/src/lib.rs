@@ -226,6 +226,10 @@ pub struct Credential {
     pub label: String,
     pub status: CredentialStatus,
     pub updated_at: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -408,6 +412,12 @@ pub struct DeleteRequest {
     pub idempotency_key: String,
 }
 
+/// Deleting a labelled credential reports the removal without returning secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CredentialDeleted {
+    pub deleted: bool,
+}
+
 /// A durable event has a cursor even when delivered on a multiplexed connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Event {
@@ -517,6 +527,10 @@ pub struct CliCredential {
     pub label: String,
     pub status: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
     pub expires_at: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -544,6 +558,8 @@ pub struct CliAgentChoice {
 pub struct CliCredentialInput {
     pub idempotency_key: String,
     pub provider: String,
+    #[serde(default)]
+    pub label: Option<String>,
     /// Encrypted by the API, never returned by credential endpoints.
     pub record: serde_json::Value,
 }
@@ -596,9 +612,9 @@ pub mod cli_paths {
 pub mod api_paths {
     use super::{
         Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
-        CreateCredential, CreateSession, Credential, DeleteRequest, Event, HealthResponse, Image,
-        InterruptOutcome, InterruptSession, Model, Provider, Session, SessionClosed, Subscription,
-        TurnMetrics, UpdateAgent,
+        CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest, Event,
+        HealthResponse, Image, InterruptOutcome, InterruptSession, Model, Provider, Session,
+        SessionClosed, Subscription, TurnMetrics, UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -760,6 +776,21 @@ pub mod api_paths {
         ),
         responses((status = 200, body = AgentMetrics), (status = 404, body = ApiError)))]
     pub fn agent_metrics() {}
+    #[utoipa::path(get, path = "/v1/credentials/{provider}/{label}",
+        params(
+            ("provider" = String, Path, description = "Provider id"),
+            ("label" = String, Path, description = "Credential label"),
+        ),
+        responses((status = 200, body = Credential), (status = 404, body = ApiError)))]
+    pub fn check_credential_entry() {}
+    #[utoipa::path(delete, path = "/v1/credentials/{provider}/{label}",
+        params(
+            ("provider" = String, Path, description = "Provider id"),
+            ("label" = String, Path, description = "Credential label"),
+        ),
+        request_body = DeleteRequest,
+        responses((status = 200, body = CredentialDeleted), (status = 404, body = ApiError)))]
+    pub fn remove_credential_entry() {}
 }
 
 /// The schema document is generated from the same types clients and servers serialize.
@@ -782,6 +813,7 @@ pub mod api_paths {
         api_paths::list_providers,
         api_paths::list_credentials, api_paths::set_credential,
         api_paths::check_credential, api_paths::remove_credential,
+        api_paths::check_credential_entry, api_paths::remove_credential_entry,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
@@ -797,7 +829,7 @@ pub mod api_paths {
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
-    CreateImage, CreateCredential, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
+    CreateImage, CreateCredential, CredentialDeleted, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
     CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput
 )))]
 pub struct ApiDocument;
@@ -902,6 +934,7 @@ mod tests {
         check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
         check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
+        check!(CredentialDeleted, {"deleted":true});
     }
 
     #[test]

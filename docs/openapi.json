@@ -799,6 +799,114 @@
         }
       }
     },
+    "/v1/credentials/{provider}/{label}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "check_credential_entry",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "description": "Credential label",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "remove_credential_entry",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "description": "Credential label",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialDeleted"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/docs": {
       "get": {
         "tags": [
@@ -2020,6 +2128,9 @@
           "updated_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
           "expires_at": {
             "type": [
               "string",
@@ -2031,6 +2142,12 @@
           },
           "label": {
             "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -2053,6 +2170,12 @@
         "properties": {
           "idempotency_key": {
             "type": "string"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -2459,11 +2582,20 @@
           "updated_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
           "kind": {
             "$ref": "#/components/schemas/CredentialKind"
           },
           "label": {
             "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -2473,6 +2605,18 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "CredentialDeleted": {
+        "type": "object",
+        "description": "Deleting a labelled credential reports the removal without returning secrets.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
           }
         }
       },

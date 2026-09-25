@@ -980,17 +980,23 @@ Catalog image metadata does not yet enable image inputs.
 
 ### 9.2 Credential storage and refresh
 
-Records at `("credential", scope, provider)` hold API keys or OAuth material,
-provider metadata, and an update timestamp. The CLI uses cluster scope;
-`agent:<id>` is reserved. Versioned records use XChaCha20-Poly1305 with a random
-24-byte nonce and scope/provider authenticated as associated data. The 32-byte
+Auth entries are keyed by scope, provider, and a label unique within that
+provider. Each entry records its creation and last use, kind (`subscription`,
+`api-key`, or `cloud`), and encrypted secret material. Existing records at
+`("credential", scope, provider)` migrate on first read to label `default` with
+kind inferred from the secret type. Without an explicit label, set, login, and
+import replace the provider's `default` entry; until routes select entries, the
+gateway serves the oldest ready entry and falls back to the oldest otherwise.
+The CLI uses cluster scope; `agent:<id>` is
+reserved. Versioned records use XChaCha20-Poly1305 with a random 24-byte nonce
+and scope, provider, and label authenticated as associated data. The 32-byte
 cluster data key stays outside FoundationDB in `~/.swarmy/keyring` (mode 600),
 overridden by `SWARMY_KEYRING`. `dev up` creates it only when absent; explicit
 remote credential copying installs the same key on gateway hosts.
 
 The resolver reads the store before environment keys and ambient AWS or Google
 credentials. An existing record's decryption or refresh failure never selects an
-environment fallback. OAuth refresh is fenced by a lease and verifies both its
+environment fallback. OAuth refresh is fenced per entry by a lease and verifies both its
 owner and unchanged credential before committing a rotation. Waiters use the
 winner's record. Failed refresh preserves the record and marks `needs_login`;
 explicit replacement or deletion fences outstanding refreshes. Lease expiry

@@ -43,9 +43,10 @@ pub use sandbox::{
 
 mod tool;
 pub use tool::{
-    BashArguments, BashResult, EmptyArguments, PlaceReply, PlaceRequest, PlacedToolClaim,
-    ProcessArguments, ProcessStartArguments, SandboxArgumentError, SandboxArguments, SandboxRecord,
-    ToolClaim, ToolJob, WebFetchArguments, WriteStdinArguments,
+    BashArguments, BashResult, EmptyArguments, MAX_TOOL_OUTPUT_BYTES, PlaceReply, PlaceRequest,
+    PlacedToolClaim, ProcessArguments, ProcessListArguments, ProcessStartArguments,
+    SandboxArgumentError, SandboxArguments, SandboxRecord, ToolClaim, ToolJob, WebFetchArguments,
+    WriteStdinArguments, cap_tool_output, tool_spill_path,
 };
 
 mod placement;
