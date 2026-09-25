@@ -58,6 +58,47 @@ fn image_json(arguments: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// Run the sibling `swarmyd` binary beside the test `swarmy` binary. Volume
+/// management moved to the node daemon, so the retag property is observed
+/// through `swarmyd vol` rather than the store.
+fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
+    let swarmy = std::path::PathBuf::from(env!("CARGO_BIN_EXE_swarmy"));
+    let swarmyd = swarmy
+        .parent()
+        .expect("profile directory")
+        .join(format!("swarmyd{}", std::env::consts::EXE_SUFFIX));
+    if !swarmyd.exists() {
+        // `cargo test -p swarmy-cli` does not build the daemon binary, so
+        // build it once; a warm target directory makes this a no-op.
+        let mut build = Command::new("cargo");
+        build
+            .args(["build", "-p", "swarmyd", "--bin", "swarmyd"])
+            .current_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("workspace root")
+                    .parent()
+                    .expect("workspace root"),
+            );
+        if !cfg!(debug_assertions) {
+            build.arg("--release");
+        }
+        assert!(build.status().unwrap().success());
+    }
+    let output = Command::new(&swarmyd)
+        .arg("vol")
+        .arg("--json")
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 #[tokio::test]
 async fn root_base_ubuntu_acceptance() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
@@ -89,6 +130,12 @@ async fn root_base_ubuntu_acceptance() {
     assert!(first["chunks_stored"].as_u64().unwrap() > 0);
     let reference = format!("base-ubuntu:{tag}");
     check_registration(&reference, &tag, &first);
+    // The server mints a fresh manifest id on every upload, so the retag
+    // property is read from the volume record: a volume created on the first
+    // manifest keeps that manifest after the rebuild.
+    let created = swarmyd_json(&["create", &reference]);
+    let volume_id = created["volume_id"].as_str().unwrap().to_owned();
+    assert_eq!(created["manifest_id"], first["manifest_id"]);
     check_chroot(directory.path(), &raw);
     let started = std::time::Instant::now();
     let second_raw = directory.path().join("second.ext4");
@@ -116,11 +163,13 @@ async fn root_base_ubuntu_acceptance() {
         image_json(&["show", &reference])["manifest_id"],
         second["manifest_id"]
     );
-    // Retagging the same recipe must reuse the first manifest rather than
-    // registering a new one. Volume creation moved to `swarmyd vol`, so the
-    // client asserts the observable half: an existing volume on the first
-    // manifest keeps resolving after the rebuild.
-    assert_eq!(second["manifest_id"], first["manifest_id"]);
+    // Retagging must leave the already-created volume on its original
+    // manifest, read from the volume record rather than the upload response.
+    let shown_volume = swarmyd_json(&["show", &volume_id]);
+    assert_eq!(
+        shown_volume["record"]["head_manifest"],
+        first["manifest_id"]
+    );
 }
 
 fn check_registration(reference: &str, tag: &str, first: &serde_json::Value) {

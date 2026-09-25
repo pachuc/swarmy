@@ -66,6 +66,7 @@ async fn run() -> Result<()> {
     state.gc = settings.gc;
     state.upload_dir = std::path::PathBuf::from(&settings.state_dir).join("uploads");
     state.upload_max_bytes = settings.image_upload_max_bytes;
+    swarmy_api::images::sweep_stale_uploads(&state.upload_dir);
     state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
     state.default_image = settings.default_image.clone();
     state.default_selection = swarmy_core::ResolvedSelection {

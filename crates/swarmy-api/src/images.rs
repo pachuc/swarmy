@@ -113,9 +113,17 @@ async fn drain(body: Body) {
     }
 }
 
+/// Stream an image to the control plane for chunking and registration.
+///
+/// # Errors
+///
+/// Returns a 4xx response for an invalid name, tag, idempotency key, image
+/// requirement, or oversized body, and a 5xx response when the store or the
+/// object upload fails.
 pub async fn upload(
     State(state): State<AppState>,
     Query(query): Query<UploadQuery>,
+    headers: axum::http::HeaderMap,
     body: Body,
 ) -> ApiResult<api::ImageUpload> {
     let validated = match validate(&query) {
@@ -125,21 +133,35 @@ pub async fn upload(
             return Err(error);
         }
     };
-    let (_spool, path, _size) = spool(&state, body).await?;
-    let store = state.store.clone();
-    let objects = state.objects.clone();
+    // A well-behaved client sends `Content-Length`; reject an oversized
+    // upload before spooling gigabytes the server would only delete.
+    if let Some(length) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<u64>().ok())
+        && length > state.upload_max_bytes
+    {
+        drain(body).await;
+        return Err(oversized(state.upload_max_bytes));
+    }
     let replay_key = format!("images:upload:{}", validated.idempotency_key);
-    // A retried upload observes the completed response. The lock is held
-    // only for the replay check and response store; chunk publication below
-    // must not block other control-plane mutations.
+    // A retried upload observes the completed response without re-spooling
+    // the image to disk. The body is still drained so the client finishes
+    // writing before the replayed answer. The lock is held only for the
+    // replay check and response store; chunk publication below must not
+    // block other control-plane mutations.
     {
         let _guard = state.mutation_guard().await;
         if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
+            drain(body).await;
             return serde_json::from_value(value)
                 .map(Json)
                 .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"));
         }
     }
+    let (_spool, path, _size) = spool(&state, body).await?;
+    let store = state.store.clone();
+    let objects = state.objects.clone();
     let built = swarmy_volume::image::upload_image_protected(&path, objects, store.clone())
         .await
         .map_err(|failure| match failure {
@@ -232,14 +254,7 @@ async fn spool(
             .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
     }
     if too_large {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(api::ApiError {
-                code: "image_too_large".into(),
-                message: format!("uploaded image exceeds the {max_bytes} byte limit"),
-                provider_text: None,
-            }),
-        ));
+        return Err(oversized(max_bytes));
     }
     if size == 0 {
         return Err(invalid("uploaded image is empty"));
@@ -249,4 +264,36 @@ async fn spool(
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
     drop(file);
     Ok((directory, path, size))
+}
+
+/// Reject an upload over the configured limit with a 413 before spooling or
+/// after draining an oversized stream.
+fn oversized(max_bytes: u64) -> (StatusCode, Json<api::ApiError>) {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(api::ApiError {
+            code: "image_too_large".into(),
+            message: format!("uploaded image exceeds the {max_bytes} byte limit"),
+            provider_text: None,
+        }),
+    )
+}
+
+/// Delete spool directories a crashed upload left behind. Each upload spools
+/// under `swarmy-upload-*` inside the configured directory with a guard that
+/// deletes it on every path, so anything present at startup is orphaned.
+pub fn sweep_stale_uploads(upload_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(upload_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("swarmy-upload-") {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+            tracing::warn!(path = %entry.path().display(), %error, "stale upload not swept");
+        }
+    }
 }

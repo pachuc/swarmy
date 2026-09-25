@@ -56,12 +56,16 @@ pub async fn start(
                 .parse::<Ulid>()
                 .map(LeaseOwnerId::from_ulid)
                 .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"))?;
+            // Between the replay-key reservation and the lease acquisition
+            // the run record does not exist yet; a concurrent start with the
+            // same key observes the reservation, so answer 409 rather than a
+            // 500 for a record that is still being created.
             let run = state
                 .store
                 .get_gc_run(owner)
                 .await
                 .map_err(storage)?
-                .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"))?;
+                .ok_or_else(busy)?;
             return Ok(Json(snapshot(&run)));
         }
     }

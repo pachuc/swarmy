@@ -52,3 +52,8 @@ tracing.workspace = true
 jiff.workspace = true
 ulid.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Unit tests in the chat client construct typed API errors; the binary itself
+# talks HTTP only through swarmy-client.
+reqwest.workspace = true

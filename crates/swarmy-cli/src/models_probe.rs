@@ -42,6 +42,7 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
             provider_id,
             &model.id,
             args.effort,
+            args.label,
             json,
         )
         .await;
@@ -230,6 +231,7 @@ async fn server_probe(
     provider_id: &str,
     model_id: &str,
     effort: Option<swarmy_core::ReasoningEffort>,
+    label: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
     let started = std::time::Instant::now();
@@ -248,7 +250,7 @@ async fn server_probe(
         client.probe_model(&swarmy_api_types::ProbeModel {
             provider: provider_id.into(),
             model: model_id.into(),
-            label: None,
+            label,
             effort,
         }),
     )

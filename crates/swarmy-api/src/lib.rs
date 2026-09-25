@@ -14,7 +14,7 @@ use std::sync::Arc;
 mod cli;
 mod conversation;
 mod gc;
-mod images;
+pub mod images;
 mod models;
 mod stream;
 use swarmy_api_types as api;

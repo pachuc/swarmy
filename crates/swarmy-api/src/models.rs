@@ -40,12 +40,27 @@ impl AuthStore for ClusterAuthStore {
     }
 }
 
-fn provider_failure(message: String) -> (StatusCode, Json<api::ApiError>) {
+fn provider_failure(provider_text: String) -> (StatusCode, Json<api::ApiError>) {
     (
         StatusCode::BAD_GATEWAY,
         Json(api::ApiError {
             code: "provider_failure".into(),
-            message,
+            message: "provider probe failed".into(),
+            provider_text: Some(provider_text),
+        }),
+    )
+}
+
+/// The server gives up before the client's 300 second wait so a hung
+/// provider surfaces as a probe error rather than a client timeout.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+
+fn provider_timeout() -> (StatusCode, Json<api::ApiError>) {
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(api::ApiError {
+            code: "provider_timeout".into(),
+            message: "provider probe timed out".into(),
             provider_text: None,
         }),
     )
@@ -83,7 +98,11 @@ pub async fn probe(
         .unwrap_or(swarmy_core::ReasoningEffort::None);
     let (effort, _) = model.clamp_effort(requested);
     let auth = resolve_auth(&state, &body).await?;
-    let answer = run_probe(provider, model, auth, effort).await?;
+    let answer =
+        match tokio::time::timeout(PROBE_TIMEOUT, run_probe(provider, model, auth, effort)).await {
+            Ok(answer) => answer?,
+            Err(_) => return Err(provider_timeout()),
+        };
     let effort_value = serde_json::to_value(effort)
         .ok()
         .and_then(|value| serde_json::from_value(value).ok())
@@ -119,9 +138,13 @@ async fn resolve_auth(
     Ok(swarmy_llm::auth::resolve(&body.provider, &resolver)
         .await
         .map_err(|resolve_error| {
-            error(
+            (
                 StatusCode::BAD_REQUEST,
-                &format!("credential_unavailable: {resolve_error}"),
+                Json(api::ApiError {
+                    code: "credential_unavailable".into(),
+                    message: resolve_error.to_string(),
+                    provider_text: None,
+                }),
             )
         })?
         .auth)

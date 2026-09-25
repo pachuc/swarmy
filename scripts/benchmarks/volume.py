@@ -259,7 +259,7 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
                 "bs=256K", "iflag=direct", "status=none")
             report(f"sequential_{kind}", start, bytes=128 * 1024 * 1024)
     vol("show", volume)
-    run("swarmy", "vol", "ls")
+    run("swarmyd", "vol", "ls")
 
 
 if __name__ == "__main__":

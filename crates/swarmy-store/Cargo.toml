@@ -29,7 +29,6 @@ swarmy-api-types.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
