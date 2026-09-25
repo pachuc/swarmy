@@ -51,3 +51,9 @@ be forgotten. Do them opportunistically alongside related work.
   2026-09-24 waiting for the typed message to appear on the successor
   session; it passed on master minutes earlier. Timing-sensitive; widen the
   wait or make the TUI fixture signal readiness before typing.
+
+- Low priority: session logs are kept forever, and tool outputs over 80 KiB
+  spill to blobs that stay referenced as long as the session exists. At some
+  point truncate long tool outputs in long-term session storage (keep the
+  head and tail, drop the middle) or add a retention policy. Not urgent;
+  growth is slow.
