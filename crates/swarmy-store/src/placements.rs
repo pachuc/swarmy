@@ -204,6 +204,18 @@ impl Store {
     /// released by a process that accounts for memory differently, which
     /// happened during the upgrade that introduced memory budgets.
     async fn committed_bytes(&self, trx: &Transaction, node: NodeId) -> Result<u64> {
+        self.committed_bytes_excluding(trx, node, AgentId::from_ulid(ulid::Ulid::nil()))
+            .await
+    }
+
+    /// The committed sum without one agent's own placement, so a takeover on
+    /// the same node is not charged twice for the computer it is replacing.
+    async fn committed_bytes_excluding(
+        &self,
+        trx: &Transaction,
+        node: NodeId,
+        exclude: AgentId,
+    ) -> Result<u64> {
         let (start, end) = self
             .root
             .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
@@ -215,6 +227,11 @@ impl Store {
             let full = page.len() == MAX_SCAN_LIMIT;
             for (key, value) in page {
                 let record: PlacementRecord = decode(&value)?;
+                if record.agent_id == exclude {
+                    begin = key;
+                    begin.push(0);
+                    continue;
+                }
                 total = total
                     .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
                     .ok_or(StoreError::InvalidState)?;
@@ -245,7 +262,7 @@ impl Store {
             return Err(StoreError::NodeAtCapacity);
         }
         let bytes = self.requirement_bytes(trx, agent).await?;
-        let committed = self.committed_bytes(trx, node).await?;
+        let committed = self.committed_bytes_excluding(trx, node, agent).await?;
         if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
             return Err(StoreError::NodeAtCapacity);
         }
@@ -441,6 +458,10 @@ impl Store {
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
+            // Clear the old row before reserving so the committed-memory sum,
+            // which is derived from the node's placement rows, does not count
+            // the crashed placement against the same node's capacity.
+            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self.read_placement_hosting(&trx, &current).await?;
             // Missing metadata predates claim tracking, so do not assume that
@@ -465,7 +486,6 @@ impl Store {
                 last_changed_at: now,
                 ..current
             };
-            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             trx.clear(&self.placement_key("placement_address", current.agent_id));
             self.write_placement(&trx, &record)?;
             write(
