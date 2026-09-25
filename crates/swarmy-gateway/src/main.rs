@@ -867,15 +867,11 @@ impl Gateway {
                 None,
             ));
         };
-        let (client, entry, entry_kind) = match self
-            .providers
-            .client_pinned(provider, model, pinned)
-            .await
-        {
-            Ok(resolved) => resolved,
-            Err(error) => return Ok((Err(error), false, pinned.map(str::to_owned), None)),
-        };
-        };
+        let (client, entry, entry_kind) =
+            match self.providers.client_pinned(provider, model, pinned).await {
+                Ok(resolved) => resolved,
+                Err(error) => return Ok((Err(error), false, pinned.map(str::to_owned), None)),
+            };
         let key = CredentialKey::for_label(provider, entry.clone());
         if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
             let reason = self
