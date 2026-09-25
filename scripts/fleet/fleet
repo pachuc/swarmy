@@ -53,9 +53,12 @@ def load():
     if CONFIG.stat().st_mode & 0o077:
         raise RuntimeError(f"{CONFIG} must have owner-only permissions (chmod 600)")
     data = tomllib.loads(CONFIG.read_text())
-    for key in ("remote", "github_token", "repo"):
+    for key in ("github_token", "repo"):
         if not data.get(key):
             raise RuntimeError(f"{CONFIG}: missing {key}")
+    # An empty or absent remote means the local API configuration, which is
+    # how the driver runs on a swarm's own control node without a tunnel.
+    data.setdefault("remote", "")
     data.setdefault("workers", 4)
     return data
 
@@ -114,7 +117,8 @@ Read the repository's AGENTS.md and docs/DESIGN.md before changing files. Implem
 
 
 def swarmy(config, *args):
-    return ["swarmy", "--remote", config["remote"], *args]
+    remote = config.get("remote")
+    return ["swarmy", *(["--remote", remote] if remote else []), *args]
 
 
 def tasky(*args, json_output=False):
