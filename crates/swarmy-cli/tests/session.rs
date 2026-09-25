@@ -727,3 +727,69 @@ async fn run_rejects_unknown_images_before_creating_a_session() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn session_and_agent_metrics_json_use_the_persisted_turn() {
+    run(|fixture| async move {
+        let agent = fixture
+            .store
+            .create_agent("metrics-agent", "fixture:test", "", Timestamp::now())
+            .await
+            .unwrap();
+        let (session, _) = fixture
+            .store
+            .open_main_session(agent.agent_id, Timestamp::now())
+            .await
+            .unwrap();
+        let turn = MessageId::from_ulid(Ulid::generate());
+        let request = RequestId::for_step(session, 1);
+        for (stage, ns) in [
+            (swarmy_core::TurnStage::Appended, 1_000_000),
+            (swarmy_core::TurnStage::FirstToken, 3_000_000),
+            (swarmy_core::TurnStage::Idle, 5_000_000),
+        ] {
+            fixture
+                .store
+                .record_turn_metric(
+                    session,
+                    turn,
+                    swarmy_store::MetricPatch::Stage(swarmy_core::TurnEvent {
+                        session_id: session,
+                        turn_id: turn,
+                        stage,
+                        request_id: Some(request),
+                        clock_id: "boot".into(),
+                        monotonic_ns: ns,
+                        unix_ns: i128::from(ns),
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        let session_id = session.to_string();
+        let output = fixture
+            .output(&["session", "metrics", &session_id, "--json"])
+            .await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["turn_id"], turn.to_string());
+        assert_eq!(rows[0]["append_to_idle_ms"], 4.0);
+        let output = fixture
+            .output(&["agent", "metrics", "metrics-agent", "--json"])
+            .await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rollup: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(rollup["turns"], 1);
+        assert_eq!(rollup["latencies"]["append_to_idle"]["p50_ms"], 4.0);
+    })
+    .await;
+}

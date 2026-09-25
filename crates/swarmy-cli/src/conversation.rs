@@ -279,9 +279,9 @@ impl Conversation {
             }
             *recorded = true;
         }
-        self.bus
-            .record_turn(&Bus::turn_event(self.id, turn.id, stage, None))
-            .await;
+        let event = Bus::turn_event(self.id, turn.id, stage, None);
+        self.bus.record_turn(&event).await;
+        self.store.observe_turn_stage(event);
     }
 
     async fn wake(&mut self) -> Result<()> {

@@ -24,18 +24,45 @@ use tokio::{
 use crate::ManifestBuilder;
 use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, Result, VolumeError};
 
+const FETCH_BUCKET_US: [u64; 12] = [
+    250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 512_000,
+];
+
+fn fetch_percentile(buckets: &[AtomicU64; 12], percentile: u64) -> Option<u64> {
+    let total: u64 = buckets
+        .iter()
+        .map(|bucket| bucket.load(Ordering::Relaxed))
+        .sum();
+    if total == 0 {
+        return None;
+    }
+    let target = (total * percentile).div_ceil(100);
+    let mut cumulative = 0;
+    for (bound, bucket) in FETCH_BUCKET_US.iter().zip(buckets) {
+        cumulative += bucket.load(Ordering::Relaxed);
+        if cumulative >= target {
+            return Some(*bound);
+        }
+    }
+    Some(FETCH_BUCKET_US[FETCH_BUCKET_US.len() - 1])
+}
+
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwrap();
 
 /// Counters are per device. Cold reads count foreground object fetches;
 /// readahead fetches count speculative object fetches separately.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceStats {
     pub cache_hits: u64,
     pub cold_reads: u64,
     pub readahead_hits: u64,
     pub readahead_fetches: u64,
+    pub fetched_chunks: u64,
+    pub fetched_bytes: u64,
+    pub fetch_p50_us: Option<u64>,
+    pub fetch_p95_us: Option<u64>,
     pub dirty_bytes: u64,
     /// Chunk uploads currently waiting for object storage, including existence checks.
     pub uploads_in_flight: u64,
@@ -51,6 +78,9 @@ struct Counters {
     cold_reads: AtomicU64,
     readahead_hits: AtomicU64,
     readahead_fetches: AtomicU64,
+    fetched_chunks: AtomicU64,
+    fetched_bytes: AtomicU64,
+    fetch_histogram: [AtomicU64; 12],
     dirty_bytes: AtomicU64,
     uploads_in_flight: AtomicU64,
     tool_priority_uploads: AtomicU64,
@@ -290,6 +320,10 @@ impl VolumeDevice {
             cold_reads: self.counters.cold_reads.load(Ordering::Relaxed),
             readahead_hits: self.counters.readahead_hits.load(Ordering::Relaxed),
             readahead_fetches: self.counters.readahead_fetches.load(Ordering::Relaxed),
+            fetched_chunks: self.counters.fetched_chunks.load(Ordering::Relaxed),
+            fetched_bytes: self.counters.fetched_bytes.load(Ordering::Relaxed),
+            fetch_p50_us: fetch_percentile(&self.counters.fetch_histogram, 50),
+            fetch_p95_us: fetch_percentile(&self.counters.fetch_histogram, 95),
             dirty_bytes: self.counters.dirty_bytes.load(Ordering::Relaxed),
             uploads_in_flight: self.counters.uploads_in_flight.load(Ordering::Relaxed),
             tool_priority_uploads: self.counters.tool_priority_uploads.load(Ordering::Relaxed),
@@ -649,7 +683,17 @@ impl VolumeDevice {
             &self.counters.cold_reads
         };
         counter.fetch_add(1, Ordering::Relaxed);
+        let start = std::time::Instant::now();
         let bytes = self.store.get_chunk(hash).await?;
+        self.counters.fetched_chunks.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .fetched_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let bucket = FETCH_BUCKET_US
+            .partition_point(|bound| *bound < elapsed)
+            .min(FETCH_BUCKET_US.len() - 1);
+        self.counters.fetch_histogram[bucket].fetch_add(1, Ordering::Relaxed);
         // Atomic replacement lets other devices share this directory safely.
         let temporary = self
             .cache_dir
@@ -851,5 +895,20 @@ mod tests {
         assert!(device.write(0, &[7; 4096]).await.is_err());
         assert_eq!(device.stats().dirty_bytes, 0);
         assert_eq!(device.read(0, 4096).await.unwrap(), vec![0; 4096]);
+    }
+}
+
+#[cfg(test)]
+mod fetch_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn percentiles_are_bounded_and_empty_histograms_have_no_latency() {
+        let buckets: [AtomicU64; 12] = std::array::from_fn(|_| AtomicU64::new(0));
+        assert_eq!(fetch_percentile(&buckets, 50), None);
+        buckets[0].store(2, Ordering::Relaxed);
+        buckets[3].store(1, Ordering::Relaxed);
+        assert_eq!(fetch_percentile(&buckets, 50), Some(250));
+        assert_eq!(fetch_percentile(&buckets, 95), Some(2_000));
     }
 }

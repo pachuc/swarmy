@@ -367,8 +367,30 @@ impl Gateway {
         let mut response = None;
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
         let mut token_position = 0_u64;
+        let mut first_token = false;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
+            let content = match &delta {
+                Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
+                Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+                _ => false,
+            };
+            if content && !first_token {
+                first_token = true;
+                if let Some(turn) = turn {
+                    let event = Bus::turn_event(
+                        job.session_id,
+                        turn,
+                        swarmy_core::TurnStage::FirstToken,
+                        Some(job.request_id),
+                    );
+                    self.store.observe_turn_stage(event.clone());
+                    let bus = self.bus.clone();
+                    tokio::spawn(async move {
+                        bus.record_turn(&event).await;
+                    });
+                }
+            }
             if response.is_some() {
                 return Err(swarmy_llm::Error::Protocol("delta after completion".into()));
             }
@@ -413,6 +435,74 @@ impl Gateway {
             .map(|message| message.id)
     }
 
+    async fn observe_inference_stage(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        stage: swarmy_core::TurnStage,
+    ) {
+        if let Some(turn) = turn {
+            let event = Bus::turn_event(job.session_id, turn, stage, Some(job.request_id));
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
+        }
+    }
+
+    fn observe_wait(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        kind: swarmy_store::WaitKind,
+    ) {
+        if let Some(turn) = turn {
+            self.store.observe_turn_metric(
+                job.session_id,
+                turn,
+                swarmy_store::MetricPatch::Wait {
+                    request_id: job.request_id.to_string(),
+                    kind,
+                },
+            );
+        }
+    }
+
+    fn observe_terminal_metric(
+        &self,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        provider: &str,
+        event: &Event,
+    ) {
+        let Some(turn) = turn else { return };
+        let patch = match event {
+            Event::InferenceCompleted {
+                usage, cost_micros, ..
+            } => Some(swarmy_store::MetricPatch::Inference(
+                swarmy_api_types::InferenceMetric {
+                    request_id: job.request_id.to_string(),
+                    provider: provider.to_owned(),
+                    model: job.request.settings.model.clone(),
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    reasoning_tokens: usage.reasoning_output_tokens,
+                    cost_micros: *cost_micros,
+                    ..Default::default()
+                },
+            )),
+            Event::InferenceFailed {
+                error,
+                retryable: false,
+                ..
+            } => Some(swarmy_store::MetricPatch::Error(error.clone())),
+            Event::InferenceFailed { .. } => None,
+            _ => unreachable!("gateway terminal event"),
+        };
+        if let Some(patch) = patch {
+            self.store.observe_turn_metric(job.session_id, turn, patch);
+        }
+    }
+
     async fn process(
         &self,
         message: &WorkMessage<InferenceJobRef>,
@@ -437,29 +527,13 @@ impl Gateway {
                     (Some(used), clamped)
                 });
         let turn = Self::turn_id(job);
-        if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    swarmy_core::TurnStage::InferenceStarted,
-                    Some(job.request_id),
-                ))
-                .await;
-        }
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
+            .await;
         let (result, blocked) = self
             .attempt_provider(job, provider, effort_used, turn)
             .await?;
-        if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    swarmy_core::TurnStage::InferenceFinished,
-                    Some(job.request_id),
-                ))
-                .await;
-        }
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
+            .await;
         let result = match result {
             Ok(response) => Ok(response),
             Err(error)
@@ -469,6 +543,8 @@ impl Gateway {
                     && message.delivery_count()? < self.max_deliver =>
             {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
+                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
+                self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
                 self.store.release_inference(claim).await?;
                 let exponent = u32::try_from(message.delivery_count()?.saturating_sub(1).min(5))?;
                 message
@@ -479,6 +555,17 @@ impl Gateway {
             Err(error) => Err(error),
         };
         let (retryable, retry_at) = self.record_breaker(provider, job, &result, blocked).await?;
+        if let Err(error) = &result {
+            let kind = if retryable_error(error).0 {
+                swarmy_store::WaitKind::RateLimit
+            } else {
+                swarmy_store::WaitKind::ProviderFailure
+            };
+            self.observe_wait(job, turn, kind);
+            if retryable {
+                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
+            }
+        }
         let event = match &result {
             Ok(response) => Event::InferenceCompleted {
                 provider: provider.clone(),
@@ -505,8 +592,9 @@ impl Gateway {
             },
         };
         let stored_result = result.map_err(|error| error.to_string());
-        self.persist_response(job, claim, event, &stored_result, turn)
+        self.persist_response(job, claim, event.clone(), &stored_result, turn)
             .await?;
+        self.observe_terminal_metric(job, turn, provider, &event);
         if stored_result.is_ok() {
             self.store.clear_inference_wait(job.session_id).await?;
         }

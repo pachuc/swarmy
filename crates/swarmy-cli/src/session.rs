@@ -3,6 +3,7 @@ use std::{collections::HashSet, io::Write, time::Duration};
 use anyhow::{Context, Result};
 use swarmy_core::{Event, MessageId, MessageRole, Part, SessionId, SessionState, ToolResult};
 use swarmy_llm::Delta;
+use swarmy_store::MAX_SCAN_LIMIT;
 
 use crate::conversation::{Conversation, Notification, Opened, TranscriptEvent, store};
 
@@ -51,6 +52,43 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
             )?;
         }
         Command::Show { .. } | Command::List => unreachable!("session reads use the API"),
+        Command::Metrics { session_id } => {
+            show_metrics(&store, SessionId::from_ulid(session_id), json).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn show_metrics(store: &swarmy_store::Store, id: SessionId, json: bool) -> Result<()> {
+    anyhow::ensure!(
+        store.fetch_session(id).await?.is_some(),
+        "session not found"
+    );
+    let mut after = None;
+    let mut rows = Vec::new();
+    loop {
+        let page = store.list_turn_metrics(id, after, MAX_SCAN_LIMIT).await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page
+            .last()
+            .and_then(|row| row.turn_id.parse::<ulid::Ulid>().ok())
+            .map(MessageId::from_ulid);
+        rows.extend(page);
+    }
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+    } else {
+        for row in rows {
+            println!(
+                "{} append_to_idle_ms={:?} inference_ms={:?} tools={}",
+                row.turn_id,
+                row.append_to_idle_ms,
+                row.inference_duration_ms,
+                row.tools.len()
+            );
+        }
     }
     Ok(())
 }

@@ -752,6 +752,16 @@ impl RuncRuntime {
         .await?)
     }
 
+    /// Read fetch activity for a mounted agent disk without publishing it.
+    /// # Errors
+    /// Returns attachment transport or decoding errors.
+    pub async fn volume_stats(
+        &self,
+        volume: swarmy_core::VolumeId,
+    ) -> Result<swarmy_volume::DeviceStats> {
+        Ok(server::stats(&self.config, volume).await?)
+    }
+
     /// List local containers owned by this runtime.
     pub async fn list(&self) -> Vec<Sandbox> {
         self.sandboxes

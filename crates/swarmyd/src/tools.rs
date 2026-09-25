@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use base64::Engine as _;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::{
     LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, Sandbox, SandboxArguments, ToolJob,
@@ -62,9 +65,10 @@ async fn serve(
                     match result {
                         Ok(()) => {
                             if let Some(turn) = turn {
-                                bus.record_turn(&Bus::turn_event(message.value.session_id, turn,
-                                    swarmy_core::TurnStage::ToolCompleted,
-                                    Some(message.value.request_id))).await;
+                                let event = Bus::turn_event(message.value.session_id, turn,
+                                    swarmy_core::TurnStage::ToolCompleted, Some(message.value.request_id));
+                                bus.record_turn(&event).await;
+                                store.observe_turn_stage(event);
                             }
                             if let Some(session) = store.fetch_session(message.value.session_id).await?
                                 && session.state == swarmy_core::SessionState::Runnable
@@ -116,6 +120,53 @@ pub async fn execute(
     }
 }
 
+fn observe_tool_start(store: &Store, claim: &PlacedToolClaim, name: &str) {
+    store.observe_request_tool(
+        claim.job.session_id,
+        claim.job.request_id,
+        swarmy_api_types::ToolMetric {
+            request_id: claim.job.request_id.to_string(),
+            name: name.into(),
+            started_ns: i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok(),
+            ..Default::default()
+        },
+    );
+}
+
+fn observe_tool_result(
+    store: &Store,
+    claim: &PlacedToolClaim,
+    result: &ToolResult,
+    exit_status: Option<i32>,
+    process_wall_ms: Option<f64>,
+) {
+    let (output_bytes, exit_status) = match result {
+        ToolResult::Completed {
+            output, metadata, ..
+        } => (
+            output.len() as u64,
+            metadata
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok())
+                .or(exit_status),
+        ),
+        ToolResult::Error { error } => (error.len() as u64, exit_status),
+    };
+    store.observe_request_tool(
+        claim.job.session_id,
+        claim.job.request_id,
+        swarmy_api_types::ToolMetric {
+            request_id: claim.job.request_id.to_string(),
+            name: claim.job.arguments.name().into(),
+            exit_status,
+            output_bytes: Some(output_bytes),
+            process_wall_ms,
+            ..Default::default()
+        },
+    );
+}
+
 async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> Result<()> {
     tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
     let sandbox = swarmy_core::Sandbox {
@@ -131,6 +182,8 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             "display tool requires a display image"
         );
     }
+    let mut process_wall_ms = None;
+    let mut exit_status = None;
     let mut result = match &claim.job.arguments {
         SandboxArguments::Checkpoint(_) => {
             let manifest_id = runtime.checkpoint(&sandbox).await?;
@@ -141,7 +194,11 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
         }
         arguments => {
             let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
+            observe_tool_start(store, claim, arguments.name());
+            let started = Instant::now();
             let (exit, stdout, stderr) = exec(runtime, &sandbox, request).await?;
+            process_wall_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+            exit_status = Some(exit.exit_code);
             if exit.timed_out {
                 ToolResult::Error {
                     error: format!(
@@ -206,6 +263,7 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             Err(error) => return Err(error.into()),
         }
     }
+    observe_tool_result(store, claim, &result, exit_status, process_wall_ms);
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
 }

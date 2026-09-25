@@ -195,6 +195,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/wait-idle", get(conversation::wait_idle))
         .route("/v1/sessions/{id}/events", get(events))
+        .route("/v1/sessions/{id}/metrics", get(session_metrics))
+        .route("/v1/agents/{id}/metrics", get(agent_metrics))
         .route("/v1/events", get(stream::subscribe))
         .route(
             "/v1/events/{connection_id}/subscription",
@@ -438,6 +440,55 @@ async fn show_session(
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?,
     )))
 }
+async fn session_metrics(
+    State(state): State<AppState>,
+    Path(text): Path<String>,
+    Query(page): Query<Page>,
+) -> ApiResult<Vec<api::TurnMetrics>> {
+    let session_id = id(&text, SessionId::from_ulid)?;
+    if state
+        .store
+        .fetch_session(session_id)
+        .await
+        .map_err(storage)?
+        .is_none()
+    {
+        return Err(error(StatusCode::NOT_FOUND, "session_not_found"));
+    }
+    let after = page
+        .after
+        .as_deref()
+        .map(|value| id(value, swarmy_core::MessageId::from_ulid))
+        .transpose()?;
+    Ok(Json(
+        state
+            .store
+            .list_turn_metrics(session_id, after, limit(page.limit))
+            .await
+            .map_err(storage)?,
+    ))
+}
+
+async fn agent_metrics(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<api::AgentMetrics> {
+    let record = if let Ok(value) = name.parse::<Ulid>() {
+        state.store.get_agent(AgentId::from_ulid(value)).await
+    } else {
+        state.store.get_agent_by_name(&name).await
+    }
+    .map_err(storage)?
+    .ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?;
+    Ok(Json(
+        state
+            .store
+            .agent_turn_metrics(record.agent_id)
+            .await
+            .map_err(storage)?,
+    ))
+}
+
 #[derive(Deserialize)]
 struct EventsPage {
     after: Option<u64>,

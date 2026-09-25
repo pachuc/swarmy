@@ -32,10 +32,19 @@ struct Request {
     discard: bool,
     #[serde(default)]
     freeze: bool,
+    #[serde(default)]
+    query: Option<Query>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Query {
+    Stats,
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
     flush: Option<FlushResult>,
+    #[serde(default)]
+    stats: Option<crate::DeviceStats>,
     error: Option<String>,
 }
 
@@ -100,6 +109,7 @@ pub async fn control_flush_with_freeze(
         detach,
         discard: false,
         freeze,
+        query: None,
     };
     let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
     socket.write_all(&serde_json::to_vec(&request)?).await?;
@@ -117,6 +127,32 @@ pub async fn control_flush_with_freeze(
         .ok_or_else(|| Error::Message("attach server returned no manifest".into()))
 }
 
+/// Read the attachment's accumulated chunk-fetch histogram without flushing.
+/// # Errors
+/// Returns transport or decoding errors.
+pub async fn stats(config: &ServerConfig, id: VolumeId) -> Result<crate::DeviceStats> {
+    let request = Request {
+        node: config.node,
+        mount: None,
+        detach: false,
+        discard: false,
+        freeze: false,
+        query: Some(Query::Stats),
+    };
+    let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
+    socket.write_all(&serde_json::to_vec(&request)?).await?;
+    socket.write_all(b"\n").await?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line).await?;
+    let reply: Reply = serde_json::from_str(&line)?;
+    if let Some(error) = reply.error {
+        return Err(Error::Message(error));
+    }
+    reply
+        .stats
+        .ok_or_else(|| Error::Message("attachment returned no fetch stats".into()))
+}
+
 /// Disconnect an attachment without publishing after placement authority is lost.
 /// # Errors
 /// Returns transport or device teardown errors.
@@ -127,6 +163,7 @@ pub async fn discard(config: &ServerConfig, id: VolumeId) -> Result<()> {
         detach: true,
         discard: true,
         freeze: false,
+        query: None,
     };
     let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
     socket.write_all(&serde_json::to_vec(&request)?).await?;
@@ -383,6 +420,9 @@ async fn handle(
             request.node == node,
             "writer lease belongs to another node ({node})"
         );
+        if request.query.is_some() {
+            return Ok((None, false, Some(writer.device_stats())));
+        }
         if request.discard {
             let detached = attachment
                 .take()
@@ -391,7 +431,7 @@ async fn handle(
                 .await;
             detached?;
             let _ = writer.release().await;
-            return Ok((None, true));
+            return Ok((None, true, None));
         }
         let manifest = if request.detach {
             finish(path, writer, attachment).await?
@@ -418,13 +458,14 @@ async fn handle(
                 .flush(if request.freeze { mount } else { None })
                 .await?
         };
-        Ok::<_, Error>((Some(manifest), request.detach))
+        Ok::<_, Error>((Some(manifest), request.detach, None))
     }
     .await;
     let (reply, detached) = match result {
-        Ok((manifest, detached)) => (
+        Ok((manifest, detached, stats)) => (
             Reply {
                 flush: manifest,
+                stats,
                 error: None,
             },
             detached,
@@ -432,6 +473,7 @@ async fn handle(
         Err(error) => (
             Reply {
                 flush: None,
+                stats: None,
                 error: Some(format!("{error:#}")),
             },
             attachment.is_none(),

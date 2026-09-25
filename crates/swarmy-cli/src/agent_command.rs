@@ -63,6 +63,8 @@ pub enum Command {
     Ls,
     /// Inspect an agent and its sessions
     Show { name: String },
+    /// Roll up durable metrics from an agent's main session
+    Metrics { name: String },
     /// Delete an agent and its computer, retaining transcripts
     Delete {
         name: String,

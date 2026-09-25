@@ -72,14 +72,9 @@ impl Worker {
         };
         tracing::info!(session_id = %id, owner = %lease.owner, step = lease.seq, "claimed step");
         if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    id,
-                    turn,
-                    swarmy_core::TurnStage::Claimed,
-                    None,
-                ))
-                .await;
+            let event = Bus::turn_event(id, turn, swarmy_core::TurnStage::Claimed, None);
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
         }
         self.kill("after_claim");
         let lease = Mutex::new(Some(lease));
@@ -796,6 +791,7 @@ impl Worker {
         let id = session.session_id;
         let display = self.session_display(session).await?;
         for (request_id, call) in pending_tools(events) {
+            self.tool_name(id, turn, request_id, &call.tool);
             let result = match self.store.ensure_session_computer(id).await {
                 Err(StoreError::ComputerDeleted) => Err(StoreError::ComputerDeleted.to_string()),
                 Err(error) => return Err(error.into()),
@@ -1016,12 +1012,37 @@ impl Worker {
         futures::future::try_join_all(jobs.into_iter().map(|job| async move {
             self.tool_stage(id, turn, TurnStage::ToolDispatched, job.request_id)
                 .await;
+            if let Some(turn) = turn {
+                self.store.observe_turn_metric(
+                    id,
+                    turn,
+                    swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+                        request_id: job.request_id.to_string(),
+                        name: job.arguments.name().into(),
+                        ..Default::default()
+                    }),
+                );
+            }
             self.bus
                 .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
                 .await
         }))
         .await?;
         Ok(())
+    }
+
+    fn tool_name(&self, id: SessionId, turn: Option<MessageId>, request: RequestId, name: &str) {
+        if let Some(turn) = turn {
+            self.store.observe_turn_metric(
+                id,
+                turn,
+                swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+                    request_id: request.to_string(),
+                    name: name.into(),
+                    ..Default::default()
+                }),
+            );
+        }
     }
 
     async fn tool_stage(
@@ -1032,9 +1053,9 @@ impl Worker {
         request: RequestId,
     ) {
         if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(id, turn, stage, Some(request)))
-                .await;
+            let event = Bus::turn_event(id, turn, stage, Some(request));
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
         }
     }
 
@@ -1280,14 +1301,9 @@ impl Worker {
             }
         };
         if let Some(turn) = turn {
-            self.bus
-                .record_turn(&Bus::turn_event(
-                    session.session_id,
-                    turn,
-                    TurnStage::Idle,
-                    None,
-                ))
-                .await;
+            let event = Bus::turn_event(session.session_id, turn, TurnStage::Idle, None);
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
         }
         self.publish_events(session.session_id, &[event]).await
     }
@@ -1541,7 +1557,32 @@ impl Worker {
                 )
                 .await?;
             if committed {
-                self.publish_events(job.session_id, &[event]).await?;
+                self.publish_events(job.session_id, std::slice::from_ref(&event))
+                    .await?;
+                if let Some(turn) = job
+                    .request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == swarmy_core::MessageRole::User)
+                    .map(|message| message.id)
+                {
+                    self.store.observe_turn_metric(
+                        job.session_id,
+                        turn,
+                        swarmy_store::MetricPatch::Wait {
+                            request_id: job.request_id.to_string(),
+                            kind: swarmy_store::WaitKind::MissingGateway,
+                        },
+                    );
+                    if !retryable && let Event::InferenceFailed { error, .. } = event {
+                        self.store.observe_turn_metric(
+                            job.session_id,
+                            turn,
+                            swarmy_store::MetricPatch::Error(error),
+                        );
+                    }
+                }
             }
         }
         Ok(true)

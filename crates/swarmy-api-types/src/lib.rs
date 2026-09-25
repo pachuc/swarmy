@@ -2,6 +2,11 @@
 //! This crate intentionally has no dependency on storage or transport.
 
 use serde::{Deserialize, Serialize};
+mod metrics;
+pub use metrics::{
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, StageTiming, ToolMetric,
+    TurnMetrics,
+};
 use utoipa::{OpenApi, ToSchema};
 
 /// A log namespace. The tagged representation reserves channels without changing session cursors.
@@ -549,7 +554,9 @@ pub mod cli_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
-    Node, ServiceHealth, DoctorSnapshot, DoctorService, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
+    Node, ServiceHealth, DoctorSnapshot, DoctorService, StageTiming, InferenceMetric, ToolMetric,
+    ComputerMetric, TurnMetrics, LatencyPercentiles, AgentMetrics, CreateAgent, UpdateAgent,
+    CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, Event, EventPayload, ApiError, CliSession, CliSessionDetail,

@@ -554,3 +554,99 @@ async fn invalid_effort_uses_cli_selection_error() {
         "reasoning effort must be one of: none, minimal, low, medium, high, xhigh, max"
     );
 }
+
+#[tokio::test]
+async fn durable_turn_metrics_match_the_session_and_agent_api() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let agent = f
+        .store
+        .create_agent("metric-agent", "fixture:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let (session, _) = f
+        .store
+        .open_main_session(agent.agent_id, jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let turn = swarmy_core::MessageId::from_ulid(Ulid::generate());
+    let request = swarmy_core::RequestId::for_step(session, 1);
+    for (stage, ns) in [
+        (swarmy_core::TurnStage::Appended, 1_000_000),
+        (swarmy_core::TurnStage::InferenceStarted, 2_000_000),
+        (swarmy_core::TurnStage::FirstToken, 3_000_000),
+        (swarmy_core::TurnStage::InferenceFinished, 5_000_000),
+        (swarmy_core::TurnStage::ToolDispatched, 6_000_000),
+        (swarmy_core::TurnStage::ToolCompleted, 8_000_000),
+        (swarmy_core::TurnStage::Idle, 9_000_000),
+    ] {
+        f.store
+            .record_turn_metric(
+                session,
+                turn,
+                swarmy_store::MetricPatch::Stage(swarmy_core::TurnEvent {
+                    session_id: session,
+                    turn_id: turn,
+                    stage,
+                    request_id: Some(request),
+                    clock_id: "test-boot".into(),
+                    monotonic_ns: ns,
+                    unix_ns: i128::from(ns),
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    f.store
+        .record_turn_metric(
+            session,
+            turn,
+            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+                request_id: request.to_string(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                input_tokens: 12,
+                cached_input_tokens: 3,
+                output_tokens: 4,
+                reasoning_tokens: 1,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    f.store
+        .record_turn_metric(
+            session,
+            turn,
+            swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+                request_id: request.to_string(),
+                name: "bash".into(),
+                exit_status: Some(0),
+                output_bytes: Some(42),
+                started_ns: Some(7_000_000),
+                process_wall_ms: Some(0.5),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let direct = f.store.list_turn_metrics(session, None, 10).await.unwrap();
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].append_to_first_token_ms, Some(2.0));
+    assert_eq!(direct[0].inference_duration_ms, Some(3.0));
+    assert_eq!(direct[0].tools[0].name, "bash");
+    assert_eq!(direct[0].tools[0].queue_ms, Some(1.0));
+    let client = swarmy_client::Client::new(&f.base, "test-token").unwrap();
+    assert_eq!(
+        client
+            .session_metrics(&session.to_string(), None, 10)
+            .await
+            .unwrap(),
+        direct
+    );
+    let rollup = client.agent_metrics("metric-agent").await.unwrap();
+    assert_eq!(rollup.turns, 1);
+    assert_eq!(rollup.output_tokens, 4);
+    assert!((rollup.latencies["tool_round_trip"].p50_ms - 2.0).abs() < 0.001);
+}

@@ -1,5 +1,9 @@
 use anyhow::{Context, Result, bail};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use swarmy_core::{
     AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, SandboxSpec, SessionId, ToolJob,
 };
@@ -224,11 +228,73 @@ impl Hosting {
         Ok(placement)
     }
 
+    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
+    #[allow(clippy::cast_precision_loss)]
+    fn observe_computer_boot(
+        &self,
+        session: SessionId,
+        request: swarmy_core::RequestId,
+        volume: swarmy_core::VolumeId,
+        elapsed: f64,
+    ) {
+        let store = self.store.clone();
+        let runtime = self.runtime.clone();
+        tokio::spawn(async move {
+            if let (Ok(Some(turn)), Ok(stats)) = (
+                store.request_turn_id(request).await,
+                runtime.volume_stats(volume).await,
+            ) {
+                store.observe_turn_metric(
+                    session,
+                    turn,
+                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                        placement_ms: Some(elapsed),
+                        cold: Some(stats.fetched_chunks > 0),
+                        chunks_fetched: stats.fetched_chunks,
+                        bytes_fetched: stats.fetched_bytes,
+                        fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                        fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                    }),
+                );
+            }
+        });
+    }
+
+    async fn boot_computer(
+        &self,
+        agent: AgentId,
+        placement: &PlacementRecord,
+        first: &Call,
+        placement_started: Instant,
+    ) -> Result<()> {
+        let volume = self
+            .store
+            .agent_volume(first.job.session_id, placement)
+            .await?;
+        self.runtime
+            .create(
+                self.sandbox_spec(agent, first.job.session_id).await?,
+                BlockDevice { volume_id: volume },
+            )
+            .await?;
+        self.store
+            .set_placement_address(placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+            .await?;
+        self.observe_computer_boot(
+            first.job.session_id,
+            first.job.request_id,
+            volume,
+            placement_started.elapsed().as_secs_f64() * 1_000.0,
+        );
+        Ok(())
+    }
+
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let Some(mut first) = calls.recv().await else {
             return Ok(());
         };
         first.activity.start(first.job.session_id);
+        let placement_started = Instant::now();
         let placement = match self.placement(agent, &first.job).await {
             Ok(placement) => placement,
             Err(error) => {
@@ -245,18 +311,7 @@ impl Hosting {
         let mut shutdown = self.shutdown.subscribe();
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            let volume = self
-                .store
-                .agent_volume(first.job.session_id, &placement)
-                .await?;
-            self.runtime
-                .create(
-                    self.sandbox_spec(agent, first.job.session_id).await?,
-                    BlockDevice { volume_id: volume },
-                )
-                .await?;
-            self.store
-                .set_placement_address(&placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+            self.boot_computer(agent, &placement, &first, placement_started)
                 .await?;
             self.execute(&placement, first).await?;
             loop {

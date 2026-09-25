@@ -212,27 +212,12 @@ pub async fn append(
         .await
         .map_err(session_error)?;
     if fresh {
-        state
-            .bus
-            .record_turn(&Bus::turn_event(
-                session_id,
-                turn,
-                TurnStage::Submitted,
-                None,
-            ))
-            .await;
-        state
-            .bus
-            .record_turn(&Bus::turn_event(
-                session_id,
-                turn,
-                TurnStage::Appended,
-                None,
-            ))
-            .await;
-        // Runnable is durable even if the nudge fails. Do not add a store read
-        // or make a transport failure invalidate the successful append.
-        if let Err(failure) = state
+        let submitted = Bus::turn_event(session_id, turn, TurnStage::Submitted, None);
+        let appended = Bus::turn_event(session_id, turn, TurnStage::Appended, None);
+        state.bus.record_turn(&submitted).await;
+        state.bus.record_turn(&appended).await;
+        // These writes follow admission and the nudge; they cannot delay either.
+        let nudged = state
             .bus
             .nudge(
                 session_id,
@@ -241,9 +226,18 @@ pub async fn append(
                 state.resend_interval,
                 false,
             )
-            .await
-        {
+            .await;
+        state.store.observe_turn_stage(submitted);
+        state.store.observe_turn_stage(appended);
+        if let Err(failure) = nudged {
             tracing::warn!(%failure, "message nudge failed; scheduler will recover");
+        } else {
+            state.store.observe_turn_stage(Bus::turn_event(
+                session_id,
+                turn,
+                TurnStage::Nudged,
+                None,
+            ));
         }
     }
     Ok(Json(api::AppendedMessage {

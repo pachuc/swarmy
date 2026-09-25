@@ -170,6 +170,30 @@ impl Client {
     pub async fn session(&self, id: &str) -> Result<api::Session, Error> {
         self.get(&format!("sessions/{id}"), &[]).await
     }
+    /// Read a bounded page of durable turn metrics.
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn session_metrics(
+        &self,
+        id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<api::TurnMetrics>, Error> {
+        self.get(
+            &format!("sessions/{}/metrics", segment(id)),
+            &page(after, limit),
+        )
+        .await
+    }
+
+    /// Roll up the main session of a named agent.
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn agent_metrics(&self, id: &str) -> Result<api::AgentMetrics, Error> {
+        self.get(&format!("agents/{}/metrics", segment(id)), &[])
+            .await
+    }
+
     /// Calls the corresponding API route.
     ///
     /// # Errors
