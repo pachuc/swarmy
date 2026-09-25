@@ -219,13 +219,20 @@ impl Providers {
 
     async fn auth(&self, provider: &ProviderInfo) -> Result<ResolvedAuth, swarmy_llm::Error> {
         if provider.api == Api::Fake {
+            // The scripted client needs no credentials, but stored entries
+            // still select the breaker record so one entry's rate limit does
+            // not park the provider's other entries.
+            let mut entry = None;
+            if let Ok(resolver) = &self.resolver {
+                entry = resolver.entry_label(&provider.id).await;
+            }
             return self
                 .scripted
                 .clone()
                 .map(|client| ResolvedAuth {
                     auth: ClientAuth::Scripted(client),
                     version: [0; 32],
-                    entry: None,
+                    entry,
                 })
                 .map_err(swarmy_llm::Error::Credentials);
         }
