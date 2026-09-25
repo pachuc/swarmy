@@ -4254,6 +4254,7 @@ dependencies = [
  "object_store",
  "portable-pty",
  "ratatui",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
