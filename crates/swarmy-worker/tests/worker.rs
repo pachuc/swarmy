@@ -1098,6 +1098,8 @@ async fn route_failover_drops_previous_provider_reasoning() {
                 ],
                 stop_reason: StopReason::ToolCalls,
                 usage: TokenUsage::default(),
+                quota_remaining: BTreeMap::new(),
+                quota_resets: BTreeMap::new(),
             };
             let answer = Response {
                 parts: vec![Part::Text {
@@ -1105,6 +1107,8 @@ async fn route_failover_drops_previous_provider_reasoning() {
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: TokenUsage::default(),
+                quota_remaining: BTreeMap::new(),
+                quota_resets: BTreeMap::new(),
             };
             std::fs::write(
                 f.files.path().join("script.json"),
