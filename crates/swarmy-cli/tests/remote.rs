@@ -103,12 +103,14 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
     let human = cli(root.path(), &["remote", "status"]);
     let text = String::from_utf8(human.stdout).unwrap();
     assert!(text.contains("test instance=i-test type=m6i.large"));
+    assert!(text.contains("api_token=not-applicable"));
     assert!(text.contains("test-2 instance=i-second type=m6id.4xlarge"));
     assert_eq!(
         value[0]["nodes"][0]["instance_state"],
         "unknown (SSH unreachable)"
     );
     assert_eq!(value[0]["tunnel"], false);
+    assert_eq!(value[0]["api_token"], "not-applicable");
     assert_eq!(value[0]["images"], serde_json::json!([]));
     assert_eq!(value[0]["image_error"], "unknown: tunnel disconnected");
     assert_eq!(

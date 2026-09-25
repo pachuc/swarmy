@@ -2,6 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
+    str::FromStr,
     time::Duration,
 };
 
@@ -1421,4 +1422,62 @@ async fn never_launched_record_is_removed_without_cloud_calls() {
     assert!(cloud.find_tokens.borrow().is_empty());
     assert!(cloud.terminated.borrow().is_empty());
     assert!(cloud.deleted.borrow().is_empty());
+}
+
+fn node_settings(services: swarmy_config::RemoteServices, token: &str) -> swarmy_config::Settings {
+    swarmy_config::Settings {
+        remote: RemoteSettings {
+            services,
+            ..settings()
+        },
+        provider: "fake".into(),
+        api: swarmy_config::ApiSettings {
+            token: token.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn node_config_token(config: &str) -> String {
+    toml::Value::from_str(config)
+        .unwrap()
+        .get("api")
+        .and_then(|api| api.get("token"))
+        .and_then(|token| token.as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn control_node_provisioning_generates_a_fresh_api_token_unless_configured() {
+    let settings = node_settings(swarmy_config::RemoteServices::Node, "");
+    let options = super::services::Options::with_keyring(&settings, false, None, None).unwrap();
+    let first = node_config_token(options.config_toml());
+    assert!(!first.is_empty());
+    // Reprovisioning from the same laptop settings generates a fresh token for
+    // the new node; the installed node keeps its own token because upgrades
+    // only fill a missing one.
+    let repeat = node_config_token(
+        super::services::Options::with_keyring(&settings, false, None, None)
+            .unwrap()
+            .config_toml(),
+    );
+    assert!(!repeat.is_empty());
+    assert_ne!(first, repeat);
+    let configured = node_settings(swarmy_config::RemoteServices::Node, "existing-token");
+    let kept = node_config_token(
+        super::services::Options::with_keyring(&configured, false, None, None)
+            .unwrap()
+            .config_toml(),
+    );
+    assert_eq!(kept, "existing-token");
+    assert!(toml::Value::from_str(&configured.to_toml().unwrap()).is_ok());
+}
+
+#[test]
+fn laptop_services_provisioning_generates_no_api_token() {
+    let settings = node_settings(swarmy_config::RemoteServices::Laptop, "");
+    let options = super::services::Options::with_keyring(&settings, false, None, None).unwrap();
+    assert!(node_config_token(options.config_toml()).is_empty());
 }
