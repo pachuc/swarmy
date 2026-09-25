@@ -147,6 +147,13 @@ scratch, and `curl -s 127.0.0.1:9333/vol/status` for deleted bytes awaiting
 compaction. The node daemon evicts the least recently hosted scratch when
 the NVMe passes 80 percent.
 
+Snapshots of worker disks run every 30 minutes on provisioned nodes
+(`SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS=1800` in `node.env`). Each snapshot
+uploads only changed chunks, and on a real bucket every chunk is one PUT
+request, so the period is the main lever on request cost; retention of
+three snapshots plus the 30-minute collection grace keeps live data bounded
+to the disks' contents plus recent churn.
+
 ## Adding a node
 
 `swarmy remote add-node dev` joins a second node to the same backing

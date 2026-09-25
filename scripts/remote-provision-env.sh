@@ -34,6 +34,9 @@ SWARMY_NODE_ROLES=$roles
 # Long-lived workers rewrite build caches constantly; keep few snapshots and
 # reclaim unreferenced chunks quickly so the node's object store stays small.
 SWARMY_VOLUME_SNAPSHOT_RETENTION=3
+# Fleet workers clone fresh per task, so a half-hour recovery point is
+# plenty and cuts object-store writes to a third of the ten-minute default.
+SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS=1800
 SWARMY_GC_GRACE_SECONDS=1800
 SWARMY_GC_INTERVAL_SECONDS=600
 LD_LIBRARY_PATH=/home/ubuntu/.local/lib
