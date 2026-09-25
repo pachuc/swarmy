@@ -1011,6 +1011,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -2853,7 +2863,7 @@
       },
       "EntryQuotaView": {
         "type": "object",
-        "description": "Quota view for one entry, either observed or configured.",
+        "description": "Quota view for one entry, either observed or configured. Requests and\ntokens are separate observed dimensions; `free` carries requests remaining\nand `tokens_remaining` carries tokens remaining. Configured `used` counts\nwhole hourly buckets overlapping the window (hour granularity).",
         "required": [
           "source",
           "used",
@@ -2893,8 +2903,24 @@
               "type": "string"
             }
           },
+          "requests_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
           "source": {
             "type": "string"
+          },
+          "tokens_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           },
           "used": {
             "type": "integer",

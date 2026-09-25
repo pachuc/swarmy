@@ -1117,6 +1117,10 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
     let mut completion = InferenceCompletion {
         claim,
         expected_head: 0,
+        entry: None,
+        entry_kind: None,
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
         event: Event::InferenceFailed {
             seq: 999,
             request_id,

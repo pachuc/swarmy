@@ -139,6 +139,7 @@ impl Fixture {
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
             quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
         };
         let mut responses: BTreeMap<_, _> = (0..100).map(|index| (index, answer.clone())).collect();
         if tools {
@@ -153,6 +154,7 @@ impl Fixture {
                     stop_reason: StopReason::ToolCalls,
                     usage: TokenUsage::default(),
                     quota_remaining: std::collections::BTreeMap::new(),
+                    quota_resets: std::collections::BTreeMap::new(),
                 },
             );
         }
@@ -172,6 +174,7 @@ impl Fixture {
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
             quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
         };
         let responses: BTreeMap<_, _> = (failures..100).map(|index| (index, &answer)).collect();
         let failures: BTreeMap<_, _> = (0..failures).map(|index| (index, serde_json::json!({
@@ -1349,6 +1352,7 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
             parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
             usage: TokenUsage { input_tokens, ..Default::default() },
             quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
         };
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}

@@ -103,6 +103,7 @@ impl Fixture {
                 ..TokenUsage::default()
             },
             quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
         };
         let responses: std::collections::BTreeMap<_, _> =
             (0..10).map(|turn| (turn, &response)).collect();
@@ -900,6 +901,7 @@ fn switch_script() -> (Response, Response) {
         stop_reason: StopReason::ToolCalls,
         usage: TokenUsage::default(),
         quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
     };
     let second = Response {
         parts: vec![Part::Text {
@@ -908,6 +910,7 @@ fn switch_script() -> (Response, Response) {
         stop_reason: StopReason::EndTurn,
         usage: TokenUsage::default(),
         quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
     };
     (first, second)
 }

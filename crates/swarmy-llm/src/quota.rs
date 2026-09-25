@@ -1,9 +1,12 @@
 //! Remaining-quota headers published by inference providers.
 //!
-//! `OpenAI` publishes `x-ratelimit-remaining-*`, Anthropic publishes
-//! `anthropic-ratelimit-*`. Bedrock surfaces throttling through SDK retry
-//! metadata rather than headers, so the gateway records nothing for it.
-//! Entries without published quotas use an operator-configured limit instead.
+//! `OpenAI` publishes `x-ratelimit-remaining-*` with `x-ratelimit-reset-*`
+//! windows, Anthropic publishes `anthropic-ratelimit-*-remaining` with
+//! `anthropic-ratelimit-*-reset` windows. Bedrock surfaces throttling through
+//! SDK retry metadata rather than headers, so the gateway records nothing for
+//! it. Entries without published quotas use an operator-configured limit
+//! instead. Requests and tokens are separate dimensions and are never
+//! combined into one number.
 
 use std::collections::BTreeMap;
 
@@ -29,10 +32,77 @@ fn lowered(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Parse a reset value into seconds until the window resets. Accepts plain
+/// seconds (`90`), duration strings (`500ms`, `1s`, `6m`), and `RFC 3339`
+/// timestamps (seconds from now, saturating to zero when in the past).
+#[must_use]
+pub fn parse_reset_seconds(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(seconds);
+    }
+    if let Ok(seconds) = parse_duration_seconds(trimmed) {
+        return Some(seconds);
+    }
+    if let Ok(stamp) = trimmed.parse::<jiff::Timestamp>() {
+        let now = jiff::Timestamp::now().as_second();
+        return Some(u64::try_from(stamp.as_second().saturating_sub(now)).unwrap_or(u64::MAX));
+    }
+    None
+}
+
+fn parse_duration_seconds(value: &str) -> Result<u64, ()> {
+    let value = value.trim();
+    if let Some(number) = value.strip_suffix("ms") {
+        let millis: u64 = number.trim().parse().map_err(|_| ())?;
+        return Ok(millis.div_ceil(1_000));
+    }
+    if let Some(number) = value.strip_suffix('s') {
+        let seconds: u64 = number.trim().parse().map_err(|_| ())?;
+        return Ok(seconds);
+    }
+    if let Some(number) = value.strip_suffix('m') {
+        let minutes: u64 = number.trim().parse().map_err(|_| ())?;
+        return number
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| ())
+            .and_then(|_| minutes.checked_mul(60).ok_or(()));
+    }
+    if let Some(number) = value.strip_suffix('h') {
+        let hours: u64 = number.trim().parse().map_err(|_| ())?;
+        return hours.checked_mul(3_600).ok_or(());
+    }
+    if let Some(number) = value.strip_suffix('d') {
+        let days: u64 = number.trim().parse().map_err(|_| ())?;
+        return days.checked_mul(86_400).ok_or(());
+    }
+    Err(())
+}
+
+fn resets_with(headers: &BTreeMap<String, String>, prefix: &str) -> BTreeMap<String, u64> {
+    headers
+        .iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .filter_map(|(name, value)| {
+            parse_reset_seconds(value).map(|seconds| (name.clone(), seconds))
+        })
+        .collect()
+}
+
 /// `OpenAI` `x-ratelimit-remaining-*` values as `(header, remaining)`.
 #[must_use]
 pub fn openai_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
     remaining_with(&lowered(headers), "x-ratelimit-remaining-")
+}
+
+/// `OpenAI` `x-ratelimit-reset-*` windows in seconds until reset.
+#[must_use]
+pub fn openai_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+    resets_with(&lowered(headers), "x-ratelimit-reset-")
 }
 
 /// Anthropic `anthropic-ratelimit-*` remaining values.
@@ -44,6 +114,15 @@ pub fn anthropic_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<Str
         .collect()
 }
 
+/// Anthropic `anthropic-ratelimit-*-reset` windows in seconds until reset.
+#[must_use]
+pub fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+    let all = resets_with(&lowered(headers), "anthropic-ratelimit-");
+    all.into_iter()
+        .filter(|(name, _)| name.contains("reset"))
+        .collect()
+}
+
 /// Parse already-lowered headers without a live HTTP response, for tests.
 #[must_use]
 pub fn remaining_from_lowered(
@@ -51,6 +130,41 @@ pub fn remaining_from_lowered(
     prefix: &str,
 ) -> BTreeMap<String, u64> {
     remaining_with(headers, prefix)
+}
+
+/// Parse already-lowered reset headers without a live HTTP response.
+#[must_use]
+pub fn resets_from_lowered(
+    headers: &BTreeMap<String, String>,
+    prefix: &str,
+) -> BTreeMap<String, u64> {
+    resets_with(headers, prefix)
+}
+
+/// Smallest reset window in seconds, if any reset header parsed.
+#[must_use]
+pub fn reset_window_seconds(resets: &BTreeMap<String, u64>) -> Option<u64> {
+    resets.values().copied().min()
+}
+
+/// Remaining requests, matching headers whose name mentions requests.
+#[must_use]
+pub fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+    remaining
+        .iter()
+        .filter(|(name, _)| name.contains("request"))
+        .map(|(_, value)| *value)
+        .min()
+}
+
+/// Remaining tokens, matching headers whose name mentions tokens.
+#[must_use]
+pub fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+    remaining
+        .iter()
+        .filter(|(name, _)| name.contains("token"))
+        .map(|(_, value)| *value)
+        .min()
 }
 
 #[cfg(test)]
@@ -68,6 +182,8 @@ mod tests {
         let remaining = remaining_from_lowered(&headers, "x-ratelimit-remaining-");
         assert_eq!(remaining.len(), 2);
         assert_eq!(remaining["x-ratelimit-remaining-requests"], 99);
+        assert_eq!(requests_remaining(&remaining), Some(99));
+        assert_eq!(tokens_remaining(&remaining), Some(12_000));
     }
 
     #[test]
@@ -83,5 +199,19 @@ mod tests {
             .filter(|(name, _)| name.contains("remaining"))
             .collect();
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn reset_values_parse_durations_and_timestamps() {
+        assert_eq!(parse_reset_seconds("90"), Some(90));
+        assert_eq!(parse_reset_seconds("2s"), Some(2));
+        assert_eq!(parse_reset_seconds("500ms"), Some(1));
+        assert_eq!(parse_reset_seconds("2m"), Some(120));
+        assert_eq!(parse_reset_seconds("bogus"), None);
+        let resets = BTreeMap::from([
+            ("x-ratelimit-reset-requests".into(), 60_u64),
+            ("x-ratelimit-reset-tokens".into(), 300_u64),
+        ]);
+        assert_eq!(reset_window_seconds(&resets), Some(60));
     }
 }

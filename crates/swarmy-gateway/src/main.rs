@@ -331,6 +331,13 @@ async fn refresh(
     Ok(())
 }
 
+struct CompletionAttribution {
+    entry: Option<String>,
+    entry_kind: Option<String>,
+    quota_remaining: std::collections::BTreeMap<String, u64>,
+    quota_resets: std::collections::BTreeMap<String, u64>,
+}
+
 struct TerminalInput<'a> {
     job: &'a InferenceJob,
     provider: &'a str,
@@ -596,6 +603,50 @@ impl Gateway {
         } else {
             &job.provider
         };
+        let (model, effort_used, effort_clamped, effort_requested) =
+            Self::effort_for(self, job, provider);
+        let turn = Self::turn_id(job);
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
+            .await;
+        let (result, blocked, entry, entry_kind) = self
+            .attempt_provider(job, provider, effort_used, turn)
+            .await?;
+        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
+            .await;
+        let Some(result) = self
+            .retry_or_continue(message, claim, job, turn, result, blocked)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.commit_terminal(
+            message,
+            claim,
+            job,
+            provider,
+            model,
+            turn,
+            effort_used,
+            effort_requested,
+            effort_clamped,
+            result,
+            blocked,
+            entry,
+            entry_kind,
+        )
+        .await
+    }
+
+    fn effort_for(
+        &self,
+        job: &InferenceJob,
+        provider: &str,
+    ) -> (
+        Option<&swarmy_llm::catalog::ModelInfo>,
+        Option<swarmy_core::ReasoningEffort>,
+        bool,
+        Option<swarmy_core::ReasoningEffort>,
+    ) {
         let model = self
             .providers
             .catalog
@@ -608,16 +659,20 @@ impl Gateway {
                     let (used, clamped) = model.clamp_effort(requested);
                     (Some(used), clamped)
                 });
-        let turn = Self::turn_id(job);
-        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
-            .await;
-        let (result, blocked, entry, entry_kind) = self
-            .attempt_provider(job, provider, effort_used, turn)
-            .await?;
-        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
-            .await;
-        let result = match result {
-            Ok(response) => Ok(response),
+        (model, effort_used, effort_clamped, effort_requested)
+    }
+
+    async fn retry_or_continue(
+        &self,
+        message: &WorkMessage<InferenceJobRef>,
+        claim: &InferenceClaim,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        result: std::result::Result<Response, swarmy_llm::Error>,
+        blocked: bool,
+    ) -> Result<Option<std::result::Result<Response, swarmy_llm::Error>>> {
+        match result {
+            Ok(response) => Ok(Some(Ok(response))),
             Err(error)
                 if !blocked
                     && !permanent_error(&error)
@@ -632,10 +687,31 @@ impl Gateway {
                 message
                     .negative_acknowledge(Some(Duration::from_millis(100) * 2_u32.pow(exponent)))
                     .await?;
-                return Ok(());
+                Ok(None)
             }
-            Err(error) => Err(error),
-        };
+            Err(error) => Ok(Some(Err(error))),
+        }
+    }
+
+    // Terminal commit carries breaker, event, attribution, and ack state
+    // together; splitting would separate the atomic usage write from its fan-out.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_terminal(
+        &self,
+        message: &WorkMessage<InferenceJobRef>,
+        claim: &InferenceClaim,
+        job: &InferenceJob,
+        provider: &str,
+        model: Option<&swarmy_llm::catalog::ModelInfo>,
+        turn: Option<MessageId>,
+        effort_used: Option<swarmy_core::ReasoningEffort>,
+        effort_requested: Option<swarmy_core::ReasoningEffort>,
+        effort_clamped: bool,
+        result: std::result::Result<Response, swarmy_llm::Error>,
+        blocked: bool,
+        entry: Option<String>,
+        entry_kind: Option<String>,
+    ) -> Result<()> {
         let (retryable, retry_at) = self
             .record_breaker(provider, entry.as_deref(), job, &result, blocked)
             .await?;
@@ -661,16 +737,11 @@ impl Gateway {
             retry_at,
             result: &result,
         });
-        self.record_entry_attribution(
-            job,
-            provider,
-            entry.as_deref(),
-            entry_kind.as_deref(),
-            &result,
-        )
-        .await;
+        let attribution = Self::attribution_for(&result, entry, entry_kind);
+        self.touch_entry(provider, attribution.entry.as_deref())
+            .await;
         let stored_result = result.map_err(|error| error.to_string());
-        self.persist_response(job, claim, event.clone(), &stored_result, turn)
+        self.persist_response(job, claim, event.clone(), &stored_result, turn, attribution)
             .await?;
         self.observe_terminal_metric(job, turn, provider, &event);
         if stored_result.is_ok() {
@@ -678,6 +749,33 @@ impl Gateway {
         }
         message.acknowledge().await?;
         Ok(())
+    }
+
+    fn attribution_for(
+        result: &std::result::Result<Response, swarmy_llm::Error>,
+        entry: Option<String>,
+        entry_kind: Option<String>,
+    ) -> CompletionAttribution {
+        let (quota_remaining, quota_resets) = result.as_ref().map_or_else(
+            |_| {
+                (
+                    std::collections::BTreeMap::new(),
+                    std::collections::BTreeMap::new(),
+                )
+            },
+            |response| {
+                (
+                    response.quota_remaining.clone(),
+                    response.quota_resets.clone(),
+                )
+            },
+        );
+        CompletionAttribution {
+            entry,
+            entry_kind,
+            quota_remaining,
+            quota_resets,
+        }
     }
 
     fn terminal_event(input: &TerminalInput<'_>) -> Event {
@@ -710,45 +808,10 @@ impl Gateway {
         }
     }
 
-    async fn record_entry_attribution(
-        &self,
-        job: &InferenceJob,
-        provider: &str,
-        entry: Option<&str>,
-        entry_kind: Option<&str>,
-        result: &std::result::Result<Response, swarmy_llm::Error>,
-    ) {
-        let Ok(response) = result.as_ref() else {
-            return;
-        };
-        self.record_entry_usage(job.request_id, provider, entry, entry_kind)
-            .await;
-        self.record_entry_quota(provider, entry, response).await;
-    }
-
-    async fn record_entry_usage(
-        &self,
-        request: RequestId,
-        provider: &str,
-        entry: Option<&str>,
-        kind: Option<&str>,
-    ) {
+    async fn touch_entry(&self, provider: &str, entry: Option<&str>) {
         let Some(label) = entry else {
             return;
         };
-        // Attribution is best effort: the provider response is already in hand
-        // and must still be persisted when this bookkeeping fails.
-        if let Err(error) = self.store.set_inference_entry(request, Some(label)).await {
-            warn!(%error, "inference entry attribution failed");
-        }
-        if let Some(kind) = kind
-            && let Err(error) = self
-                .store
-                .set_inference_entry_kind(request, Some(kind))
-                .await
-        {
-            warn!(%error, "inference entry kind attribution failed");
-        }
         if let Ok(keyring) = swarmy_config::Keyring::load()
             && let Err(error) = self
                 .store
@@ -757,22 +820,6 @@ impl Gateway {
                 .await
         {
             warn!(%error, "credential last-use update failed");
-        }
-    }
-
-    async fn record_entry_quota(&self, provider: &str, entry: Option<&str>, response: &Response) {
-        let Some(label) = entry else {
-            return;
-        };
-        if response.quota_remaining.is_empty() {
-            return;
-        }
-        if let Err(error) = self
-            .store
-            .observe_entry_quota(provider, label, &response.quota_remaining)
-            .await
-        {
-            warn!(%error, "entry quota observation failed");
         }
     }
 
@@ -884,9 +931,11 @@ impl Gateway {
         mut event: Event,
         result: &std::result::Result<Response, String>,
         turn: Option<MessageId>,
+        attribution: CompletionAttribution,
     ) -> Result<()> {
         // Keep the finished response and renew the deadline during store outages.
         // Retrying only this transaction avoids spending another provider call.
+        // Entry attribution and quota observation commit atomically with usage.
         let mut expected_head = job.step;
         loop {
             let completion = InferenceCompletion {
@@ -894,6 +943,10 @@ impl Gateway {
                 expected_head,
                 event: event.clone(),
                 now: Timestamp::now(),
+                entry: attribution.entry.clone(),
+                entry_kind: attribution.entry_kind.clone(),
+                quota_remaining: attribution.quota_remaining.clone(),
+                quota_resets: attribution.quota_resets.clone(),
             };
             let snapshot = match self.terminal_snapshot(job, &completion).await {
                 Ok(snapshot) => snapshot,
@@ -903,38 +956,71 @@ impl Gateway {
                     continue;
                 }
             };
-            let committed = if let Some(snapshot) = &snapshot {
-                self.store
-                    .complete_inference_and_idle(&completion, result, snapshot)
-                    .await
-            } else {
-                self.store.complete_inference(&completion, result).await
-            };
-            match committed {
-                Ok(false) => break,
-                Ok(true) => {
-                    event.set_seq(expected_head + 1);
-                    let session = self.store.fetch_session(job.session_id).await?;
-                    let committed_snapshot = snapshot.as_ref().filter(|reference| {
-                        session.as_ref().is_some_and(|session| {
-                            session.state == swarmy_core::SessionState::Idle
-                                && session.snapshot_ref.as_ref() == Some(reference)
-                        })
-                    });
-                    self.notify_completion(job.session_id, &event, turn, committed_snapshot)
-                        .await;
-                    break;
-                }
-                Err(swarmy_store::StoreError::StaleSequence { actual, .. }) => {
-                    expected_head = actual;
-                }
-                Err(error) => {
-                    warn!(%error, "retrying terminal store update");
-                    sleep(Duration::from_millis(100)).await;
-                }
+            if self
+                .commit_completion(
+                    job,
+                    &completion,
+                    result,
+                    snapshot.as_ref(),
+                    &mut event,
+                    turn,
+                )
+                .await?
+            {
+                break;
             }
+            expected_head = self.refresh_head(job, expected_head).await?;
         }
         Ok(())
+    }
+
+    // Six arguments pack the retry loop state; splitting further would
+    // separate the commit from its stale-head refresh.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_completion(
+        &self,
+        job: &InferenceJob,
+        completion: &InferenceCompletion,
+        result: &std::result::Result<Response, String>,
+        snapshot: Option<&swarmy_core::SnapshotRef>,
+        event: &mut Event,
+        turn: Option<MessageId>,
+    ) -> Result<bool> {
+        let committed = if let Some(snapshot) = snapshot {
+            self.store
+                .complete_inference_and_idle(completion, result, snapshot)
+                .await
+        } else {
+            self.store.complete_inference(completion, result).await
+        };
+        match committed {
+            Ok(false) => Ok(true),
+            Ok(true) => {
+                event.set_seq(completion.expected_head + 1);
+                let session = self.store.fetch_session(job.session_id).await?;
+                let committed_snapshot = snapshot.filter(|reference| {
+                    session.as_ref().is_some_and(|session| {
+                        session.state == swarmy_core::SessionState::Idle
+                            && session.snapshot_ref.as_ref() == Some(*reference)
+                    })
+                });
+                self.notify_completion(job.session_id, event, turn, committed_snapshot)
+                    .await;
+                Ok(true)
+            }
+            Err(swarmy_store::StoreError::StaleSequence { .. }) => Ok(false),
+            Err(error) => {
+                warn!(%error, "retrying terminal store update");
+                sleep(Duration::from_millis(100)).await;
+                Ok(false)
+            }
+        }
+    }
+
+    async fn refresh_head(&self, job: &InferenceJob, expected: u64) -> Result<u64> {
+        let _ = (job, expected);
+        let session = self.store.fetch_session(job.session_id).await?;
+        Ok(session.map_or(expected, |session| session.head_seq))
     }
 
     async fn terminal_snapshot(
@@ -1142,6 +1228,7 @@ mod retry_tests {
                 stop_reason: swarmy_llm::StopReason::EndTurn,
                 usage: swarmy_llm::TokenUsage::default(),
                 quota_remaining: std::collections::BTreeMap::new(),
+                quota_resets: std::collections::BTreeMap::new(),
             },
         );
         runtime.block_on(async {

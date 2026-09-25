@@ -426,7 +426,10 @@ pub struct SetEntryQuota {
     pub window_seconds: u64,
 }
 
-/// Quota view for one entry, either observed or configured.
+/// Quota view for one entry, either observed or configured. Requests and
+/// tokens are separate observed dimensions; `free` carries requests remaining
+/// and `tokens_remaining` carries tokens remaining. Configured `used` counts
+/// whole hourly buckets overlapping the window (hour granularity).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct EntryQuotaView {
     pub source: String,
@@ -436,6 +439,8 @@ pub struct EntryQuotaView {
     pub window_seconds: Option<u64>,
     pub observed_at: Option<String>,
     pub remaining: std::collections::BTreeMap<String, u64>,
+    pub requests_remaining: Option<u64>,
+    pub tokens_remaining: Option<u64>,
 }
 
 /// A durable event has a cursor even when delivered on a multiplexed connection.
@@ -824,7 +829,7 @@ pub mod api_paths {
             ("label" = String, Path, description = "Credential label"),
         ),
         request_body = SetEntryQuota,
-        responses((status = 200, body = EntryQuotaView), (status = 400, body = ApiError)))]
+        responses((status = 200, body = EntryQuotaView), (status = 400, body = ApiError), (status = 404, body = ApiError)))]
     pub fn set_entry_quota() {}
 }
 
@@ -972,7 +977,7 @@ mod tests {
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
         check!(SetEntryQuota, {"idempotency_key":"k","limit":1000,"window_seconds":18000});
-        check!(EntryQuotaView, {"source":"configured","used":3,"free":997,"limit":1000,"window_seconds":18000,"observed_at":null,"remaining":{}});
+        check!(EntryQuotaView, {"source":"configured","used":3,"free":997,"limit":1000,"window_seconds":18000,"observed_at":null,"remaining":{},"requests_remaining":null,"tokens_remaining":null});
     }
 
     #[test]

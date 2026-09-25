@@ -30,6 +30,8 @@ pub struct UsageAttribution<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub recorded_at: jiff::Timestamp,
+    pub entry: Option<&'a str>,
+    pub entry_kind: Option<&'a str>,
 }
 
 impl Store {
@@ -140,6 +142,9 @@ impl Store {
             read::<UsageTotals>(trx, &session_key),
             read::<UsageTotals>(trx, &agent_key)
         )?;
+        // The completion carries the entry when the gateway resolved one, so
+        // the hot path needs no extra reads. Fall back to the staged keys for
+        // older callers that still write them before committing.
         let entry_key = self
             .root
             .pack(&("inference_entry", attribution.request.as_bytes().as_slice()));
@@ -147,10 +152,16 @@ impl Store {
             "inference_entry_kind",
             attribution.request.as_bytes().as_slice(),
         ));
-        let (entry, kind): (Option<Option<String>>, Option<Option<String>>) =
-            futures::try_join!(read(trx, &entry_key), read(trx, &kind_key))?;
-        let entry = entry.flatten();
-        let kind = kind.flatten();
+        let (entry, kind) = if attribution.entry.is_some() || attribution.entry_kind.is_some() {
+            (
+                attribution.entry.map(str::to_owned),
+                attribution.entry_kind.map(str::to_owned),
+            )
+        } else {
+            let (entry, kind): (Option<Option<String>>, Option<Option<String>>) =
+                futures::try_join!(read(trx, &entry_key), read(trx, &kind_key))?;
+            (entry.flatten(), kind.flatten())
+        };
         crate::write(
             trx,
             &self
@@ -168,6 +179,16 @@ impl Store {
                 recorded_at: Some(attribution.recorded_at),
             },
         )?;
+        // Secondary index for bounded pruning, written in the same transaction.
+        let hour = crate::metering::hour_floor(attribution.recorded_at.as_second());
+        trx.set(
+            &self.root.pack(&(
+                "usage_record_by_time",
+                hour,
+                attribution.request.as_bytes().as_slice(),
+            )),
+            &[],
+        );
         trx.clear(&entry_key);
         trx.clear(&kind_key);
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {

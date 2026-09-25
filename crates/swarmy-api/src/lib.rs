@@ -865,12 +865,34 @@ fn quota_view(quota: swarmy_store::EntryQuota) -> api::EntryQuotaView {
         window_seconds: quota.window_seconds,
         observed_at: quota.observed_at.map(|at| at.to_string()),
         remaining: quota.remaining,
+        requests_remaining: quota.requests_remaining,
+        tokens_remaining: quota.tokens_remaining,
     }
 }
+
+async fn require_entry(
+    state: &AppState,
+    provider: &str,
+    label: &str,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    let exists = credential_store(state)?
+        .list_entries(CredentialScope::Cluster)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .any(|entry| entry.provider == provider && entry.label == label);
+    if exists {
+        Ok(())
+    } else {
+        Err(error(StatusCode::NOT_FOUND, "credential_not_found"))
+    }
+}
+
 async fn entry_quota(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,
 ) -> ApiResult<api::EntryQuotaView> {
+    require_entry(&state, &provider, &label).await?;
     let quota = state
         .store
         .entry_quota(&provider, &label)
@@ -886,6 +908,7 @@ async fn set_entry_quota(
     if body.limit == 0 || body.window_seconds == 0 {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_quota"));
     }
+    require_entry(&state, &provider, &label).await?;
     let store = state.store.clone();
     replay(
         &state,

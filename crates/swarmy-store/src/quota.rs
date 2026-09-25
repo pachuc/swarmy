@@ -4,9 +4,12 @@
 //! observed values with their timestamp. Entries without published quotas
 //! (such as `ChatGPT` subscriptions) use an operator-configured `limit` and
 //! `window`; `used` is then computed from the entry's hourly rollups.
+//! Requests and tokens are separate dimensions: observed quotas expose both
+//! without combining them, and configured quotas count completions.
 
 use std::collections::BTreeMap;
 
+use foundationdb::Transaction;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +19,8 @@ use crate::{Result, Store, read};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ObservedQuota {
     pub values: BTreeMap<String, u64>,
+    pub resets: BTreeMap<String, u64>,
+    pub window_seconds: Option<u64>,
     pub updated_at: Timestamp,
 }
 
@@ -35,7 +40,10 @@ pub enum QuotaSource {
 }
 
 /// Quota view for one entry. Configured quotas compute `used` from rollups
-/// over the window; observed quotas report the latest published `remaining`.
+/// over the window; observed quotas report the latest published `remaining`
+/// with requests and tokens kept separate. Rollup buckets are hourly, so a
+/// configured `used` counts whole hourly buckets overlapping
+/// `[now - window, now)` rather than individual completions in the window.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EntryQuota {
     pub source: QuotaSource,
@@ -45,12 +53,22 @@ pub struct EntryQuota {
     pub window_seconds: Option<u64>,
     pub observed_at: Option<Timestamp>,
     pub remaining: BTreeMap<String, u64>,
+    pub requests_remaining: Option<u64>,
+    pub tokens_remaining: Option<u64>,
 }
 
-/// Parse windows like `30m`, `5h`, `7d` into seconds.
+/// Parse windows like `30m`, `5h`, `7d` into seconds. Never panics on
+/// non-`ASCII` input; the unit is the final `ASCII` character.
 #[must_use]
 pub fn parse_window(value: &str) -> Option<u64> {
-    let (number, unit) = value.split_at(value.len().checked_sub(1)?);
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let (number, unit) = split_window(value)?;
+    if number.is_empty() {
+        return None;
+    }
     let number: u64 = number.parse().ok()?;
     match unit {
         "s" => Some(number),
@@ -59,6 +77,22 @@ pub fn parse_window(value: &str) -> Option<u64> {
         "d" => number.checked_mul(86_400),
         "w" => number.checked_mul(604_800),
         _ => None,
+    }
+}
+
+fn split_window(value: &str) -> Option<(&str, &str)> {
+    if let Some(number) = value.strip_suffix('s') {
+        Some((number, "s"))
+    } else if let Some(number) = value.strip_suffix('m') {
+        Some((number, "m"))
+    } else if let Some(number) = value.strip_suffix('h') {
+        Some((number, "h"))
+    } else if let Some(number) = value.strip_suffix('d') {
+        Some((number, "d"))
+    } else if let Some(number) = value.strip_suffix('w') {
+        Some((number, "w"))
+    } else {
+        None
     }
 }
 
@@ -71,6 +105,31 @@ impl Store {
         self.root.pack(&("entry_quota_config", provider, label))
     }
 
+    pub(crate) fn write_observed(
+        &self,
+        trx: &Transaction,
+        provider: &str,
+        label: &str,
+        remaining: &BTreeMap<String, u64>,
+        resets: &BTreeMap<String, u64>,
+        now: Timestamp,
+    ) -> Result<()> {
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        let window_seconds = resets.values().copied().min();
+        crate::write(
+            trx,
+            &self.observed_key(provider, label),
+            &ObservedQuota {
+                values: remaining.clone(),
+                resets: resets.clone(),
+                window_seconds,
+                updated_at: now,
+            },
+        )
+    }
+
     /// Record the latest published remaining-quota values for one entry.
     /// # Errors
     /// Returns encoding or storage errors.
@@ -79,24 +138,29 @@ impl Store {
         provider: &str,
         label: &str,
         remaining: &BTreeMap<String, u64>,
+        resets: &BTreeMap<String, u64>,
     ) -> Result<()> {
         if remaining.is_empty() {
             return Ok(());
         }
-        let value = ObservedQuota {
-            values: remaining.clone(),
-            updated_at: Timestamp::now(),
-        };
-        let observed = self.observed_key(provider, label);
-        let value_bytes = crate::encode(&value)?;
-        if value_bytes.len() > crate::INLINE_LIMIT {
+        let now = Timestamp::now();
+        let remaining = remaining.clone();
+        let resets = resets.clone();
+        let key = self.observed_key(provider, label);
+        let value = crate::encode(&ObservedQuota {
+            values: remaining,
+            window_seconds: resets.values().copied().min(),
+            resets,
+            updated_at: now,
+        })?;
+        if value.len() > crate::INLINE_LIMIT {
             return Err(crate::StoreError::TooLarge);
         }
         self.transaction(|trx| {
-            let observed = &observed;
-            let value_bytes = &value_bytes;
+            let key = &key;
+            let value = &value;
             async move {
-                trx.set(observed, value_bytes);
+                trx.set(key, value);
                 Ok(())
             }
         })
@@ -150,8 +214,10 @@ impl Store {
     }
 
     /// Quota view for one entry. A configured limit takes precedence and
-    /// computes `used` from rollups; otherwise the latest observed values
-    /// are reported with no window.
+    /// computes `used` from rollups over the exact `[now - window, now)`
+    /// range (counting whole hourly buckets); otherwise the latest observed
+    /// requests and tokens are reported separately with the smallest reset
+    /// window, if any.
     /// # Errors
     /// Returns decoding, storage, or time errors.
     pub async fn entry_quota(&self, provider: &str, label: &str) -> Result<EntryQuota> {
@@ -182,6 +248,8 @@ impl Store {
                 window_seconds: Some(config.window_seconds),
                 observed_at: observed.map(|quota| quota.updated_at),
                 remaining: BTreeMap::new(),
+                requests_remaining: None,
+                tokens_remaining: None,
             });
         }
         let Some(observed) = observed else {
@@ -193,17 +261,22 @@ impl Store {
                 window_seconds: None,
                 observed_at: None,
                 remaining: BTreeMap::new(),
+                requests_remaining: None,
+                tokens_remaining: None,
             });
         };
-        let free = observed.values.values().copied().min();
+        let requests = requests_remaining(&observed.values);
+        let tokens = tokens_remaining(&observed.values);
         Ok(EntryQuota {
             source: QuotaSource::Observed,
             used: 0,
-            free,
+            free: requests,
             limit: None,
-            window_seconds: None,
+            window_seconds: observed.window_seconds,
             observed_at: Some(observed.updated_at),
             remaining: observed.values,
+            requests_remaining: requests,
+            tokens_remaining: tokens,
         })
     }
 
@@ -226,6 +299,22 @@ impl Store {
     }
 }
 
+fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+    remaining
+        .iter()
+        .filter(|(name, _)| name.contains("request"))
+        .map(|(_, value)| *value)
+        .min()
+}
+
+fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+    remaining
+        .iter()
+        .filter(|(name, _)| name.contains("token"))
+        .map(|(_, value)| *value)
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +328,8 @@ mod tests {
         assert_eq!(parse_window("5x"), None);
         assert_eq!(parse_window("h"), None);
         assert_eq!(parse_window(""), None);
+        assert_eq!(parse_window("5é"), None);
+        assert_eq!(parse_window("é"), None);
+        assert_eq!(parse_window(" 5h "), Some(18_000));
     }
 }

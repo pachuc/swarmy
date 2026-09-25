@@ -171,8 +171,12 @@ pub struct Response {
     pub usage: TokenUsage,
     /// Latest published remaining-quota headers, empty when the provider
     /// publishes nothing. The gateway records these on the auth entry.
+    /// Requests and tokens are separate dimensions; callers must not combine
+    /// them. Resets carry seconds until each window resets.
     #[serde(default)]
     pub quota_remaining: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub quota_resets: BTreeMap<String, u64>,
 }
 
 /// Output indices correlate concurrent text, reasoning, and function arguments.

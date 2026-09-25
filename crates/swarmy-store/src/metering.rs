@@ -13,7 +13,7 @@ use jiff::{Timestamp, ToSpan, civil::Weekday};
 use serde::{Deserialize, Serialize};
 use swarmy_core::{TokenUsage, UsageTotals};
 
-use crate::{Result, Store, StoreError, scan};
+use crate::{Result, Store, StoreError, read, scan};
 
 /// Queryable rollup dimensions. `Entry` is `provider/label`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,36 +303,43 @@ impl Store {
         from_hour: i64,
         to_hour: i64,
     ) -> Result<BTreeMap<i64, (UsageTotals, u64)>> {
-        let prefix = self
+        if to_hour < from_hour {
+            return Ok(BTreeMap::new());
+        }
+        let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
+        let begin = self
             .root
-            .subspace(&("metering_hour", dimension.as_str(), key));
-        let (range_start, range_end) = prefix.range();
+            .pack(&("metering_hour", dimension.as_str(), key, from_hour));
+        let end = self
+            .root
+            .pack(&("metering_hour", dimension.as_str(), key, end_hour));
         let mut hours: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
-        let mut begin = range_start.clone();
+        let mut cursor = begin.clone();
         loop {
             let rows = self
                 .transaction(|trx| {
-                    let range = (begin.clone(), range_end.clone());
+                    let range = (cursor.clone(), end.clone());
                     async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
                 })
                 .await?;
             if rows.is_empty() {
                 break;
             }
+            // Range bounds already restrict hours; unpack failures still error.
+            let prefix = self
+                .root
+                .subspace(&("metering_hour", dimension.as_str(), key));
             for (raw_key, value) in &rows {
                 let (hour, field): (i64, String) =
                     prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
-                if hour < from_hour || hour > to_hour {
-                    continue;
-                }
                 if FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
                         .or_default()
                         .insert(field.clone(), counter(value));
                 }
-                begin.clone_from(raw_key);
-                begin.push(0);
+                cursor.clone_from(raw_key);
+                cursor.push(0);
             }
             if rows.len() < crate::MAX_SCAN_LIMIT {
                 break;
@@ -394,12 +401,68 @@ impl Store {
     }
 
     /// Delete raw completion records at or before `before`, keeping rollups.
+    /// New records write a `(recorded_at hour, request id)` index entry in
+    /// the same completion transaction, so pruning scans that index from the
+    /// oldest hour up to the cutoff in bounded batches. Deleting the index
+    /// entry with its record advances the scan, so repeated ticks drain more
+    /// than one batch. Records without `recorded_at` predate the index and
+    /// are prunable once the retention window has passed since the upgrade
+    /// marker recorded on first prune.
     /// # Errors
     /// Returns decoding or storage errors.
     pub async fn prune_metering_raw(&self, before: Timestamp, limit: usize) -> Result<usize> {
         crate::check_limit(limit)?;
-        let prefix = self.root.subspace(&("usage_record",));
-        let (range_start, range_end) = prefix.range();
+        if limit == 0 {
+            return Ok(0);
+        }
+        let upgrade_key = self.root.pack(&("metering_upgrade_at",));
+        let upgrade_at: Option<Timestamp> = self
+            .transaction(|trx| {
+                let upgrade_key = &upgrade_key;
+                async move { read(&trx, upgrade_key).await }
+            })
+            .await?;
+        let upgrade_at = if let Some(at) = upgrade_at {
+            at
+        } else {
+            let now = Timestamp::now();
+            let bytes = crate::encode(&now)?;
+            self.transaction(|trx| {
+                let upgrade_key = &upgrade_key;
+                let bytes = &bytes;
+                async move {
+                    trx.set(upgrade_key, bytes);
+                    Ok(())
+                }
+            })
+            .await?;
+            now
+        };
+        let cutoff_hour = crate::metering::hour_floor(before.as_second());
+        let mut pruned = 0;
+        pruned += self
+            .prune_index_hours_before(cutoff_hour, limit - pruned)
+            .await?;
+        if pruned < limit {
+            pruned += self
+                .prune_index_hour_exact(cutoff_hour, before, limit - pruned)
+                .await?;
+        }
+        if pruned < limit {
+            pruned += self
+                .prune_legacy_raw(before, upgrade_at, limit - pruned)
+                .await?;
+        }
+        Ok(pruned)
+    }
+
+    async fn prune_index_hours_before(&self, cutoff_hour: i64, limit: usize) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let prefix = self.root.subspace(&("usage_record_by_time",));
+        let (range_start, _) = prefix.range();
+        let range_end = self.root.pack(&("usage_record_by_time", cutoff_hour));
         let rows = self
             .transaction(|trx| {
                 let range = (range_start.clone(), range_end.clone());
@@ -409,20 +472,156 @@ impl Store {
         if rows.is_empty() {
             return Ok(0);
         }
-        let mut stale = Vec::new();
-        for (key, value) in &rows {
-            let record: crate::usage::UsageRecord = crate::decode(value)?;
-            let old = record.recorded_at.is_some_and(|at| at <= before);
-            if old {
-                stale.push(key.clone());
-            }
+        let mut stale = Vec::with_capacity(rows.len() * 2);
+        for (index_key, _) in &rows {
+            let (_, request): (i64, Vec<u8>) =
+                prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
+            let record_key = self.root.pack(&("usage_record", request.as_slice()));
+            stale.push(index_key.clone());
+            stale.push(record_key);
         }
-        let pruned = stale.len();
+        let pruned = rows.len();
         self.transaction(|trx| {
             let stale = &stale;
             async move {
                 for key in stale {
                     trx.clear(key);
+                }
+                Ok(())
+            }
+        })
+        .await?;
+        Ok(pruned)
+    }
+
+    async fn prune_index_hour_exact(
+        &self,
+        cutoff_hour: i64,
+        before: Timestamp,
+        limit: usize,
+    ) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let prefix = self.root.subspace(&("usage_record_by_time",));
+        let range_start = self.root.pack(&("usage_record_by_time", cutoff_hour));
+        let next_hour = cutoff_hour.checked_add(3_600).unwrap_or(cutoff_hour);
+        let range_end = self.root.pack(&("usage_record_by_time", next_hour));
+        let rows = self
+            .transaction(|trx| {
+                let range = (range_start.clone(), range_end.clone());
+                async move { scan(&trx, range, limit).await }
+            })
+            .await?;
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let mut pairs = Vec::with_capacity(rows.len());
+        for (index_key, _) in &rows {
+            let (_, request): (i64, Vec<u8>) =
+                prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
+            let record_key = self.root.pack(&("usage_record", request.as_slice()));
+            pairs.push((index_key.clone(), record_key));
+        }
+        let keys: Vec<Vec<u8>> = pairs.iter().map(|(_, key)| key.clone()).collect();
+        let records: Vec<Option<crate::usage::UsageRecord>> = self
+            .transaction(|trx| {
+                let keys = &keys;
+                async move {
+                    let mut out = Vec::with_capacity(keys.len());
+                    for key in keys {
+                        out.push(read(&trx, key).await?);
+                    }
+                    Ok(out)
+                }
+            })
+            .await?;
+        let mut stale = Vec::new();
+        for ((index_key, record_key), record) in pairs.into_iter().zip(records) {
+            let old = record
+                .as_ref()
+                .is_some_and(|record| record.recorded_at.is_some_and(|at| at <= before));
+            if old {
+                stale.push(index_key);
+                stale.push(record_key);
+            }
+        }
+        let pruned = stale.len() / 2;
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        self.transaction(|trx| {
+            let stale = &stale;
+            async move {
+                for key in stale {
+                    trx.clear(key);
+                }
+                Ok(())
+            }
+        })
+        .await?;
+        Ok(pruned)
+    }
+
+    async fn prune_legacy_raw(
+        &self,
+        before: Timestamp,
+        upgrade_at: Timestamp,
+        limit: usize,
+    ) -> Result<usize> {
+        if limit == 0 || upgrade_at > before {
+            return Ok(0);
+        }
+        let cursor_key = self.root.pack(&("metering_prune_cursor",));
+        let cursor: Option<Vec<u8>> = self
+            .transaction(|trx| {
+                let cursor_key = &cursor_key;
+                async move { read(&trx, cursor_key).await }
+            })
+            .await?;
+        let prefix = self.root.subspace(&("usage_record",));
+        let (range_start, range_end) = prefix.range();
+        let mut begin = range_start.clone();
+        if let Some(last) = cursor {
+            begin = last;
+            begin.push(0);
+        }
+        let rows = self
+            .transaction(|trx| {
+                let range = (begin.clone(), range_end.clone());
+                async move { scan(&trx, range, limit.max(crate::MAX_SCAN_LIMIT)).await }
+            })
+            .await?;
+        if rows.is_empty() {
+            self.transaction(|trx| {
+                let cursor_key = &cursor_key;
+                async move {
+                    trx.clear(cursor_key);
+                    Ok(())
+                }
+            })
+            .await?;
+            return Ok(0);
+        }
+        let mut stale = Vec::new();
+        for (key, value) in &rows {
+            let record: crate::usage::UsageRecord = crate::decode(value)?;
+            if record.recorded_at.is_none() {
+                stale.push(key.clone());
+            }
+        }
+        let last_key = rows.last().map(|(key, _)| key.clone());
+        let pruned = stale.len();
+        self.transaction(|trx| {
+            let stale = &stale;
+            let last_key = &last_key;
+            let cursor_key = &cursor_key;
+            async move {
+                for key in stale {
+                    trx.clear(key);
+                }
+                if let Some(last) = last_key {
+                    crate::write(&trx, cursor_key, last)?;
                 }
                 Ok(())
             }
