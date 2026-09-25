@@ -32,9 +32,7 @@ impl ClusterCredentials {
         };
         if let Some(credentials) = &credentials {
             // Diagnose wrong keys before accepting requests for any stored provider.
-            credentials
-                .list_credentials(CredentialScope::Cluster)
-                .await?;
+            credentials.list_entries(CredentialScope::Cluster).await?;
         }
         Ok(Self { store, credentials })
     }
@@ -73,10 +71,11 @@ impl AuthStore for ClusterCredentials {
                 Ok(None)
             };
         };
-        credentials
-            .get_credential(CredentialScope::Cluster, provider)
+        let entry = credentials
+            .first_entry(CredentialScope::Cluster, provider)
             .await
-            .map_err(|error| store_error(&error))
+            .map_err(|error| store_error(&error))?;
+        Ok(entry.map(|(_, record)| record))
     }
 
     async fn refresh(
@@ -85,12 +84,36 @@ impl AuthStore for ClusterCredentials {
         observed: &CredentialRecord,
         login: &dyn Login,
     ) -> Result<CredentialRecord, Error> {
-        self.credentials
+        let credentials = self
+            .credentials
             .as_ref()
-            .ok_or(Error::Credentials("missing cluster keyring"))?
-            .refresh_with_lease(
+            .ok_or(Error::Credentials("missing cluster keyring"))?;
+        let entries = credentials
+            .list_entries(CredentialScope::Cluster)
+            .await
+            .map_err(|error| store_error(&error))?;
+        let mut selected = None;
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.provider == provider)
+        {
+            if credentials
+                .get_entry(CredentialScope::Cluster, provider, &entry.label)
+                .await
+                .map_err(|error| store_error(&error))?
+                .as_ref()
+                == Some(observed)
+            {
+                selected = Some(entry.label);
+                break;
+            }
+        }
+        let label = selected.ok_or(Error::NeedsLogin(provider.into()))?;
+        credentials
+            .refresh_entry_with_lease(
                 CredentialScope::Cluster,
                 provider,
+                &label,
                 Duration::from_secs(45),
                 |current| async move {
                     if current != *observed {

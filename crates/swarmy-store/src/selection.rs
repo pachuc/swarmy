@@ -39,6 +39,42 @@ impl Store {
         .await
     }
 
+    /// Advertise an independently selectable auth entry beside the provider-level record.
+    /// # Errors
+    /// Returns database or encoding errors.
+    pub async fn put_gateway_entry(
+        &self,
+        provider: &str,
+        label: &str,
+        record: &GatewayProvider,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            write(
+                &trx,
+                &self.root.pack(&("gateway_provider_entry", provider, label)),
+                record,
+            )
+        })
+        .await
+    }
+
+    /// # Errors
+    /// Returns database or encoding errors.
+    pub async fn gateway_entry(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<Option<GatewayProvider>> {
+        self.transaction(|trx| async move {
+            read(
+                &trx,
+                &self.root.pack(&("gateway_provider_entry", provider, label)),
+            )
+            .await
+        })
+        .await
+    }
+
     /// Read the last advertisement for a provider, expired or not.
     /// # Errors
     /// Returns database or decoding errors.

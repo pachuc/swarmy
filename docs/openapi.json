@@ -1815,6 +1815,9 @@
           "updated_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
           "expires_at": {
             "type": [
               "string",
@@ -1826,6 +1829,12 @@
           },
           "label": {
             "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -1848,6 +1857,12 @@
         "properties": {
           "idempotency_key": {
             "type": "string"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -2174,11 +2189,20 @@
           "updated_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
           "kind": {
             "$ref": "#/components/schemas/CredentialKind"
           },
           "label": {
             "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"
@@ -2195,7 +2219,7 @@
         "type": "string",
         "enum": [
           "subscription",
-          "api_key",
+          "api-key",
           "cloud"
         ]
       },

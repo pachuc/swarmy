@@ -185,8 +185,24 @@ async fn advertise(store: &Store, served: &[String]) -> Result<()> {
         expires_at: Timestamp::now().checked_add(ADVERTISEMENT_TTL)?,
         reason: "credentials resolved".into(),
     };
+    let entries = match swarmy_config::Keyring::load() {
+        Ok(keyring) => {
+            store
+                .credentials(keyring)
+                .list_entries(swarmy_core::CredentialScope::Cluster)
+                .await?
+        }
+        Err(_) => Vec::new(),
+    };
     for provider in served {
         store.put_gateway_provider(provider, &record).await?;
+        for entry in entries.iter().filter(|entry| {
+            &entry.provider == provider && entry.status == swarmy_core::CredentialStatus::Ready
+        }) {
+            store
+                .put_gateway_entry(provider, &entry.label, &record)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -505,12 +521,38 @@ impl Gateway {
             },
         };
         let stored_result = result.map_err(|error| error.to_string());
+        if stored_result.is_ok() {
+            self.record_entry_usage(job.request_id, provider).await?;
+        }
         self.persist_response(job, claim, event, &stored_result, turn)
             .await?;
         if stored_result.is_ok() {
             self.store.clear_inference_wait(job.session_id).await?;
         }
         message.acknowledge().await?;
+        Ok(())
+    }
+
+    async fn record_entry_usage(&self, request: RequestId, provider: &str) -> Result<()> {
+        let entry = if let Ok(keyring) = swarmy_config::Keyring::load() {
+            let credentials = self.store.credentials(keyring);
+            let selected = credentials
+                .first_entry(swarmy_core::CredentialScope::Cluster, provider)
+                .await?;
+            if let Some((label, _)) = &selected {
+                credentials
+                    .touch_entry(swarmy_core::CredentialScope::Cluster, provider, label)
+                    .await?;
+            }
+            selected.map(|(label, _)| label)
+        } else {
+            None
+        };
+        if let Some(entry) = entry {
+            self.store
+                .set_inference_entry(request, Some(&entry))
+                .await?;
+        }
         Ok(())
     }
 

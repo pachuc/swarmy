@@ -445,8 +445,12 @@ async fn credential_changes_update_a_running_gateway() {
                 }
             }).await.unwrap();
             assert!(!f.store.gateway_serves("openrouter").await.unwrap());
-            credentials.put_credential(CredentialScope::Cluster, "openrouter", &CredentialRecord {
+            credentials.put_entry(CredentialScope::Cluster, "openrouter", "primary", &CredentialRecord {
                 kind: CredentialKind::ApiKey { key: "fixture-key".into(), extra: std::collections::BTreeMap::default() },
+                updated_at: Timestamp::now(),
+            }).await.unwrap();
+            credentials.put_entry(CredentialScope::Cluster, "openrouter", "backup", &CredentialRecord {
+                kind: CredentialKind::ApiKey { key: "fixture-backup".into(), extra: std::collections::BTreeMap::default() },
                 updated_at: Timestamp::now(),
             }).await.unwrap();
             timeout(Duration::from_secs(65), async {
@@ -454,6 +458,8 @@ async fn credential_changes_update_a_running_gateway() {
                     sleep(Duration::from_millis(100)).await;
                 }
             }).await.unwrap();
+            assert!(f.store.gateway_entry("openrouter", "primary").await.unwrap().is_some());
+            assert!(f.store.gateway_entry("openrouter", "backup").await.unwrap().is_some());
             let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
             let mut job = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
@@ -461,7 +467,13 @@ async fn credential_changes_update_a_running_gateway() {
             job.provider = "openrouter".into();
             f.bus.publish_work(&queue, &InferenceJobRef::from(&job)).await.unwrap();
             assert!(matches!(f.terminal(&job).await, Event::InferenceCompleted { .. }));
-            credentials.delete_credential(CredentialScope::Cluster, "openrouter").await.unwrap();
+            let usage = f.store.inference_usage_record(job.request_id).await.unwrap().unwrap();
+            assert_eq!(usage.entry.as_deref(), Some("primary"));
+            let entries = credentials.list_entries(CredentialScope::Cluster).await.unwrap();
+            assert!(entries.iter().find(|entry| entry.label == "primary").unwrap().last_used_at.is_some());
+            assert!(entries.iter().find(|entry| entry.label == "backup").unwrap().last_used_at.is_none());
+            credentials.delete_entry(CredentialScope::Cluster, "openrouter", "primary").await.unwrap();
+            credentials.delete_entry(CredentialScope::Cluster, "openrouter", "backup").await.unwrap();
             timeout(Duration::from_secs(65), async {
                 while f.store.gateway_serves("openrouter").await.unwrap() {
                     sleep(Duration::from_millis(100)).await;

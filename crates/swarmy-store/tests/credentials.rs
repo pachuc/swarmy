@@ -283,3 +283,154 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn labelled_entries_migrate_refresh_and_remove_independently() {
+    let Some(f) = Fixture::new() else { return };
+    f.credentials
+        .put_credential(SCOPE, "openai", &oauth("legacy"))
+        .await
+        .unwrap();
+    let first = f.credentials.list_entries(SCOPE).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].label, "default");
+    assert_eq!(first[0].kind, "subscription");
+    assert_eq!(f.credentials.list_entries(SCOPE).await.unwrap().len(), 1);
+    f.credentials
+        .put_entry(SCOPE, "openai", "second", &oauth("second"))
+        .await
+        .unwrap();
+    assert_eq!(f.credentials.list_entries(SCOPE).await.unwrap().len(), 2);
+    assert_eq!(
+        access(
+            &f.credentials
+                .first_entry(SCOPE, "openai")
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+        ),
+        "legacy"
+    );
+    let refreshed = f
+        .credentials
+        .refresh_entry_with_lease(
+            SCOPE,
+            "openai",
+            "second",
+            Duration::from_secs(2),
+            |_| async { Ok(oauth("rotated")) },
+        )
+        .await
+        .unwrap();
+    assert_eq!(access(&refreshed), "rotated");
+    assert_eq!(
+        access(
+            &f.credentials
+                .get_entry(SCOPE, "openai", "default")
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        "legacy"
+    );
+    f.credentials
+        .delete_entry(SCOPE, "openai", "second")
+        .await
+        .unwrap();
+    assert!(
+        f.credentials
+            .get_entry(SCOPE, "openai", "second")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.credentials.list_entries(SCOPE).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
+    let Some(f) = Fixture::new() else { return };
+    f.credentials
+        .put_entry(SCOPE, "openai", "primary", &oauth("first"))
+        .await
+        .unwrap();
+    f.credentials
+        .put_entry(SCOPE, "openai", "backup", &oauth("backup"))
+        .await
+        .unwrap();
+    let entered = tokio::sync::Notify::new();
+    let proceed = tokio::sync::Notify::new();
+    let refresh = f.credentials.refresh_entry_with_lease(
+        SCOPE,
+        "openai",
+        "primary",
+        Duration::from_secs(3),
+        |_| async {
+            entered.notify_one();
+            proceed.notified().await;
+            Ok(oauth("stale"))
+        },
+    );
+    let replace = async {
+        entered.notified().await;
+        f.credentials
+            .put_entry(SCOPE, "openai", "primary", &oauth("replaced"))
+            .await
+            .unwrap();
+        proceed.notify_one();
+    };
+    let (result, ()) = tokio::join!(refresh, replace);
+    assert!(matches!(result, Err(StoreError::LeaseMismatch)));
+    assert_eq!(
+        access(
+            &f.credentials
+                .get_entry(SCOPE, "openai", "primary")
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        "replaced"
+    );
+    assert_eq!(
+        access(
+            &f.credentials
+                .get_entry(SCOPE, "openai", "backup")
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        "backup"
+    );
+}
+
+#[tokio::test]
+async fn legacy_api_key_migrates_once_to_default() {
+    let Some(f) = Fixture::new() else { return };
+    let record = CredentialRecord {
+        kind: CredentialKind::ApiKey {
+            key: "synthetic".into(),
+            extra: Default::default(),
+        },
+        updated_at: Timestamp::now(),
+    };
+    f.credentials
+        .put_credential(SCOPE, "openai", &record)
+        .await
+        .unwrap();
+    let first = f.credentials.list_entries(SCOPE).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].label, "default");
+    assert_eq!(first[0].kind, "api-key");
+    let second = f.credentials.list_entries(SCOPE).await.unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].created_at, first[0].created_at);
+    assert!(
+        f.credentials
+            .get_entry(SCOPE, "openai", "default")
+            .await
+            .unwrap()
+            .unwrap()
+            == record
+    );
+}

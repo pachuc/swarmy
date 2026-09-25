@@ -9,17 +9,18 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
     let settings = Settings::load()?.settings;
     let (client, endpoint) = crate::api_client::connect()?;
     match command {
-        Command::Import { file } => {
+        Command::Import { file, label } => {
             let path = file
                 .or(auth_file)
                 .unwrap_or_else(|| PathBuf::from(settings.credential_file));
             let credentials = FileCredentialStore::new(path).load().await?;
             let record = credentials.to_record()?;
-            submit(&client, &endpoint, "chatgpt", &record).await?;
+            submit(&client, &endpoint, "chatgpt", label.as_deref(), &record).await?;
             report("imported", "chatgpt", json);
         }
         Command::Login {
             provider,
+            label,
             resource,
             scope,
         } => {
@@ -34,7 +35,14 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
                 kind,
                 updated_at: jiff::Timestamp::now(),
             };
-            submit(&client, &endpoint, login.provider(), &record).await?;
+            submit(
+                &client,
+                &endpoint,
+                login.provider(),
+                label.as_deref(),
+                &record,
+            )
+            .await?;
             report("saved", login.provider(), json);
         }
         _ => anyhow::bail!("use swarmy for auth set, ls, rm, and check"),
@@ -45,10 +53,11 @@ async fn submit(
     client: &swarmy_client::Client,
     endpoint: &str,
     provider: &str,
+    label: Option<&str>,
     record: &CredentialRecord,
 ) -> Result<()> {
     let body = serde_json::json!({"idempotency_key": ulid::Ulid::generate().to_string(),
-        "provider":provider,"record":record});
+        "provider":provider,"label":label,"record":record});
     crate::api_client::call(
         endpoint,
         client.cli_set_credential(&serde_json::from_value(body)?),

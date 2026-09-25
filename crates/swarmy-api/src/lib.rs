@@ -234,6 +234,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
         )
+        .route(
+            "/v1/credentials/{provider}/{label}",
+            get(check_credential_entry).delete(remove_credential_entry),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
     // every swarm documents itself at its own version without a token.
@@ -674,10 +678,10 @@ fn credential_store(
 fn credential(value: swarmy_store::credentials::CredentialSummary) -> api::Credential {
     api::Credential {
         provider: value.provider,
-        kind: if value.kind == "api_key" {
-            api::CredentialKind::ApiKey
-        } else {
-            api::CredentialKind::Subscription
+        kind: match value.kind.as_str() {
+            "api-key" => api::CredentialKind::ApiKey,
+            "cloud" => api::CredentialKind::Cloud,
+            _ => api::CredentialKind::Subscription,
         },
         label: value.label,
         status: match value.status {
@@ -686,12 +690,14 @@ fn credential(value: swarmy_store::credentials::CredentialSummary) -> api::Crede
             swarmy_core::CredentialStatus::NeedsLogin => api::CredentialStatus::NeedsLogin,
         },
         updated_at: value.updated_at.to_string(),
+        created_at: value.created_at.to_string(),
+        last_used_at: value.last_used_at.map(|at| at.to_string()),
     }
 }
 async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Credential>> {
     Ok(Json(
         credential_store(&state)?
-            .list_credentials(CredentialScope::Cluster)
+            .list_entries(CredentialScope::Cluster)
             .await
             .map_err(storage)?
             .into_iter()
@@ -703,31 +709,42 @@ async fn check_credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> ApiResult<api::Credential> {
-    let record = credential_store(&state)?
-        .get_credential(CredentialScope::Cluster, &provider)
+    let summary = credential_store(&state)?
+        .list_entries(CredentialScope::Cluster)
         .await
         .map_err(storage)?
+        .into_iter()
+        .find(|entry| entry.provider == provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(credential(
-        swarmy_store::credentials::CredentialSummary::new(provider, &record, Timestamp::now()),
-    )))
+    Ok(Json(credential(summary)))
 }
 async fn set_credential(
     State(state): State<AppState>,
     Json(body): Json<api::CreateCredential>,
 ) -> ApiResult<api::Credential> {
     use swarmy_core::{CredentialKind, CredentialRecord};
-    if body.kind != api::CredentialKind::ApiKey {
+    if body.kind == api::CredentialKind::Subscription {
         return Err(error(
             StatusCode::BAD_REQUEST,
-            "unsupported_credential_kind",
+            "use_auth_login_for_subscription",
         ));
     }
     let store = credential_store(&state)?;
     let record = CredentialRecord {
         kind: CredentialKind::ApiKey {
             key: body.secret,
-            extra: std::collections::BTreeMap::from([("label".into(), body.label)]),
+            extra: std::collections::BTreeMap::from([
+                ("label".into(), body.label.clone()),
+                (
+                    "auth_kind".into(),
+                    if body.kind == api::CredentialKind::Cloud {
+                        "cloud"
+                    } else {
+                        "api-key"
+                    }
+                    .into(),
+                ),
+            ]),
         },
         updated_at: Timestamp::now(),
     };
@@ -737,16 +754,55 @@ async fn set_credential(
         &format!("credentials:{}:set", body.provider),
         async move {
             store
-                .put_credential(CredentialScope::Cluster, &body.provider, &record)
+                .put_entry(
+                    CredentialScope::Cluster,
+                    &body.provider,
+                    &body.label,
+                    &record,
+                )
                 .await
                 .map_err(storage)?;
-            Ok(Json(credential(
-                swarmy_store::credentials::CredentialSummary::new(
-                    body.provider,
-                    &record,
-                    Timestamp::now(),
-                ),
-            )))
+            let summary = store
+                .list_entries(CredentialScope::Cluster)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .find(|entry| entry.provider == body.provider && entry.label == body.label)
+                .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing"))?;
+            Ok(Json(credential(summary)))
+        },
+    )
+    .await
+}
+async fn check_credential_entry(
+    State(state): State<AppState>,
+    Path((provider, label)): Path<(String, String)>,
+) -> ApiResult<api::Credential> {
+    let summary = credential_store(&state)?
+        .list_entries(CredentialScope::Cluster)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .find(|entry| entry.provider == provider && entry.label == label)
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
+    Ok(Json(credential(summary)))
+}
+async fn remove_credential_entry(
+    State(state): State<AppState>,
+    Path((provider, label)): Path<(String, String)>,
+    Json(body): Json<api::DeleteRequest>,
+) -> ApiResult<Value> {
+    let store = credential_store(&state)?;
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("credentials:{provider}:{label}:remove"),
+        async move {
+            store
+                .delete_entry(CredentialScope::Cluster, &provider, &label)
+                .await
+                .map_err(storage)?;
+            Ok(Json(json!({"deleted":true})))
         },
     )
     .await
@@ -762,10 +818,18 @@ async fn remove_credential(
         &body.idempotency_key,
         &format!("credentials:{provider}:remove"),
         async move {
-            store
-                .delete_credential(CredentialScope::Cluster, &provider)
+            if let Some(entry) = store
+                .list_entries(CredentialScope::Cluster)
                 .await
-                .map_err(storage)?;
+                .map_err(storage)?
+                .into_iter()
+                .find(|entry| entry.provider == provider)
+            {
+                store
+                    .delete_entry(CredentialScope::Cluster, &provider, &entry.label)
+                    .await
+                    .map_err(storage)?;
+            }
             Ok(Json(json!({"deleted": true})))
         },
     )
