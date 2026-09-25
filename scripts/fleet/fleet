@@ -211,7 +211,17 @@ def launch(args, config):
     image = args.image or config.get("image")
     if image and ":" not in image:
         raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
-    worker, workers = pick_worker(config, selection, image, provider, model)
+    if getattr(args, "worker", None):
+        # A task that must run on a particular worker, for example to pick up
+        # files an earlier session left on that worker's disk.
+        workers = load_workers(config)
+        if args.worker not in workers:
+            raise RuntimeError(f"unknown worker {args.worker}")
+        if workers[args.worker]:
+            raise RuntimeError(f"{args.worker} still holds {workers[args.worker]}; release it first")
+        worker = args.worker
+    else:
+        worker, workers = pick_worker(config, selection, image, provider, model)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
@@ -469,6 +479,7 @@ def main():
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
     launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
+    launch_parser.add_argument("--worker", help="run on this idle worker instead of the first free one, for example to reuse files on its disk")
     sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
     sub.add_parser("collect", help="record the worker's pull request in tasky").add_argument("task_id")
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
