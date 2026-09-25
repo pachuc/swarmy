@@ -93,6 +93,11 @@ Things learned on the way, all fixed in code or documented here:
 
 ## Daily operation
 
+- Each task runs in a fresh side conversation on its worker (`run --agent
+  NAME --new`): same disk and memory files, empty context. The worker's main
+  conversation is unused. On a metered provider this keeps every turn's
+  billed context to the current task instead of the worker's whole history.
+  `fleet resume` and `fleet kill` address the task's own session.
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
   model, state and its age, task elapsed time, and cost. A recent wait can show
   `waiting_inference 2m; waiting for inference: ...`. A session in
