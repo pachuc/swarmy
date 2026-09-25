@@ -274,11 +274,13 @@ def state_for(session, events, log):
         state = "waiting_inference"
     if state is None:
         return "unknown", ""
-    if state in ("idle", "completed"):
-        return "idle", ""
     outcomes = [item for item in log if item.get("event") == "run_outcome"]
-    if outcomes and outcomes[-1].get("outcome") == "failed":
-        return "failed", ""
+    if state in ("idle", "completed"):
+        # A recorded failure only describes the last turn while the session
+        # stays idle; a later resume makes the live state authoritative.
+        if outcomes and outcomes[-1].get("outcome") == "failed":
+            return "failed", ""
+        return "idle", ""
     reasons = "; ".join(wait.get("reasons", [])) if wait and state == "waiting_inference" else ""
     return state, ("waiting for inference: " + reasons if reasons else "")
 
