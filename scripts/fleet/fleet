@@ -930,7 +930,11 @@ def benchmark(args):
     """Run one isolated benchmark session without tasky or a persistent worker."""
     if not args.prompt_file.is_file():
         raise RuntimeError(f"missing benchmark prompt: {args.prompt_file}")
-    cmd = ["swarmy", "--remote", args.remote, "run", "--json",
+    # An empty or "local" remote uses the node's own API configuration, the
+    # same rule as the fleet.toml remote, so the benchmark runs on a control
+    # node without a tunnel.
+    remote = [] if args.remote in ("", "local") else ["--remote", args.remote]
+    cmd = ["swarmy", *remote, "run", "--json",
            "--provider", args.provider, "--model", args.model,
            "--effort", args.effort, args.prompt_file.read_text()]
     result = subprocess.run(cmd, text=True, stdout=sys.stdout, stderr=sys.stderr, check=False)
@@ -959,7 +963,7 @@ def main():
     kill_parser.add_argument("task_id")
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
-    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote")
+    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote (use --remote local on a control node)")
     bench.add_argument("--remote", required=True)
     bench.add_argument("--provider", required=True)
     bench.add_argument("--model", required=True)
