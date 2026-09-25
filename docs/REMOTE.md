@@ -84,7 +84,12 @@ Use `--json` to emit one machine-readable summary per node. A timeout leaves
 the upgraded binaries on disk but does not restart the busy node daemon; retry
 the command after its commands finish. The retry compares each running unit's
 executable with the installed binary, including previously installed upgrades. This command does not stop the backing
-FoundationDB, NATS, or object store.
+FoundationDB, NATS, or object store. On a node serving the API, the upgrade
+also fills a missing `[api]` token in the node's `.swarmy/config.toml` without
+rotating an existing one, and restarts the API when the fill changed it, so
+nodes provisioned before token provisioning start accepting requests.
+`remote status` reports each remote's token state as `set`, `missing`, or
+`not-applicable`.
 
 Use `--image-recipe images/custom` on `remote up` to select a recipe directory
 within the copied checkout. Relative paths are resolved from the checkout root;
