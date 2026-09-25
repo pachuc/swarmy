@@ -417,5 +417,40 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(medians["dev2"]["a2f_p50_ms"], 1000.0)
 
 
+    def test_report_released_task_resolves_from_launch_log(self):
+        env = self.report_env()
+        self.assertEqual(self.call("launch", "RRRPT1", env=env).returncode, 0)
+        state = self.root / "state"
+        log = state / "rrrpt1.jsonl"
+        # Point the launch log at the fixture session so aggregates are known.
+        log.write_text(log.read_text().replace("01AAAA", "SESA"))
+        self.assertEqual(self.call("release", "RRRPT1", "--force", env=env).returncode, 0)
+        self.assertFalse((state / "rrrpt1.json").exists())
+        self.assertTrue(log.exists())
+        table = self.call("report", "RRRPT1", env=env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        self.assertIn("| RRRPT1 | 3 |", table.stdout)
+        as_json = self.call("report", "RRRPT1", "--json", env=env)
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        payload = json.loads(as_json.stdout)
+        self.assertEqual(payload["rows"][0]["session_id"], "SESA")
+        self.assertEqual(payload["rows"][0]["turns"], 3)
+        # The released log has a fresh mtime, so an old --since still finds it
+        # under its file stem.
+        recent = self.call("report", "--since", "2026-09-20T00:00:00Z", env=env)
+        self.assertEqual(recent.returncode, 0, recent.stderr)
+        self.assertIn("| rrrpt1 | 3 |", recent.stdout)
+        # An event timestamp takes precedence over the file mtime: backdate
+        # the first event and the same --since stops matching.
+        lines = log.read_text().splitlines()
+        first = json.loads(lines[0])
+        first["timestamp"] = "2020-01-01T00:00:00Z"
+        lines[0] = json.dumps(first)
+        log.write_text("\n".join(lines) + "\n")
+        stale = self.call("report", "--since", "2026-09-20T00:00:00Z", env=env)
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn("no tasks launched since", stale.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -264,6 +264,82 @@ def assignment(config, task_id):
     return path, json.loads(path.read_text())
 
 
+def launch_log_path(config, task_id):
+    return state_path(config) / (task_suffix(task_id) + ".jsonl")
+
+
+def session_id_from_log(path):
+    """The session id from a launch log's first session event, if present.
+
+    The release action deletes the assignment JSON, but the append-only
+    launch log outlives it, so a finished task still resolves through this.
+    """
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    for event in records(text):
+        if not isinstance(event, dict):
+            continue
+        if event.get("event") in ("session_created", "session_opened"):
+            session_id = event.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+    return None
+
+
+def log_event_time(path, events):
+    """When a launch log started: the first event's timestamp, else mtime.
+
+    The launch announcement carries no timestamp today, so file modification
+    time is the fallback; a future timestamp field on that event takes
+    precedence when it parses.
+    """
+    first = next((event for event in events if isinstance(event, dict)), None)
+    if first is not None:
+        for key in ("timestamp", "started_at", "created_at", "time", "launched_at"):
+            value = first.get(key)
+            if isinstance(value, str) and value.strip():
+                try:
+                    return parse_report_time(value)
+                except RuntimeError:
+                    continue
+        for key, scale in (("unix_ns", 1_000_000_000.0), ("unix_ms", 1_000.0),
+                           ("unix_s", 1.0), ("timestamp", 1.0)):
+            value = first.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if not math.isfinite(value) or value <= 0:
+                continue
+            return datetime.fromtimestamp(value / scale, tz=timezone.utc)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
+def resolve_report_session(config, task_id):
+    """A task's session id for the report, including released tasks.
+
+    The assignment JSON is authoritative while the task is active; after
+    release only the launch log remains, so fall back to its session event.
+    """
+    suffix = task_suffix(task_id)
+    path = state_path(config) / (suffix + ".json")
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        else:
+            if isinstance(data, dict) and data.get("session_id"):
+                return str(data["session_id"])
+    session_id = session_id_from_log(launch_log_path(config, task_id))
+    if session_id is not None:
+        return session_id
+    raise RuntimeError(f"no fleet launch for {task_id}")
+
+
 def session_events(config, session_id):
     return records(command(swarmy(config, "session", "show", session_id, "--json")))
 
@@ -542,10 +618,16 @@ def parse_report_argv(tokens):
 
 
 def tasks_since(config, since):
-    """Every launched task whose assignment started at or after the time."""
+    """Every launched task whose assignment started at or after the time.
+
+    Assignments carry started_at while active; released tasks keep only
+    their launch log, whose first event time (or file modification time)
+    stands in for the launch time.
+    """
     moment = parse_report_time(since)
     base = state_path(config)
     found = []
+    seen = set()
     if not base.exists():
         return found
     for path in sorted(base.glob("*.json")):
@@ -557,12 +639,26 @@ def tasks_since(config, since):
             continue
         if not isinstance(data, dict) or "task_id" not in data or "session_id" not in data:
             continue
+        seen.add(path.stem)
         try:
             started = parse_report_time(data.get("started_at")) if data.get("started_at") else None
         except RuntimeError:
             continue
         if started is not None and started >= moment:
             found.append((str(data["task_id"]), str(data["session_id"])))
+    for path in sorted(base.glob("*.jsonl")):
+        if path.stem in seen:
+            continue
+        try:
+            events = records(path.read_text())
+        except OSError:
+            continue
+        session_id = session_id_from_log(path)
+        if session_id is None:
+            continue
+        started = log_event_time(path, events)
+        if started is not None and started >= moment:
+            found.append((path.stem, session_id))
     return found
 
 
@@ -765,7 +861,8 @@ def report_command(tokens, config):
     """Aggregate per-turn metrics for tasks or sessions into a table.
 
     Each entry resolves to a session id (task ids through their fleet
-    assignment, --session ids directly, --since through assignment start
+    assignment or, after release, their launch log, --session ids
+    directly, --since through assignment start times and launch log
     times), its records load through `swarmy session metrics --json`, and
     the per-task rows pool into a totals row. Repeated --label prints one
     table per label plus a final table of the per-label medians.
@@ -789,8 +886,7 @@ def report_command(tokens, config):
         rows, pooled, session_ids = [], [], None
         for display, direct in entries:
             if direct is None:
-                _, data = assignment(config, display)
-                session_id = data["session_id"]
+                session_id = resolve_report_session(config, display)
             else:
                 session_id = direct
             turns = fetch_turn_metrics(config, session_id)
