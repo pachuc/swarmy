@@ -211,14 +211,27 @@ def launch(args, config):
     image = args.image or config.get("image")
     if image and ":" not in image:
         raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
-    worker, workers = pick_worker(config, selection, image, provider, model)
+    if getattr(args, "worker", None):
+        # A task that must run on a particular worker, for example to pick up
+        # files an earlier session left on that worker's disk.
+        workers = load_workers(config)
+        if args.worker not in workers:
+            raise RuntimeError(f"unknown worker {args.worker}")
+        if workers[args.worker]:
+            raise RuntimeError(f"{args.worker} still holds {workers[args.worker]}; release it first")
+        worker = args.worker
+    else:
+        worker, workers = pick_worker(config, selection, image, provider, model)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
         os.chmod(log, 0o600)
         # run --agent takes the agent's own provider, model, and effort and
         # rejects overrides, so selection only applies at worker creation.
-        process = subprocess.Popen(swarmy(config, "run", "--agent", worker,
+        # Each task runs in a fresh side conversation on the worker: same disk
+        # and memory files, empty context, so a metered provider is not billed
+        # for every earlier task on every turn.
+        process = subprocess.Popen(swarmy(config, "run", "--agent", worker, "--new",
                                           "--json", prompt(args.task_id, task, config, branch)),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
@@ -261,11 +274,13 @@ def state_for(session, events, log):
         state = "waiting_inference"
     if state is None:
         return "unknown", ""
-    if state in ("idle", "completed"):
-        return "idle", ""
     outcomes = [item for item in log if item.get("event") == "run_outcome"]
-    if outcomes and outcomes[-1].get("outcome") == "failed":
-        return "failed", ""
+    if state in ("idle", "completed"):
+        # A recorded failure only describes the last turn while the session
+        # stays idle; a later resume makes the live state authoritative.
+        if outcomes and outcomes[-1].get("outcome") == "failed":
+            return "failed", ""
+        return "idle", ""
     reasons = "; ".join(wait.get("reasons", [])) if wait and state == "waiting_inference" else ""
     return state, ("waiting for inference: " + reasons if reasons else "")
 
@@ -303,9 +318,6 @@ def status(config):
     stalled = False
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
-        session_id = detail.get("main_session")
-        events = session_events(config, session_id) if session_id else []
-        session = sessions.get(session_id)
         data = {}
         logged = []
         if task_id:
@@ -314,6 +326,11 @@ def status(config):
             data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
             run_log = state_path(config) / (suffix + ".jsonl")
             logged = records(run_log.read_text()) if run_log.exists() else []
+        # A task runs in its own side conversation; fall back to the main one
+        # for launches recorded before that change.
+        session_id = data.get("session_id") or detail.get("main_session")
+        events = session_events(config, session_id) if session_id else []
+        session = sessions.get(session_id)
         state, reasons = state_for(session, events, logged) if task_id else ("idle", "")
         age = state_age(session)
         if task_id and state in ("waiting_inference", "leased") and age is not None and age > threshold:
@@ -357,7 +374,7 @@ def verify_pr(url, data, config, *, merged=False):
 def collect(task_id, config):
     path, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = agent.get("main_session") or data["session_id"]
+    session_id = data["session_id"]
     message = last_message(session_events(config, session_id))
     match = URL.search(message)
     if match:
@@ -385,8 +402,8 @@ def collect(task_id, config):
 
 def resume(task_id, message, config):
     _, data = assignment(config, task_id)
-    # A follow-up on the worker's main conversation continues the task.
-    args = swarmy(config, "run", "--agent", data["worker"], "--json", message)
+    # A follow-up on the task's own conversation continues it.
+    args = swarmy(config, "run", "--session", data["session_id"], "--json", message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)
@@ -416,7 +433,7 @@ def release(task_id, config, *, force=False):
 def kill(task_id, config, timeout_seconds):
     _, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = agent.get("main_session") or data["session_id"]
+    session_id = data["session_id"]
     command(swarmy(config, "session", "interrupt", session_id))
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -464,6 +481,7 @@ def main():
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
     launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
+    launch_parser.add_argument("--worker", help="run on this idle worker instead of the first free one, for example to reuse files on its disk")
     sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
     sub.add_parser("collect", help="record the worker's pull request in tasky").add_argument("task_id")
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
