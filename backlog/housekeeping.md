@@ -57,3 +57,8 @@ be forgotten. Do them opportunistically alongside related work.
   point truncate long tool outputs in long-term session storage (keep the
   head and tail, drop the middle) or add a retention policy. Not urgent;
   growth is slow.
+
+- The worker's timer tool did not wake an idle session (worker-3,
+  2026-09-25, "Timer ... will wake me in 10 minutes"); the session stayed
+  idle until the operator resumed it. Check whether timers survive an idle
+  transition and whether the scheduler honours them for side sessions.
