@@ -96,7 +96,7 @@ async fn serve(
 
 pub async fn execute(
     store: &Store,
-    runtime: &RuncRuntime,
+    runtime: Arc<RuncRuntime>,
     placement: &PlacementRecord,
     job: ToolJob,
     turn: Option<swarmy_core::MessageId>,
@@ -127,7 +127,7 @@ pub async fn execute(
 
 async fn run(
     store: &Store,
-    runtime: &RuncRuntime,
+    runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
     turn: Option<swarmy_core::MessageId>,
     needs_computer_sample: bool,
@@ -146,7 +146,7 @@ async fn run(
             "display tool requires a display image"
         );
     }
-    let outcome = run_command(store, runtime, &sandbox, claim).await?;
+    let outcome = run_command(store, &runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
     if let ToolResult::Completed { metadata, .. } = &mut result
         && let Some(encoded) = metadata.remove("image_base64")
@@ -157,7 +157,7 @@ async fn run(
         metadata.insert("image_object_key".into(), serde_json::json!(key));
     }
     if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
+        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
     }
     // A single call usually remains at its request head. Concurrent calls and
     // rebuild notices return the actual head from the same fenced transaction.
@@ -169,10 +169,12 @@ async fn run(
             Err(error) => return Err(error.into()),
         }
     }
-    // Start time, result, first-tool computer sample, and completion stage
-    // land in one transaction after the fenced commit. Queueing versus
-    // execution stays distinguishable through `started_ns` and
-    // `process_wall_ms`.
+    // The tool result and completion stage land right after the fenced
+    // commit so the worker sees the completion without waiting for the
+    // volume stat round trip. The first-tool computer re-sample follows in
+    // its own transaction from a spawned task; the store keeps the first
+    // re-sample per turn. Queueing versus execution stays distinguishable
+    // through `started_ns` and `process_wall_ms`.
     observe_tool_completion(
         store,
         runtime,
@@ -180,9 +182,8 @@ async fn run(
         turn,
         needs_computer_sample,
         &result,
-        outcome.summary,
-    )
-    .await;
+        &outcome.summary,
+    );
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
 }
@@ -279,14 +280,14 @@ async fn run_command(
 
 // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
 #[allow(clippy::cast_precision_loss)]
-async fn observe_tool_completion(
+fn observe_tool_completion(
     store: &Store,
-    runtime: &RuncRuntime,
+    runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
     turn: Option<swarmy_core::MessageId>,
     needs_computer_sample: bool,
     result: &ToolResult,
-    timing: ToolTiming,
+    timing: &ToolTiming,
 ) {
     let Some(turn) = turn else { return };
     let (output_bytes, exit_status) = match result {
@@ -311,36 +312,43 @@ async fn observe_tool_completion(
         process_wall_ms: timing.process_wall_ms,
         ..Default::default()
     };
-    // Lazy hydration during the first command is invisible in the boot
-    // sample, so re-sample here. Only the first completion per turn carries
-    // it; the store keeps the first re-sample per turn as well.
-    let computer = if needs_computer_sample {
-        let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
-        runtime
-            .volume_stats(volume)
-            .await
-            .ok()
-            .map(|stats| swarmy_api_types::ComputerMetric {
-                first_tool_chunks_fetched: Some(stats.fetched_chunks),
-                first_tool_bytes_fetched: Some(stats.fetched_bytes),
-                first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
-                first_tool_fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
-                ..Default::default()
-            })
-    } else {
-        None
-    };
     let completed = swarmy_bus::Bus::turn_event(
         claim.job.session_id,
         turn,
         swarmy_core::TurnStage::ToolCompleted,
         Some(claim.job.request_id),
     );
+    // The result lands before the volume stat round trip so `run` returns
+    // without waiting on the attach server socket.
     store.observe_turn_metrics(
         claim.job.session_id,
         turn,
-        swarmy_store::completion_patches(tool, computer, completed),
+        swarmy_store::completion_patches(tool, None, completed),
     );
+    // Lazy hydration during the first command is invisible in the boot
+    // sample, so re-sample after the result is committed. Only the first
+    // completion per turn carries it; the store keeps the first re-sample
+    // per turn as well.
+    if needs_computer_sample {
+        let store = store.clone();
+        let session = claim.job.session_id;
+        let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
+        tokio::spawn(async move {
+            if let Ok(stats) = runtime.volume_stats(volume).await {
+                store.observe_turn_metric(
+                    session,
+                    turn,
+                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                        first_tool_chunks_fetched: Some(stats.fetched_chunks),
+                        first_tool_bytes_fetched: Some(stats.fetched_bytes),
+                        first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                        first_tool_fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                        ..Default::default()
+                    }),
+                );
+            }
+        });
+    }
 }
 
 async fn stop_result_process(

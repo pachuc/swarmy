@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -75,11 +75,13 @@ pub struct Hosting {
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
     previous: Mutex<BTreeMap<AgentId, u64>>,
-    /// Turns whose first-tool computer re-sample already landed. The boot
-    /// sample is taken before the first command runs; only the first
-    /// completion per turn carries the re-sample, so later tools skip the
-    /// volume stat read and the extra transaction.
-    computer_sampled: Mutex<HashSet<MessageId>>,
+    /// The turn whose first-tool computer re-sample already landed, per
+    /// agent. The boot sample is taken before the first command runs; only
+    /// the first completion per turn carries the re-sample, so later tools
+    /// skip the volume stat read and the extra transaction. One entry per
+    /// agent bounds the map for the life of the node process; entries leave
+    /// with the hosting entry when the agent is evicted or shuts down.
+    computer_sampled: Mutex<BTreeMap<AgentId, MessageId>>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -142,7 +144,7 @@ impl Hosting {
             idle: Duration::from_secs(settings.sandbox_idle_seconds.get()),
             entries: Mutex::new(BTreeMap::new()),
             previous: Mutex::new(previous),
-            computer_sampled: Mutex::new(HashSet::new()),
+            computer_sampled: Mutex::new(BTreeMap::new()),
             shutdown: watch::channel(false).0,
         }))
     }
@@ -160,6 +162,13 @@ impl Hosting {
                 bail!("node is shutting down");
             }
             entries.retain(|_, entry| !entry.task.is_finished());
+            // Drop samples for agents with no hosting entry so the map
+            // holds at most one turn per live agent.
+            let live: Vec<AgentId> = entries.keys().copied().collect();
+            self.computer_sampled
+                .lock()
+                .await
+                .retain(|agent, _| live.contains(agent));
             let entry = entries.entry(agent).or_insert_with(|| {
                 let (calls, receive) = mpsc::channel(16);
                 let hosting = self.clone();
@@ -366,6 +375,7 @@ impl Hosting {
                     .await?;
                 self.store.release(&placement).await?;
                 self.previous.lock().await.remove(&agent);
+                self.computer_sampled.lock().await.remove(&agent);
                 tracing::info!(%agent, epoch = placement.epoch, reason = "eviction", "placement released");
             } else {
                 self.runtime.discard_if_present(agent).await?;
@@ -391,16 +401,19 @@ impl Hosting {
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
         // Only the first completion per turn carries the computer re-sample;
-        // later tools skip the volume stat read entirely.
+        // later tools skip the volume stat read entirely. One entry per
+        // agent keeps the map bounded for the life of the node process.
         let needs_sample = match call.turn {
-            Some(turn) => !self.computer_sampled.lock().await.contains(&turn),
+            Some(turn) => {
+                self.computer_sampled.lock().await.get(&placement.agent_id) != Some(&turn)
+            }
             None => false,
         };
         let turn = call.turn;
         let result = tokio::select! {
             result = crate::tools::execute(
                 &self.store,
-                &self.runtime,
+                self.runtime.clone(),
                 placement,
                 call.job,
                 turn,
@@ -412,7 +425,10 @@ impl Hosting {
             && let Some(turn) = turn
             && result.is_ok()
         {
-            self.computer_sampled.lock().await.insert(turn);
+            self.computer_sampled
+                .lock()
+                .await
+                .insert(placement.agent_id, turn);
         }
         let failed = result.is_err();
         let _ = call.reply.send(result);
@@ -502,5 +518,6 @@ impl Hosting {
         for (_, entry) in entries {
             let _ = entry.task.await;
         }
+        self.computer_sampled.lock().await.clear();
     }
 }

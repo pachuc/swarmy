@@ -296,8 +296,7 @@ async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, 
         "{turn:?}"
     );
     assert!(
-        turn.inference[0].output_tokens_per_second.is_some()
-            || turn.inference[0].output_tokens == 0,
+        turn.inference[0].output_tokens_per_second.is_some(),
         "{turn:?}"
     );
 }

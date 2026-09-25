@@ -137,8 +137,11 @@ pub fn dispatch_patches(event: TurnEvent, tool_name: &str) -> Vec<MetricPatch> {
     ]
 }
 
-/// One node completion folds the tool result, the optional first-tool
-/// computer re-sample, and the completion stage into a single transaction.
+/// One node completion folds the tool result and the completion stage into
+/// a single transaction. The first-tool computer re-sample follows in its
+/// own transaction from a spawned task so the completion never waits on the
+/// volume stat round trip; the helper keeps the optional computer slot for
+/// tests that build the batch directly.
 #[must_use]
 pub fn completion_patches(
     tool: ToolMetric,
@@ -392,11 +395,16 @@ impl Store {
 
     /// Merge several independent observations in one read-modify-write
     /// transaction. A dispatch folds its tool name into its stage, and a node
-    /// completion folds its tool result, first-tool computer sample, and
-    /// completion stage, so each costs one transaction. A `CommitUnknown`
-    /// outcome is retried once: every patch is idempotent (stages dedup,
-    /// inference keeps the maximum wait counters, tool and computer merges
-    /// keep the first sample), so replaying the batch cannot double-count.
+    /// completion folds its tool result and completion stage, so each costs
+    /// one transaction; the first-tool computer re-sample follows in its own
+    /// transaction from a spawned task so the completion never waits on the
+    /// volume stat round trip. A `CommitUnknown`
+    /// outcome is retried once, except for batches that contain a wait patch:
+    /// wait patches increment retry and wait counters, so replaying them
+    /// after a commit that actually landed would double-count. Stage,
+    /// inference, tool, computer, and error patches are idempotent (stages
+    /// dedup, inference keeps the maximum counters, tool and computer merges
+    /// keep the first sample), so replaying those batches is safe.
     /// # Errors
     /// Returns database or encoding failures without changing the conversation.
     pub async fn record_turn_metrics(
@@ -410,6 +418,9 @@ impl Store {
             session.as_ulid().to_bytes().as_slice(),
             turn.as_ulid().to_bytes().as_slice(),
         ));
+        let has_wait = patches
+            .iter()
+            .any(|patch| matches!(patch, MetricPatch::Wait { .. }));
         let mut attempts = 0;
         loop {
             let attempted = self
@@ -432,7 +443,9 @@ impl Store {
                 })
                 .await;
             match attempted {
-                Err(StoreError::CommitUnknown) if attempts == 0 => attempts += 1,
+                // Wait batches are not replayed: the increment is not
+                // idempotent, so a landed commit would double-count.
+                Err(StoreError::CommitUnknown) if attempts == 0 && !has_wait => attempts += 1,
                 other => return other,
             }
         }
@@ -809,9 +822,10 @@ mod tests {
     #[test]
     fn batched_patches_equal_sequential_writes_and_bound_transactions() {
         // One dispatch folds name plus stage; one completion folds tool plus
-        // computer plus stage. A turn with three tool calls costs six
-        // transactions (one dispatch and one completion per call) instead of
-        // roughly nine read-modify-write transactions per call.
+        // stage. A turn with three tool calls costs six transactions (one
+        // dispatch and one completion per call) instead of roughly nine
+        // read-modify-write transactions per call; the first-tool computer
+        // re-sample adds one spawned transaction per turn.
         let session = SessionId::from_ulid(ulid::Ulid::nil());
         let turn = MessageId::from_ulid(ulid::Ulid::nil());
         let dispatched = |request: swarmy_core::RequestId| TurnEvent {
