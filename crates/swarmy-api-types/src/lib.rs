@@ -34,6 +34,9 @@ pub fn same_major(left: &str, right: &str) -> bool {
 pub enum LogId {
     Session(String),
     Channel(String),
+    /// Ephemeral turn timeline observations. Live-only: cursors are ignored
+    /// and events are numbered per connection, so reconnects replay nothing.
+    Timeline(String),
 }
 
 /// A sequence is local to one log, starts at one, and increases without gaps.
@@ -278,6 +281,20 @@ pub struct DoctorSnapshot {
     pub images: Vec<String>,
     pub default_image: Option<String>,
     pub credentials: Option<Vec<Credential>>,
+    /// Registered nodes with committed sandbox memory. Older servers omit
+    /// this; clients must treat a missing list as unknown, not empty.
+    #[serde(default)]
+    pub nodes: Vec<DoctorNode>,
+}
+
+/// One registered node and its committed sandbox memory in bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DoctorNode {
+    pub node_id: String,
+    pub roles: Vec<NodeRole>,
+    pub capacity: NodeCapacity,
+    pub last_heartbeat: String,
+    pub committed_memory_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -288,6 +305,45 @@ pub struct DoctorService {
     pub alive: bool,
     pub providers: Vec<String>,
     pub capacity: Option<NodeCapacity>,
+}
+
+/// Start a chunk collection run on the control plane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StartGcRun {
+    pub idempotency_key: String,
+    pub dry_run: bool,
+}
+
+/// Durable accounting for one collector attempt. An unfinished record means
+/// the run is still sweeping or its process stopped before persisting final
+/// counters.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcRun {
+    pub run_id: String,
+    pub started_at: String,
+    pub dry_run: bool,
+    pub finished: bool,
+    pub error: Option<String>,
+    pub manifests: u64,
+    pub scanned: u64,
+    pub candidates: u64,
+    pub candidate_bytes: u64,
+    pub deleted: u64,
+    pub bytes_freed: u64,
+    pub duration_ms: u64,
+}
+
+/// A published image with its chunk statistics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ImageUpload {
+    pub name: String,
+    pub tag: String,
+    pub manifest_id: String,
+    pub header: serde_json::Value,
+    pub size: u64,
+    pub chunks_total: u64,
+    pub chunks_stored: u64,
+    pub chunks_uploaded: u64,
 }
 
 /// Every client mutation has a key that survives retries of the same intent.
@@ -591,9 +647,9 @@ pub mod cli_paths {
 pub mod api_paths {
     use super::{
         Agent, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
-        CreateCredential, CreateSession, Credential, DeleteRequest, Event, HealthResponse, Image,
-        InterruptOutcome, InterruptSession, Model, Provider, Session, SessionClosed, Subscription,
-        UpdateAgent,
+        CreateCredential, CreateSession, Credential, DeleteRequest, Event, GcRun, HealthResponse,
+        Image, ImageUpload, InterruptOutcome, InterruptSession, Model, Provider, Session,
+        SessionClosed, StartGcRun, Subscription, UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -694,6 +750,26 @@ pub mod api_paths {
         ),
         responses((status = 200, body = Vec<Image>), (status = 401, body = ApiError)))]
     pub fn list_images() {}
+    #[utoipa::path(post, path = "/v1/images/uploads",
+        params(
+            ("name" = String, Query, description = "Image name"),
+            ("tag" = String, Query, description = "Image tag"),
+            ("idempotency_key" = String, Query, description = "Retry key for this upload"),
+            ("scratch" = Option<String>, Query, description = "Comma-separated sandbox scratch paths"),
+            ("memory_mib" = Option<u64>, Query, description = "Sandbox memory requirement"),
+            ("display" = Option<bool>, Query, description = "Image needs a display server"),
+        ),
+        request_body(content = inline(Vec<u8>), description = "Raw ext4 image bytes"),
+        responses((status = 200, body = ImageUpload), (status = 400, body = ApiError)))]
+    pub fn upload_image() {}
+    #[utoipa::path(post, path = "/v1/gc/runs",
+        request_body = StartGcRun,
+        responses((status = 200, body = GcRun), (status = 400, body = ApiError)))]
+    pub fn start_gc_run() {}
+    #[utoipa::path(get, path = "/v1/gc/runs/{id}",
+        params(("id" = String, Path, description = "Collection run id")),
+        responses((status = 200, body = GcRun), (status = 404, body = ApiError)))]
+    pub fn gc_run() {}
     #[utoipa::path(get, path = "/v1/images/{name}/{tag}",
         params(
             ("name" = String, Path, description = "Image name"),
@@ -755,9 +831,10 @@ pub mod api_paths {
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
         api_paths::wait_idle, api_paths::session_events,
         api_paths::subscribe, api_paths::update_subscription,
-        api_paths::list_images, api_paths::show_image,
+        api_paths::list_images, api_paths::upload_image, api_paths::show_image,
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
         api_paths::list_providers,
+        api_paths::start_gc_run, api_paths::gc_run,
         api_paths::list_credentials, api_paths::set_credential,
         api_paths::check_credential, api_paths::remove_credential,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
@@ -767,9 +844,10 @@ pub mod api_paths {
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
-    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
+    StartGcRun, GcRun,
     CreateAgent, UpdateAgent, DeleteRequest,
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
@@ -801,6 +879,7 @@ mod tests {
     fn resource_json_contract() {
         check!(LogId, {"kind":"session","id":"s"});
         check!(LogId, {"kind":"channel","id":"c"});
+        check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
         check!(Subscription, {"cursors":[],"token_deltas":false});
         for status in ["running", "finished", "failed"] {
@@ -878,6 +957,9 @@ mod tests {
         check!(CreateTurn, {"idempotency_key":"k","session_id":"s"});
         check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
         check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
+        check!(StartGcRun, {"idempotency_key":"k","dry_run":true});
+        check!(GcRun, {"run_id":"r","started_at":"2026-09-23T12:00:00Z","dry_run":true,"finished":true,"error":null,"manifests":1,"scanned":2,"candidates":3,"candidate_bytes":4,"deleted":5,"bytes_freed":6,"duration_ms":7});
+        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
     }
 

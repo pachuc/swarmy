@@ -4,6 +4,7 @@ pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
+pub mod cost;
 pub mod fake;
 pub mod responses;
 pub mod retry;

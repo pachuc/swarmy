@@ -29,6 +29,7 @@ pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;
 mod leases;
 mod nodes;
+pub mod objects;
 mod placed_tools;
 mod placements;
 pub use placements::ScratchRecord;

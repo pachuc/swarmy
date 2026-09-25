@@ -92,8 +92,9 @@ fn no_api_fails_without_service_lines_and_does_not_leak_secrets() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
-fn doctor_starts_even_when_the_client_library_cannot_load() {
+fn doctor_reports_no_client_library_check() {
+    // The client links no database library, so doctor must not report a
+    // libfdb_c check at all, even with an unloadable library on the path.
     let fixture = Fixture::new();
     fixture.config("provider = 'fake'");
     fs::write(
@@ -106,14 +107,13 @@ fn doctor_starts_even_when_the_client_library_cannot_load() {
         .env("LD_LIBRARY_PATH", fixture.0.path())
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "libfdb_c")["ok"], false);
     assert!(
-        check(&report, "libfdb_c")["fix"]
-            .as_str()
+        report["checks"]
+            .as_array()
             .unwrap()
-            .contains("scripts/install-dev-tools.sh")
+            .iter()
+            .all(|check| check["name"] != "libfdb_c")
     );
     assert_eq!(check(&report, "config")["ok"], true);
 }

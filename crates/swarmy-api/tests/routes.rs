@@ -51,6 +51,7 @@ async fn authenticated_routes_and_create_replay() {
         bus,
         "test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
+        std::sync::Arc::new(object_store::memory::InMemory::new()),
     );
     state.default_image = Some("fixture:test".into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

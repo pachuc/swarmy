@@ -32,8 +32,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid S3 namespace: {0}")]
     S3Namespace(&'static str),
-    #[error(transparent)]
-    ObjectStore(#[from] object_store::Error),
     #[error("configuration I/O: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid configuration: {0}")]

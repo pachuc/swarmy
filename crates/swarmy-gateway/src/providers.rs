@@ -10,7 +10,7 @@ use swarmy_llm::{
 use swarmy_store::Store;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::{config::FileFake, credentials::ClusterCredentials};
+use crate::credentials::ClusterCredentials;
 
 type ClientKey = (String, String, [u8; 32]);
 
@@ -95,9 +95,12 @@ impl Providers {
             }
         };
         let scripted = if std::path::Path::new(&settings.fake.script).is_file() {
-            FileFake::from_settings(settings)
-                .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
-                .map_err(|_| "fake script is unreadable or invalid")
+            swarmy_llm::fake::FileFake::from_files(
+                std::path::Path::new(&settings.fake.script),
+                std::path::Path::new(&settings.fake.call_log),
+            )
+            .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
+            .map_err(|_| "fake script is unreadable or invalid")
         } else {
             Err("fake script is absent")
         };

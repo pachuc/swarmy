@@ -10,11 +10,15 @@ mod client_commands;
 mod client_conversation;
 mod dev;
 mod doctor;
+mod gc;
+mod image;
 mod image_command;
 mod input;
 mod models;
+mod models_probe;
 mod models_probe_command;
 mod provider_report;
+mod provider_runtime;
 #[cfg(feature = "remote")]
 mod remote;
 mod remote_command;
@@ -25,7 +29,6 @@ mod remote_ssh;
 mod selection_command;
 mod session_command;
 mod tools;
-mod vol_command;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -73,11 +76,6 @@ enum Command {
     Gc {
         #[arg(long)]
         dry_run: bool,
-    },
-    /// Create, attach, and snapshot durable volumes
-    Vol {
-        #[command(subcommand)]
-        command: vol_command::Command,
     },
     /// Build and inspect base filesystem images
     Image {
@@ -175,47 +173,18 @@ fn main() -> anyhow::Result<()> {
         };
         return tokio::runtime::Runtime::new()?.block_on(auth::run(command, auth_file, cli.json));
     }
+    // Every database-backed command runs through the control-plane API, so
+    // the client links no database, message bus, or object store library.
     if matches!(
         &cli.command,
-        Command::Session {
-            command: session_command::Command::List | session_command::Command::Show { .. }
-        } | Command::Agent { .. }
+        Command::Session { .. }
+            | Command::Agent { .. }
             | Command::Image {
                 command: image_command::Command::Ls | image_command::Command::Show { .. }
             }
-            | Command::Auth {
-                command: auth_command::Command::Set(_)
-                    | auth_command::Command::Ls
-                    | auth_command::Command::Rm { .. }
-                    | auth_command::Command::Check { .. },
-                ..
-            }
+            | Command::Auth { .. }
     ) {
         return tokio::runtime::Runtime::new()?.block_on(api_commands::run(cli.command, cli.json));
-    }
-    if matches!(
-        cli.command,
-        Command::Auth { .. }
-            | Command::Models {
-                command: models::Command::Probe(_)
-            }
-            | Command::Remote {
-                command: remote_command::Command::Status
-            }
-            | Command::Agent { .. }
-            | Command::Session { .. }
-            | Command::Vol { .. }
-            | Command::Image { .. }
-            | Command::Gc { .. }
-    ) {
-        use std::os::unix::process::CommandExt;
-        let runtime = std::env::current_exe()?.with_file_name("swarmy-session");
-        let error = std::process::Command::new(runtime)
-            .args(std::env::args_os().skip(1))
-            .exec();
-        return Err(anyhow::anyhow!(
-            "cannot start database commands: {error}; reinstall swarmy-cli"
-        ));
     }
     tokio::runtime::Runtime::new()?.block_on(run(cli))
 }
@@ -266,17 +235,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         #[cfg(not(feature = "remote"))]
         Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Agent { .. }
-        | Command::Session { .. }
-        | Command::Vol { .. }
-        | Command::Image { .. }
-        | Command::Gc { .. } => unreachable!(),
+        Command::Agent { .. } | Command::Session { .. } => unreachable!(),
+        Command::Image { command } => image::run(command, cli.json).await?,
+        Command::Gc { dry_run } => gc::run(dry_run, cli.json).await?,
         Command::Doctor => {
             if !doctor::run(cli.json).await? {
                 std::process::exit(1);
             }
         }
-        Command::Auth { .. } => unreachable!("auth commands run in swarmy-session"),
+        Command::Auth { .. } => unreachable!("auth commands run through the API"),
         Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())

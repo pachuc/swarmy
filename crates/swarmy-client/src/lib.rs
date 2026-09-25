@@ -20,10 +20,24 @@ pub enum Error {
     Decode(#[from] serde_json::Error),
     #[error("invalid stream UTF-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+    #[error("local file error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("invalid base URL: {0}")]
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+}
+
+/// A locally built image streamed to the control plane for publication.
+#[derive(Clone, Debug)]
+pub struct UploadImage<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub idempotency_key: &'a str,
+    pub scratch: &'a [String],
+    pub memory_mib: Option<u64>,
+    pub display: bool,
+    pub file: &'a std::path::Path,
 }
 
 #[derive(Clone)]
@@ -277,6 +291,48 @@ impl Client {
     pub async fn image(&self, name: &str, tag: &str) -> Result<api::Image, Error> {
         self.get(&format!("images/{}/{}", segment(name), segment(tag)), &[])
             .await
+    }
+    /// Stream a locally built ext4 file for server-side publication.
+    ///
+    /// # Errors
+    /// Returns file, API, transport, or response decoding errors.
+    pub async fn upload_image(&self, upload: &UploadImage<'_>) -> Result<api::ImageUpload, Error> {
+        let mut query: Vec<(String, String)> = vec![
+            ("name".into(), upload.name.into()),
+            ("tag".into(), upload.tag.into()),
+            ("idempotency_key".into(), upload.idempotency_key.into()),
+            ("display".into(), upload.display.to_string()),
+        ];
+        if !upload.scratch.is_empty() {
+            query.push(("scratch".into(), upload.scratch.join(",")));
+        }
+        if let Some(memory) = upload.memory_mib {
+            query.push(("memory_mib".into(), memory.to_string()));
+        }
+        let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::open(upload.file).await?);
+        let response = self
+            .http
+            .post(self.url("images/uploads"))
+            .bearer_auth(&self.token)
+            .query(&query)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+        decode(response).await
+    }
+    /// Start a chunk collection run on the control plane.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn start_gc_run(&self, body: &api::StartGcRun) -> Result<api::GcRun, Error> {
+        self.send(Method::POST, "gc/runs", body).await
+    }
+    /// Read a collection run, finished or still sweeping.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn gc_run(&self, id: &str) -> Result<api::GcRun, Error> {
+        self.get(&format!("gc/runs/{id}"), &[]).await
     }
     /// Calls the corresponding API route.
     ///

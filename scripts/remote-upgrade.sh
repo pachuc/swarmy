@@ -17,7 +17,7 @@ if [[ $mode == stack ]]; then
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked --no-default-features -p swarmy-cli >&2
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
         -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api >&2
-    binaries=(swarmy swarmy-session swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api)
+    binaries=(swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api)
 else
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd >&2
     binaries=(swarmyd)

@@ -7,7 +7,7 @@ use swarmy_core::CHUNK_SIZE;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let store = swarmy_config::Settings::load()?.settings.object_store()?;
+    let store = swarmy_store::objects::from_settings(&swarmy_config::Settings::load()?.settings)?;
     for sample in 0..20 {
         let id = ulid::Ulid::generate();
         let path = Path::from(format!("request-probe/{id}"));

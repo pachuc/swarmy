@@ -1,28 +1,42 @@
-use std::sync::Arc;
-
-use swarmy_store::{Store, blob::ObjectBlobStore};
-
 pub async fn run(dry_run: bool, json: bool) -> anyhow::Result<()> {
-    let settings = swarmy_config::Settings::load()?.settings;
-    let blobs = Arc::new(ObjectBlobStore::new(settings.object_store()?));
-    let objects = blobs.object_store();
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    anyhow::ensure!(
-        directory.iter().all(|part| !part.is_empty()),
-        "empty store directory component"
-    );
-    let store = Store::open(Some(&settings.fdb_cluster_file), Some(&directory), blobs).await?;
-    let run = swarmy_volume::gc::collect(&store, objects, settings.gc, dry_run).await?;
+    let (client, endpoint) = crate::api_client::connect()?;
+    let started = crate::api_client::call(
+        &endpoint,
+        client.start_gc_run(&swarmy_api_types::StartGcRun {
+            idempotency_key: ulid::Ulid::generate().to_string(),
+            dry_run,
+        }),
+    )
+    .await
+    .map_err(|error| {
+        if error.to_string().contains("gc_busy") {
+            anyhow::anyhow!("another collection run is already in progress")
+        } else {
+            error
+        }
+    })?;
+    // The sweep continues on the control plane; follow its durable record.
+    // Collection scans the whole object namespace, so allow it time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    let run = loop {
+        let run = crate::api_client::call(&endpoint, client.gc_run(&started.run_id)).await?;
+        if run.finished {
+            break run;
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("collection run {} is still in progress", run.run_id);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    };
+    if let Some(error) = run.error.as_deref() {
+        anyhow::bail!("collection run {} failed: {error}", run.run_id);
+    }
     if json {
         println!("{}", serde_json::to_string(&run)?);
     } else {
         println!(
             "Run {}: {} manifests, {} chunks scanned; {} candidates ({} bytes); {} deleted ({} bytes freed); {} ms{}",
-            run.owner,
+            run.run_id,
             run.manifests,
             run.scanned,
             run.candidates,

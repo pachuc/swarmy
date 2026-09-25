@@ -70,7 +70,7 @@ impl ObjectBlobStore {
     }
 
     fn from_settings(settings: &swarmy_config::Settings) -> Result<Self, BlobError> {
-        Ok(Self::new(settings.object_store()?))
+        Ok(Self::new(crate::objects::from_settings(settings)?))
     }
 
     #[must_use]

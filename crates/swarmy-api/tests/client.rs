@@ -38,6 +38,7 @@ impl Fixture {
             self.bus.clone(),
             "test-token".into(),
             swarmy_llm::catalog::Catalog::get().clone(),
+            std::sync::Arc::new(object_store::memory::InMemory::new()),
         );
         self.server = tokio::spawn(axum::serve(listener, router(state)).into_future());
     }
@@ -115,6 +116,7 @@ async fn fixture() -> Option<Fixture> {
         bus.clone(),
         "test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
+        std::sync::Arc::new(object_store::memory::InMemory::new()),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

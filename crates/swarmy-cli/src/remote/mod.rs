@@ -7,6 +7,7 @@ mod logs;
 mod services;
 pub(crate) mod ssh;
 mod state;
+mod status;
 #[cfg(test)]
 mod tests;
 mod up;
@@ -118,7 +119,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
         Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
         Command::Logs { name } => logs::run(&state, &name).await,
-        Command::Status => unreachable!("status runs in swarmy-session"),
+        Command::Status => status::run(json).await,
     }
 }
 

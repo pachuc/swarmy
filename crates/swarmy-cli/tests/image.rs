@@ -2,10 +2,7 @@ use std::process::Command;
 
 #[test]
 fn image_commands_are_advertised_and_validate_arguments() {
-    for binary in [
-        env!("CARGO_BIN_EXE_swarmy"),
-        env!("CARGO_BIN_EXE_swarmy-session"),
-    ] {
+    for binary in [env!("CARGO_BIN_EXE_swarmy")] {
         let output = Command::new(binary)
             .args(["image", "--help"])
             .output()
@@ -92,32 +89,6 @@ async fn root_base_ubuntu_acceptance() {
     assert!(first["chunks_stored"].as_u64().unwrap() > 0);
     let reference = format!("base-ubuntu:{tag}");
     check_registration(&reference, &tag, &first);
-    let _network = swarmy_store::boot();
-    let settings = swarmy_config::Settings::load().unwrap().settings;
-    let store_directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    let store = swarmy_store::Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(&store_directory),
-        std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    let manifest = serde_json::from_value(first["manifest_id"].clone()).unwrap();
-    let volume = swarmy_core::VolumeId::from_ulid(ulid::Ulid::generate());
-    store.create_volume(volume, manifest).await.unwrap();
-    assert_eq!(
-        store
-            .get_volume(volume)
-            .await
-            .unwrap()
-            .unwrap()
-            .head_manifest,
-        manifest
-    );
     check_chroot(directory.path(), &raw);
     let started = std::time::Instant::now();
     let second_raw = directory.path().join("second.ext4");
@@ -144,16 +115,6 @@ async fn root_base_ubuntu_acceptance() {
     assert_eq!(
         image_json(&["show", &reference])["manifest_id"],
         second["manifest_id"]
-    );
-    // Retagging must leave the already-created volume on its original manifest.
-    assert_eq!(
-        store
-            .get_volume(volume)
-            .await
-            .unwrap()
-            .unwrap()
-            .head_manifest,
-        manifest
     );
 }
 

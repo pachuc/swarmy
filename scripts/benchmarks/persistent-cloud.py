@@ -74,7 +74,7 @@ def main():
     primary, remote = (node["private_ip"] for node in nodes)
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
-        for binary in ("swarmy", "swarmy-session", "swarmy-chaos", "swarmy-scheduler", "swarmy-worker", "swarmy-gateway", "swarmyd"):
+        for binary in ("swarmy", "swarmy-chaos", "swarmy-scheduler", "swarmy-worker", "swarmy-gateway", "swarmyd"):
             run(["strip", "-o", str(staging / binary), str(ROOT / "target/debug" / binary)])
         for binary in ("fdbserver", "fdbcli", "nats-server"):
             shutil.copy2(shutil.which(binary) or "/usr/sbin/" + binary, staging / binary)

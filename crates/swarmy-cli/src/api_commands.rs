@@ -142,7 +142,50 @@ async fn session(
         session_command::Command::Show { session_id } => {
             show_session(client, endpoint, session_id, json).await?;
         }
-        _ => unreachable!("session close and interrupt run in swarmy-session"),
+        session_command::Command::Close { session_id } => {
+            let id = session_id.to_string();
+            request(
+                endpoint,
+                client.close_session(
+                    &id,
+                    &swarmy_api_types::CloseSession {
+                        idempotency_key: Ulid::generate().to_string(),
+                    },
+                ),
+            )
+            .await?;
+            print(
+                &json!({"event":"session_closed","session_id":id}),
+                &format!("Closed session {id}"),
+                json,
+            );
+        }
+        session_command::Command::Interrupt { session_id } => {
+            let id = session_id.to_string();
+            let outcome = request(
+                endpoint,
+                client.interrupt(
+                    &id,
+                    &swarmy_api_types::InterruptSession {
+                        idempotency_key: Ulid::generate().to_string(),
+                    },
+                ),
+            )
+            .await?;
+            let (status, message) = match outcome.result {
+                swarmy_api_types::InterruptStatus::Finished => {
+                    ("finished", format!("Interrupted session {id}"))
+                }
+                swarmy_api_types::InterruptStatus::Requested => {
+                    ("requested", format!("Interrupt requested for session {id}"))
+                }
+            };
+            print(
+                &json!({"event":"session_interrupt","session_id":id,"result":status}),
+                &message,
+                json,
+            );
+        }
     }
     Ok(())
 }

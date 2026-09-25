@@ -49,9 +49,13 @@ pub enum Command {
 }
 
 pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
+    // Probes verify providers directly from the CLI and need no API.
+    if let Command::Probe(args) = command {
+        return crate::models_probe::run(args, json).await;
+    }
     let (client, endpoint) = crate::api_client::connect()?;
     match command {
-        Command::Probe(_) => unreachable!("probes run in swarmy-session"),
+        Command::Probe(_) => unreachable!("probes run without the API"),
         Command::Ls {
             provider,
             reasoning,

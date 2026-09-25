@@ -41,7 +41,7 @@ impl Terminal {
         agent: Option<&str>,
         new: bool,
     ) -> Self {
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
+        let mut command = CommandBuilder::new(super::cli_bin::swarmy());
         command.arg("chat");
         if new {
             command.arg("--new");
@@ -214,10 +214,7 @@ impl Services {
         let mut services = Self {
             files,
             children: Vec::new(),
-            bin: PathBuf::from(env!("CARGO_BIN_EXE_swarmy"))
-                .parent()
-                .unwrap()
-                .to_owned(),
+            bin: super::cli_bin::swarmy().parent().unwrap().to_owned(),
         };
         for name in ["scheduler", "worker", "gateway"] {
             services.launch(fixture, name);
@@ -753,10 +750,7 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
     let mut services = Services {
         files,
         children: Vec::new(),
-        bin: PathBuf::from(env!("CARGO_BIN_EXE_swarmy"))
-            .parent()
-            .unwrap()
-            .to_owned(),
+        bin: super::cli_bin::swarmy().parent().unwrap().to_owned(),
     };
     for name in ["scheduler", "worker", "gateway"] {
         services.launch(fixture, name);
@@ -788,7 +782,7 @@ mod named;
 #[tokio::test]
 async fn header_shows_persisted_provider_model_and_effort() {
     run(|fixture| async move {
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
+        let mut command = CommandBuilder::new(super::cli_bin::swarmy());
         command.args(["chat", "--model", "openai/gpt-5.5", "--effort", "max"]);
         let mut terminal = Terminal::command(&fixture, command, "fixture:test");
         let screen = terminal.ready().await;

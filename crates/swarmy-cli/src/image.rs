@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
-use swarmy_core::{ImageTag, ManifestId};
-use swarmy_volume::image::{Recipe, build_ext4, upload_image_protected, validate_label};
+use swarmy_image::{Recipe, validate_label};
 
-use crate::{image_command::Command, session::store};
+use crate::image_command::Command;
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
     match command {
@@ -40,11 +39,24 @@ async fn build(
     );
     let name = name.unwrap_or(directory_name);
     validate_label(&name)?;
-    let store = store().await?;
-    let settings = swarmy_config::Settings::load()?.settings;
-    let objects = settings.object_store()?;
-    let image = tokio::task::spawn_blocking(move || build_ext4(&recipe, &directory)).await??;
-    let built = upload_image_protected(image.path(), objects, store.clone()).await?;
+    // The ext4 file is built locally; chunk publication and registration run
+    // on the control plane so the client never needs object store credentials.
+    let image = tokio::task::spawn_blocking(move || swarmy_image::build_ext4(&recipe, &directory))
+        .await??;
+    let (client, endpoint) = crate::api_client::connect()?;
+    let uploaded = crate::api_client::call(
+        &endpoint,
+        client.upload_image(&swarmy_client::UploadImage {
+            name: &name,
+            tag: &tag,
+            idempotency_key: &ulid::Ulid::generate().to_string(),
+            scratch: &scratch,
+            memory_mib,
+            display: recipe_display,
+            file: image.path(),
+        }),
+    )
+    .await?;
     if let Some(output) = output {
         // Refuse to overwrite an existing image, including through a symlink.
         let destination = std::fs::OpenOptions::new()
@@ -63,27 +75,21 @@ async fn build(
             anyhow::ensure!(status.success(), "copying ext4 image failed: {status}");
         }
     }
-    let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
-    store.put_manifest(manifest_id, &built.header).await?;
-    store
-        .put_image_with_requirements(
-            &name,
-            &ImageTag(tag.clone()),
-            manifest_id,
-            &scratch,
-            memory_mib,
-            recipe_display,
-        )
-        .await?;
     if json {
         println!(
             "{}",
-            serde_json::json!({"event": "image_built", "name": name, "tag": tag, "manifest_id": manifest_id, "header": built.header, "size": built.header.size, "chunks_total": built.chunks_total, "chunks_stored": built.chunks_stored, "chunks_uploaded": built.chunks_uploaded})
+            serde_json::json!({"event": "image_built", "name": uploaded.name, "tag": uploaded.tag, "manifest_id": uploaded.manifest_id, "header": uploaded.header, "size": uploaded.size, "chunks_total": uploaded.chunks_total, "chunks_stored": uploaded.chunks_stored, "chunks_uploaded": uploaded.chunks_uploaded})
         );
     } else {
         println!(
-            "{name}:{tag} {manifest_id}\nsize={} bytes chunks_stored={} chunks_uploaded={} chunks_total={}",
-            built.header.size, built.chunks_stored, built.chunks_uploaded, built.chunks_total
+            "{}:{} {}\nsize={} bytes chunks_stored={} chunks_uploaded={} chunks_total={}",
+            uploaded.name,
+            uploaded.tag,
+            uploaded.manifest_id,
+            uploaded.size,
+            uploaded.chunks_stored,
+            uploaded.chunks_uploaded,
+            uploaded.chunks_total
         );
     }
     Ok(())

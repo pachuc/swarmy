@@ -1,6 +1,4 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
-//! `swarmy-session` includes this file directly, so it must not reach into the
-//! parent module.
 use std::{
     path::{Path, PathBuf},
     process::Stdio,

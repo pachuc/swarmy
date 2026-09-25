@@ -26,6 +26,7 @@ async fn run() -> Result<()> {
         .map(str::to_owned)
         .collect();
     let blobs = Arc::new(ObjectBlobStore::from_env()?);
+    let objects = blobs.object_store();
     let store = Store::open(Some(&settings.fdb_cluster_file), Some(&directory), blobs).await?;
     let bus = Bus::connect(
         &settings.nats_url,
@@ -61,7 +62,8 @@ async fn run() -> Result<()> {
             }
         }
     });
-    let mut state = AppState::new(store, bus, token, settings.catalog()?);
+    let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);
+    state.gc = settings.gc;
     state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
     state.default_image = settings.default_image.clone();
     state.default_selection = swarmy_core::ResolvedSelection {

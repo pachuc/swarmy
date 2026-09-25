@@ -29,12 +29,13 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         .model(provider_id, model_id)
         .with_context(|| format!("unknown model: {}", args.model))?;
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
-        ClientAuth::Scripted(Arc::new(swarmy_gateway::config::FileFake::from_settings(
-            &settings,
+        ClientAuth::Scripted(Arc::new(swarmy_llm::fake::FileFake::from_files(
+            std::path::Path::new(&settings.fake.script),
+            std::path::Path::new(&settings.fake.call_log),
         )?))
     } else {
         let resolver =
-            swarmy_llm::auth::Resolver::new(crate::provider_runtime::auth_store(&settings).await?)?;
+            swarmy_llm::auth::Resolver::new(crate::provider_runtime::auth_store(&settings))?;
         swarmy_llm::auth::resolve(provider_id, &resolver).await
             .with_context(|| format!("resolve {provider_id}; use swarmy auth set {provider_id} --from-env or swarmy auth login {provider_id}"))?.auth
     };
@@ -49,14 +50,14 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let first = stream(client.as_ref(), request.clone(), json).await?;
     totals.add(
         &first.usage,
-        swarmy_gateway::cost::cost_micros(&model.cost, &first.usage),
+        swarmy_llm::cost::cost_micros(&model.cost, &first.usage),
     );
     let answer = if args.tools {
         tool_result(&mut request, first)?;
         let answer = stream(client.as_ref(), request, json).await?;
         totals.add(
             &answer.usage,
-            swarmy_gateway::cost::cost_micros(&model.cost, &answer.usage),
+            swarmy_llm::cost::cost_micros(&model.cost, &answer.usage),
         );
         answer
     } else {

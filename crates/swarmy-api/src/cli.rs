@@ -15,6 +15,7 @@ use ulid::Ulid;
 
 /// One bounded API read gives doctor a consistent view of service heartbeats.
 pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot> {
+    let nodes = registered_nodes(&state).await?;
     let services = state.store.list_services().await.map_err(storage)?;
     let services: Vec<_> = services
         .into_iter()
@@ -86,7 +87,54 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnaps
         images,
         default_image: state.default_image,
         credentials,
+        nodes,
     }))
+}
+
+/// Registered nodes with committed sandbox memory for the doctor snapshot.
+async fn registered_nodes(
+    state: &AppState,
+) -> Result<Vec<api::DoctorNode>, (axum::http::StatusCode, Json<api::ApiError>)> {
+    let mut nodes = Vec::new();
+    let mut after = None;
+    loop {
+        let (page, next) = state
+            .store
+            .scan_live_nodes(after, jiff::Timestamp::MIN, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        for record in page {
+            let committed = state
+                .store
+                .committed_memory(record.node_id)
+                .await
+                .map_err(storage)?;
+            nodes.push(api::DoctorNode {
+                node_id: record.node_id.to_string(),
+                roles: record
+                    .roles
+                    .into_iter()
+                    .map(|role| match role {
+                        swarmy_core::NodeRole::Sandbox => api::NodeRole::Sandbox,
+                        swarmy_core::NodeRole::Volume => api::NodeRole::Volume,
+                    })
+                    .collect(),
+                capacity: api::NodeCapacity {
+                    cpu_millis: record.capacity.cpu_millis,
+                    memory_bytes: record.capacity.memory_bytes,
+                    disk_bytes: record.capacity.disk_bytes,
+                    sandboxes: record.capacity.sandboxes,
+                },
+                last_heartbeat: record.last_heartbeat.to_string(),
+                committed_memory_bytes: committed,
+            });
+        }
+        after = next;
+        if after.is_none() {
+            break;
+        }
+    }
+    Ok(nodes)
 }
 
 fn typed<T: serde::de::DeserializeOwned>(
