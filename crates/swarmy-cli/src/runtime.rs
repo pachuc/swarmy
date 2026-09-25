@@ -98,6 +98,9 @@ enum Command {
         /// Create a side conversation on the named agent
         #[arg(long, requires = "agent")]
         new: bool,
+        /// Continue an existing session by id instead of an agent's main one
+        #[arg(long, conflicts_with_all = ["agent", "image", "new"])]
+        session: Option<ulid::Ulid>,
         #[command(flatten)]
         selection: selection_command::SelectionArgs,
     },
