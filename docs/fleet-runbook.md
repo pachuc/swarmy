@@ -172,6 +172,9 @@ that node (all idle after the drain).
 Use `--drain-timeout 1200` for long builds, or `--services-only` when node
 sandboxes must stay untouched. A dirty local checkout requires the explicit
 `--allow-dirty` acknowledgement. `--json` prints one summary per node.
+Upgrade all gateway nodes together: a new gateway migrates provider records
+to labelled entries on first read, and an old gateway sharing the store loses
+the provider once its legacy record is migrated.
 
 ## Recovery
 

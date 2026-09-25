@@ -40,13 +40,13 @@ hosts need no provider credentials.
 
 ```sh
 swarmy auth set anthropic --from-env
-swarmy auth set openai --file /private/openai-key
+swarmy auth set openai --label work-key --file /private/openai-key
 swarmy auth set azure --from-env --extra resource_name=my-resource
 swarmy auth set openrouter --api-key YOUR_KEY
 swarmy auth ls
 swarmy auth check
 swarmy auth check chatgpt
-swarmy auth rm openai
+swarmy auth rm openai work-key
 swarmy auth login chatgpt
 swarmy auth login openrouter
 az login
@@ -66,6 +66,16 @@ API key needs `AZURE_RESOURCE_NAME` or `AZURE_OPENAI_BASE_URL`.
 `auth login azure --resource` accepts either a classic resource name or the full
 Foundry endpoint URL. Credential `base_url` takes precedence over the classic
 resource name; no `[custom_providers.azure]` entry is needed.
+
+A provider can hold multiple labelled entries. `auth set --provider P --label L`
+adds or replaces one entry; without `--label`, set, login, and import replace
+the provider's `default` entry so a rotation takes over serving. `auth rm
+PROVIDER LABEL` removes only that entry; `auth check PROVIDER --label LABEL`
+checks one, while `auth check` checks all. Old single-provider records are
+migrated to label `default` on first read. Until routes select entries, the
+oldest ready entry for a provider handles turns, falling back to the oldest
+entry when none is ready. Entry kinds are `api-key`,
+`subscription`, and `cloud`.
 
 `auth ls` and `auth check` expose metadata, never secrets. Check verifies local
 decryption and status, not provider acceptance. Status is `ready`, `expired`, or
