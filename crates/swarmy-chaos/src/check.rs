@@ -198,6 +198,9 @@ mod tests {
             cost_micros: 0,
             effort_requested: None,
             effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
             seq: 2,
             request_id: RequestId::for_step(id, 1),
             message: Message {
@@ -237,6 +240,8 @@ mod tests {
             head_seq: 2,
             snapshot_ref: None,
             inference: swarmy_core::InferenceSelection::default(),
+            route: None,
+            route_step: 0,
             kind: swarmy_core::SessionKind::Ephemeral,
             computer_deleted: false,
             plan: Vec::new(),
@@ -255,6 +260,9 @@ mod tests {
                 cost_micros: 0,
                 effort_requested: None,
                 effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
                 seq: 2,
                 request_id: RequestId::for_step(id, 1),
                 message: Message {

@@ -30,6 +30,8 @@ mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 mod gc;
 mod leases;
+mod routes;
+pub use routes::{RouteSnapshot, RouteStepStatus};
 mod nodes;
 mod placed_tools;
 mod placements;
@@ -73,6 +75,10 @@ pub enum StoreError {
     Keyring,
     #[error("credential does not exist")]
     CredentialMissing,
+    #[error("route does not exist")]
+    RouteMissing,
+    #[error("invalid route: {0}")]
+    InvalidRoute(String),
     #[error("credential refresh failed; login required")]
     CredentialRefresh,
     #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
@@ -194,6 +200,12 @@ struct StoredSession {
     inference: swarmy_core::InferenceSelection,
     #[serde(skip)]
     interrupt_requested: bool,
+    // The route override and attempt position live in side rows so the
+    // header keeps its legacy encoding.
+    #[serde(skip)]
+    route: Option<String>,
+    #[serde(skip)]
+    route_step: u32,
 }
 
 #[derive(Clone)]
@@ -314,7 +326,7 @@ impl Store {
         }
     }
 
-    async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
+    pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
         read(trx, &self.session_key(id))
             .await?
             .ok_or(StoreError::SessionMissing)
@@ -375,6 +387,8 @@ impl Store {
             session.plan,
             session.inference,
             session.interrupt_requested,
+            session.route,
+            session.route_step,
         ) = futures::try_join!(
             self.session_kind(trx, session.session_id),
             self.computer_deleted(trx, session.agent_id),
@@ -397,6 +411,20 @@ impl Store {
                     read(trx, &self.interrupt_key(session.session_id))
                         .await?
                         .unwrap_or(false),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read::<Option<String>>(trx, &self.session_route_key(session.session_id))
+                        .await?
+                        .flatten(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_route_step_key(session.session_id))
+                        .await?
+                        .unwrap_or(0),
                 )
             },
         )?;
@@ -423,6 +451,8 @@ impl Store {
             head_seq: session.head_seq,
             snapshot_ref,
             inference: session.inference,
+            route: session.route,
+            route_step: session.route_step,
         })
     }
 

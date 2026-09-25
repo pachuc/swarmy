@@ -170,6 +170,8 @@ impl Fixture {
                     head_seq: 0,
                     snapshot_ref: None,
                     inference: swarmy_core::InferenceSelection::default(),
+                    route: None,
+                    route_step: 0,
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -215,6 +217,9 @@ impl Fixture {
                     cost_micros: 0,
                     effort_requested: None,
                     effort_clamped: false,
+                    entry: None,
+                    route: None,
+                    route_step: None,
                     seq: 0,
                     request_id,
                     message: Message {
@@ -997,6 +1002,9 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
                 cost_micros: 0,
                 effort_requested: None,
                 effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
                 seq: 0,
                 request_id: RequestId::for_step(id, 2),
                 message: Message {

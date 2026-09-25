@@ -12,6 +12,9 @@ pub struct SelectionArgs {
     /// Reasoning effort: none, minimal, low, medium, high, xhigh, max
     #[arg(long, conflicts_with = "agent")]
     pub effort: Option<ReasoningEffort>,
+    /// Inference failover route for this session only
+    #[arg(long)]
+    pub route: Option<String>,
 }
 
 impl From<SelectionArgs> for InferenceSelection {

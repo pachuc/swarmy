@@ -283,6 +283,8 @@ impl Store {
                 usage,
                 cost_micros,
                 provider,
+                route,
+                route_step,
                 ..
             } = &completion.event
             {
@@ -293,6 +295,8 @@ impl Store {
                     crate::usage::UsageAttribution {
                         request: claim.request_id,
                         provider,
+                        route: route.clone(),
+                        route_step: *route_step,
                     },
                     usage,
                     *cost_micros,

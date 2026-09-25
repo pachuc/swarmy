@@ -35,6 +35,12 @@ enum HumanEvent {
         effort_requested: Option<crate::ReasoningEffort>,
         #[serde(default)]
         effort_clamped: bool,
+        #[serde(default)]
+        entry: Option<String>,
+        #[serde(default)]
+        route: Option<String>,
+        #[serde(default)]
+        route_step: Option<u32>,
     },
     ToolCallRequested {
         seq: u64,
@@ -137,6 +143,35 @@ enum BinaryEvent {
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
     },
+    /// A completion that names its auth entry and route step. Appended after
+    /// the retryable failure variant so every earlier discriminant is frozen.
+    /// Completions without route attribution keep the metered shape, so old
+    /// readers still decode the turns they wrote.
+    RoutedInferenceCompleted {
+        seq: u64,
+        request_id: RequestId,
+        message: Message,
+        #[serde(default)]
+        provider: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        effort_used: Option<crate::ReasoningEffort>,
+        #[serde(default)]
+        usage: crate::TokenUsage,
+        #[serde(default)]
+        cost_micros: u64,
+        #[serde(default)]
+        effort_requested: Option<crate::ReasoningEffort>,
+        #[serde(default)]
+        effort_clamped: bool,
+        #[serde(default)]
+        entry: Option<String>,
+        #[serde(default)]
+        route: Option<String>,
+        #[serde(default)]
+        route_step: Option<u32>,
+    },
 }
 
 impl Serialize for Event {
@@ -157,6 +192,158 @@ impl<'de> Deserialize<'de> for Event {
         }
     }
 }
+/// Encode a completion with the metered shape when it carries no route
+/// attribution, so old readers decode the turns they wrote; attributed
+/// completions use the appended routed shape.
+#[allow(clippy::too_many_arguments)]
+fn completion_to_binary(
+    seq: u64,
+    request_id: RequestId,
+    message: Message,
+    provider: String,
+    model: String,
+    effort_used: Option<crate::ReasoningEffort>,
+    usage: crate::TokenUsage,
+    cost_micros: u64,
+    effort_requested: Option<crate::ReasoningEffort>,
+    effort_clamped: bool,
+    entry: Option<String>,
+    route: Option<String>,
+    route_step: Option<u32>,
+) -> BinaryEvent {
+    if entry.is_none() && route.is_none() && route_step.is_none() {
+        BinaryEvent::MeteredInferenceCompleted {
+            seq,
+            request_id,
+            message,
+            provider,
+            model,
+            effort_used,
+            usage,
+            cost_micros,
+            effort_requested,
+            effort_clamped,
+        }
+    } else {
+        BinaryEvent::RoutedInferenceCompleted {
+            seq,
+            request_id,
+            message,
+            provider,
+            model,
+            effort_used,
+            usage,
+            cost_micros,
+            effort_requested,
+            effort_clamped,
+            entry,
+            route,
+            route_step,
+        }
+    }
+}
+
+/// Decode a failure, retryable or not.
+fn failed_completion(
+    seq: u64,
+    request_id: RequestId,
+    error: String,
+    retryable: bool,
+    retry_at: Option<jiff::Timestamp>,
+) -> Event {
+    Event::InferenceFailed {
+        seq,
+        request_id,
+        error,
+        retryable,
+        retry_at,
+    }
+}
+
+/// Decode a completion from before metering existed.
+fn unmetered_completion(seq: u64, request_id: RequestId, message: Message) -> Event {
+    Event::InferenceCompleted {
+        seq,
+        request_id,
+        message,
+        provider: String::new(),
+        model: String::new(),
+        effort_used: None,
+        usage: crate::TokenUsage::default(),
+        cost_micros: 0,
+        effort_requested: None,
+        effort_clamped: false,
+        entry: None,
+        route: None,
+        route_step: None,
+    }
+}
+
+/// Decode a routed completion with its entry and route step.
+#[allow(clippy::too_many_arguments)]
+fn routed_completion(
+    seq: u64,
+    request_id: RequestId,
+    message: Message,
+    provider: String,
+    model: String,
+    effort_used: Option<crate::ReasoningEffort>,
+    usage: crate::TokenUsage,
+    cost_micros: u64,
+    effort_requested: Option<crate::ReasoningEffort>,
+    effort_clamped: bool,
+    entry: Option<String>,
+    route: Option<String>,
+    route_step: Option<u32>,
+) -> Event {
+    Event::InferenceCompleted {
+        seq,
+        request_id,
+        message,
+        provider,
+        model,
+        effort_used,
+        usage,
+        cost_micros,
+        effort_requested,
+        effort_clamped,
+        entry,
+        route,
+        route_step,
+    }
+}
+
+/// Decode a metered completion without route attribution.
+#[allow(clippy::too_many_arguments)]
+fn metered_completion(
+    seq: u64,
+    request_id: RequestId,
+    message: Message,
+    provider: String,
+    model: String,
+    effort_used: Option<crate::ReasoningEffort>,
+    usage: crate::TokenUsage,
+    cost_micros: u64,
+    effort_requested: Option<crate::ReasoningEffort>,
+    effort_clamped: bool,
+) -> Event {
+    Event::InferenceCompleted {
+        seq,
+        request_id,
+        message,
+        provider,
+        model,
+        effort_used,
+        usage,
+        cost_micros,
+        effort_requested,
+        effort_clamped,
+        entry: None,
+        route: None,
+        route_step: None,
+    }
+}
+
 impl From<Event> for BinaryEvent {
     fn from(event: Event) -> Self {
         match event {
@@ -181,7 +368,10 @@ impl From<Event> for BinaryEvent {
                 cost_micros,
                 effort_requested,
                 effort_clamped,
-            } => Self::MeteredInferenceCompleted {
+                entry,
+                route,
+                route_step,
+            } => completion_to_binary(
                 seq,
                 request_id,
                 message,
@@ -192,7 +382,10 @@ impl From<Event> for BinaryEvent {
                 cost_micros,
                 effort_requested,
                 effort_clamped,
-            },
+                entry,
+                route,
+                route_step,
+            ),
             Event::ToolCallRequested {
                 seq,
                 request_id,
@@ -243,6 +436,10 @@ impl From<Event> for BinaryEvent {
     }
 }
 impl From<BinaryEvent> for Event {
+    // The binary layout contract lives in this one exhaustive table: one arm
+    // per frozen discriminant. Splitting arms further would scatter the
+    // mapping the discriminant test freezes, so the length lint is allowed here.
+    #[allow(clippy::too_many_lines)]
     fn from(event: BinaryEvent) -> Self {
         match event {
             BinaryEvent::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
@@ -259,18 +456,7 @@ impl From<BinaryEvent> for Event {
                 seq,
                 request_id,
                 message,
-            } => Self::InferenceCompleted {
-                seq,
-                request_id,
-                message,
-                provider: String::new(),
-                model: String::new(),
-                effort_used: None,
-                usage: crate::TokenUsage::default(),
-                cost_micros: 0,
-                effort_requested: None,
-                effort_clamped: false,
-            },
+            } => unmetered_completion(seq, request_id, message),
             BinaryEvent::ToolCallRequested {
                 seq,
                 request_id,
@@ -299,26 +485,14 @@ impl From<BinaryEvent> for Event {
                 seq,
                 request_id,
                 error,
-            } => Self::InferenceFailed {
-                seq,
-                request_id,
-                error,
-                retryable: false,
-                retry_at: None,
-            },
+            } => failed_completion(seq, request_id, error, false, None),
             BinaryEvent::RetryableInferenceFailed {
                 seq,
                 request_id,
                 error,
                 retryable,
                 retry_at,
-            } => Self::InferenceFailed {
-                seq,
-                request_id,
-                error,
-                retryable,
-                retry_at,
-            },
+            } => failed_completion(seq, request_id, error, retryable, retry_at),
             BinaryEvent::MeteredInferenceCompleted {
                 seq,
                 request_id,
@@ -330,7 +504,7 @@ impl From<BinaryEvent> for Event {
                 cost_micros,
                 effort_requested,
                 effort_clamped,
-            } => Self::InferenceCompleted {
+            } => metered_completion(
                 seq,
                 request_id,
                 message,
@@ -341,7 +515,36 @@ impl From<BinaryEvent> for Event {
                 cost_micros,
                 effort_requested,
                 effort_clamped,
-            },
+            ),
+            BinaryEvent::RoutedInferenceCompleted {
+                seq,
+                request_id,
+                message,
+                provider,
+                model,
+                effort_used,
+                usage,
+                cost_micros,
+                effort_requested,
+                effort_clamped,
+                entry,
+                route,
+                route_step,
+            } => routed_completion(
+                seq,
+                request_id,
+                message,
+                provider,
+                model,
+                effort_used,
+                usage,
+                cost_micros,
+                effort_requested,
+                effort_clamped,
+                entry,
+                route,
+                route_step,
+            ),
         }
     }
 }
@@ -349,6 +552,83 @@ impl From<BinaryEvent> for Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routed_completions_keep_metered_bytes_when_unattributed() {
+        let request_id = crate::RequestId::for_step(
+            crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)),
+            2,
+        );
+        let plain = Event::InferenceCompleted {
+            seq: 5,
+            request_id,
+            message: crate::message::tests::message(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            effort_used: None,
+            usage: crate::TokenUsage::default(),
+            cost_micros: 7,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
+        };
+        // Unattributed completions keep the metered discriminant so old
+        // readers decode the turns they wrote.
+        assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 8);
+        assert_eq!(
+            crate::decode::<Event>(&crate::encode(&plain).unwrap()).unwrap(),
+            plain
+        );
+        let Event::InferenceCompleted {
+            seq,
+            request_id,
+            message,
+            provider,
+            model,
+            effort_used,
+            usage,
+            cost_micros,
+            effort_requested,
+            effort_clamped,
+            ..
+        } = plain.clone()
+        else {
+            unreachable!("plain completion");
+        };
+        let routed = Event::InferenceCompleted {
+            seq,
+            request_id,
+            message,
+            provider,
+            model,
+            effort_used,
+            usage,
+            cost_micros,
+            effort_requested,
+            effort_clamped,
+            entry: Some("backup".into()),
+            route: Some("fallback".into()),
+            route_step: Some(1),
+        };
+        let bytes = crate::encode(&routed).unwrap();
+        assert_eq!(usize::from(bytes[1]), 10);
+        assert_eq!(crate::decode::<Event>(&bytes).unwrap(), routed);
+        let json = serde_json::to_value(&routed).unwrap();
+        assert_eq!(json["inference_completed"]["entry"], "backup");
+        assert_eq!(json["inference_completed"]["route"], "fallback");
+        assert_eq!(json["inference_completed"]["route_step"], 1);
+        // Old JSON without the new fields still decodes.
+        let mut old = json;
+        for field in ["entry", "route", "route_step"] {
+            old["inference_completed"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        assert_eq!(serde_json::from_value::<Event>(old).unwrap(), plain);
+    }
 
     #[test]
     fn old_completions_decode_alone_and_inside_a_sequence() {

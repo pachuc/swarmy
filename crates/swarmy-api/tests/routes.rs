@@ -93,6 +93,7 @@ async fn authenticated_routes_and_create_replay() {
         model: None,
         effort: None,
         system_prompt: None,
+        route: None,
     };
     let create = || {
         client
@@ -410,4 +411,198 @@ async fn check_doctor(base: &str) {
                 .first()
                 .is_some_and(|provider| provider == "fake")
     }));
+}
+
+#[tokio::test]
+async fn inference_routes_round_trip_through_cli_and_resource_api() {
+    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        return;
+    };
+    let Ok(nats) = std::env::var("SWARMY_NATS_URL") else {
+        return;
+    };
+    NETWORK.get_or_init(swarmy_store::boot);
+    let path = vec![
+        "swarmy-api-route-test".to_owned(),
+        Ulid::generate().to_string(),
+    ];
+    let store = Store::open(
+        Some(&cluster),
+        Some(&path),
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await
+    .unwrap();
+    let manifest = ManifestId::from_ulid(Ulid::generate());
+    store
+        .put_manifest(
+            manifest,
+            &ManifestHeader {
+                size: u64::from(CHUNK_SIZE),
+                chunk_size: CHUNK_SIZE,
+                root_hash: ContentHash::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .await
+        .unwrap();
+    register_services(&store).await;
+    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
+    let mut state = AppState::new(
+        store.clone(),
+        bus,
+        "test-token".into(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+    );
+    state.default_image = Some("fixture:test".into());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
+    let client = swarmy_client::Client::new(&base, "test-token").unwrap();
+    let steps = || {
+        vec![
+            swarmy_api_types::RouteStep {
+                provider: "openai".into(),
+                entry: "work-key".into(),
+                model: None,
+            },
+            swarmy_api_types::RouteStep {
+                provider: "azure".into(),
+                entry: "prod".into(),
+                model: Some("gpt-5.5".into()),
+            },
+        ]
+    };
+    // Unknown providers fail at set time instead of wedging turns later.
+    assert!(
+        client
+            .cli_set_route(&swarmy_api_types::CliRouteInput {
+                idempotency_key: Ulid::generate().to_string(),
+                name: "bad".into(),
+                steps: vec![swarmy_api_types::RouteStep {
+                    provider: "no-such-provider".into(),
+                    entry: "default".into(),
+                    model: None,
+                }],
+            })
+            .await
+            .is_err()
+    );
+    client
+        .cli_set_route(&swarmy_api_types::CliRouteInput {
+            idempotency_key: Ulid::generate().to_string(),
+            name: "fallback".into(),
+            steps: steps(),
+        })
+        .await
+        .unwrap();
+    let listed = client.cli_routes().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].steps.len(), 2);
+    assert_eq!(listed[0].steps[1].model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(client.cli_route("fallback").await.unwrap().name, "fallback");
+    assert_eq!(client.route("fallback").await.unwrap().steps, steps());
+    assert_eq!(client.routes().await.unwrap().len(), 1);
+    // Agent assignment and clearing round-trips through the resource API.
+    let agent = client
+        .create_agent(&swarmy_api_types::CreateAgent {
+            idempotency_key: Ulid::generate().to_string(),
+            name: "routed".into(),
+            description: String::new(),
+            image: ImageRef {
+                name: "fixture".into(),
+                tag: "test".into(),
+            },
+            provider: None,
+            model: None,
+            effort: None,
+            system_prompt: None,
+            route: Some("fallback".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(agent.route.as_deref(), Some("fallback"));
+    let agent = client
+        .update_agent(
+            "routed",
+            &swarmy_api_types::UpdateAgent {
+                idempotency_key: Ulid::generate().to_string(),
+                description: None,
+                provider: None,
+                model: None,
+                effort: None,
+                system_prompt: None,
+                route: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(agent.route.as_deref(), Some("fallback"));
+    // Session overrides apply per conversation; missing routes are rejected.
+    let session = client
+        .create_session(&swarmy_api_types::CreateSession {
+            idempotency_key: Ulid::generate().to_string(),
+            agent_id: None,
+            new: false,
+            image: Some(ImageRef {
+                name: "fixture".into(),
+                tag: "test".into(),
+            }),
+            provider: None,
+            model: None,
+            effort: None,
+            route: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.route, None);
+    assert!(
+        client
+            .set_session_route(
+                &session.id,
+                &swarmy_api_types::SetSessionRoute {
+                    idempotency_key: Ulid::generate().to_string(),
+                    route: Some("missing".into()),
+                },
+            )
+            .await
+            .is_err()
+    );
+    let session = client
+        .set_session_route(
+            &session.id,
+            &swarmy_api_types::SetSessionRoute {
+                idempotency_key: Ulid::generate().to_string(),
+                route: Some("fallback".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.route.as_deref(), Some("fallback"));
+    let detail = client.cli_session(&session.id).await.unwrap();
+    assert_eq!(detail.session["route"], "fallback");
+    let session = client
+        .set_session_route(
+            &session.id,
+            &swarmy_api_types::SetSessionRoute {
+                idempotency_key: Ulid::generate().to_string(),
+                route: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.route, None);
+    // Deletion reports and assigned sessions fall back afterwards.
+    assert!(
+        client
+            .cli_remove_route("fallback", &Ulid::generate().to_string())
+            .await
+            .is_ok()
+    );
+    assert!(client.cli_route("fallback").await.is_err());
+    assert_eq!(client.routes().await.unwrap().len(), 0);
+    task.abort();
 }

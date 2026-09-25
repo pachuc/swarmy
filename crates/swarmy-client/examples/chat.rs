@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider: None,
             model: None,
             effort: None,
+            route: None,
         })
         .await?;
     let mut stream = client.stream(Subscription {

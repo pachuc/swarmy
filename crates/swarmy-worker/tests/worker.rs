@@ -111,13 +111,17 @@ impl Fixture {
 
     /// Store an API-key auth entry for the fixture provider.
     async fn put_entry(&self, label: &str) {
+        self.put_entry_for(&self.provider.clone(), label).await;
+    }
+
+    /// Store an API-key auth entry for an explicit provider id.
+    async fn put_entry_for(&self, provider: &str, label: &str) {
         let keyring = self.keyring.clone().expect("call keyring() first");
-        let provider = self.provider.clone();
         self.store
             .credentials(keyring)
             .put_entry(
                 swarmy_core::CredentialScope::Cluster,
-                &provider,
+                provider,
                 label,
                 &swarmy_core::CredentialRecord {
                     kind: swarmy_core::CredentialKind::ApiKey {
@@ -129,6 +133,31 @@ impl Fixture {
             )
             .await
             .unwrap();
+    }
+
+    /// Store a named route over explicit `provider/label` steps.
+    async fn put_route(&self, name: &str, steps: &[(&str, &str)]) {
+        self.store
+            .put_route(
+                name,
+                &steps
+                    .iter()
+                    .map(|(provider, entry)| swarmy_core::RouteStep {
+                        provider: (*provider).into(),
+                        entry: (*entry).into(),
+                        model: None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Serve two scripted fake providers instead of the default one, with a
+    /// catalog model for each. Call before `start`.
+    fn fake_pair(&mut self) {
+        self.provider = "fake-a".into();
+        self.model = "fake-model".into();
     }
 
     fn script(&self, tools: bool, tool_name: &str) {
@@ -210,19 +239,39 @@ impl Fixture {
         let log =
             std::fs::File::create(self.files.path().join(format!("service-{index}.log"))).unwrap();
         let mut command = Command::new(executable);
+        let pair = self.provider == "fake-a";
         command
             .env("SWARMY_PROVIDER", &self.provider)
             .env("SWARMY_NATS_URL", &self.nats_url)
             .env(
                 "SWARMY_MODEL",
-                if self.provider == "fake" {
+                if self.provider == "fake" || pair {
                     self.model.as_str()
                 } else {
                     "gpt-5.5"
                 },
             )
-            .env("SWARMY_CUSTOM_PROVIDERS", r#"{"openai":{"api":"Fake"}}"#)
-            .env("SWARMY_PROVIDERS", &self.provider)
+            .env(
+                "SWARMY_CUSTOM_PROVIDERS",
+                if pair {
+                    r#"{"fake-a":{"api":"Fake","base_url":"fake://a"},"fake-b":{"api":"Fake","base_url":"fake://b"}}"#
+                } else {
+                    r#"{"openai":{"api":"Fake"}}"#
+                },
+            )
+            .env(
+                "SWARMY_PROVIDERS",
+                if pair { "fake-a,fake-b" } else { self.provider.as_str() },
+            );
+        if pair {
+            command.env(
+                "SWARMY_MODELS",
+                r#"[{"provider":"fake-a","id":"fake-model","api":"Fake"},{"provider":"fake-b","id":"fake-model","api":"Fake"}]"#,
+            );
+        } else {
+            command.env_remove("SWARMY_MODELS");
+        }
+        command
             .env(
                 "SWARMY_SUMMARIZE_AT_TOKENS",
                 self.summarize_at_tokens.to_string(),
@@ -266,6 +315,105 @@ impl Fixture {
         self.create_with_provider(None).await
     }
 
+    async fn create_with_route(&self, route: &str) -> SessionId {
+        let id = loop {
+            let id = SessionId::from_ulid(Ulid::generate());
+            if runnable_partition(id) == 7 {
+                break id;
+            }
+        };
+        let image = image_fixture::image(&self.store).await;
+        self.store
+            .create_session_with_route(
+                id,
+                None,
+                Some(image),
+                Timestamp::now(),
+                &swarmy_core::InferenceSelection::default(),
+                Some(route),
+            )
+            .await
+            .unwrap();
+        self.user_message(id).await;
+        id
+    }
+
+    async fn create_named_agent(&self, name: &str) -> AgentId {
+        self.store
+            .create_agent(
+                name,
+                image_fixture::image(&self.store).await,
+                "",
+                Timestamp::now(),
+            )
+            .await
+            .unwrap()
+            .agent_id
+    }
+
+    async fn set_agent_route(&self, agent: AgentId, route: Option<&str>) {
+        self.store
+            .set_agent(
+                agent,
+                &swarmy_core::AgentSettings {
+                    route: route.map(str::to_owned),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn create_agent_session(&self, agent: AgentId, route: Option<&str>) -> SessionId {
+        let id = loop {
+            let id = SessionId::from_ulid(Ulid::generate());
+            if runnable_partition(id) == 7 {
+                break id;
+            }
+        };
+        // Named sessions pin the agent's image instead of taking one.
+        self.store
+            .create_session_with_route(
+                id,
+                Some(agent),
+                None,
+                Timestamp::now(),
+                &swarmy_core::InferenceSelection::default(),
+                route,
+            )
+            .await
+            .unwrap();
+        self.user_message(id).await;
+        id
+    }
+
+    /// Wait until the gateway advertises a provider, so the first attempt
+    /// cannot fail over behind a missing advertisement instead of the
+    /// scripted failure the test asserts on.
+    async fn gateway_serves(&self, provider: &str) {
+        timeout(WAIT, async {
+            loop {
+                if self.store.gateway_serves(provider).await.unwrap() {
+                    break;
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn histories(&self) -> Vec<Vec<swarmy_core::Message>> {
+        std::fs::read_to_string(self.files.path().join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+                serde_json::from_value(entry["messages"].clone()).unwrap()
+            })
+            .collect()
+    }
+
     async fn create_with_provider(&self, provider: Option<&str>) -> SessionId {
         let id = loop {
             let id = SessionId::from_ulid(Ulid::generate());
@@ -289,6 +437,8 @@ impl Fixture {
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
+                    route: None,
+                    route_step: 0,
                 },
                 Timestamp::now(),
                 image_fixture::image(&self.store).await,
@@ -794,7 +944,7 @@ async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
 }
 
 #[tokio::test]
-async fn first_entry_breaker_leaves_second_entry_usable() {
+async fn first_entry_breaker_fails_over_to_second_entry_implicitly() {
     run(|f| {
         Box::pin(async move {
             f.provider = "openai".into();
@@ -805,38 +955,34 @@ async fn first_entry_breaker_leaves_second_entry_usable() {
             f.start("swarmy-scheduler", None);
             f.start("swarmy-gateway", None);
             f.start("swarmy-worker", None);
+            f.gateway_serves("openai").await;
             let first = f.create().await;
             f.wake(first).await;
-            // The first turn fails on the primary entry and parks the session.
-            timeout(WAIT, async {
-                while f.store.fetch_session(first).await.unwrap().unwrap().state
-                    != SessionState::Sleeping
-                {
-                    sleep(Duration::from_millis(20)).await;
+            // Without a named route the provider's entries form the implicit
+            // chain in creation order: the 429 on the primary fails the turn
+            // over to the backup instead of parking the session.
+            let events = f.idle(first).await;
+            assert!(events.iter().any(|event| matches!(
+                event,
+                Event::InferenceFailed {
+                    retryable: true,
+                    ..
                 }
-            })
-            .await
-            .unwrap();
-            // The worker may park once behind a missing advertisement before
-            // the gateway is ready; wait for the rate limit to open the entry.
-            timeout(WAIT, async {
-                loop {
-                    if f.store
-                        .entry_open_until(
-                            &swarmy_store::CredentialKey::entry("openai", "primary"),
-                            Timestamp::now(),
-                        )
-                        .await
-                        .unwrap()
-                        .is_some()
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            )));
+            let completed = events.iter().find_map(|event| match event {
+                Event::InferenceCompleted {
+                    entry,
+                    route,
+                    route_step,
+                    ..
+                } => Some((entry.clone(), route.clone(), *route_step)),
+                _ => None,
+            });
+            assert_eq!(
+                completed,
+                Some((Some("backup".into()), None, Some(1))),
+                "the completion names the failover entry and step"
+            );
             let primary = swarmy_store::CredentialKey::entry("openai", "primary");
             let backup = swarmy_store::CredentialKey::entry("openai", "backup");
             assert!(
@@ -853,23 +999,295 @@ async fn first_entry_breaker_leaves_second_entry_usable() {
                     .unwrap()
                     .is_none()
             );
-            // A session served by the other entry completes without waiting.
-            let second = f.create().await;
-            f.wake(second).await;
-            let events = f.idle(second).await;
+            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn route_fails_over_across_providers_and_records_entry_and_step() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            f.put_entry_for("fake-a", "first").await;
+            f.put_entry_for("fake-b", "second").await;
+            f.put_route("ab", &[("fake-a", "first"), ("fake-b", "second")])
+                .await;
+            f.rate_limit_script(1, 1);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("fake-a").await;
+            f.gateway_serves("fake-b").await;
+            let id = f.create_with_route("ab").await;
+            f.wake(id).await;
+            // The 429 on the first step fails the turn over to the second
+            // provider; the turn completes there without waiting out the retry.
+            let events = f.idle(id).await;
+            assert_requests(id, &events, 2);
+            let completed = events.iter().find_map(|event| match event {
+                Event::InferenceCompleted {
+                    entry,
+                    route,
+                    route_step,
+                    request_id,
+                    ..
+                } => Some((entry.clone(), route.clone(), *route_step, *request_id)),
+                _ => None,
+            });
+            let (entry, route, step, request_id) =
+                completed.expect("turn completes on the second step");
+            assert_eq!(entry.as_deref(), Some("second"));
+            assert_eq!(route.as_deref(), Some("ab"));
+            assert_eq!(step, Some(1));
+            let usage = f
+                .store
+                .inference_usage_record(request_id)
+                .await
+                .unwrap()
+                .expect("completion records usage");
+            assert_eq!(usage.entry.as_deref(), Some("second"));
+            assert_eq!(usage.route.as_deref(), Some("ab"));
+            assert_eq!(usage.route_step, Some(1));
+            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn route_failover_drops_previous_provider_reasoning() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            f.put_entry_for("fake-a", "first").await;
+            f.put_entry_for("fake-b", "second").await;
+            f.put_route("ab", &[("fake-a", "first"), ("fake-b", "second")])
+                .await;
+            // The first attempt answers with reasoning and a tool call; the
+            // folded attempt hits the rate limit, so the failover request to
+            // the second provider must not replay the first provider's
+            // reasoning blocks.
+            let first = Response {
+                parts: vec![
+                    Part::Reasoning {
+                        text: "Think first.".into(),
+                        metadata: BTreeMap::from([(
+                            "openai_responses".into(),
+                            serde_json::json!({
+                                "provider": "fake-a",
+                                "model": "fake-model",
+                                "item": {"type": "reasoning"},
+                            }),
+                        )]),
+                    },
+                    Part::ToolCall {
+                        call_id: ToolCallId("clock".into()),
+                        tool: "get_time".into(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+                stop_reason: StopReason::ToolCalls,
+                usage: TokenUsage::default(),
+            };
+            let answer = Response {
+                parts: vec![Part::Text {
+                    text: "The turn is complete.".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            };
+            std::fs::write(
+                f.files.path().join("script.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "responses": {"0": first, "2": answer, "3": answer},
+                    "failures": {"1": {"status": 429, "message": "quota reached", "retry_after_seconds": 1}},
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("fake-a").await;
+            f.gateway_serves("fake-b").await;
+            let id = f.create_with_route("ab").await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
             assert!(
                 events
                     .iter()
                     .any(|event| matches!(event, Event::InferenceCompleted { .. }))
             );
+            assert_eq!(f.calls(), 3);
+            let histories = f.histories();
+            assert_eq!(histories.len(), 3);
+            // The folded retry on the first provider keeps its reasoning.
+            assert!(
+                histories[1].iter().any(|message| message.parts.iter().any(
+                    |part| matches!(part, Part::Reasoning { .. })
+                )),
+                "same-provider retries keep reasoning"
+            );
+            // The failover request carries the thinking as text, never as a
+            // replayable reasoning block from the other provider.
+            assert!(
+                histories[2].iter().all(|message| message.parts.iter().all(
+                    |part| !matches!(part, Part::Reasoning { .. })
+                )),
+                "failover drops the previous provider's reasoning blocks"
+            );
+            assert!(
+                histories[2].iter().any(|message| message.parts.iter().any(
+                    |part| matches!(part, Part::Text { text } if text == "Think first.")
+                )),
+                "downgraded thinking text is preserved"
+            );
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn one_step_route_waits_without_touching_other_entries() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.put_route("pinned", &[("openai", "primary")]).await;
+            // A one-step route pins the agent: with its entry open the
+            // session waits instead of failing over within the provider.
+            f.store
+                .entry_failure(
+                    &swarmy_store::CredentialKey::entry("openai", "primary"),
+                    Timestamp::now()
+                        .checked_add(Duration::from_secs(3600))
+                        .unwrap(),
+                    "openai/primary: quota reached",
+                )
+                .await
+                .unwrap();
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("openai").await;
+            let id = f.create_with_route("pinned").await;
+            f.wake(id).await;
+            timeout(WAIT, async {
+                loop {
+                    if f.store.fetch_session(id).await.unwrap().unwrap().state
+                        == SessionState::Sleeping
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+            assert!(
+                wait.reasons
+                    .iter()
+                    .any(|reason| reason.contains("openai/primary")),
+                "waiting reasons name the pinned entry: {:?}",
+                wait.reasons
+            );
+            assert_eq!(f.calls(), 0, "pinned turns never call another entry");
             assert!(
                 f.store
-                    .entry_open_until(&backup, Timestamp::now())
+                    .entry_open_until(
+                        &swarmy_store::CredentialKey::entry("openai", "backup"),
+                        Timestamp::now()
+                    )
                     .await
                     .unwrap()
                     .is_none()
             );
-            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn agent_route_assignment_changes_next_turn_entry() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.put_route("use-backup", &[("openai", "backup")]).await;
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("openai").await;
+            let agent = f.create_named_agent("routed").await;
+            let id = f.create_agent_session(agent, None).await;
+            f.wake(id).await;
+            // Without assignments the implicit chain serves the oldest entry.
+            let first = f.idle(id).await;
+            assert!(first.iter().any(
+                |event| matches!(event, Event::InferenceCompleted { entry: Some(entry), .. } if entry == "primary")
+            ));
+            // Assigning the agent's route changes which entry the next turn uses.
+            f.set_agent_route(agent, Some("use-backup")).await;
+            f.user_message(id).await;
+            f.wake(id).await;
+            let second = f.idle(id).await;
+            let entries: Vec<_> = second
+                .iter()
+                .filter_map(|event| match event {
+                    Event::InferenceCompleted { entry, .. } => entry.clone(),
+                    _ => None,
+                })
+                .collect();
+            // Both turns' completions stay readable; the second turn serves backup.
+            assert_eq!(entries, ["primary", "backup"]);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn session_route_overrides_agent_route() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.put_route("use-backup", &[("openai", "backup")]).await;
+            f.put_route("use-primary", &[("openai", "primary")]).await;
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("openai").await;
+            let agent = f.create_named_agent("routed").await;
+            f.set_agent_route(agent, Some("use-backup")).await;
+            // The session override wins for that session only; the agent keeps
+            // its own assignment for every other session.
+            let id = f.create_agent_session(agent, Some("use-primary")).await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            let entries: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::InferenceCompleted { entry, .. } => entry.clone(),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(entries, ["primary"]);
+            let agent_record = f.store.get_agent(agent).await.unwrap().unwrap();
+            assert_eq!(agent_record.route.as_deref(), Some("use-backup"));
         })
     })
     .await;

@@ -21,6 +21,65 @@ use crate::config::Config;
 
 type ActiveLease = Mutex<Option<Lease>>;
 
+/// One inference attempt on a resolved route step: the provider and entry
+/// the gateway must use, the route that selected them, and the step index
+/// recorded on the completion for metering.
+struct ResolvedAttempt {
+    provider: String,
+    entry: Option<String>,
+    route: Option<String>,
+    route_step: u32,
+    snapshot: swarmy_store::RouteSnapshot,
+}
+
+impl Worker {
+    async fn route_snapshot(&self, session: &SessionRecord) -> Result<swarmy_store::RouteSnapshot> {
+        Ok(self
+            .store
+            .route_snapshot(
+                session.agent_id,
+                session.route.as_deref(),
+                session.inference.provider.as_deref(),
+                self.config.default_route.as_deref(),
+                &self.config.provider,
+                Timestamp::now(),
+            )
+            .await?)
+    }
+}
+
+fn failover_reasons(
+    snapshot: &swarmy_store::RouteSnapshot,
+    from: u32,
+    target: u32,
+    error: &str,
+) -> Vec<String> {
+    let mut reasons = vec![error.to_owned()];
+    for skipped in from.saturating_add(1)..target {
+        if let Some(reason) = snapshot
+            .steps
+            .get(usize::try_from(skipped).unwrap_or(usize::MAX))
+            .and_then(|step| step.reason.clone())
+        {
+            reasons.push(reason);
+        }
+    }
+    reasons
+}
+
+fn warn_on_route_fallback(session: &SessionRecord, snapshot: &swarmy_store::RouteSnapshot) {
+    // A deleted or renamed route falls back to the implicit chain; say so
+    // once per resolution so the operator can fix the assignment.
+    let requested = session.route.as_deref();
+    if requested.is_some() && snapshot.name != requested.map(str::to_owned) {
+        tracing::warn!(
+            session_id = %session.session_id,
+            route = requested,
+            "assigned route is missing; using the implicit provider chain",
+        );
+    }
+}
+
 pub struct Worker {
     store: Store,
     bus: Bus,
@@ -493,26 +552,59 @@ impl Worker {
                 .as_ref()
                 .is_none_or(|wait| wait.last_failure_seq != *seq)
             {
-                let mut token = lease.lock().await;
-                let parked = self
-                    .store
-                    .park_inference(
-                        id,
-                        token.as_ref().context("lease released")?,
-                        &swarmy_store::InferenceFailureWait {
-                            seq: *seq,
-                            reason: error,
-                            wake_at: *retry_at,
-                        },
-                        now,
-                        self.config.max_inference_wait,
-                    )
-                    .await?;
-                if parked {
-                    *token = None;
-                    return Ok(true);
-                }
+                return self
+                    .failover_or_park(session, lease, *seq, error, *retry_at, now)
+                    .await;
             }
+        }
+        Ok(false)
+    }
+
+    /// Failover happens only here, at the turn boundary between attempts: a
+    /// retryable failure moves the session to the next step of its route for
+    /// the next attempt. When every step is open the session waits for the
+    /// earliest retry among them.
+    async fn failover_or_park(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        seq: u64,
+        error: &str,
+        retry_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<bool> {
+        let snapshot = self.route_snapshot(session).await?;
+        let mut token = lease.lock().await;
+        let lease_ref = token.as_ref().context("lease released")?;
+        if let Some(target) = snapshot.pick(session.route_step.saturating_add(1)) {
+            let target = u32::try_from(target).unwrap_or(u32::MAX);
+            let reasons = failover_reasons(&snapshot, session.route_step, target, error);
+            self.store
+                .set_session_route_step(session.session_id, lease_ref, target, &reasons, now)
+                .await?;
+            session.route_step = target;
+            return Ok(false);
+        }
+        let earliest = swarmy_store::Store::earliest_retry(&snapshot.steps, retry_at);
+        let parked = self
+            .store
+            .park_exhausted_route(
+                session.session_id,
+                lease_ref,
+                &swarmy_store::InferenceFailureWait {
+                    seq,
+                    reason: error,
+                    wake_at: earliest,
+                },
+                earliest,
+                now,
+                self.config.max_inference_wait,
+            )
+            .await?;
+        if parked {
+            session.route_step = 0;
+            *token = None;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -577,7 +669,7 @@ impl Worker {
         session: &SessionRecord,
         request: &mut swarmy_llm::Request,
         preceding: &mut Vec<Event>,
-    ) -> Result<String> {
+    ) -> Result<ResolvedAttempt> {
         // Resolve on every inference so existing sessions see later agent updates.
         // A summary request keeps its own prompt; every other request gets the agent's
         // prompt override first and then the memory directory and contents appended.
@@ -604,14 +696,26 @@ impl Worker {
             apply_display_tools(request, self.session_display(session).await?);
         }
         let selection = session.inference.resolve(&defaults);
-        request.settings.model.clone_from(&selection.model);
+        let snapshot = self.route_snapshot(session).await?;
+        warn_on_route_fallback(session, &snapshot);
+        let index = snapshot.pick_or_earliest(session.route_step);
+        let step = snapshot.steps.get(index).context("empty route snapshot")?;
+        let model_id = step
+            .model
+            .clone()
+            .unwrap_or_else(|| selection.model.clone());
+        request.settings.model.clone_from(&model_id);
         request.settings.reasoning_effort = Some(selection.effort);
+        // Reasoning blocks replay only for the provider and model that
+        // produced them; a failover step must not inherit another step's
+        // signatures, so downgrade them here where the request is built.
+        swarmy_llm::reasoning::downgrade_mismatched_reasoning(
+            &mut request.messages,
+            &step.provider,
+            &model_id,
+        );
 
-        if let Some(model) = self
-            .config
-            .catalog
-            .model(&selection.provider, &selection.model)
-        {
+        if let Some(model) = self.config.catalog.model(&step.provider, &model_id) {
             if !model
                 .input_modalities
                 .iter()
@@ -637,7 +741,7 @@ impl Worker {
                         parts: vec![swarmy_core::Part::Text {
                             text: format!(
                                 "Reasoning effort clamped from {} to {effort} for {}/{}",
-                                selection.effort, selection.provider, selection.model
+                                selection.effort, step.provider, model_id
                             ),
                         }],
                     },
@@ -664,7 +768,13 @@ impl Worker {
                 )?;
             }
         }
-        Ok(selection.provider)
+        Ok(ResolvedAttempt {
+            provider: step.provider.clone(),
+            entry: step.label.clone(),
+            route: snapshot.name.clone(),
+            route_step: u32::try_from(index).unwrap_or(u32::MAX),
+            snapshot,
+        })
     }
 
     async fn hydrate_images(&self, request: &mut swarmy_llm::Request) -> Result<()> {
@@ -727,9 +837,35 @@ impl Worker {
         mut request: swarmy_llm::Request,
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
-        let provider = self
+        let attempt = self
             .prepare_request(session, &mut request, &mut preceding)
             .await?;
+        // Persist the picked step so a retryable failure advances from the
+        // attempt that actually ran, not from a stale position.
+        if attempt.route_step != session.route_step {
+            let mut reasons = Vec::new();
+            for skipped in session.route_step..attempt.route_step {
+                if let Some(step) = attempt
+                    .snapshot
+                    .steps
+                    .get(usize::try_from(skipped).unwrap_or(usize::MAX))
+                    && let Some(reason) = &step.reason
+                {
+                    reasons.push(reason.clone());
+                }
+            }
+            let token = lease.lock().await;
+            self.store
+                .set_session_route_step(
+                    session.session_id,
+                    token.as_ref().context("lease released")?,
+                    attempt.route_step,
+                    &reasons,
+                    Timestamp::now(),
+                )
+                .await?;
+            session.route_step = attempt.route_step;
+        }
         for (event, seq) in preceding.iter_mut().zip(session.head_seq + 1..) {
             event.set_seq(seq);
         }
@@ -740,7 +876,10 @@ impl Worker {
             .and_then(|head| head.checked_add(1))
             .context("sequence overflow")?;
         let job = InferenceJob {
-            provider,
+            provider: attempt.provider,
+            entry: attempt.entry,
+            route: attempt.route,
+            route_step: attempt.route_step,
             session_id: id,
             step,
             request_id: RequestId::for_step(id, step),
@@ -758,7 +897,7 @@ impl Worker {
                         session_id: id,
                         seq: step,
                         provider: job.provider.clone(),
-                        key_id: String::new(),
+                        key_id: job.entry.clone().unwrap_or_default(),
                     },
                     &job,
                     &job.request,
@@ -1126,7 +1265,7 @@ impl Worker {
                         session_id: job.session_id,
                         seq: job.step,
                         provider: self.job_provider(job).to_owned(),
-                        key_id: String::new(),
+                        key_id: job.entry.clone().unwrap_or_default(),
                     },
                     token.as_ref().context("lease released")?,
                     Timestamp::now(),

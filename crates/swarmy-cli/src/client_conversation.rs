@@ -46,6 +46,7 @@ async fn create_session(
     agent_id: Option<String>,
     new: bool,
     selection: swarmy_core::InferenceSelection,
+    route: Option<String>,
 ) -> Result<api::Session> {
     let image = image.map(image_ref).transpose()?;
     let result = client
@@ -62,6 +63,7 @@ async fn create_session(
                 .transpose()?
                 .map(serde_json::from_value)
                 .transpose()?,
+            route,
         })
         .await;
     match result {
@@ -143,6 +145,7 @@ impl Conversation {
         agent: Option<String>,
         new: bool,
         selection: swarmy_core::InferenceSelection,
+        route: Option<String>,
     ) -> Result<Self> {
         ensure!(!new || agent.is_some(), "--new requires --agent");
         ensure!(
@@ -167,12 +170,16 @@ impl Conversation {
         let session = if let Some(id) = id {
             client.session(&id).await?
         } else {
+            // Agent sessions inherit the agent and reject overrides at
+            // creation; the route override below assigns them afterwards.
+            let for_create = route.clone().filter(|_| agent_record.is_none());
             create_session(
                 &client,
                 image.as_deref(),
                 agent_record.as_ref().map(|a| a.id.clone()),
                 new,
                 selection,
+                for_create,
             )
             .await?
         };
@@ -206,6 +213,21 @@ impl Conversation {
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
         let endpoint = crate::api_client::endpoint()?;
+        if route.is_some() && session.route != route {
+            // An explicit --route overrides the session only; the agent and
+            // swarm default keep their assignments.
+            session = crate::api_client::call(
+                &endpoint,
+                client.set_session_route(
+                    &session.id,
+                    &api::SetSessionRoute {
+                        idempotency_key: ulid::Ulid::generate().to_string(),
+                        route: route.clone(),
+                    },
+                ),
+            )
+            .await?;
+        }
         let head = session.head_sequence;
         Ok(Self {
             provider,

@@ -37,6 +37,27 @@ pub enum Command {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Manage named inference failover routes
+    Routes {
+        #[command(subcommand)]
+        command: RoutesCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RoutesCommand {
+    /// List named routes with their steps in order
+    Ls,
+    /// Show one route's steps in order
+    Show { name: String },
+    /// Replace a route's steps in `PROVIDER/LABEL[=MODEL]` order
+    Set {
+        name: String,
+        #[arg(num_args(1..))]
+        steps: Vec<String>,
+    },
+    /// Remove a named route; assigned sessions fall back
+    Rm { name: String },
 }
 
 #[derive(Args)]
@@ -76,4 +97,61 @@ fn extra(value: &str) -> Result<(String, String), String> {
         return Err("needs_login is reserved".into());
     }
     Ok((name.into(), value.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[test]
+    fn routes_subcommands_parse_without_connecting_to_the_stack() {
+        assert!(crate::Cli::try_parse_from(["swarmy", "auth", "routes", "ls"]).is_ok());
+        assert!(
+            crate::Cli::try_parse_from(["swarmy", "auth", "routes", "show", "fallback"]).is_ok()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "auth",
+                "routes",
+                "set",
+                "fallback",
+                "chatgpt/default",
+                "openai/work-key",
+                "azure/prod=gpt-5.5",
+            ])
+            .is_ok()
+        );
+        assert!(crate::Cli::try_parse_from(["swarmy", "auth", "routes", "rm", "fallback"]).is_ok());
+        assert!(
+            crate::Cli::try_parse_from(["swarmy", "auth", "routes", "set", "fallback"]).is_err()
+        );
+    }
+
+    #[test]
+    fn run_and_chat_accept_a_session_route() {
+        assert!(crate::Cli::try_parse_from(["swarmy", "run", "--route", "fallback", "hi"]).is_ok());
+        assert!(crate::Cli::try_parse_from(["swarmy", "chat", "--route", "fallback"]).is_ok());
+        // The route overrides one session only, so it stays available with an agent.
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy", "chat", "--agent", "tommy", "--route", "fallback"
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "run",
+                "--agent",
+                "tommy",
+                "--provider",
+                "openai",
+                "--route",
+                "fallback",
+                "hi",
+            ])
+            .is_err()
+        );
+    }
 }

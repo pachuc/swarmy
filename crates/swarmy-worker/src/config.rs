@@ -25,6 +25,7 @@ pub struct Config {
     pub max_inference_wait: Duration,
     pub gateway_wait: Duration,
     pub allowed_providers: Option<Vec<String>>,
+    pub default_route: Option<String>,
 }
 
 impl Config {
@@ -100,6 +101,7 @@ impl Config {
             max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
             gateway_wait: Duration::from_secs(settings.inference.gateway_wait_seconds.get()),
             allowed_providers: settings.providers,
+            default_route: settings.inference.default_route,
         })
     }
 }

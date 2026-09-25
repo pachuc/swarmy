@@ -381,3 +381,88 @@ async fn native_store_records_need_only_account_metadata() {
     assert_eq!(refreshed.access_token(), "access-new");
     assert_eq!(refreshed.account_id(), "account-test");
 }
+
+/// A pinned route step resolves exactly its entry instead of the pool's
+/// first choice, and a missing label is an operator error.
+#[tokio::test]
+async fn pinned_resolution_selects_the_named_entry() {
+    use std::collections::BTreeMap;
+    use swarmy_llm::auth::{AuthStore, Login, Resolver};
+
+    struct Stub {
+        entries: Vec<(String, swarmy_core::CredentialRecord)>,
+    }
+
+    fn api_key(key: &str) -> swarmy_core::CredentialRecord {
+        swarmy_core::CredentialRecord {
+            kind: swarmy_core::CredentialKind::ApiKey {
+                key: key.into(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuthStore for Stub {
+        async fn get(
+            &self,
+            _provider: &str,
+        ) -> Result<Option<swarmy_core::CredentialRecord>, swarmy_llm::Error> {
+            Ok(self.entries.first().map(|(_, record)| record.clone()))
+        }
+
+        async fn get_labelled(
+            &self,
+            _provider: &str,
+        ) -> Result<Option<(Option<String>, swarmy_core::CredentialRecord)>, swarmy_llm::Error>
+        {
+            Ok(self
+                .entries
+                .first()
+                .map(|(label, record)| (Some(label.clone()), record.clone())))
+        }
+
+        async fn get_exact(
+            &self,
+            _provider: &str,
+            label: &str,
+        ) -> Result<Option<swarmy_core::CredentialRecord>, swarmy_llm::Error> {
+            Ok(self
+                .entries
+                .iter()
+                .find(|(entry, _)| entry == label)
+                .map(|(_, record)| record.clone()))
+        }
+
+        async fn refresh(
+            &self,
+            _provider: &str,
+            observed: &swarmy_core::CredentialRecord,
+            _login: &dyn Login,
+        ) -> Result<swarmy_core::CredentialRecord, swarmy_llm::Error> {
+            Ok(observed.clone())
+        }
+    }
+
+    let store = Arc::new(Stub {
+        entries: vec![
+            ("primary".into(), api_key("primary-key")),
+            ("backup".into(), api_key("backup-key")),
+        ],
+    });
+    let resolver = Resolver::new(store).unwrap();
+    // The pool serves the first entry.
+    assert_eq!(
+        resolver.resolve("openai").await.unwrap().entry.as_deref(),
+        Some("primary"),
+    );
+    // The pinned step serves exactly its entry, even when it is not first.
+    let pinned = resolver.resolve_pinned("openai", "backup").await.unwrap();
+    assert_eq!(pinned.entry.as_deref(), Some("backup"));
+    let swarmy_llm::ClientAuth::ApiKey(key) = pinned.auth else {
+        panic!("expected an API key client");
+    };
+    assert_eq!(key, "backup-key");
+    assert!(resolver.resolve_pinned("openai", "missing").await.is_err());
+}

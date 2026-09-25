@@ -189,7 +189,8 @@ fn main() -> anyhow::Result<()> {
                 command: auth_command::Command::Set(_)
                     | auth_command::Command::Ls
                     | auth_command::Command::Rm { .. }
-                    | auth_command::Command::Check { .. },
+                    | auth_command::Command::Check { .. }
+                    | auth_command::Command::Routes { .. },
                 ..
             }
     ) {

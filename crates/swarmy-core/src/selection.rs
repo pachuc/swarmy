@@ -36,6 +36,7 @@ pub enum InferenceField {
     Provider,
     Model,
     Effort,
+    Route,
 }
 
 #[cfg(test)]

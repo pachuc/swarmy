@@ -85,6 +85,14 @@ pub struct SessionRecord {
     pub snapshot_ref: Option<SnapshotRef>,
     #[serde(default)]
     pub inference: crate::InferenceSelection,
+    /// Session route override. `None` inherits the agent, then the swarm default.
+    #[serde(default)]
+    pub route: Option<String>,
+    /// Position in the resolved route for the current attempt chain. The
+    /// worker advances it past retryable failures and resets it when the
+    /// chain is exhausted or the turn succeeds.
+    #[serde(default)]
+    pub route_step: u32,
 }
 
 /// Lease times are supplied by callers; this crate never reads the clock.
@@ -160,6 +168,8 @@ mod tests {
             kind: SessionKind::Ephemeral,
             computer_deleted: false,
             plan: Vec::new(),
+            route: None,
+            route_step: 0,
         };
         assert_round_trip(&session);
         let mut old = serde_json::to_value(&session).unwrap();

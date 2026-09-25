@@ -202,6 +202,8 @@ impl Store {
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
                 trx.clear(&self.interrupt_key(id));
+                // Turn end restarts the route chain with the next turn.
+                crate::write(&trx, &self.session_route_step_key(id), &0_u32)?;
                 self.transition(&trx, session, SessionState::Idle, now)
                     .await
             }

@@ -405,6 +405,8 @@ impl Store {
     }
 
     /// Remove a completed turn's wait and any remaining due index entry.
+    /// A completed attempt also restarts the route chain, so the next turn
+    /// probes from the first step again.
     /// # Errors
     /// Returns storage failures.
     pub async fn clear_inference_wait(&self, id: SessionId) -> Result<()> {
@@ -413,6 +415,7 @@ impl Store {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
                 trx.clear(&self.wait_key(id));
             }
+            write(&trx, &self.session_route_step_key(id), &0_u32)?;
             Ok(())
         })
         .await

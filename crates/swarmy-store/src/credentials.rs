@@ -70,19 +70,19 @@ fn entry_kind(record: &CredentialRecord) -> String {
 }
 
 #[derive(Serialize, Deserialize)]
-struct EntryValue {
-    created_at: Timestamp,
-    last_used_at: Option<Timestamp>,
-    ciphertext: Vec<u8>,
+pub(crate) struct EntryValue {
+    pub(crate) created_at: Timestamp,
+    pub(crate) last_used_at: Option<Timestamp>,
+    pub(crate) ciphertext: Vec<u8>,
     /// Plaintext copy of the record's login state, so the scheduler can skip
     /// entries needing login without decrypting. The flag is stable: unlike
     /// expiry it never changes with time.
     #[serde(default)]
-    needs_login: bool,
+    pub(crate) needs_login: bool,
     /// Plaintext OAuth expiry, so the scheduler can skip expired entries
     /// without decrypting. Absent for API keys, which do not expire.
     #[serde(default)]
-    expires_at: Option<Timestamp>,
+    pub(crate) expires_at: Option<Timestamp>,
 }
 
 /// Rows written before the readiness hints existed carry no plaintext
@@ -96,7 +96,7 @@ struct LegacyEntryValue {
     ciphertext: Vec<u8>,
 }
 
-fn decode_entry(bytes: &[u8]) -> Result<EntryValue> {
+pub(crate) fn decode_entry(bytes: &[u8]) -> Result<EntryValue> {
     if let Ok(entry) = decode::<EntryValue>(bytes) {
         return Ok(entry);
     }
@@ -131,7 +131,11 @@ fn entry_readiness(record: &CredentialRecord) -> (bool, Option<Timestamp>) {
 }
 
 /// Scheduler view of one entry's readiness from its plaintext hints.
-fn entry_ready(needs_login: bool, expires_at: Option<Timestamp>, now: Timestamp) -> bool {
+pub(crate) fn entry_ready(
+    needs_login: bool,
+    expires_at: Option<Timestamp>,
+    now: Timestamp,
+) -> bool {
     !needs_login && expires_at.is_none_or(|expiry| expiry > now)
 }
 

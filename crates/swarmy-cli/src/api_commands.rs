@@ -76,12 +76,13 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 || inference.provider.is_some()
                 || inference.model.is_some()
                 || inference.effort.is_some()
+                || inference.route.is_some()
                 || inference.memory.is_some()
                 || inference.gpu.is_some()
                 || github_token.is_some()
                 || *clear_github_token,
             "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
-                 --memory, --gpu, --github-token, or --clear-github-token"
+                  --route, --memory, --gpu, --github-token, or --clear-github-token"
         );
     }
     let (client, endpoint) = crate::api_client::connect()?;
@@ -124,10 +125,11 @@ async fn session(
                     print(
                         &row,
                         &format!(
-                            "{id} {} {}/{} kind={kind} agent={name} head={} computer_deleted={} archived={} main={}",
+                            "{id} {} {}/{} route={} kind={kind} agent={name} head={} computer_deleted={} archived={} main={}",
                             display_state(&row),
                             str_field(selection, "provider"),
                             str_field(selection, "model"),
+                            row["route"].as_str().unwrap_or("(swarm default)"),
                             row["head_seq"],
                             row["computer_deleted"],
                             row["archived"],
@@ -231,7 +233,7 @@ async fn show_session(
     print(
         &value,
         &format!(
-            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={gpu} sandbox_address={}",
+            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={gpu} sandbox_address={}",
             display_state(record),
             record["interrupt_requested"],
             str_field(selection, "provider"),
@@ -240,6 +242,7 @@ async fn show_session(
             inherited("model"),
             str_field(selection, "effort"),
             inherited("effort"),
+            record["route"].as_str().unwrap_or("(swarm default)"),
             str_field(scratch, "node_id"),
             scratch["bytes"].as_u64().unwrap_or(0),
             requirements["memory_mib"],
@@ -369,11 +372,12 @@ async fn image(
 fn settings_text(agent: &Value) -> String {
     let fallback = |key| agent[key].as_str().unwrap_or("(stack default)");
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
         fallback("provider"),
         fallback("system_prompt"),
         fallback("model"),
         fallback("reasoning_effort"),
+        fallback("route"),
         agent["requirements"]["memory_mib"],
         match str_field(&agent["requirements"], "gpu") {
             "none" => "None",
@@ -389,6 +393,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<Value> 
         ("provider", args.provider),
         ("model", args.model),
         ("effort", args.effort),
+        ("route", args.route),
     ] {
         if let Some(setting) = setting {
             if setting == "default" {
@@ -860,7 +865,100 @@ async fn auth(
             .await?;
             auth_report("removed", &provider, json);
         }
+        auth_command::Command::Routes { command } => {
+            routes(client, endpoint, command, json).await?;
+        }
         _ => unreachable!("login and import remain local"),
+    }
+    Ok(())
+}
+
+fn route_text(name: &str, steps: &[Value]) -> String {
+    let steps = steps
+        .iter()
+        .map(|step| {
+            let model = step["model"].as_str().unwrap_or("");
+            if model.is_empty() {
+                format!(
+                    "{}/{}",
+                    str_field(step, "provider"),
+                    str_field(step, "entry")
+                )
+            } else {
+                format!(
+                    "{}/{}={model}",
+                    str_field(step, "provider"),
+                    str_field(step, "entry")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{name} {steps}")
+}
+
+async fn routes(
+    client: &Client,
+    endpoint: &str,
+    command: auth_command::RoutesCommand,
+    json: bool,
+) -> Result<()> {
+    match command {
+        auth_command::RoutesCommand::Ls => {
+            for row in request(endpoint, client.cli_routes())
+                .await?
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?
+            {
+                let steps = row["steps"].as_array().cloned().unwrap_or_default();
+                print(&row, &route_text(str_field(&row, "name"), &steps), json);
+            }
+        }
+        auth_command::RoutesCommand::Show { name } => {
+            let row = projection(endpoint, client.cli_route(&name)).await?;
+            let steps = row["steps"].as_array().cloned().unwrap_or_default();
+            print(&row, &route_text(str_field(&row, "name"), &steps), json);
+        }
+        auth_command::RoutesCommand::Set { name, steps } => {
+            ensure!(!steps.is_empty(), "a route needs at least one step");
+            let mut parsed = Vec::with_capacity(steps.len());
+            for step in &steps {
+                let step = swarmy_core::route::parse_step(step)
+                    .map_err(|message| anyhow::anyhow!("{message}"))?;
+                parsed.push(serde_json::json!({
+                    "provider": step.provider,
+                    "entry": step.entry,
+                    "model": step.model,
+                }));
+            }
+            projection(
+                endpoint,
+                client.cli_set_route(&serde_json::from_value(serde_json::json!({
+                    "idempotency_key": Ulid::generate().to_string(),
+                    "name": name,
+                    "steps": parsed,
+                }))?),
+            )
+            .await?;
+            print(
+                &serde_json::json!({"event":"saved","route":name}),
+                &format!("{name}: saved"),
+                json,
+            );
+        }
+        auth_command::RoutesCommand::Rm { name } => {
+            request(
+                endpoint,
+                client.cli_remove_route(&name, &Ulid::generate().to_string()),
+            )
+            .await?;
+            print(
+                &serde_json::json!({"event":"removed","route":name}),
+                &format!("{name}: removed"),
+                json,
+            );
+        }
     }
     Ok(())
 }

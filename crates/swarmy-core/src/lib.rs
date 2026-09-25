@@ -60,6 +60,8 @@ pub use turn::{TurnEvent, TurnStage};
 
 mod agent;
 pub use agent::{AgentRecord, AgentSettings};
+pub mod route;
+pub use route::{ANY_ENTRY, ExpandedRouteStep, MAX_ROUTE_STEPS, RouteRecord, RouteStep};
 
 mod memory;
 pub use memory::MemoryRequest;

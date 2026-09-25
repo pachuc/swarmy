@@ -1862,6 +1862,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -2109,6 +2115,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "system_prompt": {
             "type": [
@@ -2424,6 +2436,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -2549,6 +2567,12 @@
             "description": "Open a side conversation rather than the named agent's main session."
           },
           "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
             "type": [
               "string",
               "null"
@@ -3597,6 +3621,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/SessionState"
           },
@@ -3923,6 +3953,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -3962,6 +3998,12 @@
             ]
           },
           "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
             "type": [
               "string",
               "null"

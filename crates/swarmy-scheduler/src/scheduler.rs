@@ -2,15 +2,16 @@ use std::collections::HashMap;
 
 use jiff::Timestamp;
 use swarmy_bus::Bus;
-use swarmy_core::{CredentialScope, Event, SessionId, SessionState, WakeReply, WakeRequest};
-use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, runnable_partition};
+use swarmy_core::{Event, SessionId, SessionState, WakeReply, WakeRequest};
+use swarmy_store::{MAX_SCAN_LIMIT, RouteSnapshot, Store, StoreError, runnable_partition};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
 
-/// One scheduler tick's breaker decisions by provider. The pool does not
-/// vary by session, so `scan_partition` resolves each provider once.
-type BreakerCache = HashMap<String, Option<(Timestamp, String)>>;
+/// One scheduler tick's breaker decisions by route. Sessions sharing an
+/// agent and override share the snapshot; the tick cache never outlives the
+/// tick, so route edits apply on the next pass.
+type BreakerCache = HashMap<String, RouteSnapshot>;
 
 pub struct Scheduler {
     store: Store,
@@ -39,40 +40,44 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Resolve the session's entry behind its provider's breaker records.
-    /// Routes select the entry in a later task; until then every ready entry
-    /// is a candidate, the same pool the gateway serves from. Returns the
-    /// earliest retry and its reason only when every candidate is open; a
-    /// usable entry means the session can run.
+    /// Resolve the session's route behind its steps' breaker records. A
+    /// usable step means the session can run; when every step is open the
+    /// session waits for the earliest retry among them. The scan starts at
+    /// the session's attempt position so the scheduler and the worker agree
+    /// on which step serves the next attempt.
     async fn breaker_park(
         &self,
-        provider: &str,
+        session: &swarmy_core::SessionRecord,
         cache: &mut BreakerCache,
     ) -> Result<Option<(Timestamp, String)>, StoreError> {
-        if let Some(cached) = cache.get(provider) {
-            return Ok(cached.clone());
+        let key = format!(
+            "{}:{}",
+            session.agent_id,
+            session.route.as_deref().unwrap_or("")
+        );
+        let snapshot = if let Some(snapshot) = cache.get(&key) {
+            snapshot.clone()
+        } else {
+            // Without stored entries the provider shares one unlabeled record
+            // (fake, environment keys, ambient host chains).
+            let snapshot = self
+                .store
+                .route_snapshot(
+                    session.agent_id,
+                    session.route.as_deref(),
+                    session.inference.provider.as_deref(),
+                    self.config.default_route.as_deref(),
+                    &self.config.provider,
+                    Timestamp::now(),
+                )
+                .await?;
+            cache.insert(key, snapshot.clone());
+            snapshot
+        };
+        if snapshot.pick(session.route_step).is_some() {
+            return Ok(None);
         }
-        // Without stored entries the provider shares one unlabeled record
-        // (fake, environment keys, ambient host chains).
-        let mut earliest: Option<(Timestamp, String)> = None;
-        for candidate in self
-            .store
-            .breaker_snapshot(CredentialScope::Cluster, provider, Timestamp::now())
-            .await?
-        {
-            let Some(until) = candidate.open_until else {
-                cache.insert(provider.to_owned(), None);
-                return Ok(None);
-            };
-            let reason = candidate
-                .reason
-                .unwrap_or_else(|| "provider temporarily unavailable".into());
-            if earliest.as_ref().is_none_or(|(at, _)| until < *at) {
-                earliest = Some((until, reason));
-            }
-        }
-        cache.insert(provider.to_owned(), earliest.clone());
-        Ok(earliest)
+        Ok(snapshot.earliest())
     }
 
     async fn nudge(&self, session_id: SessionId, force: bool, breakers: &mut BreakerCache) {
@@ -97,12 +102,7 @@ impl Scheduler {
                     }
                     return Ok(());
                 }
-                let provider = session
-                    .inference
-                    .provider
-                    .as_deref()
-                    .unwrap_or(&self.config.provider);
-                if let Some((until, reason)) = self.breaker_park(provider, breakers).await? {
+                if let Some((until, reason)) = self.breaker_park(&session, breakers).await? {
                     let wait = self.store.inference_wait(session_id).await?;
                     let failure_pending = if session.head_seq == 0 {
                         false

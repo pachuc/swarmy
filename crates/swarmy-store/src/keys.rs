@@ -191,6 +191,14 @@ impl Store {
         self.root
             .pack(&("session_kind", id.as_ulid().to_bytes().as_slice()))
     }
+    pub(crate) fn session_route_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session_route", id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn session_route_step_key(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .pack(&("session_route_step", id.as_ulid().to_bytes().as_slice()))
+    }
     pub(crate) fn session_idle_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("session_idle", id.as_ulid().to_bytes().as_slice()))

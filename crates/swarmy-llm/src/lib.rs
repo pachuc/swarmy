@@ -5,6 +5,7 @@ pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
+pub mod reasoning;
 pub mod responses;
 pub mod retry;
 pub mod selection;
@@ -100,6 +101,15 @@ pub struct InferenceJob {
     pub request: Request,
     #[serde(default)]
     pub provider: String,
+    /// Pinned auth entry selected by the session's route, if any.
+    #[serde(default)]
+    pub entry: Option<String>,
+    /// Named route that selected the entry, if any.
+    #[serde(default)]
+    pub route: Option<String>,
+    /// Index into the resolved route for this attempt.
+    #[serde(default)]
+    pub route_step: u32,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -110,6 +120,12 @@ pub struct InferenceJobRef {
     pub request_id: RequestId,
     pub provider: String,
     pub selection: GenerationSettings,
+    #[serde(default)]
+    pub entry: Option<String>,
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub route_step: u32,
 }
 
 impl From<&InferenceJob> for InferenceJobRef {
@@ -120,6 +136,9 @@ impl From<&InferenceJob> for InferenceJobRef {
             request_id: job.request_id,
             provider: job.provider.clone(),
             selection: job.request.settings.clone(),
+            entry: job.entry.clone(),
+            route: job.route.clone(),
+            route_step: job.route_step,
         }
     }
 }
@@ -309,6 +328,9 @@ mod job_tests {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
             provider: "fake".into(),
+            entry: Some("primary".into()),
+            route: Some("fallback".into()),
+            route_step: 1,
             session_id,
             step: 7,
             request_id: RequestId::for_step(session_id, 7),

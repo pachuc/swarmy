@@ -10,26 +10,60 @@ pub struct UsageRecord {
     pub entry: Option<String>,
     pub usage: TokenUsage,
     pub cost_micros: u64,
+    /// Route that selected the entry, when a named route resolved it.
+    #[serde(default)]
+    pub route: Option<String>,
+    /// Index into the resolved route, so metering names the exact step.
+    #[serde(default)]
+    pub route_step: Option<u32>,
+}
+
+/// Rows written before routes existed carry no route attribution.
+#[derive(Deserialize)]
+struct LegacyUsageRecord {
+    provider: String,
+    entry: Option<String>,
+    usage: TokenUsage,
+    cost_micros: u64,
 }
 
 pub(crate) struct UsageAttribution<'a> {
     pub request: RequestId,
     pub provider: &'a str,
+    pub route: Option<String>,
+    pub route_step: Option<u32>,
 }
 
 impl Store {
-    /// Read the entry attributed to a completed inference request.
+    /// Read the entry and route step attributed to a completed inference request.
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn inference_usage_record(&self, request: RequestId) -> Result<Option<UsageRecord>> {
         self.transaction(|trx| async move {
-            read(
-                &trx,
-                &self
-                    .root
-                    .pack(&("usage_record", request.as_bytes().as_slice())),
-            )
-            .await
+            let bytes: Option<Vec<u8>> = trx
+                .get(
+                    &self
+                        .root
+                        .pack(&("usage_record", request.as_bytes().as_slice())),
+                    false,
+                )
+                .await?
+                .map(|value| value.to_vec());
+            bytes
+                .map(|bytes| {
+                    swarmy_core::decode::<UsageRecord>(&bytes).or_else(|_| {
+                        swarmy_core::decode::<LegacyUsageRecord>(&bytes).map(|legacy| UsageRecord {
+                            provider: legacy.provider,
+                            entry: legacy.entry,
+                            usage: legacy.usage,
+                            cost_micros: legacy.cost_micros,
+                            route: None,
+                            route_step: None,
+                        })
+                    })
+                })
+                .transpose()
+                .map_err(crate::StoreError::from)
         })
         .await
     }
@@ -119,6 +153,8 @@ impl Store {
                 entry: entry.flatten(),
                 usage: usage.clone(),
                 cost_micros,
+                route: attribution.route.clone(),
+                route_step: attribution.route_step,
             },
         )?;
         trx.clear(&entry_key);

@@ -384,6 +384,9 @@ impl Gateway {
             step: job.step,
             request_id: job.request_id,
             provider: job.provider.clone(),
+            entry: job.entry.clone(),
+            route: job.route.clone(),
+            route_step: job.route_step,
             request,
         };
         let work = self.process(message, &claim, &stored);
@@ -600,7 +603,7 @@ impl Gateway {
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
             .await;
         let (result, blocked, entry) = self
-            .attempt_provider(job, provider, effort_used, turn)
+            .attempt_provider(job, provider, effort_used, turn, job.entry.as_deref())
             .await?;
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
             .await;
@@ -649,6 +652,9 @@ impl Gateway {
                 effort_clamped,
                 seq: 0,
                 request_id: job.request_id,
+                entry: entry.clone(),
+                route: job.route.clone(),
+                route_step: Some(job.route_step),
                 message: Message {
                     id: MessageId::from_ulid(Ulid::generate()),
                     role: MessageRole::Assistant,
@@ -704,6 +710,7 @@ impl Gateway {
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
+        pinned: Option<&str>,
     ) -> Result<(
         std::result::Result<Response, swarmy_llm::Error>,
         bool,
@@ -711,7 +718,8 @@ impl Gateway {
     )> {
         // Resolve the entry first so the breaker check and the call use the
         // same key. Resolution already skips entries with open breakers; the
-        // claim below serializes the remaining race to a single probe.
+        // claim below serializes the remaining race to a single probe. A
+        // pinned route step selects exactly its entry instead of the pool.
         let model = self
             .providers
             .catalog
@@ -726,9 +734,9 @@ impl Gateway {
                 None,
             ));
         };
-        let (client, entry) = match self.providers.client(provider, model).await {
+        let (client, entry) = match self.providers.client_pinned(provider, model, pinned).await {
             Ok(resolved) => resolved,
-            Err(error) => return Ok((Err(error), false, None)),
+            Err(error) => return Ok((Err(error), false, pinned.map(str::to_owned))),
         };
         let key = CredentialKey::for_label(provider, entry.clone());
         if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
