@@ -924,6 +924,10 @@ impl Gateway {
         Ok((true, Some(until)))
     }
 
+    // The loop retries inside this transaction: a stale head adopts the actual
+    // head from the error without an extra fetch, and any other store error
+    // backs off and retries with the same head, so a store outage never drops
+    // the finished provider response or spends another provider call.
     async fn persist_response(
         &self,
         job: &InferenceJob,
@@ -956,71 +960,38 @@ impl Gateway {
                     continue;
                 }
             };
-            if self
-                .commit_completion(
-                    job,
-                    &completion,
-                    result,
-                    snapshot.as_ref(),
-                    &mut event,
-                    turn,
-                )
-                .await?
-            {
-                break;
+            let committed = if let Some(snapshot) = snapshot.as_ref() {
+                self.store
+                    .complete_inference_and_idle(&completion, result, snapshot)
+                    .await
+            } else {
+                self.store.complete_inference(&completion, result).await
+            };
+            match committed {
+                Ok(false) => break,
+                Ok(true) => {
+                    event.set_seq(expected_head + 1);
+                    let session = self.store.fetch_session(job.session_id).await?;
+                    let committed_snapshot = snapshot.as_ref().filter(|reference| {
+                        session.as_ref().is_some_and(|session| {
+                            session.state == swarmy_core::SessionState::Idle
+                                && session.snapshot_ref.as_ref() == Some(*reference)
+                        })
+                    });
+                    self.notify_completion(job.session_id, &event, turn, committed_snapshot)
+                        .await;
+                    break;
+                }
+                Err(swarmy_store::StoreError::StaleSequence { actual, .. }) => {
+                    expected_head = actual;
+                }
+                Err(error) => {
+                    warn!(%error, "retrying terminal store update");
+                    sleep(Duration::from_millis(100)).await;
+                }
             }
-            expected_head = self.refresh_head(job, expected_head).await?;
         }
         Ok(())
-    }
-
-    // Six arguments pack the retry loop state; splitting further would
-    // separate the commit from its stale-head refresh.
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_completion(
-        &self,
-        job: &InferenceJob,
-        completion: &InferenceCompletion,
-        result: &std::result::Result<Response, String>,
-        snapshot: Option<&swarmy_core::SnapshotRef>,
-        event: &mut Event,
-        turn: Option<MessageId>,
-    ) -> Result<bool> {
-        let committed = if let Some(snapshot) = snapshot {
-            self.store
-                .complete_inference_and_idle(completion, result, snapshot)
-                .await
-        } else {
-            self.store.complete_inference(completion, result).await
-        };
-        match committed {
-            Ok(false) => Ok(true),
-            Ok(true) => {
-                event.set_seq(completion.expected_head + 1);
-                let session = self.store.fetch_session(job.session_id).await?;
-                let committed_snapshot = snapshot.filter(|reference| {
-                    session.as_ref().is_some_and(|session| {
-                        session.state == swarmy_core::SessionState::Idle
-                            && session.snapshot_ref.as_ref() == Some(*reference)
-                    })
-                });
-                self.notify_completion(job.session_id, event, turn, committed_snapshot)
-                    .await;
-                Ok(true)
-            }
-            Err(swarmy_store::StoreError::StaleSequence { .. }) => Ok(false),
-            Err(error) => {
-                warn!(%error, "retrying terminal store update");
-                sleep(Duration::from_millis(100)).await;
-                Ok(false)
-            }
-        }
-    }
-
-    async fn refresh_head(&self, job: &InferenceJob, expected: u64) -> Result<u64> {
-        let _ = (job, expected);
-        let session = self.store.fetch_session(job.session_id).await?;
-        Ok(session.map_or(expected, |session| session.head_seq))
     }
 
     async fn terminal_snapshot(

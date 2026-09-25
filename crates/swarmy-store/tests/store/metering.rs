@@ -275,25 +275,34 @@ async fn bucket_sums_match_session_totals_and_failed_commits_leave_nothing() {
     assert_eq!(groups[0].completions, 2);
     assert_eq!(groups[0].totals, totals);
     assert_eq!(store.agent_usage(session.agent_id).await.unwrap(), totals);
-    // A stale completed commit must discard its record and bucket adds with
-    // the transaction; the previous test used a failed event that never
-    // reached the metering write.
-    let head = store.fetch_session(id).await.unwrap().unwrap().head_seq;
-    let request = RequestId::for_step(id, head + 1);
-    let (_step, claim) = start_claim(store, id).await;
-    let stale = swarmy_store::InferenceCompletion {
-        claim,
-        expected_head: head + 5,
-        event: completion_event(request, "openai", "gpt-5", &first, first_cost),
+    // Two concurrent commits for the same step race inside one transaction
+    // each: the metering write happens after the head check, so the loser
+    // either conflicts and retries onto the idempotency record or sees it
+    // immediately. Exactly one commit wins and the buckets hold one
+    // completion, proving a failed attempt leaves no partial bucket adds.
+    let (step, claim) = start_claim(store, id).await;
+    let request = claim.request_id;
+    let racer = |usage: swarmy_core::TokenUsage, cost: u64| swarmy_store::InferenceCompletion {
+        claim: claim.clone(),
+        expected_head: step,
+        event: completion_event(request, "openai", "gpt-5", &usage, cost),
         now: base,
         entry: Some("primary".into()),
         entry_kind: Some("api-key".into()),
         quota_remaining: std::collections::BTreeMap::new(),
         quota_resets: std::collections::BTreeMap::new(),
     };
-    assert!(store.complete_inference(&stale, &"nope").await.is_err());
+    let first_attempt = racer(first.clone(), first_cost);
+    let second_attempt = racer(second.clone(), second_cost);
+    let (winner, loser) = tokio::join!(
+        store.complete_inference(&first_attempt, &"answer"),
+        store.complete_inference(&second_attempt, &"answer"),
+    );
+    let outcomes = [winner.unwrap(), loser.unwrap()];
+    assert_eq!(outcomes.iter().filter(|done| **done).count(), 1);
     let groups = session_groups(store, id, hour).await;
-    assert_eq!(groups[0].completions, 2);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].completions, 3);
     test.cleanup().await;
 }
 
@@ -487,5 +496,81 @@ async fn pruning_drains_more_than_one_batch_across_ticks() {
     let groups = session_groups(store, id, hour).await;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].completions, 70);
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let base = Timestamp::from_second(1_000_000).unwrap();
+    let second = Timestamp::from_second(base.as_second() + 3_600).unwrap();
+    let third = Timestamp::from_second(base.as_second() + 7_200).unwrap();
+    let (tokens, cost) = usage(1, 1, 1);
+    let first = complete_with(
+        store,
+        id,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            "api-key",
+            tokens.clone(),
+            cost,
+            base,
+        ),
+    )
+    .await;
+    let middle = complete_with(
+        store,
+        id,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            "api-key",
+            tokens.clone(),
+            cost,
+            second,
+        ),
+    )
+    .await;
+    // The third record lands late in its hour so the cutoff-hour scan keeps it.
+    let late = Timestamp::from_second(third.as_second() + 500).unwrap();
+    let last = complete_with(
+        store,
+        id,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            "api-key",
+            tokens.clone(),
+            cost,
+            late,
+        ),
+    )
+    .await;
+    let cutoff = Timestamp::from_second(third.as_second() + 10).unwrap();
+    let pruned = store.prune_metering_raw(cutoff, 64).await.unwrap();
+    assert_eq!(pruned, 2);
+    assert!(store.inference_usage_record(first).await.unwrap().is_none());
+    assert!(
+        store
+            .inference_usage_record(middle)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.inference_usage_record(last).await.unwrap().is_some());
+    for (moment, want) in [(base, 1), (second, 1), (late, 1)] {
+        let hour = swarmy_store::metering::hour_floor(moment.as_second());
+        let groups = session_groups(store, id, hour).await;
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].completions, want);
+    }
     test.cleanup().await;
 }

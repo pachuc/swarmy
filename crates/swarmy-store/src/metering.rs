@@ -573,12 +573,21 @@ impl Store {
             return Ok(0);
         }
         let cursor_key = self.root.pack(&("metering_prune_cursor",));
-        let cursor: Option<Vec<u8>> = self
+        let done_key = self.root.pack(&("metering_legacy_pruned",));
+        let (cursor, done): (Option<Vec<u8>>, Option<bool>) = self
             .transaction(|trx| {
                 let cursor_key = &cursor_key;
-                async move { read(&trx, cursor_key).await }
+                let done_key = &done_key;
+                async move {
+                    let cursor = read(&trx, cursor_key).await?;
+                    let done = read(&trx, done_key).await?;
+                    Ok((cursor, done))
+                }
             })
             .await?;
+        if done.unwrap_or(false) {
+            return Ok(0);
+        }
         let prefix = self.root.subspace(&("usage_record",));
         let (range_start, range_end) = prefix.range();
         let mut begin = range_start.clone();
@@ -589,14 +598,20 @@ impl Store {
         let rows = self
             .transaction(|trx| {
                 let range = (begin.clone(), range_end.clone());
-                async move { scan(&trx, range, limit.max(crate::MAX_SCAN_LIMIT)).await }
+                async move { scan(&trx, range, limit).await }
             })
             .await?;
         if rows.is_empty() {
+            // The scan reached the end of the subspace: every pre-index
+            // record has been examined, and new writes carry the index, so
+            // mark legacy cleanup complete instead of restarting from the
+            // beginning and decoding every raw record on each tick.
             self.transaction(|trx| {
                 let cursor_key = &cursor_key;
+                let done_key = &done_key;
                 async move {
                     trx.clear(cursor_key);
+                    crate::write(&trx, done_key, &true)?;
                     Ok(())
                 }
             })

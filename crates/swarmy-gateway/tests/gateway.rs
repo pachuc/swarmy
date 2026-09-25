@@ -575,6 +575,90 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
 }
 
 #[tokio::test]
+async fn stale_first_commit_retries_without_another_provider_call() {
+    run(|mut f| async move {
+        f.script(50, false, "hello");
+        f.start(1);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            // Move the session head before the gateway commits, so its first
+            // commit attempt fails stale. The loop must adopt the actual head
+            // from the error and commit the already-received response on
+            // retry instead of dropping it at the cost of another call.
+            let head = f
+                .store
+                .fetch_session(job.session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .head_seq;
+            assert_eq!(head, job.step);
+            let nudge = swarmy_core::Message {
+                id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+                role: swarmy_core::MessageRole::User,
+                parts: vec![Part::Text {
+                    text: "intervening".into(),
+                }],
+            };
+            f.store
+                .append_events(
+                    job.session_id,
+                    head,
+                    &[Event::MessageAppended {
+                        seq: 0,
+                        message: nudge,
+                    }],
+                )
+                .await
+                .unwrap();
+            f.publish(&job).await;
+            timeout(WAIT, async {
+                loop {
+                    let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
+                    if events
+                        .iter()
+                        .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+            assert_eq!(
+                f.store
+                    .get_idempotency(job.request_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                IdempotencyState::Completed
+            );
+            let groups = f
+                .store
+                .usage(
+                    swarmy_store::MeteringDimension::Session,
+                    &job.session_id.to_string(),
+                    Timestamp::from_second(0).unwrap(),
+                    Timestamp::now(),
+                    swarmy_store::UsageGroupBy::Day,
+                )
+                .await
+                .unwrap();
+            assert_eq!(groups.iter().map(|group| group.completions).sum::<u64>(), 1);
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn kill_mid_stream_redelivers_and_live_deltas_precede_completion() {
     run(|mut f| async move {
         f.script(2_000, false, "partial output");

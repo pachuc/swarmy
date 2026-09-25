@@ -33,8 +33,9 @@ fn lowered(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
 }
 
 /// Parse a reset value into seconds until the window resets. Accepts plain
-/// seconds (`90`), duration strings (`500ms`, `1s`, `6m`), and `RFC 3339`
-/// timestamps (seconds from now, saturating to zero when in the past).
+/// seconds (`90`), durations (`500ms`, `1s`, `6m`, and compound forms like
+/// `6m0s`, `1m30s`, `2h0m0s`), and `RFC 3339` timestamps (seconds from now,
+/// saturating to zero when in the past).
 #[must_use]
 pub fn parse_reset_seconds(value: &str) -> Option<u64> {
     let trimmed = value.trim();
@@ -54,33 +55,59 @@ pub fn parse_reset_seconds(value: &str) -> Option<u64> {
     None
 }
 
+/// Parse a duration into seconds. Accepts bare seconds (`90`), single units
+/// (`500ms`, `2s`, `6m`), and compound forms (`6m0s`, `1m30s`, `2h0m0s`) as
+/// published in `OpenAI` reset headers. Units are `ms`, `s`, `m`, `h`, `d`.
 fn parse_duration_seconds(value: &str) -> Result<u64, ()> {
-    let value = value.trim();
-    if let Some(number) = value.strip_suffix("ms") {
-        let millis: u64 = number.trim().parse().map_err(|_| ())?;
-        return Ok(millis.div_ceil(1_000));
+    let mut rest = value.trim();
+    if rest.is_empty() {
+        return Err(());
     }
-    if let Some(number) = value.strip_suffix('s') {
-        let seconds: u64 = number.trim().parse().map_err(|_| ())?;
-        return Ok(seconds);
+    // Bare seconds carry no unit.
+    if rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return rest.parse::<u64>().map_err(|_| ());
     }
-    if let Some(number) = value.strip_suffix('m') {
-        let minutes: u64 = number.trim().parse().map_err(|_| ())?;
-        return number
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| ())
-            .and_then(|_| minutes.checked_mul(60).ok_or(()));
+    let mut total: u64 = 0;
+    let mut matched = false;
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).ok_or(())?;
+        if digits == 0 {
+            return Err(());
+        }
+        let (number, units) = rest.split_at(digits);
+        let amount: u64 = number.parse().map_err(|_| ())?;
+        let unit_end = units
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(units.len());
+        let (unit, next) = units.split_at(unit_end);
+        match unit {
+            "ms" => {
+                total = total.checked_add(amount.div_ceil(1_000)).ok_or(())?;
+            }
+            "s" => {
+                total = total.checked_add(amount).ok_or(())?;
+            }
+            "m" => {
+                total = total
+                    .checked_add(amount.checked_mul(60).ok_or(())?)
+                    .ok_or(())?;
+            }
+            "h" => {
+                total = total
+                    .checked_add(amount.checked_mul(3_600).ok_or(())?)
+                    .ok_or(())?;
+            }
+            "d" => {
+                total = total
+                    .checked_add(amount.checked_mul(86_400).ok_or(())?)
+                    .ok_or(())?;
+            }
+            _ => return Err(()),
+        }
+        matched = true;
+        rest = next;
     }
-    if let Some(number) = value.strip_suffix('h') {
-        let hours: u64 = number.trim().parse().map_err(|_| ())?;
-        return hours.checked_mul(3_600).ok_or(());
-    }
-    if let Some(number) = value.strip_suffix('d') {
-        let days: u64 = number.trim().parse().map_err(|_| ())?;
-        return days.checked_mul(86_400).ok_or(());
-    }
-    Err(())
+    if matched { Ok(total) } else { Err(()) }
 }
 
 fn resets_with(headers: &BTreeMap<String, String>, prefix: &str) -> BTreeMap<String, u64> {
@@ -213,5 +240,14 @@ mod tests {
             ("x-ratelimit-reset-tokens".into(), 300_u64),
         ]);
         assert_eq!(reset_window_seconds(&resets), Some(60));
+    }
+
+    #[test]
+    fn compound_openai_reset_values_parse_to_seconds() {
+        assert_eq!(parse_reset_seconds("6m0s"), Some(360));
+        assert_eq!(parse_reset_seconds("1m30s"), Some(90));
+        assert_eq!(parse_reset_seconds("2h0m0s"), Some(7_200));
+        assert_eq!(parse_reset_seconds("1d2h"), Some(93_600));
+        assert_eq!(parse_reset_seconds("1500ms"), Some(2));
     }
 }
