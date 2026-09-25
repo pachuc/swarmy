@@ -145,6 +145,7 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
     let summaries = client.cli_credentials().await.unwrap();
     assert_eq!(summaries[0].provider, "test-provider");
     assert_eq!(summaries[0].kind, "api-key");
+    assert_eq!(summaries[0].label, "default");
     assert_eq!(
         client.cli_credential("test-provider").await.unwrap().status,
         "ready"

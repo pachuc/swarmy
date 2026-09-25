@@ -367,7 +367,7 @@ impl Gateway {
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<Response, swarmy_llm::Error> {
+    ) -> Result<(Response, Option<String>), swarmy_llm::Error> {
         let model = self
             .providers
             .catalog
@@ -376,7 +376,7 @@ impl Gateway {
                 provider: provider.into(),
                 model: job.request.settings.model.clone(),
             })?;
-        let client = self.providers.client(provider, model).await?;
+        let (client, entry) = self.providers.client(provider, model).await?;
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
@@ -417,6 +417,7 @@ impl Gateway {
             }
         }
         response
+            .map(|response| (response, entry))
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))
     }
 
@@ -463,7 +464,7 @@ impl Gateway {
                 ))
                 .await;
         }
-        let (result, blocked) = self
+        let (result, blocked, entry) = self
             .attempt_provider(job, provider, effort_used, turn)
             .await?;
         if let Some(turn) = turn {
@@ -522,7 +523,8 @@ impl Gateway {
         };
         let stored_result = result.map_err(|error| error.to_string());
         if stored_result.is_ok() {
-            self.record_entry_usage(job.request_id, provider).await?;
+            self.record_entry_usage(job.request_id, provider, entry.as_deref())
+                .await;
         }
         self.persist_response(job, claim, event, &stored_result, turn)
             .await?;
@@ -533,27 +535,24 @@ impl Gateway {
         Ok(())
     }
 
-    async fn record_entry_usage(&self, request: RequestId, provider: &str) -> Result<()> {
-        let entry = if let Ok(keyring) = swarmy_config::Keyring::load() {
-            let credentials = self.store.credentials(keyring);
-            let selected = credentials
-                .first_entry(swarmy_core::CredentialScope::Cluster, provider)
-                .await?;
-            if let Some((label, _)) = &selected {
-                credentials
-                    .touch_entry(swarmy_core::CredentialScope::Cluster, provider, label)
-                    .await?;
-            }
-            selected.map(|(label, _)| label)
-        } else {
-            None
+    async fn record_entry_usage(&self, request: RequestId, provider: &str, entry: Option<&str>) {
+        let Some(label) = entry else {
+            return;
         };
-        if let Some(entry) = entry {
-            self.store
-                .set_inference_entry(request, Some(&entry))
-                .await?;
+        // Attribution is best effort: the provider response is already in hand
+        // and must still be persisted when this bookkeeping fails.
+        if let Err(error) = self.store.set_inference_entry(request, Some(label)).await {
+            warn!(%error, "inference entry attribution failed");
         }
-        Ok(())
+        if let Ok(keyring) = swarmy_config::Keyring::load()
+            && let Err(error) = self
+                .store
+                .credentials(keyring)
+                .touch_entry(swarmy_core::CredentialScope::Cluster, provider, label)
+                .await
+        {
+            warn!(%error, "credential last-use update failed");
+        }
     }
 
     async fn attempt_provider(
@@ -562,7 +561,11 @@ impl Gateway {
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(std::result::Result<Response, swarmy_llm::Error>, bool)> {
+    ) -> Result<(
+        std::result::Result<Response, swarmy_llm::Error>,
+        bool,
+        Option<String>,
+    )> {
         let key = CredentialKey(provider.to_owned());
         if let Some(until) = self.store.claim_provider(&key, Timestamp::now()).await? {
             let reason = self
@@ -579,9 +582,13 @@ impl Gateway {
                     ),
                 }),
                 true,
+                None,
             ));
         }
-        Ok((self.infer(job, provider, effort, turn).await, false))
+        Ok(match self.infer(job, provider, effort, turn).await {
+            Ok((response, entry)) => (Ok(response), false, entry),
+            Err(error) => (Err(error), false, None),
+        })
     }
 
     async fn record_breaker(

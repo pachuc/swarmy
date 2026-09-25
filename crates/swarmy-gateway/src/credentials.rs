@@ -57,6 +57,13 @@ fn store_error(error: &StoreError) -> Error {
 #[async_trait]
 impl AuthStore for ClusterCredentials {
     async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
+        Ok(self.get_labelled(provider).await?.map(|(_, record)| record))
+    }
+
+    async fn get_labelled(
+        &self,
+        provider: &str,
+    ) -> Result<Option<(Option<String>, CredentialRecord)>, Error> {
         let Some(credentials) = &self.credentials else {
             return if self
                 .store
@@ -75,7 +82,7 @@ impl AuthStore for ClusterCredentials {
             .first_entry(CredentialScope::Cluster, provider)
             .await
             .map_err(|error| store_error(&error))?;
-        Ok(entry.map(|(_, record)| record))
+        Ok(entry.map(|(label, record)| (Some(label), record)))
     }
 
     async fn refresh(
@@ -88,27 +95,30 @@ impl AuthStore for ClusterCredentials {
             .credentials
             .as_ref()
             .ok_or(Error::Credentials("missing cluster keyring"))?;
+        // Read only this provider's entries in one transaction. When another
+        // gateway already rotated the entry, the observed record matches no
+        // current entry; fall back to the first entry so the fenced refresh
+        // below adopts the winner's record instead of failing the turn.
         let entries = credentials
-            .list_entries(CredentialScope::Cluster)
+            .provider_entries(CredentialScope::Cluster, provider)
             .await
             .map_err(|error| store_error(&error))?;
         let mut selected = None;
-        for entry in entries
-            .into_iter()
-            .filter(|entry| entry.provider == provider)
-        {
-            if credentials
-                .get_entry(CredentialScope::Cluster, provider, &entry.label)
-                .await
-                .map_err(|error| store_error(&error))?
-                .as_ref()
-                == Some(observed)
-            {
-                selected = Some(entry.label);
+        for (label, record) in &entries {
+            if record == observed {
+                selected = Some(label.clone());
                 break;
             }
         }
-        let label = selected.ok_or(Error::NeedsLogin(provider.into()))?;
+        let label = match selected {
+            Some(label) => label,
+            None => credentials
+                .first_entry(CredentialScope::Cluster, provider)
+                .await
+                .map_err(|error| store_error(&error))?
+                .map(|(label, _)| label)
+                .ok_or(Error::NeedsLogin(provider.into()))?,
+        };
         credentials
             .refresh_entry_with_lease(
                 CredentialScope::Cluster,
@@ -139,11 +149,17 @@ impl AuthStore for ClusterCredentials {
 mod tests {
     use super::*;
     use foundationdb::{Database, tuple::Subspace};
-    use std::sync::{Arc, OnceLock};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc, OnceLock,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
     use swarmy_core::{CredentialKind, CredentialStatus};
     use swarmy_llm::{
         ClientAuth,
-        auth::{Credentials, OAuthClient, Resolver},
+        auth::{Credentials, LoginUi, OAuthClient, Resolver},
     };
     use swarmy_store::blob::MemoryBlobStore;
     use wiremock::{
@@ -327,7 +343,7 @@ mod tests {
     }
     #[tokio::test]
     async fn openrouter_login_key_is_persisted_and_wrong_key_never_falls_back() {
-        use swarmy_llm::auth::{LoginUi, OpenRouterLogin};
+        use swarmy_llm::auth::OpenRouterLogin;
         struct Ui;
         #[async_trait]
         impl LoginUi for Ui {
@@ -384,5 +400,144 @@ mod tests {
         )))
         .unwrap();
         assert!(wrong.resolve("openrouter").await.is_err());
+    }
+
+    fn api_key(key: &str) -> CredentialRecord {
+        CredentialRecord {
+            kind: CredentialKind::ApiKey {
+                key: key.into(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        }
+    }
+
+    fn api_key_of(record: &CredentialRecord) -> &str {
+        let CredentialKind::ApiKey { key, .. } = &record.kind else {
+            panic!("expected an API key record")
+        };
+        key
+    }
+
+    struct StubLogin {
+        calls: AtomicUsize,
+        key: String,
+        delay: Duration,
+    }
+
+    struct UnreachableLogin;
+
+    #[async_trait]
+    impl Login for UnreachableLogin {
+        fn provider(&self) -> &'static str {
+            "openai"
+        }
+        async fn login(&self, _: &dyn LoginUi) -> Result<CredentialKind, Error> {
+            unreachable!("rotation already happened")
+        }
+        async fn refresh(&self, _: &CredentialKind) -> Result<Option<CredentialKind>, Error> {
+            unreachable!("an adopted record never refreshes")
+        }
+    }
+
+    #[async_trait]
+    impl Login for StubLogin {
+        fn provider(&self) -> &'static str {
+            "openai"
+        }
+        async fn login(&self, _: &dyn LoginUi) -> Result<CredentialKind, Error> {
+            Err(Error::Credentials(
+                "interactive login is unavailable in tests",
+            ))
+        }
+        async fn refresh(&self, _: &CredentialKind) -> Result<Option<CredentialKind>, Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            Ok(Some(api_key(&self.key).kind))
+        }
+    }
+
+    #[tokio::test]
+    async fn racing_entry_refreshers_adopt_the_winner() {
+        let Some(store) = test_store() else {
+            return;
+        };
+        let credentials = store.credentials(Keyring::from_bytes([9; 32]));
+        let observed = api_key("old-key");
+        credentials
+            .put_entry(CredentialScope::Cluster, "openai", "default", &observed)
+            .await
+            .unwrap();
+        let login = Arc::new(StubLogin {
+            calls: AtomicUsize::new(0),
+            key: "new-key".into(),
+            delay: Duration::from_millis(150),
+        });
+        let first = ClusterCredentials::with_credentials(&store, credentials.clone());
+        let second = ClusterCredentials::with_credentials(&store, credentials.clone());
+        // Both gateways hold the stale record; one rotates while the other
+        // adopts the winner instead of failing its turn.
+        let (a, b) = tokio::join!(
+            first.refresh("openai", &observed, login.as_ref()),
+            second.refresh("openai", &observed, login.as_ref()),
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert!(a == b);
+        assert_eq!(api_key_of(&a), "new-key");
+        assert_eq!(login.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_observer_adopts_an_externally_rotated_entry() {
+        let Some(store) = test_store() else {
+            return;
+        };
+        let credentials = store.credentials(Keyring::from_bytes([11; 32]));
+        let observed = api_key("old-key");
+        credentials
+            .put_entry(CredentialScope::Cluster, "openai", "default", &observed)
+            .await
+            .unwrap();
+        credentials
+            .put_entry(
+                CredentialScope::Cluster,
+                "openai",
+                "default",
+                &api_key("rotated-key"),
+            )
+            .await
+            .unwrap();
+        let auth = ClusterCredentials::with_credentials(&store, credentials);
+        let adopted = auth
+            .refresh("openai", &observed, &UnreachableLogin)
+            .await
+            .unwrap();
+        assert_eq!(api_key_of(&adopted), "rotated-key");
+    }
+
+    #[tokio::test]
+    async fn legacy_record_reads_and_refreshes_through_default() {
+        let Some(store) = test_store() else {
+            return;
+        };
+        let credentials = store.credentials(Keyring::from_bytes([10; 32]));
+        let legacy = api_key("legacy-key");
+        credentials
+            .put_credential(CredentialScope::Cluster, "openai", &legacy)
+            .await
+            .unwrap();
+        let auth = ClusterCredentials::with_credentials(&store, credentials);
+        // The first read migrates the legacy record; an old gateway sharing
+        // the store would no longer see it, so gateways upgrade together.
+        assert!(auth.get("openai").await.unwrap().unwrap() == legacy);
+        let login = StubLogin {
+            calls: AtomicUsize::new(0),
+            key: "rotated-key".into(),
+            delay: Duration::ZERO,
+        };
+        let rotated = auth.refresh("openai", &legacy, &login).await.unwrap();
+        assert_eq!(api_key_of(&rotated), "rotated-key");
+        assert_eq!(login.calls.load(Ordering::SeqCst), 1);
+        assert!(auth.get("openai").await.unwrap().unwrap() == rotated);
     }
 }

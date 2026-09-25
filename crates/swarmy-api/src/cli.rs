@@ -72,7 +72,7 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnaps
     let credentials = match super::credential_store(&state) {
         Ok(store) => Some(
             store
-                .list_credentials(swarmy_core::CredentialScope::Cluster)
+                .list_entries(swarmy_core::CredentialScope::Cluster)
                 .await
                 .map_err(storage)?
                 .into_iter()
@@ -644,22 +644,14 @@ pub async fn credential_set(
         &body.idempotency_key,
         &format!(
             "cli:credentials:{provider}:{}:set",
-            body.label.as_deref().unwrap_or("auto")
+            body.label.as_deref().unwrap_or("default")
         ),
         async move {
             let record: swarmy_core::CredentialRecord = serde_json::from_value(body.record.clone())
                 .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_credential"))?;
-            let label = body.label.unwrap_or_else(|| {
-                let suffix = ulid::Ulid::generate().to_string();
-                format!(
-                    "{}-{}",
-                    match record.kind {
-                        swarmy_core::CredentialKind::ApiKey { .. } => "api-key",
-                        swarmy_core::CredentialKind::OAuth { .. } => "subscription",
-                    },
-                    suffix[20..].to_lowercase()
-                )
-            });
+            // Without a label the provider's default entry is replaced so a
+            // rotation takes over serving; pass --label to keep a second entry.
+            let label = body.label.unwrap_or_else(|| "default".into());
             store
                 .put_entry(
                     swarmy_core::CredentialScope::Cluster,

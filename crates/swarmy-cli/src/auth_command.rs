@@ -7,6 +7,8 @@ pub enum Command {
     Login {
         #[arg(default_value = "chatgpt")]
         provider: String,
+        /// Entry label. Without one the provider's default entry is replaced;
+        /// pass `--label` to keep a second entry.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -30,6 +32,8 @@ pub enum Command {
     Import {
         #[arg(long)]
         file: Option<PathBuf>,
+        /// Entry label. Without one the provider's default entry is replaced;
+        /// pass `--label` to keep a second entry.
         #[arg(long)]
         label: Option<String>,
     },
@@ -52,6 +56,8 @@ pub struct Set {
     pub provider: Option<String>,
     #[arg(long = "provider", conflicts_with = "provider")]
     pub provider_flag: Option<String>,
+    /// Entry label. Without one the provider's default entry is replaced;
+    /// pass `--label` to keep a second entry.
     #[arg(long)]
     pub label: Option<String>,
     #[command(flatten)]

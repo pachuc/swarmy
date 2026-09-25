@@ -15,6 +15,7 @@ use swarmy_core::{
 };
 
 use crate::{Result, Store, StoreError, read, scan, write};
+use foundationdb::RetryableTransaction;
 
 /// No secrets are returned by list operations. Each encrypted value is read once.
 #[derive(Debug, Serialize)]
@@ -167,40 +168,42 @@ impl CredentialStore {
     }
 
     // Migration is committed in one transaction; competing readers cannot create two entries.
-    async fn migrate(&self, scope: CredentialScope, provider: &str) -> Result<()> {
+    // The legacy read and the entry write share the caller's transaction so
+    // resolution stays one read.
+    async fn migrate_legacy(
+        &self,
+        trx: &RetryableTransaction,
+        scope: CredentialScope,
+        provider: &str,
+    ) -> Result<()> {
         let old = self.key("credential", scope, provider);
-        let entry = self.entry_key("credential_entry", scope, provider, "default");
+        if let Some(bytes) = trx.get(&old, false).await?.map(|value| value.to_vec()) {
+            let record = decrypt(&self.keyring, scope, provider, &bytes)?;
+            let entry = self.entry_key("credential_entry", scope, provider, "default");
+            let previous: Option<EntryValue> = read(trx, &entry).await?;
+            write(
+                trx,
+                &entry,
+                &EntryValue {
+                    created_at: previous.map_or(record.updated_at, |entry| entry.created_at),
+                    last_used_at: None,
+                    ciphertext: encrypt(
+                        &self.keyring,
+                        scope,
+                        &entry_identity(provider, "default"),
+                        &record,
+                    )?,
+                },
+            )?;
+            trx.clear(&old);
+            trx.clear(&self.key("credential_lease", scope, provider));
+        }
+        Ok(())
+    }
+
+    async fn migrate(&self, scope: CredentialScope, provider: &str) -> Result<()> {
         self.store
-            .transaction(|trx| {
-                let old = &old;
-                let entry = &entry;
-                async move {
-                    if let Some(bytes) = trx.get(old, false).await? {
-                        let record = decrypt(&self.keyring, scope, provider, &bytes)?;
-                        {
-                            let previous: Option<EntryValue> = read(&trx, entry).await?;
-                            write(
-                                &trx,
-                                entry,
-                                &EntryValue {
-                                    created_at: previous
-                                        .map_or(record.updated_at, |entry| entry.created_at),
-                                    last_used_at: None,
-                                    ciphertext: encrypt(
-                                        &self.keyring,
-                                        scope,
-                                        &entry_identity(provider, "default"),
-                                        &record,
-                                    )?,
-                                },
-                            )?;
-                        }
-                        trx.clear(old);
-                        trx.clear(&self.key("credential_lease", scope, provider));
-                    }
-                    Ok(())
-                }
-            })
+            .transaction(|trx| async move { self.migrate_legacy(&trx, scope, provider).await })
             .await
     }
 
@@ -245,6 +248,8 @@ impl CredentialStore {
             .await
     }
 
+    /// Read one labelled entry, migrating the provider's legacy record in the
+    /// same transaction so a resolution is one read.
     /// # Errors
     /// Returns decryption, encoding, or database errors.
     pub async fn get_entry(
@@ -253,14 +258,18 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<Option<CredentialRecord>> {
-        self.migrate(scope, provider).await?;
         let key = self.entry_key("credential_entry", scope, provider, label);
-        self.store
+        let entry: Option<EntryValue> = self
+            .store
             .transaction(|trx| {
                 let key = &key;
-                async move { read::<EntryValue>(&trx, key).await }
+                async move {
+                    self.migrate_legacy(&trx, scope, provider).await?;
+                    read(&trx, key).await
+                }
             })
-            .await?
+            .await?;
+        entry
             .map(|entry| {
                 decrypt(
                     &self.keyring,
@@ -385,6 +394,52 @@ impl CredentialStore {
         Ok(result)
     }
 
+    /// Read one provider's entries, oldest first, migrating its legacy record
+    /// in the same transaction. Only this provider's keys are scanned and
+    /// decrypted, so per-job resolution stays one read.
+    /// # Errors
+    /// Returns decryption, encoding, or database errors.
+    pub async fn provider_entries(
+        &self,
+        scope: CredentialScope,
+        provider: &str,
+    ) -> Result<Vec<(String, CredentialRecord)>> {
+        let space = self
+            .store
+            .root
+            .subspace(&("credential_entry", scope.to_string(), provider));
+        let (begin, end) = space.range();
+        let rows = self
+            .store
+            .transaction(|trx| {
+                let range = (begin.clone(), end.clone());
+                async move {
+                    self.migrate_legacy(&trx, scope, provider).await?;
+                    scan(&trx, range, crate::MAX_SCAN_LIMIT).await
+                }
+            })
+            .await?;
+        let mut entries = Vec::new();
+        for (key, value) in rows {
+            let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+            let entry: EntryValue = decode(&value)?;
+            let record = decrypt(
+                &self.keyring,
+                scope,
+                &entry_identity(provider, &label),
+                &entry.ciphertext,
+            )?;
+            entries.push((label, entry.created_at, record));
+        }
+        entries.sort_by(|left, right| left.1.cmp(&right.1).then(left.0.cmp(&right.0)));
+        Ok(entries
+            .into_iter()
+            .map(|(label, _, record)| (label, record))
+            .collect())
+    }
+
+    /// Serve the oldest ready entry so a rotated replacement takes over once
+    /// it is usable; fall back to the oldest entry when none is ready.
     /// # Errors
     /// Returns decryption, encoding, or database errors.
     pub async fn first_entry(
@@ -392,18 +447,15 @@ impl CredentialStore {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Option<(String, CredentialRecord)>> {
-        let Some(summary) = self
-            .list_entries(scope)
-            .await?
-            .into_iter()
-            .find(|entry| entry.provider == provider)
-        else {
-            return Ok(None);
-        };
-        Ok(self
-            .get_entry(scope, provider, &summary.label)
-            .await?
-            .map(|record| (summary.label, record)))
+        let entries = self.provider_entries(scope, provider).await?;
+        let now = Timestamp::now();
+        if let Some((label, record)) = entries
+            .iter()
+            .find(|(_, record)| record.status(now) == CredentialStatus::Ready)
+        {
+            return Ok(Some((label.clone(), record.clone())));
+        }
+        Ok(entries.into_iter().next())
     }
 
     /// Fenced refresh of a single labelled entry. Other labels have independent leases.

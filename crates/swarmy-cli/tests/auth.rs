@@ -288,7 +288,7 @@ fn two_labels_under_one_provider_are_independent() {
 }
 
 #[test]
-fn generated_labels_are_distinct_even_for_rapid_sets() {
+fn labelless_set_replaces_the_default_entry() {
     let Some(f) = Fixture::new() else { return };
     for _ in 0..2 {
         f.success(&["auth", "set", "openai", "--api-key", "sk-test"]);
@@ -298,11 +298,6 @@ fn generated_labels_are_distinct_even_for_rapid_sets() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(entries.len(), 2);
-    assert_ne!(entries[0]["label"], entries[1]["label"]);
-    assert!(
-        entries
-            .iter()
-            .all(|row| row["label"].as_str().unwrap().starts_with("api-key-"))
-    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["label"], "default");
 }

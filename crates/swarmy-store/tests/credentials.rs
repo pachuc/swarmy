@@ -349,6 +349,42 @@ async fn labelled_entries_migrate_refresh_and_remove_independently() {
 }
 
 #[tokio::test]
+async fn first_entry_prefers_the_oldest_ready_entry() {
+    let Some(f) = Fixture::new() else { return };
+    f.credentials
+        .put_entry(SCOPE, "openai", "default", &oauth("expired"))
+        .await
+        .unwrap();
+    let ready = CredentialRecord {
+        kind: CredentialKind::ApiKey {
+            key: "live".into(),
+            extra: std::collections::BTreeMap::default(),
+        },
+        updated_at: Timestamp::now(),
+    };
+    f.credentials
+        .put_entry(SCOPE, "openai", "second", &ready)
+        .await
+        .unwrap();
+    // The older default is expired, so the newer ready entry serves.
+    let (label, record) = f
+        .credentials
+        .first_entry(SCOPE, "openai")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(label, "second");
+    assert!(record == ready);
+    assert!(
+        f.credentials
+            .first_entry(SCOPE, "missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
     let Some(f) = Fixture::new() else { return };
     f.credentials

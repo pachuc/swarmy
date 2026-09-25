@@ -964,7 +964,10 @@ Auth entries are keyed by scope, provider, and a label unique within that
 provider. Each entry records its creation and last use, kind (`subscription`,
 `api-key`, or `cloud`), and encrypted secret material. Existing records at
 `("credential", scope, provider)` migrate on first read to label `default` with
-kind inferred from the secret type. The CLI uses cluster scope; `agent:<id>` is
+kind inferred from the secret type. Without an explicit label, set, login, and
+import replace the provider's `default` entry; until routes select entries, the
+gateway serves the oldest ready entry and falls back to the oldest otherwise.
+The CLI uses cluster scope; `agent:<id>` is
 reserved. Versioned records use XChaCha20-Poly1305 with a random 24-byte nonce
 and scope, provider, and label authenticated as associated data. The 32-byte
 cluster data key stays outside FoundationDB in `~/.swarmy/keyring` (mode 600),

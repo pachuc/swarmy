@@ -67,12 +67,14 @@ API key needs `AZURE_RESOURCE_NAME` or `AZURE_OPENAI_BASE_URL`.
 Foundry endpoint URL. Credential `base_url` takes precedence over the classic
 resource name; no `[custom_providers.azure]` entry is needed.
 
-A provider can hold multiple labelled entries. `auth set --label NAME` replaces only
-that entry; without a label, set, login and import generate a short unique label.
-`auth rm PROVIDER LABEL` removes only that entry; `auth check PROVIDER --label LABEL`
+A provider can hold multiple labelled entries. `auth set --provider P --label L`
+adds or replaces one entry; without `--label`, set, login, and import replace
+the provider's `default` entry so a rotation takes over serving. `auth rm
+PROVIDER LABEL` removes only that entry; `auth check PROVIDER --label LABEL`
 checks one, while `auth check` checks all. Old single-provider records are
 migrated to label `default` on first read. Until routes select entries, the
-oldest entry for a provider handles turns. Entry kinds are `api-key`,
+oldest ready entry for a provider handles turns, falling back to the oldest
+entry when none is ready. Entry kinds are `api-key`,
 `subscription`, and `cloud`.
 
 `auth ls` and `auth check` expose metadata, never secrets. Check verifies local
