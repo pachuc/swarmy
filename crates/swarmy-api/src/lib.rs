@@ -23,6 +23,7 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
 use ulid::Ulid;
 use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -233,14 +234,16 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
         )
-        .route("/v1/openapi.json", get(openapi))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
+    // Health, the OpenAPI document, and the rendered reference are public so
+    // every swarm documents itself at its own version without a token.
     Router::new()
         .route("/v1/health", get(health))
+        .merge(SwaggerUi::new("/v1/docs").url("/v1/openapi.json", api::ApiDocument::openapi()))
         .merge(protected)
         .with_state(state)
 }
-async fn health(State(state): State<AppState>) -> ApiResult<Value> {
+async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse> {
     let services = state.store.list_services().await.map_err(storage)?;
     let node_count = services
         .iter()
@@ -260,12 +263,14 @@ async fn health(State(state): State<AppState>) -> ApiResult<Value> {
             },
         })
         .collect();
-    Ok(Json(
-        json!({"version": swarmy_version::VERSION, "git_commit": swarmy_version::GIT_COMMIT, "services": services, "node_count": node_count, "default_provider": state.default_selection.provider}),
-    ))
-}
-async fn openapi() -> Json<Value> {
-    Json(serde_json::to_value(api::ApiDocument::openapi()).unwrap_or_default())
+    Ok(Json(api::HealthResponse {
+        version: swarmy_version::VERSION.into(),
+        git_commit: swarmy_version::GIT_COMMIT.into(),
+        api_version: api::API_VERSION.into(),
+        default_provider: state.default_selection.provider.clone(),
+        services,
+        node_count: u64::try_from(node_count).unwrap_or(u64::MAX),
+    }))
 }
 #[derive(Deserialize)]
 struct Page {
@@ -407,14 +412,10 @@ async fn update_agent(
     )
     .await
 }
-#[derive(Deserialize)]
-struct DeleteKey {
-    idempotency_key: String,
-}
 async fn delete_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(body): Json<DeleteKey>,
+    Json(body): Json<api::DeleteRequest>,
 ) -> ApiResult<Value> {
     let store = state.store.clone();
     replay(
@@ -753,7 +754,7 @@ async fn set_credential(
 async fn remove_credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
-    Json(body): Json<DeleteKey>,
+    Json(body): Json<api::DeleteRequest>,
 ) -> ApiResult<Value> {
     let store = credential_store(&state)?;
     replay(
