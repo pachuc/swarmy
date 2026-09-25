@@ -23,8 +23,9 @@ elif args[:2] == ['pr', 'list']:
 elif args[:2] == ['pr', 'view']:
     print(json.dumps({'url':args[2], 'state':os.environ.get('PR_STATE','OPEN'),
                       'baseRefName':'master', 'headRefName':os.environ.get('PR_BRANCH','swarmy/ewr2hd')}))
-elif args[:2] == ['--remote', 'dev']:
-    rest = args[2:]
+elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['session']):
+    # An empty remote in fleet.toml drops the --remote flag (local API mode).
+    rest = args[2:] if args[:2] == ['--remote', 'dev'] else args
     if rest[:2] == ['agent', 'create']:
         token = sys.stdin.read()
         (root / 'token_ok').write_text(str(token == 'private-token\\n'))
@@ -142,6 +143,14 @@ class FleetTests(unittest.TestCase):
         self.assertFalse(any("delete" in call for call in self.calls()))
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertEqual(workers, {"worker-1": None})
+
+    def test_empty_remote_uses_the_local_api_configuration(self):
+        # On a control node the driver runs without a tunnel profile.
+        self.config.write_text(self.config.read_text().replace('remote = "dev"', 'remote = ""'))
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0, "launch failed")
+        swarmy_calls = [call for call in self.calls() if call[:1] in (["agent"], ["run"], ["session"])]
+        self.assertTrue(swarmy_calls, "no swarmy calls recorded")
+        self.assertFalse(any("--remote" in call for call in self.calls()))
 
     def test_pool_reuses_idle_workers_and_caps_creation(self):
         self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)

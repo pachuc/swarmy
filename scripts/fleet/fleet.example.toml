@@ -1,5 +1,5 @@
 # Copy to fleet.toml and run chmod 600 scripts/fleet/fleet.toml.
-remote = "dev"
+remote = "dev"  # saved tunnel profile; leave empty to use the local API configuration (on a control node)
 repo = "pachuc/swarmy"
 provider = "openrouter"
 model = "openai/gpt-6-sol"
