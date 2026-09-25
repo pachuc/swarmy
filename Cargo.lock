@@ -4440,6 +4440,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "object_store",
+ "serde_json",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
