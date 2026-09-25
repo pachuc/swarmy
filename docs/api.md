@@ -89,13 +89,17 @@ from `/v1`. Changes within `/v1` are additive only:
 - Nothing is removed or reinterpreted: no route or field is deleted, no field
   changes type, and no established behavior changes meaning.
 - A route or field on its way out is first marked `deprecated: true` in the
-  OpenAPI document and announced here. Deprecated shapes keep working for at
-  least two minor versions before removal.
+  OpenAPI document with an `x-sunset` date at least sixty days out, and
+  announced here. Deprecated shapes keep working for at least two minor
+  versions and until their sunset date, whichever is later. The checker
+  rejects dateless deprecations, short sunsets, and removals before the
+  sunset date; a removal after its sunset date passes.
 - Breaking changes ship as a new major API version under `/v2`, with the old
   major version kept serving through a migration window.
 
 `scripts/check-openapi-compat.sh` enforces this in CI. It diffs the generated
-`docs/openapi.json` against the base revision with the oasdiff OpenAPI diff
+`docs/openapi.json` against the merge base with the target branch (a push to
+master therefore compares master with itself) with the oasdiff OpenAPI diff
 tool and fails on any removed path, removed field, or changed type.
 
 Clients accept any server with the same major API version. `GET /v1/health`

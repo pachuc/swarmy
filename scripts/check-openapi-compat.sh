@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Fail when docs/openapi.json breaks the compatibility policy in docs/api.md.
 #
-# Breaking means the OpenAPI diff tool reports any breaking change against the
-# base revision: a removed path or operation, a removed request or response
-# field, or a changed field type. Additive changes (new paths, new optional
-# fields, new enum variants documented as ignored by old clients) pass.
+# The working tree document is diffed against the merge base with the given
+# base revision (default: origin/master), so a push to master compares master
+# with itself and trivially passes; pull requests are where the check bites.
+# Breaking means the OpenAPI diff tool reports an error against the base: a
+# removed path or operation, a removed request or response field, or a changed
+# field type. Additive changes pass: new paths, new optional fields, new
+# response enum values, and new event variants, which clients must ignore.
+# Deprecations carry an x-sunset date at least sixty days out; removals pass
+# only after their sunset date.
 # Usage: scripts/check-openapi-compat.sh [base-ref] (default: origin/master).
 set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -22,7 +27,11 @@ fi
 
 base_commit="$(git merge-base HEAD "$base_ref" 2>/dev/null || echo "$base_ref")"
 if ! base_tree="$(git rev-parse "$base_commit^{commit}" 2>/dev/null)"; then
-    echo "check-openapi-compat: base ref $base_ref is unavailable; skipping"
+    echo "check-openapi-compat: base ref $base_ref is unavailable" >&2
+    if [ -n "${CI:-}" ]; then
+        exit 1
+    fi
+    echo "check-openapi-compat: skipping"
     exit 0
 fi
 if ! git cat-file -e "$base_tree:$new_spec" 2>/dev/null; then
@@ -34,16 +43,17 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 git show "$base_tree:$new_spec" >"$work/base.json"
 
-# The policy treats any removed field or route as breaking, so removals that
-# oasdiff grades below error are escalated to it. Changed types and
-# unannounced removals are already errors.
+# The policy treats any removal of an unannounced field as breaking, so
+# removals that oasdiff grades below error are escalated to it. Changed types
+# and unannounced removals are already errors. New response enum values and
+# event variants stay informational so additive growth passes, and removals
+# after their x-sunset date pass through --deprecation-days-stable below.
 cat >"$work/severity-levels.txt" <<EOF
-api-path-removed-with-deprecation ERR
-api-removed-with-deprecation ERR
 request-parameter-removed ERR
-request-parameter-removed-with-deprecation ERR
 request-property-removed ERR
 response-optional-property-removed ERR
+response-property-enum-value-added INFO
+response-property-one-of-added INFO
 EOF
 
 oasdiff_bin="${OASDIFF_BIN:-}"
@@ -68,7 +78,7 @@ if [ -z "$oasdiff_bin" ]; then
 fi
 
 if "$oasdiff_bin" breaking --severity-levels "$work/severity-levels.txt" \
-    --fail-on ERR "$work/base.json" "$new_spec"; then
+    --fail-on ERR --deprecation-days-stable 60 "$work/base.json" "$new_spec"; then
     echo "check-openapi-compat: no breaking changes against $base_tree"
 else
     echo "check-openapi-compat: breaking API change detected against $base_tree" >&2

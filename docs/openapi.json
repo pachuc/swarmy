@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Swarmy API",
-    "description": "",
+    "description": "Version 1 control plane. Additive-only within /v1: new routes and fields may appear, nothing is removed or retyped, and deprecations carry an x-sunset date. See docs/api.md.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"

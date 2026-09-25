@@ -733,7 +733,7 @@ pub mod api_paths {
 // Keep `info(version)` in sync with `API_VERSION` above.
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "Swarmy API", version = "1.0.0"),
+    info(title = "Swarmy API", version = "1.0.0", description = "Version 1 control plane. Additive-only within /v1: new routes and fields may appear, nothing is removed or retyped, and deprecations carry an x-sunset date. See docs/api.md."),
     servers((url = "/v1", description = "Version 1 control plane")),
     paths(
         api_paths::health, api_paths::openapi, api_paths::docs,
@@ -848,6 +848,11 @@ mod tests {
         assert!(!same_major("2.0.0", API_VERSION));
         assert!(!same_major("", API_VERSION));
         assert!(!same_major("unknown", API_VERSION));
+    }
+
+    #[test]
+    fn openapi_info_version_tracks_api_version() {
+        assert_eq!(ApiDocument::openapi().info.version, API_VERSION);
     }
 
     #[test]

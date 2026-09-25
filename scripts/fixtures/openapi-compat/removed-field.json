@@ -1,0 +1,74 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "compat fixtures",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/widgets": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Widget"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/gadgets": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Gadget"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Widget": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      },
+      "Gadget": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
