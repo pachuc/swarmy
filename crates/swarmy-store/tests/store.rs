@@ -185,13 +185,13 @@ async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
 #[tokio::test]
 async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
     let Some(f) = TestStore::memory() else { return };
-    let key = CredentialKey("fake".into());
+    let key = CredentialKey::provider("fake");
     f.store
-        .provider_failure(&key, timestamp(105), "quota reached")
+        .entry_failure(&key, timestamp(105), "quota reached")
         .await
         .unwrap();
     assert_eq!(
-        f.store.claim_provider(&key, timestamp(100)).await.unwrap(),
+        f.store.claim_entry(&key, timestamp(100)).await.unwrap(),
         Some(timestamp(105))
     );
     let reopened = Store::with_subspace(
@@ -201,18 +201,18 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
     );
     assert_eq!(
         reopened
-            .provider_open_until(&key, timestamp(100))
+            .entry_open_until(&key, timestamp(100))
             .await
             .unwrap(),
         Some(timestamp(105))
     );
     assert_eq!(
-        reopened.claim_provider(&key, timestamp(105)).await.unwrap(),
+        reopened.claim_entry(&key, timestamp(105)).await.unwrap(),
         None
     );
     assert!(
         reopened
-            .claim_provider(&key, timestamp(105))
+            .claim_entry(&key, timestamp(105))
             .await
             .unwrap()
             .is_some()
@@ -258,10 +258,85 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
     );
-    f.store.provider_success(&key).await.unwrap();
+    f.store.entry_success(&key).await.unwrap();
     assert!(
         f.store
-            .provider_open_until(&key, timestamp(105))
+            .entry_open_until(&key, timestamp(105))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn entry_breakers_are_independent_and_label_scans_need_no_keyring() {
+    let Some(f) = TestStore::memory() else { return };
+    let primary = CredentialKey::entry("openai", "primary");
+    let backup = CredentialKey::entry("openai", "backup");
+    let unlabeled = CredentialKey::provider("openai");
+    f.store
+        .entry_failure(&primary, timestamp(105), "openai/primary: quota reached")
+        .await
+        .unwrap();
+    // One entry's rate limit leaves the provider's other entries closed.
+    assert_eq!(
+        f.store
+            .entry_open_until(&primary, timestamp(100))
+            .await
+            .unwrap(),
+        Some(timestamp(105))
+    );
+    for key in [
+        &backup,
+        &unlabeled,
+        &CredentialKey::entry("other", "primary"),
+    ] {
+        assert!(
+            f.store
+                .entry_open_until(key, timestamp(100))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(f.store.entry_failures(&primary).await.unwrap(), 1);
+    assert_eq!(f.store.entry_failures(&backup).await.unwrap(), 0);
+    assert_eq!(
+        f.store.entry_reason(&primary).await.unwrap().as_deref(),
+        Some("openai/primary: quota reached")
+    );
+    // Each entry grants its own probe: opening one entry, probing it, and
+    // holding its probe never blocks the other entry's claim.
+    f.store
+        .entry_failure(&backup, timestamp(103), "openai/backup: quota reached")
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .claim_entry(&primary, timestamp(105))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.store
+            .claim_entry(&backup, timestamp(105))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.store
+            .claim_entry(&primary, timestamp(105))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    f.store.entry_success(&primary).await.unwrap();
+    assert!(
+        f.store
+            .entry_open_until(&primary, timestamp(105))
             .await
             .unwrap()
             .is_none()

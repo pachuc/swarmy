@@ -4,9 +4,54 @@ use swarmy_core::{Lease, SessionId, SessionState};
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
-/// This key can later identify an authorization entry instead of a provider.
+/// Breaker identity: one record per auth entry. A rate limit on one key opens
+/// only that key's breaker and leaves the provider's other entries closed.
+/// Entries without a stored label (environment keys, ambient host chains, the
+/// fake provider) share the provider's unlabeled record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct CredentialKey(pub String);
+pub struct CredentialKey {
+    pub provider: String,
+    pub label: Option<String>,
+}
+
+impl CredentialKey {
+    /// The shared record for a provider without a stored entry.
+    #[must_use]
+    pub fn provider(provider: &str) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            label: None,
+        }
+    }
+
+    /// The record for one labelled auth entry.
+    #[must_use]
+    pub fn entry(provider: &str, label: &str) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            label: Some(label.to_owned()),
+        }
+    }
+
+    /// The record for a resolution that may or may not carry an entry label.
+    #[must_use]
+    pub fn for_label(provider: &str, label: Option<String>) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            label,
+        }
+    }
+
+    /// Display identity used in waiting reasons: `provider/label`, or the
+    /// provider alone for the shared unlabeled record.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.label.as_ref().map_or_else(
+            || self.provider.clone(),
+            |label| format!("{}/{}", self.provider, label),
+        )
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Breaker {
@@ -14,6 +59,16 @@ pub struct Breaker {
     pub failures: u32,
     pub probe_until: Option<Timestamp>,
     pub reason: String,
+}
+
+/// One pool candidate with its live breaker record, read in a single
+/// transaction by `Store::breaker_snapshot` for a scheduler tick. `reason`
+/// is present only while the breaker is open.
+#[derive(Clone, Debug)]
+pub struct BreakerCandidate {
+    pub key: CredentialKey,
+    pub open_until: Option<Timestamp>,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,8 +88,15 @@ pub struct InferenceFailureWait<'a> {
 }
 
 impl Store {
-    fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
-        self.root.pack(&("inference_breaker", key.0.as_str()))
+    /// Breaker records live under `(provider, label)`. The previous
+    /// provider-only tuple is never read, so open provider-keyed breakers are
+    /// dropped at upgrade; a stale one only costs one probe.
+    pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
+        self.root.pack(&(
+            "inference_breaker",
+            key.provider.as_str(),
+            key.label.as_deref().unwrap_or(""),
+        ))
     }
 
     pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
@@ -50,10 +112,10 @@ impl Store {
         ))
     }
 
-    /// Grant one probe after the open period, or return the next eligible time.
+    /// Grant one entry probe after the open period, or return the next eligible time.
     /// # Errors
     /// Returns storage failures.
-    pub async fn claim_provider(
+    pub async fn claim_entry(
         &self,
         key: &CredentialKey,
         now: Timestamp,
@@ -81,10 +143,10 @@ impl Store {
         .await
     }
 
-    /// Read the time after which the provider can accept another request.
+    /// Read the time after which the entry can accept another request.
     /// # Errors
     /// Returns storage failures.
-    pub async fn provider_open_until(
+    pub async fn entry_open_until(
         &self,
         key: &CredentialKey,
         now: Timestamp,
@@ -105,10 +167,10 @@ impl Store {
         .await
     }
 
-    /// Open the provider breaker after a retryable failure.
+    /// Open the entry breaker after a retryable failure.
     /// # Errors
     /// Returns storage failures.
-    pub async fn provider_failure(
+    pub async fn entry_failure(
         &self,
         key: &CredentialKey,
         until: Timestamp,
@@ -135,7 +197,7 @@ impl Store {
     /// Count consecutive failures for exponential backoff.
     /// # Errors
     /// Returns storage failures.
-    pub async fn provider_failures(&self, key: &CredentialKey) -> Result<u32> {
+    pub async fn entry_failures(&self, key: &CredentialKey) -> Result<u32> {
         self.transaction(|trx| async move {
             Ok(read::<Breaker>(&trx, &self.breaker_key(key))
                 .await?
@@ -144,10 +206,10 @@ impl Store {
         .await
     }
 
-    /// Read the provider text recorded with the breaker.
+    /// Read the entry text recorded with the breaker.
     /// # Errors
     /// Returns storage failures.
-    pub async fn provider_reason(&self, key: &CredentialKey) -> Result<Option<String>> {
+    pub async fn entry_reason(&self, key: &CredentialKey) -> Result<Option<String>> {
         self.transaction(|trx| async move {
             Ok(read::<Breaker>(&trx, &self.breaker_key(key))
                 .await?
@@ -159,7 +221,7 @@ impl Store {
     /// Close the breaker after a successful probe.
     /// # Errors
     /// Returns storage failures.
-    pub async fn provider_success(&self, key: &CredentialKey) -> Result<()> {
+    pub async fn entry_success(&self, key: &CredentialKey) -> Result<()> {
         self.transaction(|trx| async move {
             let key = self.breaker_key(key);
             if read::<Breaker>(&trx, &key)
@@ -181,7 +243,7 @@ impl Store {
             .await
     }
 
-    /// Park a runnable session before it can submit work to an open provider.
+    /// Park a runnable session before it can submit work to an open entry.
     /// # Errors
     /// Returns storage failures or an invalid session state.
     pub async fn park_runnable_for_breaker(

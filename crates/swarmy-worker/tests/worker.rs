@@ -46,6 +46,7 @@ struct Fixture {
     files: TempDir,
     children: Vec<Child>,
     snapshots: Mutex<HashSet<String>>,
+    keyring: Option<swarmy_config::Keyring>,
 }
 
 impl Fixture {
@@ -113,7 +114,39 @@ impl Fixture {
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
+            keyring: None,
         })
+    }
+
+    /// Generate a cluster keyring for stored auth entries and pass it to
+    /// subsequently started services, so their gateways resolve entry labels.
+    fn keyring(&mut self) -> swarmy_config::Keyring {
+        let keyring =
+            swarmy_config::Keyring::generate_at(&self.files.path().join("keyring")).unwrap();
+        self.keyring = Some(keyring.clone());
+        keyring
+    }
+
+    /// Store an API-key auth entry for the fixture provider.
+    async fn put_entry(&self, label: &str) {
+        let keyring = self.keyring.clone().expect("call keyring() first");
+        let provider = self.provider.clone();
+        self.store
+            .credentials(keyring)
+            .put_entry(
+                swarmy_core::CredentialScope::Cluster,
+                &provider,
+                label,
+                &swarmy_core::CredentialRecord {
+                    kind: swarmy_core::CredentialKind::ApiKey {
+                        key: format!("{label}-key"),
+                        extra: BTreeMap::new(),
+                    },
+                    updated_at: Timestamp::now(),
+                },
+            )
+            .await
+            .unwrap();
     }
 
     fn script(&self, tools: bool, tool_name: &str) {
@@ -231,7 +264,11 @@ impl Fixture {
                 self.gateway_wait_seconds.to_string(),
             )
             .env("SWARMY_GATEWAY_CONCURRENCY", "1")
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "info");
+        if self.keyring.is_some() {
+            command.env("SWARMY_KEYRING", self.files.path().join("keyring"));
+        }
+        command
             .env_remove("SWARMY_WORKER_KILL_POINT")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -596,9 +633,9 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
                 matches!(&last[0], Event::InferenceFailed { retryable: false, error, .. }
             if error == "interrupted by operator")
             );
-            let key = swarmy_store::CredentialKey("fake".into());
+            let key = swarmy_store::CredentialKey::provider("fake");
             f.store
-                .claim_provider(
+                .claim_entry(
                     &key,
                     Timestamp::now()
                         .checked_add(Duration::from_secs(3601))
@@ -606,7 +643,7 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
                 )
                 .await
                 .unwrap();
-            f.store.provider_success(&key).await.unwrap();
+            f.store.entry_success(&key).await.unwrap();
             f.user_message(id).await;
             f.wake(id).await;
             let events = f.idle(id).await;
@@ -775,6 +812,175 @@ async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
 }
 
 #[tokio::test]
+async fn first_entry_breaker_leaves_second_entry_usable() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.rate_limit_script(1, 3600);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let first = f.create().await;
+            f.wake(first).await;
+            // The first turn fails on the primary entry and parks the session.
+            timeout(WAIT, async {
+                while f.store.fetch_session(first).await.unwrap().unwrap().state
+                    != SessionState::Sleeping
+                {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // The worker may park once behind a missing advertisement before
+            // the gateway is ready; wait for the rate limit to open the entry.
+            timeout(WAIT, async {
+                loop {
+                    if f.store
+                        .entry_open_until(
+                            &swarmy_store::CredentialKey::entry("openai", "primary"),
+                            Timestamp::now(),
+                        )
+                        .await
+                        .unwrap()
+                        .is_some()
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let primary = swarmy_store::CredentialKey::entry("openai", "primary");
+            let backup = swarmy_store::CredentialKey::entry("openai", "backup");
+            assert!(
+                f.store
+                    .entry_open_until(&primary, Timestamp::now())
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                f.store
+                    .entry_open_until(&backup, Timestamp::now())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            // A session served by the other entry completes without waiting.
+            let second = f.create().await;
+            f.wake(second).await;
+            let events = f.idle(second).await;
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            );
+            assert!(
+                f.store
+                    .entry_open_until(&backup, Timestamp::now())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn all_entries_open_parks_until_earliest_retry() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.script(false, "get_time");
+            let started = std::time::Instant::now();
+            // Gateway-written reasons name the entry; the scheduler parks with
+            // them verbatim, which is what session show renders.
+            for (label, after) in [
+                ("primary", Duration::from_secs(3)),
+                ("backup", Duration::from_secs(3600)),
+            ] {
+                f.store
+                    .entry_failure(
+                        &swarmy_store::CredentialKey::entry("openai", label),
+                        Timestamp::now().checked_add(after).unwrap(),
+                        &format!("openai/{label}: quota reached"),
+                    )
+                    .await
+                    .unwrap();
+            }
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            let id = f.create().await;
+            f.wake(id).await;
+            // Both entries are open, so the session parks instead of calling.
+            // The first park may blame a missing advertisement before the
+            // gateway is ready; wait for the entry-named breaker reason.
+            timeout(WAIT, async {
+                loop {
+                    if f.store
+                        .inference_wait(id)
+                        .await
+                        .unwrap()
+                        .is_some_and(|wait| {
+                            wait.reasons.iter().any(|reason| {
+                                reason.contains("openai/primary")
+                                    && reason.contains("quota reached")
+                            })
+                        })
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+            assert!(
+                wait.reasons
+                    .iter()
+                    .any(|reason| reason.contains("openai/primary")
+                        && reason.contains("quota reached")),
+                "waiting reasons name the entry: {:?}",
+                wait.reasons
+            );
+            assert_eq!(f.calls(), 0);
+            // The session wakes at the earlier retry and completes on the
+            // primary probe. Waiting for the later retry would time out idle.
+            let events = f.idle(id).await;
+            assert!(started.elapsed() >= Duration::from_millis(2900));
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            );
+            assert!(
+                f.store
+                    .entry_open_until(
+                        &swarmy_store::CredentialKey::entry("openai", "primary"),
+                        Timestamp::now()
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn twenty_sessions_share_one_open_breaker() {
     run(|f| {
         Box::pin(async move {
@@ -791,8 +997,8 @@ async fn twenty_sessions_share_one_open_breaker() {
             timeout(WAIT, async {
                 loop {
                     if f.store
-                        .provider_open_until(
-                            &swarmy_store::CredentialKey("fake".into()),
+                        .entry_open_until(
+                            &swarmy_store::CredentialKey::provider("fake"),
                             Timestamp::now(),
                         )
                         .await

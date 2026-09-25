@@ -338,6 +338,9 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
             .await;
         terminal.ready().await;
         assert_user_order(&fixture, id).await;
+        // Wait for the reply only. The "input locked" status is transient and
+        // the client may render the reply and the idle state in one frame, so
+        // requiring both together raced on slow runners.
         terminal.type_text("Finish while I am gone.\r");
         terminal
             .screen(|screen| {
@@ -345,7 +348,6 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
                     .matches("Agent: Scripted conversation reply.")
                     .count()
                     == 3
-                    && screen.contains("input locked")
             })
             .await;
         terminal.type_text("\x1b");
@@ -368,7 +370,6 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
                         .matches("Agent: Scripted conversation reply.")
                         .count()
                         == count
-                        && screen.contains("input locked")
                 })
                 .await;
             services.children[index].kill().await.unwrap();

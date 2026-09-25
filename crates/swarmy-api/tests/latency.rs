@@ -212,6 +212,138 @@ async fn measure(f: &BenchFixture, id: SessionId, via_api: bool, turn: usize) ->
     elapsed
 }
 
+/// Drive one scripted no-tool turn on the agent's main session and wait
+/// for idle, returning the session and the appended turn id.
+async fn drive_agent_turn(
+    fixture: &BenchFixture,
+    agent: &swarmy_core::AgentRecord,
+) -> (SessionId, String) {
+    let (session, _) = fixture
+        .store
+        .open_main_session(agent.agent_id, jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let head = fixture
+        .store
+        .fetch_session(session)
+        .await
+        .unwrap()
+        .unwrap()
+        .head_seq;
+    let response = fixture
+        .client
+        .post(format!("{}/v1/sessions/{session}/messages", fixture.base))
+        .bearer_auth("bench-token")
+        .json(&AppendMessage {
+            idempotency_key: Ulid::generate().to_string(),
+            expected_head: head,
+            text: "swarmy bench turn no_tool".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let appended: AppendedMessage = response.json().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let record = fixture.store.fetch_session(session).await.unwrap().unwrap();
+            if record.state == SessionState::Idle && record.head_seq > head {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake turn did not finish");
+    (session, appended.turn_id)
+}
+
+/// Fetch one turn record and assert the first-token stage and its derived
+/// latencies landed. The gateway streams `PartDone` deltas for the fake
+/// provider; those must start the first-token clock or every derived
+/// latency stays null.
+async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, turn_id: &str) {
+    let metrics: Vec<swarmy_api_types::TurnMetrics> = fixture
+        .client
+        .get(format!("{}/v1/sessions/{session}/metrics", fixture.base))
+        .bearer_auth("bench-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(metrics.len(), 1, "{metrics:?}");
+    let turn = &metrics[0];
+    assert_eq!(turn.turn_id, turn_id);
+    assert!(
+        turn.stages.iter().any(|stage| stage.stage == "first_token"),
+        "no first-token stage in {:?}",
+        turn.stages
+            .iter()
+            .map(|stage| &stage.stage)
+            .collect::<Vec<_>>(),
+    );
+    assert!(turn.append_to_first_token_ms.is_some(), "{turn:?}");
+    assert!(turn.inference_duration_ms.is_some(), "{turn:?}");
+    assert!(turn.append_to_idle_ms.is_some(), "{turn:?}");
+    assert_eq!(turn.inference.len(), 1);
+    assert!(
+        turn.inference[0].time_to_first_token_ms.is_some(),
+        "{turn:?}"
+    );
+    assert!(
+        turn.inference[0].streaming_duration_ms.is_some(),
+        "{turn:?}"
+    );
+    assert!(
+        turn.inference[0].output_tokens_per_second.is_some(),
+        "{turn:?}"
+    );
+}
+
+/// A real fake-provider turn must land a first-token stage and derived
+/// latencies in the durable record. Runs on the fake stack with a registered
+/// image, like the other fixture tests.
+#[tokio::test]
+async fn fake_turn_records_first_token_metrics() {
+    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
+        return;
+    };
+    let fixture = setup(&image).await;
+    let agent = fixture
+        .store
+        .create_agent(
+            &format!("metrics-{}", Ulid::generate()),
+            &image,
+            "",
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let (session, turn_id) = drive_agent_turn(&fixture, &agent).await;
+    assert_first_token_metrics(&fixture, session, &turn_id).await;
+    let rollup: swarmy_api_types::AgentMetrics = fixture
+        .client
+        .get(format!(
+            "{}/v1/agents/{}/metrics",
+            fixture.base, agent.agent_id
+        ))
+        .bearer_auth("bench-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rollup.turns, 1);
+    assert!(
+        rollup.latencies.contains_key("append_to_idle"),
+        "{rollup:?}"
+    );
+    fixture.server.abort();
+}
+
 async fn wait_first_token(
     tokens: &mut swarmy_bus::LiveMessages<swarmy_core::LiveTokenDelta>,
     turn_id: &str,

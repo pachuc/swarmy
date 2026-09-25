@@ -24,6 +24,7 @@ swarmy-core.workspace = true
 swarmy-harness.workspace = true
 swarmy-llm.workspace = true
 swarmy-store.workspace = true
+swarmy-api-types.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

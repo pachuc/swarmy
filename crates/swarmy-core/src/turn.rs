@@ -16,6 +16,7 @@ pub enum TurnStage {
     Idle,
     FinalTextRendered,
     InputEnabled,
+    FirstToken,
 }
 
 /// Monotonic time is comparable only within the same host boot. Wall time is

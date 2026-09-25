@@ -33,7 +33,7 @@ pub enum SessionKind {
 ///
 /// Wakeups and completed external work make a session runnable. Only a leased
 /// step can dispatch work, end a turn, sleep, or complete a session. The
-/// scheduler can also park a runnable session behind a provider breaker or
+/// scheduler can also park a runnable session behind an entry breaker or
 /// end a marked turn. An expired lease returns to runnable so another worker
 /// can retry the step. Sleeping sessions wake to runnable on a timer or
 /// message, or go idle when an inference wait is interrupted. Completed is terminal and

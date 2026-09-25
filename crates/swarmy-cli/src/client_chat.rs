@@ -181,12 +181,15 @@ pub async fn run(
             frame.render_widget(Paragraph::new(view.status(&conversation)), rows[1]);
             let (line, cursor) = input.view(rows[2].width);
             frame.render_widget(Paragraph::new(line), rows[2]);
-            if view.ready && rows[2].width > 0 {
+            if rows[2].width > 0 {
                 frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
             }
         })?;
         tokio::select! {
-            event = conversation.next() => view.event(event?),
+            event = conversation.next() => {
+                view.event(event?);
+                flush_queued(&mut view, &mut conversation).await?;
+            }
             key = keys.next() => {
                 if let Event::Key(key) = key.context("terminal input closed")??
                     && key.kind != KeyEventKind::Release {
@@ -194,26 +197,117 @@ pub async fn run(
                         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { conversation.interrupt().await?; }
                         return Ok(());
                     }
-                    if !view.ready { continue; }
-                    match key.code {
-                        KeyCode::Enter if !input.text.trim().is_empty() => {
-                            let text = input.take();
-                            let turn = conversation.send(text.clone()).await?;
-                            view.users.insert(turn);
-                            view.entries.push(format!("You: {text}"));
-                            view.ready = false;
-                            view.state = "Runnable".into();
-                        }
-                        KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => input.insert(c),
-                        KeyCode::Backspace => input.backspace(),
-                        KeyCode::Left => input.left(),
-                        KeyCode::Right => input.right(),
-                        _ => {}
+                    if let Some(text) = handle_key(&mut view, &mut input, key) {
+                        send_or_queue(&mut view, &mut conversation, text).await?;
                     }
                 }
             }
         }
     }
+}
+
+/// Handle one key press against the input line. Typing, backspace, and cursor
+/// movement always edit the line so keystrokes are never lost while the
+/// session is busy. Enter with a non-empty line while idle returns the text
+/// for an immediate send; while busy it moves the line into the view queue so
+/// the next idle state sends it. Returns the text to send immediately, if any.
+fn handle_key(view: &mut View, input: &mut Input, key: KeyEvent) -> Option<String> {
+    match key.code {
+        KeyCode::Enter if !input.text.trim().is_empty() => {
+            if view.ready && view.queued.is_none() {
+                Some(input.take())
+            } else {
+                view.queue_current(input);
+                None
+            }
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            input.insert(c);
+            None
+        }
+        KeyCode::Backspace => {
+            input.backspace();
+            None
+        }
+        KeyCode::Left => {
+            input.left();
+            None
+        }
+        KeyCode::Right => {
+            input.right();
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Send a line now, or keep it queued when the send loses the busy-session
+/// race. The readiness render and the store check are separate steps, and the
+/// store can flip between them (scheduler or sweep touches, head races);
+/// neither case may drop keystrokes. Only the busy race requeues: a permanent
+/// failure (rejected token, deleted session, API down) still returns the
+/// error so the client exits with the message instead of waiting forever on
+/// `input locked (queued)`. A queued line sends exactly once on the next idle
+/// state.
+async fn send_or_queue(
+    view: &mut View,
+    conversation: &mut Conversation,
+    text: String,
+) -> Result<()> {
+    match conversation.send(text.clone()).await {
+        Ok(turn) => {
+            view.sent(&text, turn);
+            Ok(())
+        }
+        Err(error) if is_busy_send_error(&error) => {
+            view.queued = Some(text);
+            view.ready = false;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether a send failure is the transient busy-session race that may be
+/// retried on the next idle state. The API reports it as a 409 conflict with
+/// code `session_not_idle` (or `stale_head` when the head moved between the
+/// ready render and the append); the local idle guard reports it as
+/// `session is not idle`. `api_client::call` wraps the client error in a
+/// string, so match the wrapped text as well as the typed error.
+fn is_busy_send_error(error: &anyhow::Error) -> bool {
+    if let Some(client) = error.downcast_ref::<swarmy_client::Error>() {
+        return is_busy_client_error(client);
+    }
+    let text = format!("{error:#}");
+    text.contains("session_not_idle")
+        || text.contains("stale_head")
+        || text.contains("session is not idle")
+}
+
+fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
+    match error {
+        swarmy_client::Error::Api { status, body } => {
+            status.as_u16() == 409 && (body.code == "session_not_idle" || body.code == "stale_head")
+        }
+        swarmy_client::Error::Status { status, body } => {
+            status.as_u16() == 409
+                && (body.contains("session_not_idle") || body.contains("stale_head"))
+        }
+        _ => false,
+    }
+}
+
+/// Send the queued line now that the session is idle again. A send that still
+/// loses the idle race keeps the line queued instead of dropping it.
+async fn flush_queued(view: &mut View, conversation: &mut Conversation) -> Result<()> {
+    let Some(text) = view.take_queued_if_ready() else {
+        return Ok(());
+    };
+    send_or_queue(view, conversation, text).await
 }
 
 struct View {
@@ -224,6 +318,7 @@ struct View {
     systems: HashSet<String>,
     tools: HashMap<String, usize>,
     ready: bool,
+    queued: Option<String>,
     state: String,
     selection: String,
 }
@@ -257,9 +352,32 @@ impl View {
             systems: HashSet::new(),
             tools: HashMap::new(),
             ready: false,
+            queued: None,
             state: format!("{:?}", conversation.session.state),
             selection: format!("{provider}/{model} {effort}"),
         }
+    }
+    /// Record a turn that was just sent, locally echoing the user line and
+    /// locking input until the next idle state record arrives.
+    fn sent(&mut self, text: &str, turn: String) {
+        self.users.insert(turn);
+        self.entries.push(format!("You: {text}"));
+        self.ready = false;
+        self.state = "Runnable".into();
+    }
+    /// Move the current line into the queued slot so the next idle state
+    /// sends it. A line that is already waiting keeps its place; a second
+    /// Enter leaves the new typing intact for the turn after.
+    fn queue_current(&mut self, input: &mut Input) {
+        if self.queued.is_none() && !input.text.trim().is_empty() {
+            self.queued = Some(input.take());
+        }
+    }
+    /// Take the queued line once the session is idle again. Returns `None`
+    /// while busy or when nothing is waiting, so a queued message sends
+    /// exactly once.
+    fn take_queued_if_ready(&mut self) -> Option<String> {
+        if self.ready { self.queued.take() } else { None }
     }
     fn body(&self) -> String {
         let mut lines = self.entries.join("\n");
@@ -270,17 +388,25 @@ impl View {
         lines
     }
     fn status(&self, conversation: &Conversation) -> String {
-        let input = if self.ready {
+        self.status_text(
+            conversation.agent_name.as_deref().unwrap_or("ephemeral"),
+            &conversation.id,
+        )
+    }
+    fn status_text(&self, agent: &str, id: &str) -> String {
+        let base = if self.ready {
             "Enter: send"
         } else {
             "input locked"
         };
+        let input = if self.queued.is_some() {
+            format!("{base} (queued)")
+        } else {
+            base.into()
+        };
         format!(
-            "{} | {} | {} | {} | {input} | Esc: quit",
-            conversation.agent_name.as_deref().unwrap_or("ephemeral"),
-            conversation.id,
-            self.state,
-            self.selection
+            "{agent} | {id} | {} | {} | {input} | Esc: quit",
+            self.state, self.selection
         )
     }
     fn event(&mut self, item: StreamItem) {
@@ -397,5 +523,164 @@ impl View {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view_busy() -> View {
+        View {
+            entries: Vec::new(),
+            partial: String::new(),
+            users: HashSet::new(),
+            assistants: HashSet::new(),
+            systems: HashSet::new(),
+            tools: HashMap::new(),
+            ready: false,
+            queued: None,
+            state: "Runnable".into(),
+            selection: "fake/test low".into(),
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn state_event(to: &str, sequence: u64) -> StreamItem {
+        StreamItem::Event(api::Event {
+            log_id: api::LogId::Session("test".into()),
+            sequence,
+            payload: api::EventPayload::StoreRecord {
+                record: serde_json::json!({"state_changed": {"from": "other", "to": to}}),
+            },
+        })
+    }
+
+    #[test]
+    fn typing_edits_input_while_busy() {
+        let mut view = view_busy();
+        let mut input = Input::default();
+        for c in "hi".chars() {
+            assert_eq!(
+                handle_key(&mut view, &mut input, key(KeyCode::Char(c))),
+                None
+            );
+        }
+        assert_eq!(input.text, "hi");
+        assert_eq!(handle_key(&mut view, &mut input, key(KeyCode::Left)), None);
+        assert_eq!(
+            handle_key(&mut view, &mut input, key(KeyCode::Backspace)),
+            None
+        );
+        assert_eq!(input.text, "i");
+        assert_eq!(
+            handle_key(&mut view, &mut input, key(KeyCode::Char('a'))),
+            None
+        );
+        assert_eq!(input.text, "ai");
+        assert!(!view.ready);
+        // The line survives a busy state record and stays visible for render.
+        view.event(state_event("leased", 1));
+        assert_eq!(input.text, "ai");
+        assert!(!view.ready);
+        assert!(input.view(20).0.contains("ai"));
+    }
+
+    #[test]
+    fn enter_while_busy_queues_and_idle_sends_once() {
+        let mut view = view_busy();
+        let mut input = Input::default();
+        for c in "queued hello".chars() {
+            handle_key(&mut view, &mut input, key(KeyCode::Char(c)));
+        }
+        assert_eq!(handle_key(&mut view, &mut input, key(KeyCode::Enter)), None);
+        assert_eq!(view.queued.as_deref(), Some("queued hello"));
+        assert!(input.text.is_empty());
+        assert!(view.status_text("ephemeral", "test").contains("queued"));
+        assert!(
+            view.status_text("ephemeral", "test")
+                .contains("input locked")
+        );
+        // Still busy: nothing to send yet.
+        assert_eq!(view.take_queued_if_ready(), None);
+        assert_eq!(view.queued.as_deref(), Some("queued hello"));
+        // A transient busy record keeps the queued line waiting.
+        view.event(state_event("leased", 2));
+        assert_eq!(view.take_queued_if_ready(), None);
+        // The next idle record releases the line exactly once.
+        view.event(state_event("idle", 3));
+        assert!(view.ready);
+        assert_eq!(view.take_queued_if_ready().as_deref(), Some("queued hello"));
+        assert_eq!(view.take_queued_if_ready(), None);
+        assert_eq!(view.queued, None);
+    }
+
+    #[test]
+    fn enter_while_idle_sends_immediately() {
+        let mut view = view_busy();
+        view.ready = true;
+        let mut input = Input::default();
+        for c in "now".chars() {
+            handle_key(&mut view, &mut input, key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            handle_key(&mut view, &mut input, key(KeyCode::Enter)).as_deref(),
+            Some("now")
+        );
+        assert_eq!(view.queued, None);
+        assert!(input.text.is_empty());
+    }
+
+    fn api_error(status: reqwest::StatusCode, code: &str) -> anyhow::Error {
+        swarmy_client::Error::Api {
+            status,
+            body: swarmy_api_types::ApiError {
+                code: code.into(),
+                message: code.into(),
+                provider_text: None,
+            },
+        }
+        .into()
+    }
+
+    #[test]
+    fn only_busy_race_requeues_and_permanent_errors_propagate() {
+        // Typed busy races requeue: the session flipped after the ready
+        // render, or the head moved between the render and the append.
+        assert!(is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "session_not_idle"
+        )));
+        assert!(is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "stale_head"
+        )));
+        // The local idle guard reports the same race without a status code.
+        assert!(is_busy_send_error(&anyhow::anyhow!("session is not idle")));
+        // The retry path wraps the client error in a string; the code text
+        // must still count as busy.
+        assert!(is_busy_send_error(&anyhow::anyhow!(
+            "API at http://example: session_not_idle"
+        )));
+        // Permanent failures propagate so the client exits with the message
+        // instead of waiting forever on `input locked (queued)`.
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::NOT_FOUND,
+            "session_not_found"
+        )));
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "unauthorized"
+        )));
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "main_session_close"
+        )));
+        assert!(!is_busy_send_error(&anyhow::anyhow!(
+            "API at http://example: request timed out"
+        )));
     }
 }

@@ -65,6 +65,16 @@ until scratch lands.
    `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod
    600`. The file is ignored by git.
 
+## Running the driver on a control node
+
+`scripts/fleet/fleet` normally talks to a swarm through a saved tunnel profile
+(`remote = "dev"` in `fleet.toml`). The laptop holds one tunnel at a time, so a
+benchmark against a second swarm would blind the driver for the fleet it is
+operating. Leave `remote` empty in a `fleet.toml` on the swarm's own control
+node instead: the driver then calls `swarmy` with the node's local API
+configuration and no tunnel, which is how `benchmarks/run-swarm.sh` runs for
+each environment during the perf baseline.
+
 ## The split layout in practice
 
 The first split swarm (`dev2`, 2026-09-24) runs a control node on an
@@ -123,7 +133,7 @@ Things learned on the way, all fixed in code or documented here:
 ## Subscription limits
 
 All ChatGPT workers and the codex-daytona lanes share one subscription's
-usage limit. When it trips, the gateway opens the provider's breaker, the
+usage limit. When it trips, the gateway opens that entry's breaker, the
 affected workers park without a lease, and `fleet status` shows the reason.
 They continue when the limit clears; a turn gives up only after
 `[inference] max_wait_seconds` (default one hour). OpenRouter workers are

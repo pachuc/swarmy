@@ -555,3 +555,151 @@ async fn invalid_effort_uses_cli_selection_error() {
         "reasoning effort must be one of: none, minimal, low, medium, high, xhigh, max"
     );
 }
+
+/// Emit the gateway/worker/node stages for one turn through the production
+/// observation path with real clocks, then attach usage and tool data.
+async fn emit_observed_turn(
+    f: &Fixture,
+    session: swarmy_core::SessionId,
+    turn: swarmy_core::MessageId,
+) {
+    let request = swarmy_core::RequestId::for_step(session, 2);
+    for stage in [
+        swarmy_core::TurnStage::InferenceStarted,
+        swarmy_core::TurnStage::FirstToken,
+        swarmy_core::TurnStage::InferenceFinished,
+        swarmy_core::TurnStage::ToolDispatched,
+        swarmy_core::TurnStage::ToolCompleted,
+        swarmy_core::TurnStage::Idle,
+    ] {
+        // Await each write: the spawned production path races under
+        // millisecond timing and can lose read-modify-write updates, so
+        // tests serialize while production staggers stages over seconds.
+        let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
+        f.bus.record_turn(&event).await;
+        f.store
+            .record_turn_metric(session, turn, swarmy_store::MetricPatch::Stage(event))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    f.store
+        .record_turn_metric(
+            session,
+            turn,
+            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+                request_id: request.to_string(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                input_tokens: 12,
+                cached_input_tokens: 3,
+                output_tokens: 4,
+                reasoning_tokens: 1,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    f.store
+        .record_turn_metric(
+            session,
+            turn,
+            swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+                request_id: request.to_string(),
+                name: "bash".into(),
+                exit_status: Some(0),
+                output_bytes: Some(42),
+                process_wall_ms: Some(0.5),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn durable_turn_metrics_match_the_session_and_agent_api() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let agent = f
+        .store
+        .create_agent("metric-agent", "fixture:test", "", jiff::Timestamp::now())
+        .await
+        .unwrap();
+    let (session, _) = f
+        .store
+        .open_main_session(agent.agent_id, jiff::Timestamp::now())
+        .await
+        .unwrap();
+    // Drive the turn through the real API append path so the turn id and the
+    // submitted/appended stages come from production code, not fixtures.
+    let appended: AppendedMessage = f
+        .client
+        .post(format!("{}/v1/sessions/{session}/messages", f.base))
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            idempotency_key: "metrics-turn".into(),
+            expected_head: 0,
+            text: "hello".into(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = swarmy_core::MessageId::from_ulid(appended.turn_id.parse::<Ulid>().unwrap());
+    emit_observed_turn(&f, session, turn).await;
+    // Observation writes are spawned; poll until the record assembles.
+    // The appended stage arrives from a fire-and-forget write in the append
+    // handler, so it can land after the directly awaited stages below. Poll
+    // for the derived fields the assertions need, not just the stages, so a
+    // fast direct write cannot break the poll before the spawned write lands.
+    let direct = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
+            if records.len() == 1
+                && records[0].stages.iter().any(|row| row.stage == "idle")
+                && records[0]
+                    .stages
+                    .iter()
+                    .any(|row| row.stage == "first_token")
+                && records[0].stages.iter().any(|row| row.stage == "appended")
+                && records[0].append_to_first_token_ms.is_some()
+                && records[0].inference_duration_ms.is_some()
+                && records[0].append_to_idle_ms.is_some()
+            {
+                break records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("turn record did not assemble");
+    assert_eq!(direct[0].turn_id, appended.turn_id);
+    assert!(
+        direct[0]
+            .append_to_first_token_ms
+            .is_some_and(|ms| ms >= 0.0)
+    );
+    assert!(direct[0].inference_duration_ms.is_some_and(|ms| ms >= 0.0));
+    assert!(direct[0].append_to_idle_ms.is_some_and(|ms| ms >= 0.0));
+    assert_eq!(direct[0].tools[0].name, "bash");
+    assert!(direct[0].inference[0].time_to_first_token_ms.is_some());
+    let client = swarmy_client::Client::new(&f.base, "test-token").unwrap();
+    assert_eq!(
+        client
+            .session_metrics(&session.to_string(), None, 10)
+            .await
+            .unwrap(),
+        direct
+    );
+    let rollup = client
+        .agent_metrics("metric-agent", 200, None)
+        .await
+        .unwrap();
+    assert_eq!(rollup.turns, 1);
+    assert_eq!(rollup.output_tokens, 4);
+    assert!(rollup.latencies.contains_key("append_to_idle"));
+}

@@ -2,6 +2,11 @@
 //! This crate intentionally has no dependency on storage or transport.
 
 use serde::{Deserialize, Serialize};
+mod metrics;
+pub use metrics::{
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, StageTiming, ToolMetric,
+    TurnMetrics,
+};
 use utoipa::{OpenApi, ToSchema};
 
 /// The API document version served under `/v1`. The leading major version
@@ -691,11 +696,11 @@ pub mod cli_paths {
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
-        Agent, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
+        Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
         CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest, Event,
         GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome, InterruptSession, Model,
         ProbeModel, ProbeResult, Provider, Session, SessionClosed, StartGcRun, Subscription,
-        UpdateAgent,
+        TurnMetrics, UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -865,6 +870,22 @@ pub mod api_paths {
         request_body = DeleteRequest,
         responses((status = 200, description = "Deletion marker")))]
     pub fn remove_credential() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/metrics",
+        params(
+            ("id" = String, Path, description = "Session id"),
+            ("after" = Option<String>, Query, description = "Return turns after this turn id"),
+            ("limit" = Option<usize>, Query, description = "Maximum turns to return"),
+        ),
+        responses((status = 200, body = Vec<TurnMetrics>), (status = 404, body = ApiError)))]
+    pub fn session_metrics() {}
+    #[utoipa::path(get, path = "/v1/agents/{id}/metrics",
+        params(
+            ("id" = String, Path, description = "Agent id or name"),
+            ("limit" = Option<usize>, Query, description = "Maximum recent turns to roll up"),
+            ("since" = Option<String>, Query, description = "Roll up turns after this turn id"),
+        ),
+        responses((status = 200, body = AgentMetrics), (status = 404, body = ApiError)))]
+    pub fn agent_metrics() {}
     #[utoipa::path(get, path = "/v1/credentials/{provider}/{label}",
         params(
             ("provider" = String, Path, description = "Provider id"),
@@ -894,7 +915,8 @@ pub mod api_paths {
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
-        api_paths::wait_idle, api_paths::session_events,
+        api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
+        api_paths::agent_metrics,
         api_paths::subscribe, api_paths::update_subscription,
         api_paths::list_images, api_paths::upload_image, api_paths::show_image,
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
@@ -913,7 +935,8 @@ pub mod api_paths {
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
-    StartGcRun, GcRun,
+    StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
+    AgentMetrics, StartGcRun, GcRun,
     CreateAgent, UpdateAgent, DeleteRequest,
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
