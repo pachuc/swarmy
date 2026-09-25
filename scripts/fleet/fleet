@@ -930,7 +930,12 @@ def benchmark(args):
     """Run one isolated benchmark session without tasky or a persistent worker."""
     if not args.prompt_file.is_file():
         raise RuntimeError(f"missing benchmark prompt: {args.prompt_file}")
-    cmd = ["swarmy", "--remote", args.remote, "run", "--json",
+    # An empty or "local" remote uses the node's own API configuration, the
+    # same rule as the fleet.toml remote, so the benchmark runs on a control
+    # node without a tunnel.
+    remote = [] if args.remote in ("", "local") else ["--remote", args.remote]
+    image = ["--image", args.image] if args.image else []
+    cmd = ["swarmy", *remote, "run", "--json", *image,
            "--provider", args.provider, "--model", args.model,
            "--effort", args.effort, args.prompt_file.read_text()]
     result = subprocess.run(cmd, text=True, stdout=sys.stdout, stderr=sys.stderr, check=False)
@@ -959,12 +964,13 @@ def main():
     kill_parser.add_argument("task_id")
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
-    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote")
+    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote (use --remote local on a control node)")
     bench.add_argument("--remote", required=True)
     bench.add_argument("--provider", required=True)
     bench.add_argument("--model", required=True)
     bench.add_argument("--effort", required=True)
     bench.add_argument("--prompt-file", required=True, type=Path)
+    bench.add_argument("--image", help="registered image as NAME:TAG for the isolated session; default is the remote's default image")
     report_parser = sub.add_parser("report", help="aggregate per-turn session metrics into a comparison table")
     report_parser.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
     report_parser.add_argument("--since", default=None, help="include every task launched at or after this ISO 8601 time")
