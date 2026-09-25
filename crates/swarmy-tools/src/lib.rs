@@ -45,7 +45,7 @@ sandbox_tool!(
 sandbox_tool!(
     ProcessList,
     "process_list",
-    "List managed processes, including bash commands backgrounded at yield or timeout, with their command, start time, log path, and running or exited status. The list is capped: by default it returns every running process plus the 20 most recently started other records, newest first. Pass limit (1-200) to change how many non-running records to include, or all true to include every record. Each command is truncated to 512 characters with a trailing ... marker. Records from an earlier sandbox lifetime report restarted.",
+    "List managed processes, including bash commands backgrounded at yield or timeout, with their command, start time, log path, and running or exited status. The list is capped: running processes come first, followed by the 20 most recently started other records, newest first. Pass limit (1-200) to change how many non-running records to include, or all true to include every record. Each command is truncated to 512 characters with a trailing ... marker. Records from an earlier sandbox lifetime report restarted.",
     json!({"type":"object", "properties": {
         "limit": {"type":"integer", "minimum":1, "maximum":200, "default":20, "description":"How many non-running records to include besides running ones."},
         "all": {"type":"boolean", "default":false, "description":"Include every record regardless of the limit."}

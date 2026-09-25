@@ -230,8 +230,11 @@ def main():
                 'log_path': record['log_path'],
                 'status': record['status'],
             })
-        # Newest first so a long-lived worker sees recent work without paging.
-        collected.sort(key=lambda item: (item['started_at'], item['process_id']), reverse=True)
+        # Running processes lead the list, then the rest newest first, so a
+        # long-lived worker sees live work and recent history without paging.
+        def order(item):
+            return (item['status'] == 'running', item['started_at'], item['process_id'])
+        collected.sort(key=order, reverse=True)
         if include_all:
             result = collected
         else:
@@ -240,8 +243,6 @@ def main():
             others = [item for item in collected if item['status'] != 'running']
             # Running processes are always included; only the rest count to the limit.
             result = live + others[:limit]
-            # Newest first overall so recent work is visible without paging.
-            result.sort(key=lambda item: (item['started_at'], item['process_id']), reverse=True)
     else:
         record = json.loads((directory / 'record.json').read_text())
         if record['lifetime'] != lifetime:

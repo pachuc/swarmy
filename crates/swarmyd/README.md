@@ -162,8 +162,8 @@ be reconstructed whenever the sandbox remains alive. The current node restart
 path rebuilds containers, so those processes are lost. Old records report
 `restarted` and cannot be used to stop a process in the new sandbox.
 `process_list` is bounded so a long-lived worker cannot overflow its context:
-by default it returns every running process plus the 20 most recently started
-other records, newest first. Pass `limit` (1-200) to change how many non-running
+running processes come first, followed by the 20 most recently started other
+records, newest first. Pass `limit` (1-200) to change how many non-running
 records to include, or `all: true` to include every record. Each record keeps
 `process_id`, `command`, `started_at`, `log_path`, and `status`; the command is
 truncated to 512 characters with a trailing `...` marker.

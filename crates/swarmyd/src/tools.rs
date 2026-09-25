@@ -580,10 +580,20 @@ mod tests {
     }
 
     fn assert_newest_first(records: &[serde_json::Value]) {
+        // Running records lead; within each group the order is newest first.
+        let mut seen_exited = false;
         for window in records.windows(2) {
-            let first = window[0]["started_at"].as_f64().unwrap_or_default();
-            let second = window[1]["started_at"].as_f64().unwrap_or_default();
-            assert!(first >= second, "process list is not newest first");
+            let running = window[0]["status"] == "running";
+            assert!(
+                !(running && seen_exited),
+                "running process listed after an exited one"
+            );
+            seen_exited |= !running;
+            if window[0]["status"] == window[1]["status"] {
+                let first = window[0]["started_at"].as_f64().unwrap_or_default();
+                let second = window[1]["started_at"].as_f64().unwrap_or_default();
+                assert!(first >= second, "process list is not newest first");
+            }
         }
     }
 
