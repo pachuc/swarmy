@@ -245,10 +245,20 @@ impl Fixture {
         if config.agent_checks.persistent {
             environment.push(("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()));
         }
-        environment.push((
-            "SWARMY_NODE_SANDBOXES".into(),
-            config.sessions.to_string().into(),
-        ));
+        // The node must have room for one computer per session at once. The
+        // default budget of 1 GiB holds a single 768 MiB image, so size the
+        // budget from the session count with a little headroom.
+        let memory_bytes = (config.sessions as u64).max(1) * 1024 * 1024 * 1024;
+        environment.extend([
+            (
+                "SWARMY_NODE_SANDBOXES".into(),
+                config.sessions.to_string().into(),
+            ),
+            (
+                "SWARMY_NODE_MEMORY_BYTES".into(),
+                memory_bytes.to_string().into(),
+            ),
+        ]);
         environment.extend([
             (
                 "SWARMY_FAKE_SCRIPT".into(),

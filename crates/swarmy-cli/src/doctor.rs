@@ -429,19 +429,28 @@ async fn api_checks(
     };
     let version = health["version"].as_str().unwrap_or("unknown");
     let commit = health["git_commit"].as_str().unwrap_or("unknown");
+    let api_version = health["api_version"].as_str().unwrap_or("");
+    // Servers older than the documented contract carry no api_version; those
+    // still need an exact binary match. Newer servers only need the same major
+    // API version, so minor releases do not break existing clients.
+    let compatible = if api_version.is_empty() {
+        version == swarmy_version::VERSION && commit == swarmy_version::GIT_COMMIT
+    } else {
+        swarmy_api_types::same_major(api_version, swarmy_api_types::API_VERSION)
+    };
     checks.push(Check::new(
         "API",
-        if version == swarmy_version::VERSION && commit == swarmy_version::GIT_COMMIT {
+        if compatible {
             Ok(format!(
-                "reachable at {endpoint}; version {version} ({commit})"
+                "reachable at {endpoint}; api {api_version} version {version} ({commit})"
             ))
         } else {
             Err(format!(
-                "version {version} ({commit}); CLI expects {}",
-                swarmy_version::IDENTITY
+                "api {api_version} version {version} ({commit}); CLI expects api {}",
+                swarmy_api_types::API_VERSION
             ))
         },
-        "Reinstall the CLI and API from the same checkout, then restart the API.",
+        "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
     let snapshot = crate::api_client::call(&endpoint, client.doctor())
         .await

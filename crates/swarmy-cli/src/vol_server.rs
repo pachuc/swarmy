@@ -9,7 +9,7 @@ async fn config() -> Result<ServerConfig> {
     Ok(ServerConfig {
         directory: loaded.root.join(".swarmy/volumes"),
         node: loaded.node_id()?,
-        store: crate::conversation::store().await?,
+        store: crate::session::store().await?,
         objects: settings.object_store()?,
     })
 }

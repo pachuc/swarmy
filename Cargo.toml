@@ -71,6 +71,10 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 utoipa = "5"
+# Vendored Swagger UI embeds the viewer at build time: the default features
+# would download it from GitHub with system curl on every cold build, which
+# --locked does not cover and offline node builds cannot reach.
+utoipa-swagger-ui = { version = "9", features = ["axum"], default-features = false }
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"

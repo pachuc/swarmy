@@ -1,13 +1,8 @@
 //! Database commands run separately so the public CLI can diagnose a missing client library.
-mod agent;
 mod agent_command;
 mod api_client;
 mod auth;
 mod auth_command;
-mod bench;
-mod bench_command;
-mod chat;
-mod conversation;
 mod gc;
 mod image;
 mod image_command;
@@ -21,7 +16,6 @@ mod remote_command;
 mod remote_ssh;
 #[path = "remote/status.rs"]
 mod remote_status;
-mod selection;
 mod selection_command;
 mod session;
 mod session_command;
@@ -64,11 +58,6 @@ enum Command {
         #[command(subcommand)]
         command: agent_command::Command,
     },
-    /// Measure conversation latency
-    Bench {
-        #[command(subcommand)]
-        command: bench_command::Command,
-    },
     Remote {
         #[command(subcommand)]
         command: remote_command::Command,
@@ -86,38 +75,6 @@ enum Command {
     Image {
         #[command(subcommand)]
         command: image_command::Command,
-    },
-    Run {
-        prompt: String,
-        /// Base image in NAME:TAG form for this session's disk.
-        #[arg(long)]
-        image: Option<String>,
-        /// Resume the main session on a named agent (name or agent id)
-        #[arg(long, conflicts_with = "image")]
-        agent: Option<String>,
-        /// Create a side conversation on the named agent
-        #[arg(long, requires = "agent")]
-        new: bool,
-        /// Continue an existing session by id instead of an agent's main one
-        #[arg(long, conflicts_with_all = ["agent", "image", "new"])]
-        session: Option<ulid::Ulid>,
-        #[command(flatten)]
-        selection: selection_command::SelectionArgs,
-    },
-    Chat {
-        #[arg(conflicts_with_all = ["provider", "model", "effort"])]
-        session_id: Option<ulid::Ulid>,
-        /// Base image in NAME:TAG form; otherwise use `default_image`.
-        #[arg(long, conflicts_with = "session_id")]
-        image: Option<String>,
-        /// Resume the main session on a named agent (name or agent id)
-        #[arg(long, conflicts_with_all = ["image", "session_id"])]
-        agent: Option<String>,
-        /// Create a side conversation on the named agent
-        #[arg(long, requires = "agent")]
-        new: bool,
-        #[command(flatten)]
-        selection: selection_command::SelectionArgs,
     },
     Session {
         #[command(subcommand)]
@@ -142,7 +99,6 @@ fn main() -> anyhow::Result<()> {
                 command: ProbeCommand::Probe(args),
             } => models_probe::run(args, cli.json).await,
             Command::Auth { command, auth_file } => auth::run(command, auth_file, cli.json).await,
-            Command::Bench { command } => bench::run(command, cli.json).await,
             Command::Remote {
                 command: remote_command::Command::Status,
             } => remote_status::run(cli.json).await,
@@ -153,53 +109,6 @@ fn main() -> anyhow::Result<()> {
             Command::Vol { command } => vol::run(command, cli.json).await,
             Command::Image { command } => image::run(command, cli.json).await,
             Command::Agent { .. } => unreachable!("agent management uses the API"),
-            Command::Run {
-                prompt,
-                image,
-                agent,
-                new,
-                session,
-                selection,
-            } => {
-                session::run(
-                    prompt,
-                    image,
-                    agent,
-                    new,
-                    session,
-                    crate::selection::normalize(selection.into())?,
-                    cli.json,
-                )
-                .await
-            }
-            Command::Chat {
-                session_id,
-                image,
-                agent,
-                new,
-                selection,
-            } => {
-                let id = session_id.map(swarmy_core::SessionId::from_ulid);
-                if cli.json {
-                    session::chat_json(
-                        id,
-                        image,
-                        agent,
-                        new,
-                        crate::selection::normalize(selection.into())?,
-                    )
-                    .await
-                } else {
-                    chat::run(
-                        id,
-                        image,
-                        agent,
-                        new,
-                        crate::selection::normalize(selection.into())?,
-                    )
-                    .await
-                }
-            }
             Command::Session { command } => session::inspect(command, cli.json).await,
         }
     })

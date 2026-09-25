@@ -188,6 +188,13 @@ async fn assert_agent_routes(client: &Client) {
     );
 }
 
+async fn assert_service_discovery(client: &Client) {
+    let health = client.health().await.unwrap();
+    assert!(health.get("version").is_some());
+    assert!(health.get("api_version").is_some());
+    assert!(client.openapi().await.unwrap().get("openapi").is_some());
+}
+
 async fn assert_catalog_and_credentials(client: &Client) {
     let first = &client.models().await.unwrap()[0];
     assert_eq!(
@@ -231,8 +238,7 @@ async fn client_round_trips_real_routes() {
         return;
     };
     let client = &f.client;
-    assert!(client.health().await.unwrap().get("version").is_some());
-    assert!(client.openapi().await.unwrap().get("openapi").is_some());
+    assert_service_discovery(client).await;
     assert!(!client.providers().await.unwrap().is_empty());
     assert!(!client.models().await.unwrap().is_empty());
     assert_catalog_and_credentials(client).await;

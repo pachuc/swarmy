@@ -216,8 +216,16 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         fixture.bus.publish_live(LiveFeed::SessionEvents(old), &event).await.unwrap();
         let screen = chat.screen(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send")).await;
         assert!(screen.contains("archived;"));
+        // The client switches to the successor session after observing the
+        // archived state. Typing before it has settled sends to the old
+        // session, so wait for the successor to be idle and the screen ready.
+        idle(&fixture, new).await;
+        chat.ready().await;
         chat.type_text("Continue the work\r");
-        timeout(WAIT, async {
+        // This arrival raced a slow CI runner once; give it more room than
+        // the shared short wait used everywhere else in this file.
+        let successor_wait = WAIT.checked_mul(4).unwrap();
+        timeout(successor_wait, async {
             loop {
                 if fixture.store.read_events(new, 0, 64).await.unwrap().iter().any(|event| matches!(event,
                     Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
