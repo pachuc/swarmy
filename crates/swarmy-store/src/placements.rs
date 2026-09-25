@@ -259,12 +259,22 @@ impl Store {
         let key = self.placement_count_key(node);
         let count: u32 = read(trx, &key).await?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
-            return Err(StoreError::NodeAtCapacity);
+            return Err(StoreError::NodeAtCapacity {
+                detail: format!(
+                    "node {node} hosts {count} of {} sandboxes",
+                    registered.capacity.sandboxes
+                ),
+            });
         }
         let bytes = self.requirement_bytes(trx, agent).await?;
         let committed = self.committed_bytes_excluding(trx, node, agent).await?;
         if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
-            return Err(StoreError::NodeAtCapacity);
+            return Err(StoreError::NodeAtCapacity {
+                detail: format!(
+                    "agent {agent} needs {bytes} bytes but node {node} has {committed} of {} bytes committed",
+                    registered.capacity.memory_bytes
+                ),
+            });
         }
         write(trx, &key, &(count + 1))
     }
