@@ -862,6 +862,8 @@ impl Worker {
                     None => Err(format!("unknown tool: {}", call.tool)),
                 },
             };
+            let result = result
+                .map(|output| swarmy_core::cap_tool_output(&call.tool, &call.call_id.0, output));
             self.append(
                 session,
                 lease,
@@ -1794,6 +1796,54 @@ mod image_tests {
         );
         assert!(
             matches!(&request.messages[0].parts[1], Part::ToolResult { result: swarmy_core::ToolResult::Completed { output, metadata, .. }, .. } if output.contains("image was omitted") && !metadata.contains_key("image_object_key"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_output_tests {
+    #[test]
+    fn small_output_passes_through_unchanged() {
+        let output = "hello".to_owned();
+        assert_eq!(
+            swarmy_core::cap_tool_output("grep", "call_small", output.clone()),
+            output
+        );
+    }
+
+    #[test]
+    fn huge_sandbox_result_is_capped_with_spill_marker() {
+        let tool = "process_list";
+        let call_id = "call_01HUGE";
+        let head = "HEAD-MARKER-";
+        let tail = "-TAIL-MARKER";
+        let mut original = String::with_capacity(1024 * 1024);
+        original.push_str(head);
+        original.push_str(&"x".repeat(1024 * 1024 - head.len() - tail.len()));
+        original.push_str(tail);
+        assert_eq!(original.len(), 1024 * 1024);
+        // Feed a fake sandbox tool result through the same ceiling the worker
+        // applies before persisting a `ToolCallCompleted` event.
+        let result = swarmy_harness::execution_result(tool, Ok(original.clone()));
+        let swarmy_core::ToolResult::Completed { output, .. } = result else {
+            panic!("expected completed tool result");
+        };
+        let capped = swarmy_core::cap_tool_output(tool, call_id, output);
+        let spill = swarmy_core::tool_spill_path(call_id);
+        let dropped = original.len() - swarmy_core::MAX_TOOL_OUTPUT_BYTES;
+        assert!(capped.len() <= swarmy_core::MAX_TOOL_OUTPUT_BYTES + 512);
+        assert!(capped.contains(tool));
+        assert!(capped.contains(&dropped.to_string()));
+        assert!(capped.contains(&spill));
+        assert!(spill.starts_with("/home/agent/.swarmy/output/"));
+        assert!(capped.starts_with(head));
+        assert!(capped.ends_with(tail));
+        let keep = swarmy_core::MAX_TOOL_OUTPUT_BYTES;
+        let head_len = keep.div_ceil(2);
+        assert_eq!(&capped[..head_len], &original[..head_len]);
+        assert_eq!(
+            &capped[capped.len() - keep / 2..],
+            &original[original.len() - keep / 2..]
         );
     }
 }
