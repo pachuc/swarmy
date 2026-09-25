@@ -173,6 +173,43 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .await
         .unwrap();
     assert!(openapi["components"]["schemas"]["Agent"].is_object());
+    assert_docs_are_public(client, base, &openapi).await;
+}
+
+async fn assert_docs_are_public(
+    client: &reqwest::Client,
+    base: &str,
+    authenticated: &serde_json::Value,
+) {
+    // The reference renders without a token so every swarm documents itself.
+    let page = client.get(format!("{base}/v1/docs")).send().await.unwrap();
+    assert!(page.status().is_success());
+    let text = page.text().await.unwrap();
+    assert!(text.to_lowercase().contains("swagger"), "{text:.200}");
+    let anonymous: serde_json::Value = client
+        .get(format!("{base}/v1/openapi.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(&anonymous, authenticated);
+    for path in [
+        "/v1/health",
+        "/v1/openapi.json",
+        "/v1/docs",
+        "/v1/agents",
+        "/v1/sessions",
+        "/v1/sessions/{id}/messages",
+        "/v1/events",
+        "/v1/images",
+        "/v1/models",
+        "/v1/providers",
+        "/v1/credentials",
+    ] {
+        assert!(anonymous["paths"][path].is_object(), "missing {path}");
+    }
 }
 
 async fn assert_credentials(client: &reqwest::Client, base: &str) {

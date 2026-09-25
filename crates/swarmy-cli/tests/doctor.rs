@@ -251,6 +251,41 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
 }
 
 #[test]
+fn api_check_accepts_same_major_api_despite_binary_drift() {
+    use std::io::{Read, Write};
+    for (api_version, status) in [("1.9.0", "pass"), ("2.0.0", "fail")] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fixture = Fixture::new();
+        fixture.config(&format!(
+            "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
+            listener.local_addr().unwrap()
+        ));
+        let server = std::thread::spawn(move || {
+            let health = format!(
+                "{{\"version\":\"9.9.9\",\"git_commit\":\"other\",\
+                \"api_version\":\"{api_version}\",\"services\":[],\"node_count\":0}}"
+            );
+            let snapshot = "{\"services\":[{\"role\":\"scheduler\",\"instance_id\":\"s1\",\
+                \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
+                \"images\":[],\"default_image\":null,\"credentials\":[]}";
+            for body in [health, snapshot.to_owned()] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).unwrap();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+        });
+        let output = fixture.doctor(true);
+        server.join().unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(check(&report, "API")["status"], status, "{report}");
+    }
+}
+
+#[test]
 fn text_doctor_renders_ok_warn_fix_and_providers() {
     let (fixture, server) = api_fixture(false);
     let output = fixture.doctor(false);

@@ -4,6 +4,30 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 
+/// The API document version served under `/v1`. The leading major version
+/// selects the route prefix, so every `1.x` document is served from `/v1`.
+pub const API_VERSION: &str = "1.0.0";
+
+fn major_part(version: &str) -> Option<u64> {
+    version
+        .strip_prefix(['v', 'V'])
+        .unwrap_or(version)
+        .split(['.', '-', '+'])
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Whether two API versions share a major version. Clients accept any server
+/// with the same major version; unparseable versions never match.
+#[must_use]
+pub fn same_major(left: &str, right: &str) -> bool {
+    match (major_part(left), major_part(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 /// A log namespace. The tagged representation reserves channels without changing session cursors.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
@@ -224,6 +248,17 @@ pub struct ServiceHealth {
     pub last_seen: String,
 }
 
+/// The unauthenticated health projection. `api_version` carries the document
+/// version so clients can accept any server with the same major version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HealthResponse {
+    pub version: String,
+    pub git_commit: String,
+    pub api_version: String,
+    pub services: Vec<ServiceHealth>,
+    pub node_count: u64,
+}
+
 /// Protected diagnostic snapshot used by doctor; credential metadata contains no secrets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorSnapshot {
@@ -348,6 +383,12 @@ pub struct CreateCredential {
     pub kind: CredentialKind,
     pub label: String,
     pub secret: String,
+}
+
+/// Body for agent and credential deletions. The key scopes the replayed result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeleteRequest {
+    pub idempotency_key: String,
 }
 
 /// A durable event has a cursor even when delivered on a multiplexed connection.
@@ -534,12 +575,179 @@ pub mod cli_paths {
     pub fn cli_credential() {}
 }
 
+/// Versioned resource routes. These signatures are mirrored by the server router.
+pub mod api_paths {
+    use super::{
+        Agent, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
+        CreateCredential, CreateSession, Credential, DeleteRequest, Event, HealthResponse, Image,
+        InterruptOutcome, InterruptSession, Model, Provider, Session, SessionClosed, Subscription,
+        UpdateAgent,
+    };
+    #[utoipa::path(get, path = "/v1/health",
+        responses((status = 200, body = HealthResponse)))]
+    pub fn health() {}
+    #[utoipa::path(get, path = "/v1/openapi.json",
+        responses((status = 200, description = "The OpenAPI document for this server version")))]
+    pub fn openapi() {}
+    #[utoipa::path(get, path = "/v1/docs",
+        responses((status = 200, description = "Rendered API reference for this server version")))]
+    pub fn docs() {}
+    #[utoipa::path(get, path = "/v1/agents",
+        params(
+            ("after" = Option<String>, Query, description = "Return agents after this id"),
+            ("limit" = Option<usize>, Query, description = "Maximum agents to return"),
+        ),
+        responses((status = 200, body = Vec<Agent>), (status = 401, body = ApiError)))]
+    pub fn list_agents() {}
+    #[utoipa::path(post, path = "/v1/agents",
+        request_body = CreateAgent,
+        responses((status = 200, body = Agent), (status = 400, body = ApiError)))]
+    pub fn create_agent() {}
+    #[utoipa::path(get, path = "/v1/agents/{id}",
+        params(("id" = String, Path, description = "Agent id or name")),
+        responses((status = 200, body = Agent), (status = 404, body = ApiError)))]
+    pub fn show_agent() {}
+    #[utoipa::path(patch, path = "/v1/agents/{id}",
+        params(("id" = String, Path, description = "Agent id or name")),
+        request_body = UpdateAgent,
+        responses((status = 200, body = Agent), (status = 404, body = ApiError)))]
+    pub fn update_agent() {}
+    #[utoipa::path(delete, path = "/v1/agents/{id}",
+        params(("id" = String, Path, description = "Agent id or name")),
+        request_body = DeleteRequest,
+        responses((status = 200, description = "Deletion marker")))]
+    pub fn delete_agent() {}
+    #[utoipa::path(get, path = "/v1/sessions",
+        params(
+            ("after" = Option<String>, Query, description = "Return sessions after this id"),
+            ("limit" = Option<usize>, Query, description = "Maximum sessions to return"),
+        ),
+        responses((status = 200, body = Vec<Session>), (status = 401, body = ApiError)))]
+    pub fn list_sessions() {}
+    #[utoipa::path(post, path = "/v1/sessions",
+        request_body = CreateSession,
+        responses((status = 200, body = Session), (status = 400, body = ApiError)))]
+    pub fn create_session() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}",
+        params(("id" = String, Path, description = "Session id")),
+        responses((status = 200, body = Session), (status = 404, body = ApiError)))]
+    pub fn show_session() {}
+    #[utoipa::path(delete, path = "/v1/sessions/{id}",
+        params(("id" = String, Path, description = "Session id")),
+        request_body = CloseSession,
+        responses((status = 200, body = SessionClosed), (status = 404, body = ApiError)))]
+    pub fn close_session() {}
+    #[utoipa::path(post, path = "/v1/sessions/{id}/messages",
+        params(("id" = String, Path, description = "Session id")),
+        request_body = AppendMessage,
+        responses((status = 200, body = AppendedMessage), (status = 404, body = ApiError)))]
+    pub fn append_message() {}
+    #[utoipa::path(post, path = "/v1/sessions/{id}/interrupt",
+        params(("id" = String, Path, description = "Session id")),
+        request_body = InterruptSession,
+        responses((status = 200, body = InterruptOutcome), (status = 404, body = ApiError)))]
+    pub fn interrupt_session() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/wait-idle",
+        params(
+            ("id" = String, Path, description = "Session id"),
+            ("after" = Option<u64>, Query, description = "Wait for a head beyond this sequence"),
+            ("timeout_ms" = Option<u64>, Query, description = "Maximum wait in milliseconds"),
+        ),
+        responses((status = 200, body = Session), (status = 404, body = ApiError)))]
+    pub fn wait_idle() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/events",
+        params(
+            ("id" = String, Path, description = "Session id"),
+            ("after" = Option<u64>, Query, description = "Replay events after this sequence"),
+            ("limit" = Option<usize>, Query, description = "Maximum events to return"),
+        ),
+        responses((status = 200, body = Vec<Event>), (status = 404, body = ApiError)))]
+    pub fn session_events() {}
+    #[utoipa::path(get, path = "/v1/events",
+        params(("subscription" = Option<String>, Query,
+            description = "URL-encoded Subscription JSON; a Last-Event-ID header overrides it")),
+        responses((status = 200, description = "Server-sent event stream of Event frames",
+            body = Event), (status = 400, body = ApiError)))]
+    pub fn subscribe() {}
+    #[utoipa::path(put, path = "/v1/events/{connection_id}/subscription",
+        params(("connection_id" = String, Path, description = "Stream connection id")),
+        request_body = Subscription,
+        responses((status = 204, description = "Subscription replaced"),
+            (status = 404, body = ApiError)))]
+    pub fn update_subscription() {}
+    #[utoipa::path(get, path = "/v1/images",
+        params(
+            ("after" = Option<String>, Query, description = "Return images after this name and tag"),
+            ("limit" = Option<usize>, Query, description = "Maximum images to return"),
+        ),
+        responses((status = 200, body = Vec<Image>), (status = 401, body = ApiError)))]
+    pub fn list_images() {}
+    #[utoipa::path(get, path = "/v1/images/{name}/{tag}",
+        params(
+            ("name" = String, Path, description = "Image name"),
+            ("tag" = String, Path, description = "Image tag"),
+        ),
+        responses((status = 200, body = Image), (status = 404, body = ApiError)))]
+    pub fn show_image() {}
+    #[utoipa::path(get, path = "/v1/models",
+        params(
+            ("q" = Option<String>, Query, description = "Free-text model search"),
+            ("provider" = Option<String>, Query, description = "Restrict to one provider"),
+            ("reasoning" = Option<bool>, Query, description = "Only models with reasoning effort"),
+        ),
+        responses((status = 200, body = Vec<Model>), (status = 401, body = ApiError)))]
+    pub fn list_models() {}
+    #[utoipa::path(get, path = "/v1/models/search",
+        params(("q" = String, Query, description = "Free-text model search")),
+        responses((status = 200, body = Vec<Model>), (status = 401, body = ApiError)))]
+    pub fn search_models() {}
+    #[utoipa::path(get, path = "/v1/models/{provider}/{model}",
+        params(
+            ("provider" = String, Path, description = "Provider id"),
+            ("model" = String, Path, description = "Model id"),
+        ),
+        responses((status = 200, body = Model), (status = 404, body = ApiError)))]
+    pub fn show_model() {}
+    #[utoipa::path(get, path = "/v1/providers",
+        responses((status = 200, body = Vec<Provider>), (status = 401, body = ApiError)))]
+    pub fn list_providers() {}
+    #[utoipa::path(get, path = "/v1/credentials",
+        responses((status = 200, body = Vec<Credential>), (status = 401, body = ApiError)))]
+    pub fn list_credentials() {}
+    #[utoipa::path(post, path = "/v1/credentials",
+        request_body = CreateCredential,
+        responses((status = 200, body = Credential), (status = 400, body = ApiError)))]
+    pub fn set_credential() {}
+    #[utoipa::path(get, path = "/v1/credentials/{provider}",
+        params(("provider" = String, Path, description = "Provider id")),
+        responses((status = 200, body = Credential), (status = 404, body = ApiError)))]
+    pub fn check_credential() {}
+    #[utoipa::path(delete, path = "/v1/credentials/{provider}",
+        params(("provider" = String, Path, description = "Provider id")),
+        request_body = DeleteRequest,
+        responses((status = 200, description = "Deletion marker")))]
+    pub fn remove_credential() {}
+}
+
 /// The schema document is generated from the same types clients and servers serialize.
+// Keep `info(version)` in sync with `API_VERSION` above.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Swarmy API", version = "1.0.0"),
     servers((url = "/v1", description = "Version 1 control plane")),
     paths(
+        api_paths::health, api_paths::openapi, api_paths::docs,
+        api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
+        api_paths::update_agent, api_paths::delete_agent,
+        api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
+        api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
+        api_paths::wait_idle, api_paths::session_events,
+        api_paths::subscribe, api_paths::update_subscription,
+        api_paths::list_images, api_paths::show_image,
+        api_paths::list_models, api_paths::search_models, api_paths::show_model,
+        api_paths::list_providers,
+        api_paths::list_credentials, api_paths::set_credential,
+        api_paths::check_credential, api_paths::remove_credential,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
@@ -549,7 +757,9 @@ pub mod cli_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
     Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
-    Node, ServiceHealth, DoctorSnapshot, DoctorService, CreateAgent, UpdateAgent, CreateSession, UpdateSession,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService,
+    CreateAgent, UpdateAgent, DeleteRequest,
+    CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
@@ -626,13 +836,25 @@ mod tests {
         check!(NodeCapacity, {"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2});
         check!(Node, {"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
         check!(ServiceHealth, {"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        check!(HealthResponse, {"version":"0.1.0","git_commit":"abc","api_version":"1.0.0","services":[],"node_count":0});
         check!(ApiError, {"code":"provider_error","message":"failed","provider_text":"original"});
+    }
+
+    #[test]
+    fn same_major_accepts_any_minor_within_major() {
+        assert!(same_major("1.0.0", "1.0.0"));
+        assert!(same_major("1.4.0", "1.0.0"));
+        assert!(same_major("v1", API_VERSION));
+        assert!(!same_major("2.0.0", API_VERSION));
+        assert!(!same_major("", API_VERSION));
+        assert!(!same_major("unknown", API_VERSION));
     }
 
     #[test]
     fn mutation_json_contract() {
         check!(CreateAgent, {"idempotency_key":"k","name":"a","description":"d","image":{"name":"base","tag":"dev"},"provider":null,"model":null,"effort":null,"system_prompt":null});
         check!(UpdateAgent, {"idempotency_key":"k","description":null,"provider":"openai","model":null,"effort":"high","system_prompt":null});
+        check!(DeleteRequest, {"idempotency_key":"k"});
         check!(CreateSession, {"idempotency_key":"k","agent_id":null,"image":{"name":"base","tag":"dev"},"provider":null,"model":null,"effort":null});
         check!(UpdateSession, {"idempotency_key":"k","close":true,"provider":null,"model":null,"effort":null});
         check!(CreateTurn, {"idempotency_key":"k","session_id":"s"});

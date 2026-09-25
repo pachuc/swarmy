@@ -71,6 +71,7 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 utoipa = "5"
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"
