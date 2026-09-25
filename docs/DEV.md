@@ -309,7 +309,10 @@ stack has not been initialized. Each failure includes a fix and causes exit 1.
 JSON output is one object containing `ok` and a `checks` array; each check has
 `name`, `ok`, `detail`, and an optional `fix`.
 
-The public CLI loads the client only for its doctor probe. Database commands
+The public CLI loads the client only for its doctor probe. Conversation
+commands (`run`, `chat`, `bench`) and the management reads talk to the
+control-plane API. The remaining database commands (`vol`, `gc`, `image
+build`, `session close`, `session interrupt`, `auth login`, `models probe`)
 run through the installed `swarmy-session` companion, so doctor can still name
 a missing `libfdb_c` even when the database commands cannot start.
 

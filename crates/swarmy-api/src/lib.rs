@@ -23,6 +23,7 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
 use ulid::Ulid;
 use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -139,7 +140,29 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
             .unwrap_or_default(),
         computer_deleted: record.computer_deleted,
         waiting: None,
+        provider: record.inference.provider.clone(),
+        model: record.inference.model.clone(),
+        effort: record
+            .inference
+            .effort
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| serde_json::from_value(v).ok()),
+        next_session: None,
     }
+}
+async fn session_with_next(
+    store: &Store,
+    record: &swarmy_core::SessionRecord,
+) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
+    let mut result = session(record);
+    if record.state == swarmy_core::SessionState::Completed {
+        result.next_session = store
+            .next_session(record.session_id)
+            .await
+            .map_err(storage)?
+            .map(|id| id.to_string());
+    }
+    Ok(result)
 }
 async fn authorize(
     State(state): State<AppState>,
@@ -213,14 +236,16 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
         )
-        .route("/v1/openapi.json", get(openapi))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
+    // Health, the OpenAPI document, and the rendered reference are public so
+    // every swarm documents itself at its own version without a token.
     Router::new()
         .route("/v1/health", get(health))
+        .merge(SwaggerUi::new("/v1/docs").url("/v1/openapi.json", api::ApiDocument::openapi()))
         .merge(protected)
         .with_state(state)
 }
-async fn health(State(state): State<AppState>) -> ApiResult<Value> {
+async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse> {
     let services = state.store.list_services().await.map_err(storage)?;
     let node_count = services
         .iter()
@@ -234,14 +259,20 @@ async fn health(State(state): State<AppState>) -> ApiResult<Value> {
             version: s.heartbeat.version,
             alive: s.alive,
             last_seen: s.heartbeat.last_seen.to_string(),
+            providers: match s.heartbeat.detail {
+                swarmy_store::ServiceDetail::Providers(providers) => providers,
+                _ => Vec::new(),
+            },
         })
         .collect();
-    Ok(Json(
-        json!({"version": swarmy_version::VERSION, "git_commit": swarmy_version::GIT_COMMIT, "services": services, "node_count": node_count}),
-    ))
-}
-async fn openapi() -> Json<Value> {
-    Json(serde_json::to_value(api::ApiDocument::openapi()).unwrap_or_default())
+    Ok(Json(api::HealthResponse {
+        version: swarmy_version::VERSION.into(),
+        git_commit: swarmy_version::GIT_COMMIT.into(),
+        api_version: api::API_VERSION.into(),
+        default_provider: state.default_selection.provider.clone(),
+        services,
+        node_count: u64::try_from(node_count).unwrap_or(u64::MAX),
+    }))
 }
 #[derive(Deserialize)]
 struct Page {
@@ -383,14 +414,10 @@ async fn update_agent(
     )
     .await
 }
-#[derive(Deserialize)]
-struct DeleteKey {
-    idempotency_key: String,
-}
 async fn delete_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(body): Json<DeleteKey>,
+    Json(body): Json<api::DeleteRequest>,
 ) -> ApiResult<Value> {
     let store = state.store.clone();
     replay(
@@ -415,30 +442,29 @@ async fn sessions(
         .as_deref()
         .map(|v| id(v, SessionId::from_ulid))
         .transpose()?;
-    Ok(Json(
-        state
-            .store
-            .list_sessions(after, limit(page.limit))
-            .await
-            .map_err(storage)?
-            .iter()
-            .map(session)
-            .collect(),
-    ))
+    let records = state
+        .store
+        .list_sessions(after, limit(page.limit))
+        .await
+        .map_err(storage)?;
+    let mut result = Vec::with_capacity(records.len());
+    for record in &records {
+        result.push(session_with_next(&state.store, record).await?);
+    }
+    Ok(Json(result))
 }
 async fn show_session(
     State(state): State<AppState>,
     Path(text): Path<String>,
 ) -> ApiResult<api::Session> {
     let id = id(&text, SessionId::from_ulid)?;
-    Ok(Json(session(
-        &state
-            .store
-            .fetch_session(id)
-            .await
-            .map_err(storage)?
-            .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?,
-    )))
+    let record = state
+        .store
+        .fetch_session(id)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+    Ok(Json(session_with_next(&state.store, &record).await?))
 }
 async fn session_metrics(
     State(state): State<AppState>,
@@ -790,7 +816,7 @@ async fn set_credential(
 async fn remove_credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
-    Json(body): Json<DeleteKey>,
+    Json(body): Json<api::DeleteRequest>,
 ) -> ApiResult<Value> {
     let store = credential_store(&state)?;
     replay(

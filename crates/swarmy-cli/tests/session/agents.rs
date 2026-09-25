@@ -429,30 +429,46 @@ async fn json_chat_reads_prompts_and_retains_named_sessions_on_eof() {
 
 #[test]
 fn agent_options_validate_before_connecting_to_services() {
+    // Conversation commands run through the API client, so only `swarmy`
+    // validates their flag combinations. `swarmy-session` keeps the
+    // management commands it still serves.
+    for args in [
+        vec![
+            "run",
+            "hello",
+            "--agent",
+            "tommy",
+            "--image",
+            "fixture:test",
+        ],
+        vec!["chat", "--agent", "tommy", "--image", "fixture:test"],
+        vec!["chat", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--agent", "tommy"],
+        vec!["chat", "--new"],
+        vec!["run", "hello", "--new"],
+        vec![
+            "chat",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "--agent",
+            "tommy",
+            "--new",
+        ],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_swarmy"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     for binary in [
         env!("CARGO_BIN_EXE_swarmy"),
         env!("CARGO_BIN_EXE_swarmy-session"),
     ] {
         for args in [
-            vec![
-                "run",
-                "hello",
-                "--agent",
-                "tommy",
-                "--image",
-                "fixture:test",
-            ],
-            vec!["chat", "--agent", "tommy", "--image", "fixture:test"],
-            vec!["chat", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--agent", "tommy"],
-            vec!["chat", "--new"],
-            vec!["run", "hello", "--new"],
-            vec![
-                "chat",
-                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                "--agent",
-                "tommy",
-                "--new",
-            ],
             vec!["agent", "create", "invalid/name"],
             vec!["agent", "create", ""],
         ] {
@@ -474,8 +490,6 @@ fn agent_options_validate_before_connecting_to_services() {
             vec!["agent", "delete", "tommy"],
             vec!["session", "ls"],
             vec!["session", "close", "01ARZ3NDEKTSV4RRFFQ69G5FAV"],
-            vec!["chat", "--agent", "tommy"],
-            vec!["run", "hello", "--agent", "tommy"],
         ] {
             let output = std::process::Command::new(binary)
                 .args(args)
@@ -490,6 +504,23 @@ fn agent_options_validate_before_connecting_to_services() {
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(text.contains("--json") && text.contains("--remote"));
         }
+    }
+    for args in [
+        vec!["chat", "--agent", "tommy"],
+        vec!["run", "hello", "--agent", "tommy"],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_swarmy"))
+            .args(args)
+            .args(["--json", "--remote", "demo", "--help"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("--json") && text.contains("--remote"));
     }
 }
 

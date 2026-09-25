@@ -1,15 +1,14 @@
-//! The benchmark uses the same durable transport and line renderer as `run`.
-use std::{collections::BTreeMap, time::Duration};
-
+//! Benchmark the same API append and SSE idle path as a human client.
+use crate::{bench_command::Command, client_conversation::Conversation};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use swarmy_core::{Event, MessageId, TurnEvent, TurnStage};
-
-use crate::{
-    bench_command::Command,
-    conversation::{Conversation, Notification, TranscriptEvent},
-    session::{Output, final_text},
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
 };
+use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
+use swarmy_client::Client;
+use swarmy_core::{MessageId, SessionId, ToolResult, TurnEvent, TurnStage};
 
 const SCRIPT: &str = include_str!("../../../scripts/benchmarks/turn-fake.json");
 
@@ -23,7 +22,25 @@ struct Sample {
     cross_host_wall_clock: bool,
 }
 
-pub async fn run(command: Command, json: bool) -> Result<()> {
+async fn timeline_bus(settings: &swarmy_config::Settings) -> Result<Bus> {
+    let config = Config {
+        prefix: if settings.bus_prefix.is_empty() {
+            None
+        } else {
+            Some(SubjectToken::new(settings.bus_prefix.clone())?)
+        },
+        ack_wait: Duration::from_millis(settings.bus_ack_wait_ms),
+        max_deliver: settings.bus_max_deliver,
+    };
+    Ok(tokio::time::timeout(
+        Duration::from_secs(3),
+        Bus::connect(&settings.nats_url, config),
+    )
+    .await
+    .context("cannot reach turn timeline bus")??)
+}
+
+pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
     let Command::Turn {
         turns,
         image,
@@ -43,22 +60,26 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         configured == serde_json::from_str::<serde_json::Value>(SCRIPT)?,
         "bench turn requires scripts/benchmarks/turn-fake.json; configure it and restart the gateway"
     );
+    let bus = timeline_bus(&settings).await?;
     let mut samples = Vec::new();
     for shape in ["no_tool", "bash"] {
-        // Every session pins its image at creation; the bench image serves both shapes.
         let mut conversation = Conversation::open(
+            client.clone(),
             None,
-            Some(image.as_str()),
+            Some(image.clone()),
             None,
             false,
             swarmy_core::InferenceSelection::default(),
         )
         .await?;
-        let mut timeline = conversation.timeline().await?;
+        let id = SessionId::from_ulid(conversation.id.parse()?);
+        let mut timeline = bus
+            .subscribe_live::<TurnEvent>(LiveFeed::TurnTimeline(id))
+            .await?;
         for index in 0..=turns {
             let sample = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
-                measure(&mut conversation, &mut timeline, shape, index == 0, json),
+                measure(&mut conversation, &bus, &mut timeline, shape, index == 0),
             )
             .await
             .with_context(|| {
@@ -95,7 +116,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"shape": shape, "stage": stage, "turns": turns, "p50_ms": p50, "p95_ms": p95})
+                    serde_json::json!({"shape":shape,"stage":stage,"turns":turns,"p50_ms":p50,"p95_ms":p95})
                 );
             } else {
                 println!("{stage:24} p50 {p50:10.3}  p95 {p95:10.3}");
@@ -107,65 +128,78 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
 
 async fn measure(
     conversation: &mut Conversation,
+    bus: &Bus,
     timeline: &mut swarmy_bus::LiveMessages<TurnEvent>,
     shape: &str,
     warmup: bool,
-    json: bool,
 ) -> Result<Sample> {
-    conversation
+    let (sender, mut stages) = tokio::sync::mpsc::unbounded_channel();
+    conversation.observe_with(sender);
+    let start = Instant::now();
+    let turn = conversation
         .send(format!("swarmy bench turn {shape}"))
         .await?;
-    let turn_id = conversation.turn_id().context("turn id missing")?;
+    let turn_id = MessageId::from_ulid(turn.parse()?);
+    let id = SessionId::from_ulid(conversation.id.parse()?);
     let mut events = Vec::new();
-    let mut output = Output::new(json);
     let mut idle = false;
-    let mut tools = 0;
-    loop {
-        tokio::select! {
-            observation = timeline.next() => {
-                let observation = observation.context("timeline feed closed")??;
-                if observation.turn_id == turn_id { events.push(observation); }
-            }
-            notification = conversation.next(), if !idle => match notification? {
-                Notification::Log(event) => {
-                    if let Event::ToolCallCompleted { result, .. } = &event {
-                        let swarmy_core::ToolResult::Completed { metadata, .. } = result else {
-                            anyhow::bail!("bash tool failed: {result:?}");
-                        };
-                        let result: swarmy_core::BashResult = serde_json::from_value(serde_json::to_value(metadata)?)?;
-                        ensure!(result.exit_code == 0 && !result.timed_out && result.stdout == "TURN_TOOL_OK", "unexpected bash result");
-                        tools += 1;
-                    }
-                    output.event(&event)?;
-                    if final_text(&event) {
-                        let (Event::MessageAppended { message, .. } | Event::InferenceCompleted { message, .. }) = &event else { unreachable!() };
-                        ensure!(crate::conversation::message_text(message) == "TURN_OK\n", "unexpected fake response");
-                        conversation.observe(TurnStage::FinalTextRendered).await;
-                    }
+    let mut client_elapsed = Duration::ZERO;
+    {
+        let done = conversation.until_idle(false, true, true);
+        tokio::pin!(done);
+        loop {
+            tokio::select! {
+                observation = timeline.next() => {
+                    let observation = observation.context("timeline feed closed")??;
+                    if observation.turn_id == turn_id { events.push(observation); }
                 }
-                Notification::Transcript(TranscriptEvent::SessionIdle) => {
-                    conversation.observe(TurnStage::InputEnabled).await;
-                    idle = true;
+                stage = stages.recv() => {
+                    if let Some(stage) = stage { bus.record_turn(&Bus::turn_event(id, turn_id, stage, None)).await; }
                 }
-                Notification::Transcript(TranscriptEvent::Error(error)) => anyhow::bail!("turn failed: {error}"),
-                _ => {}
+                outcome = &mut done, if !idle => { outcome?; client_elapsed = start.elapsed(); idle = true; }
             }
-        }
-        if idle && complete(&events, shape == "bash") {
-            ensure!(tools == usize::from(shape == "bash"), "wrong tool count");
-            let elapsed_ms = elapsed(&events)?;
-            return Ok(Sample {
-                shape: shape.into(),
-                warmup,
-                turn_id,
-                cross_host_wall_clock: events
-                    .iter()
-                    .any(|event| event.clock_id != events[0].clock_id),
-                events,
-                elapsed_ms,
-            });
+            if idle && complete(&events, shape == "bash") {
+                break;
+            }
         }
     }
+    ensure!(
+        conversation.last_text == "TURN_OK\n",
+        "unexpected fake response"
+    );
+    ensure!(
+        conversation.tool_count == usize::from(shape == "bash"),
+        "wrong tool count"
+    );
+    if shape == "bash" {
+        let result: ToolResult = serde_json::from_value(
+            conversation
+                .tool_result
+                .clone()
+                .context("bash result missing")?,
+        )?;
+        let ToolResult::Completed { metadata, .. } = result else {
+            anyhow::bail!("bash tool failed: {result:?}");
+        };
+        let bash: swarmy_core::BashResult =
+            serde_json::from_value(serde_json::to_value(metadata)?)?;
+        ensure!(
+            bash.exit_code == 0 && !bash.timed_out && bash.stdout == "TURN_TOOL_OK",
+            "unexpected bash result"
+        );
+    }
+    let mut elapsed_ms = elapsed(&events)?;
+    elapsed_ms.insert("end_to_end".into(), client_elapsed.as_secs_f64() * 1000.0);
+    Ok(Sample {
+        shape: shape.into(),
+        warmup,
+        turn_id,
+        cross_host_wall_clock: events
+            .iter()
+            .any(|event| event.clock_id != events[0].clock_id),
+        events,
+        elapsed_ms,
+    })
 }
 
 fn complete(events: &[TurnEvent], tool: bool) -> bool {

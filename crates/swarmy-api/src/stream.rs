@@ -124,6 +124,11 @@ pub async fn subscribe(
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_subscription"))?
     };
     validate(&state, &subscription).await?;
+    // Install the live subscriptions before headers become visible to a client.
+    // Durable records can replay, but a token emitted in this window cannot.
+    let initial_feeds = feeds(&state, &subscription)
+        .await
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "subscription_unavailable"))?;
     let connection_id = Ulid::generate().to_string();
     let (changes, receiver) = watch::channel(subscription.clone());
     let progress = Arc::new(std::sync::Mutex::new(subscription.clone()));
@@ -150,7 +155,13 @@ pub async fn subscribe(
         .id(encode_cursor(&subscription)?)
         .data(serde_json::json!({"connection_id": connection_id}).to_string());
     let _ = sender.try_send(initial);
-    tokio::spawn(produce(state.clone(), receiver, sender, guard));
+    tokio::spawn(produce(
+        state.clone(),
+        receiver,
+        sender,
+        guard,
+        initial_feeds,
+    ));
     let body = async_stream::stream! {
         while let Some(event) = outbound.recv().await { yield Ok::<Event, Infallible>(event); }
     };
@@ -373,7 +384,9 @@ async fn produce(
     mut changes: watch::Receiver<Subscription>,
     sender: mpsc::Sender<Event>,
     guard: ConnectionGuard,
+    initial_feeds: SelectAll<BoxStream<'static, FeedItem>>,
 ) {
+    let mut first = Some(initial_feeds);
     let mut current = changes.borrow().clone();
     let mut pending_update = false;
     let mut force_update = false;
@@ -383,10 +396,15 @@ async fn produce(
             let requested = changes.borrow_and_update().clone();
             current = requested;
             pending_update = true;
+            first = None;
         }
         // Register live feeds before reading the log. A notification is only a
         // nudge; rereading the store also repairs a dropped NATS publication.
-        let mut live = match feeds(&state, &current).await {
+        let mut live = match if let Some(live) = first.take() {
+            Ok(live)
+        } else {
+            feeds(&state, &current).await
+        } {
             Ok(live) => live,
             Err(error) => {
                 tracing::warn!(%error, "SSE subscription failed");

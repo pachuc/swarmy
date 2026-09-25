@@ -237,24 +237,72 @@ fn normalize_calls(input: &mut Vec<Value>) {
             item["call_id"] = json!(blake3::hash(id.as_bytes()).to_hex().to_string());
         }
     }
-    let results: std::collections::BTreeSet<_> = input
+    // Pair each result with its call by id wherever the call sits, so every
+    // result immediately follows its call. A notice or late prompt between
+    // them is emitted after the results with its relative order preserved.
+    // A result whose call id appears nowhere gets a neutral placeholder call
+    // so switching providers never fails.
+    let known: std::collections::BTreeSet<String> = input
         .iter()
-        .filter(|item| item["type"] == "function_call_output")
+        .filter(|item| item["type"] == "function_call")
         .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
         .collect();
-    let mut normalized = Vec::with_capacity(input.len());
-    for item in std::mem::take(input) {
-        let missing = item["type"] == "function_call"
-            && item["call_id"]
-                .as_str()
-                .is_some_and(|id| !results.contains(id));
-        let result = missing.then(|| json!({"type": "function_call_output", "call_id": item["call_id"], "output": "Error: No result provided"}));
-        normalized.push(item);
-        if let Some(result) = result {
-            normalized.push(result);
+    let mut taken = vec![false; input.len()];
+    let mut repaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut reordered = Vec::with_capacity(input.len() * 2);
+    let mut input_items = std::mem::take(input);
+    for index in 0..input_items.len() {
+        if taken[index] {
+            continue;
         }
+        let item = std::mem::take(&mut input_items[index]);
+        if item.is_null() {
+            continue;
+        }
+        if item["type"] == "function_call_output" {
+            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
+            if known.contains(&id) {
+                // The result is pulled forward to its call below, or was
+                // already emitted there; never emit it twice.
+                continue;
+            }
+            taken[index] = true;
+            reordered.push(json!({"type": "function_call", "call_id": id.clone(), "name": "unknown_tool", "arguments": "{}"}));
+            repaired.insert(id);
+            reordered.push(item);
+            continue;
+        }
+        if item["type"] == "function_call" {
+            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
+            reordered.push(item);
+            let mut found = None;
+            for (candidate, other) in input_items.iter().enumerate() {
+                if taken[candidate] {
+                    continue;
+                }
+                if other["type"] == "function_call_output" && other["call_id"].as_str() == Some(&id)
+                {
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            if let Some(candidate) = found {
+                taken[candidate] = true;
+                reordered.push(std::mem::take(&mut input_items[candidate]));
+            } else {
+                reordered.push(json!({"type": "function_call_output", "call_id": id, "output": "Error: No result provided"}));
+            }
+            continue;
+        }
+        reordered.push(item);
     }
-    *input = normalized;
+    *input = reordered;
+    if !repaired.is_empty() {
+        tracing::warn!(
+            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
+            "repaired tool result without a stored tool call; synthesized unknown_tool call"
+        );
+    }
 }
 
 /// Incremental SSE parser, including CRLF, multiline data, comments, and UTF-8
@@ -266,6 +314,7 @@ pub struct SseParser {
     previous_cr: bool,
     output: BTreeMap<usize, Vec<Part>>,
     text_content: BTreeMap<usize, BTreeMap<usize, String>>,
+    saw_tool_arguments: bool,
     context: Option<(String, String)>,
     completed: bool,
 }
@@ -404,10 +453,13 @@ impl SseParser {
                     output_index: index(event)?,
                     text: string(event, "delta")?.to_owned(),
                 }),
-            "response.function_call_arguments.delta" => deltas.push(Delta::ToolArguments {
-                output_index: index(event)?,
-                arguments: string(event, "delta")?.to_owned(),
-            }),
+            "response.function_call_arguments.delta" => {
+                self.saw_tool_arguments = true;
+                deltas.push(Delta::ToolArguments {
+                    output_index: index(event)?,
+                    arguments: string(event, "delta")?.to_owned(),
+                });
+            }
             "response.output_text.done" => {
                 let output_index = index(event)?;
                 let content_index = content_index(event);
@@ -430,56 +482,74 @@ impl SseParser {
                 self.output.insert(output_index, parts);
             }
             "response.completed" | "response.incomplete" => {
-                let response = &event["response"];
-                if !response.is_object() {
-                    return Err(Error::Protocol("missing completed response".into()));
-                }
-                if response["status"] == "failed" {
-                    return Err(provider_error(&response["error"]));
-                }
-                // The Codex backend sends an empty output array in the terminal
-                // event; the items already collected from output_item.done are
-                // authoritative in that case.
-                let parts: Vec<Part> = match response["output"].as_array() {
-                    Some(output) if !output.is_empty() => output
-                        .iter()
-                        .map(|item| self.item_parts(item))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                    _ => self.streamed_parts(),
-                };
-                let stop_reason = if event["type"] == "response.incomplete"
-                    || response["status"] == "incomplete"
-                {
-                    match response["incomplete_details"]["reason"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                    {
-                        "max_output_tokens" => StopReason::MaxOutputTokens,
-                        "content_filter" => StopReason::ContentFilter,
-                        reason => StopReason::Incomplete(reason.to_owned()),
-                    }
-                } else if parts
-                    .iter()
-                    .any(|part| matches!(part, Part::ToolCall { .. }))
-                {
-                    StopReason::ToolCalls
-                } else {
-                    StopReason::EndTurn
-                };
-                deltas.push(Delta::Completed(Response {
-                    parts,
-                    stop_reason,
-                    usage: usage(&response["usage"]),
-                }));
-                self.completed = true;
+                self.complete_event(event, deltas)?;
             }
             "response.failed" => return Err(provider_error(&event["response"]["error"])),
             "error" => return Err(provider_error(event.get("error").unwrap_or(event))),
             _ => (),
         }
+        Ok(())
+    }
+
+    fn complete_event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        let response = &event["response"];
+        if !response.is_object() {
+            return Err(Error::Protocol("missing completed response".into()));
+        }
+        if response["status"] == "failed" {
+            return Err(provider_error(&response["error"]));
+        }
+        // The Codex backend sends an empty output array in the terminal
+        // event; the items already collected from output_item.done are
+        // authoritative in that case.
+        let parts: Vec<Part> = match response["output"].as_array() {
+            Some(output) if !output.is_empty() => output
+                .iter()
+                .map(|item| self.item_parts(item))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => self.streamed_parts(),
+        };
+        let incomplete =
+            event["type"] == "response.incomplete" || response["status"] == "incomplete";
+        if incomplete
+            && self.saw_tool_arguments
+            && !parts
+                .iter()
+                .any(|part| matches!(part, Part::ToolCall { .. }))
+        {
+            tracing::debug!(
+                reason = response["incomplete_details"]["reason"]
+                    .as_str()
+                    .unwrap_or("unknown"),
+                "response.incomplete dropped a partially received tool call"
+            );
+        }
+        let stop_reason = if incomplete {
+            match response["incomplete_details"]["reason"]
+                .as_str()
+                .unwrap_or("unknown")
+            {
+                "max_output_tokens" => StopReason::MaxOutputTokens,
+                "content_filter" => StopReason::ContentFilter,
+                reason => StopReason::Incomplete(reason.to_owned()),
+            }
+        } else if parts
+            .iter()
+            .any(|part| matches!(part, Part::ToolCall { .. }))
+        {
+            StopReason::ToolCalls
+        } else {
+            StopReason::EndTurn
+        };
+        deltas.push(Delta::Completed(Response {
+            parts,
+            stop_reason,
+            usage: usage(&response["usage"]),
+        }));
+        self.completed = true;
         Ok(())
     }
 }

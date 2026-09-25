@@ -204,6 +204,17 @@ impl Client {
             .await
     }
 
+    /// Follow the durable successor of a completed session, when summarization created one.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn successor(&self, session: &api::Session) -> Result<Option<api::Session>, Error> {
+        if let Some(next) = &session.next_session {
+            Ok(Some(self.session(next).await?))
+        } else {
+            Ok(None)
+        }
+    }
     /// Calls the corresponding API route.
     ///
     /// # Errors
@@ -568,6 +579,17 @@ impl EventStream {
     #[must_use]
     pub fn cursors(&self) -> &[api::Cursor] {
         &self.subscription.cursors
+    }
+    /// Establish the SSE subscription before submitting work, so live token deltas
+    /// are not missed while the HTTP connection is being opened.
+    ///
+    /// # Errors
+    /// Returns an API or transport error if the subscription cannot be established.
+    pub async fn open(&mut self) -> Result<(), Error> {
+        if self.response.is_none() {
+            self.connect().await?;
+        }
+        Ok(())
     }
     async fn connect(&mut self) -> Result<(), Error> {
         let query = serde_json::to_string(&self.subscription)?;

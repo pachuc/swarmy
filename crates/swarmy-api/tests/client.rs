@@ -188,6 +188,13 @@ async fn assert_agent_routes(client: &Client) {
     );
 }
 
+async fn assert_service_discovery(client: &Client) {
+    let health = client.health().await.unwrap();
+    assert!(health.get("version").is_some());
+    assert!(health.get("api_version").is_some());
+    assert!(client.openapi().await.unwrap().get("openapi").is_some());
+}
+
 async fn assert_catalog_and_credentials(client: &Client) {
     let first = &client.models().await.unwrap()[0];
     assert_eq!(
@@ -231,8 +238,7 @@ async fn client_round_trips_real_routes() {
         return;
     };
     let client = &f.client;
-    assert!(client.health().await.unwrap().get("version").is_some());
-    assert!(client.openapi().await.unwrap().get("openapi").is_some());
+    assert_service_discovery(client).await;
     assert!(!client.providers().await.unwrap().is_empty());
     assert!(!client.models().await.unwrap().is_empty());
     assert_catalog_and_credentials(client).await;
@@ -431,5 +437,56 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         tokio::time::timeout(Duration::from_millis(400), stream.next_item())
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn token_subscription_is_ready_before_open_returns() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+    let session = fixture
+        .client
+        .create_session(&api::CreateSession {
+            idempotency_key: Ulid::generate().to_string(),
+            agent_id: None,
+            new: false,
+            image: Some(api::ImageRef {
+                name: "fixture".into(),
+                tag: "test".into(),
+            }),
+            provider: None,
+            model: None,
+            effort: None,
+        })
+        .await
+        .unwrap();
+    let mut stream = fixture.client.stream(api::Subscription {
+        cursors: vec![api::Cursor {
+            log_id: session.log_id,
+            sequence: session.head_sequence,
+        }],
+        token_deltas: true,
+    });
+    stream.open().await.unwrap();
+    let id = SessionId::from_ulid(session.id.parse().unwrap());
+    fixture
+        .bus
+        .publish_live(
+            LiveFeed::ApiTokenDeltas(id),
+            &LiveTokenDelta {
+                turn_id: "turn".into(),
+                position: 0,
+                text: "first".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let item = tokio::time::timeout(Duration::from_secs(3), stream.next_item())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(item, StreamItem::TokenDelta { payload: api::EventPayload::TokenDelta { text, .. }, .. } if text == "first")
     );
 }

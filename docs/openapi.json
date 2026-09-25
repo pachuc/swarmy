@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Swarmy API",
-    "description": "",
+    "description": "Version 1 control plane. Additive-only within /v1: new routes and fields may appear, nothing is removed or retyped, and deprecations carry an x-sunset date. See docs/api.md.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -16,6 +16,220 @@
     }
   ],
   "paths": {
+    "/v1/agents": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_agents",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return agents after this id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum agents to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Agent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "create_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_agent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Agent id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "delete_agent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Agent id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deletion marker"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "update_agent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Agent id or name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAgent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/agents": {
       "get": {
         "tags": [
@@ -369,6 +583,986 @@
             }
           },
           "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/credentials": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_credentials",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Credential"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCredential"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/credentials/{provider}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "check_credential",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "remove_credential",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deletion marker"
+          }
+        }
+      }
+    },
+    "/v1/docs": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "docs",
+        "responses": {
+          "200": {
+            "description": "Rendered API reference for this server version"
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "subscribe",
+        "parameters": [
+          {
+            "name": "subscription",
+            "in": "query",
+            "description": "URL-encoded Subscription JSON; a Last-Event-ID header overrides it",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream of Event frames",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events/{connection_id}/subscription": {
+      "put": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "update_subscription",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "description": "Stream connection id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Subscription"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Subscription replaced"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/images": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_images",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return images after this name and tag",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum images to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Image"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/images/{name}/{tag}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_image",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Image name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "path",
+            "description": "Image tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Image"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Free-text model search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Restrict to one provider",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reasoning",
+            "in": "query",
+            "description": "Only models with reasoning effort",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Model"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/search": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "search_models",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Free-text model search",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Model"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/{provider}/{model}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_model",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "model",
+            "in": "path",
+            "description": "Model id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Model"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document for this server version"
+          }
+        }
+      }
+    },
+    "/v1/providers": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_providers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Provider"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return sessions after this id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum sessions to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Session"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "create_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "close_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloseSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionClosed"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/events": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "session_events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Replay events after this sequence",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum events to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Event"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/interrupt": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "interrupt_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterruptSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptOutcome"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/messages": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "append_message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppendMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppendedMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/wait-idle": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "wait_idle",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Wait for a head beyond this sequence",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "timeout_ms",
+            "in": "query",
+            "description": "Maximum wait in milliseconds",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
             "description": "",
             "content": {
               "application/json": {
@@ -1193,6 +2387,18 @@
           }
         }
       },
+      "DeleteRequest": {
+        "type": "object",
+        "description": "Body for agent and credential deletions. The key scopes the replayed result.",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
       "DoctorService": {
         "type": "object",
         "required": [
@@ -1612,6 +2818,44 @@
           }
         ]
       },
+      "HealthResponse": {
+        "type": "object",
+        "description": "The unauthenticated health projection. `api_version` carries the document\nversion so clients can accept any server with the same major version.",
+        "required": [
+          "version",
+          "git_commit",
+          "api_version",
+          "default_provider",
+          "services",
+          "node_count"
+        ],
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "default_provider": {
+            "type": "string",
+            "description": "The provider new conversations use when the request names none."
+          },
+          "git_commit": {
+            "type": "string"
+          },
+          "node_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceHealth"
+            }
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "Image": {
         "type": "object",
         "required": [
@@ -2006,6 +3250,12 @@
           "last_seen": {
             "type": "string"
           },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "role": {
             "type": "string"
           },
@@ -2038,6 +3288,16 @@
           "created_at": {
             "type": "string"
           },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -2051,6 +3311,24 @@
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/SessionState"
