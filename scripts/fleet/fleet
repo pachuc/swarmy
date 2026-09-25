@@ -934,7 +934,8 @@ def benchmark(args):
     # same rule as the fleet.toml remote, so the benchmark runs on a control
     # node without a tunnel.
     remote = [] if args.remote in ("", "local") else ["--remote", args.remote]
-    cmd = ["swarmy", *remote, "run", "--json",
+    image = ["--image", args.image] if args.image else []
+    cmd = ["swarmy", *remote, "run", "--json", *image,
            "--provider", args.provider, "--model", args.model,
            "--effort", args.effort, args.prompt_file.read_text()]
     result = subprocess.run(cmd, text=True, stdout=sys.stdout, stderr=sys.stderr, check=False)
@@ -969,6 +970,7 @@ def main():
     bench.add_argument("--model", required=True)
     bench.add_argument("--effort", required=True)
     bench.add_argument("--prompt-file", required=True, type=Path)
+    bench.add_argument("--image", help="registered image as NAME:TAG for the isolated session; default is the remote's default image")
     report_parser = sub.add_parser("report", help="aggregate per-turn session metrics into a comparison table")
     report_parser.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
     report_parser.add_argument("--since", default=None, help="include every task launched at or after this ISO 8601 time")
