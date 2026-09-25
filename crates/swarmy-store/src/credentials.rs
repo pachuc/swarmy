@@ -14,7 +14,10 @@ use swarmy_core::{
     decode, encode,
 };
 
-use crate::{Result, Store, StoreError, read, scan, write};
+use crate::{
+    BreakerCandidate, CredentialKey, Result, Store, StoreError, inference_wait::Breaker, read,
+    scan, write,
+};
 use foundationdb::RetryableTransaction;
 
 /// No secrets are returned by list operations. Each encrypted value is read once.
@@ -71,6 +74,65 @@ struct EntryValue {
     created_at: Timestamp,
     last_used_at: Option<Timestamp>,
     ciphertext: Vec<u8>,
+    /// Plaintext copy of the record's login state, so the scheduler can skip
+    /// entries needing login without decrypting. The flag is stable: unlike
+    /// expiry it never changes with time.
+    #[serde(default)]
+    needs_login: bool,
+    /// Plaintext OAuth expiry, so the scheduler can skip expired entries
+    /// without decrypting. Absent for API keys, which do not expire.
+    #[serde(default)]
+    expires_at: Option<Timestamp>,
+}
+
+/// Rows written before the readiness hints existed carry no plaintext
+/// status; they read as ready, which matches the old listing that treated
+/// every stored entry as a candidate. Rewriting the entry (login, refresh,
+/// replacement) records its hints.
+#[derive(Deserialize)]
+struct LegacyEntryValue {
+    created_at: Timestamp,
+    last_used_at: Option<Timestamp>,
+    ciphertext: Vec<u8>,
+}
+
+fn decode_entry(bytes: &[u8]) -> Result<EntryValue> {
+    if let Ok(entry) = decode::<EntryValue>(bytes) {
+        return Ok(entry);
+    }
+    let legacy = decode::<LegacyEntryValue>(bytes)?;
+    Ok(EntryValue {
+        created_at: legacy.created_at,
+        last_used_at: legacy.last_used_at,
+        ciphertext: legacy.ciphertext,
+        needs_login: false,
+        expires_at: None,
+    })
+}
+
+async fn read_entry(trx: &RetryableTransaction, key: &[u8]) -> Result<Option<EntryValue>> {
+    trx.get(key, false)
+        .await?
+        .map(|value| decode_entry(&value))
+        .transpose()
+}
+
+/// Split a record's status into the stable login flag and the time-dependent
+/// expiry, so the scheduler can reconstruct readiness without decrypting.
+/// The reconstruction matches `CredentialRecord::status`: the login arms of
+/// that check never consult the clock, and only OAuth records expire.
+fn entry_readiness(record: &CredentialRecord) -> (bool, Option<Timestamp>) {
+    let needs_login = record.status(Timestamp::now()) == CredentialStatus::NeedsLogin;
+    let expires_at = match record.kind {
+        CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
+        CredentialKind::ApiKey { .. } => None,
+    };
+    (needs_login, expires_at)
+}
+
+/// Scheduler view of one entry's readiness from its plaintext hints.
+fn entry_ready(needs_login: bool, expires_at: Option<Timestamp>, now: Timestamp) -> bool {
+    !needs_login && expires_at.is_none_or(|expiry| expiry > now)
 }
 
 #[derive(Clone)]
@@ -96,6 +158,136 @@ impl Store {
             .credential_fingerprint(scope, provider)
             .await?
             .is_some())
+    }
+
+    /// Entry labels for breaker checks, without decrypting. A legacy single
+    /// record that has not migrated yet counts as the `default` entry, placed
+    /// first because the migration keeps its original creation time.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn credential_entry_labels(
+        &self,
+        scope: CredentialScope,
+        provider: &str,
+    ) -> Result<Vec<String>> {
+        let space = self
+            .root
+            .subspace(&("credential_entry", scope.to_string(), provider));
+        let (begin, end) = space.range();
+        let rows = self
+            .transaction(|trx| {
+                let range = (begin.clone(), end.clone());
+                async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+            })
+            .await?;
+        let mut labels = Vec::new();
+        for (key, _) in rows {
+            let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+            labels.push(label);
+        }
+        let legacy = self
+            .transaction(|trx| async move {
+                Ok(trx
+                    .get(
+                        &self.root.pack(&("credential", scope.to_string(), provider)),
+                        false,
+                    )
+                    .await?
+                    .is_some())
+            })
+            .await?;
+        if legacy && !labels.iter().any(|label| label == "default") {
+            labels.insert(0, "default".into());
+        }
+        labels.sort();
+        Ok(labels)
+    }
+
+    /// One-transaction snapshot of a provider's breaker pool for a scheduler
+    /// tick: the ready entries (or every entry when none is ready, matching
+    /// the gateway pool), each with its live breaker record. Without stored
+    /// entries the provider shares one unlabeled record, and an unmigrated
+    /// legacy record counts as the `default` entry with unknown status. The
+    /// entry listing pages past `MAX_SCAN_LIMIT` inside the same transaction
+    /// instead of truncating at 64 entries.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn breaker_snapshot(
+        &self,
+        scope: CredentialScope,
+        provider: &str,
+        now: Timestamp,
+    ) -> Result<Vec<BreakerCandidate>> {
+        self.transaction(|trx| async move {
+            let space = self
+                .root
+                .subspace(&("credential_entry", scope.to_string(), provider));
+            let (mut begin, end) = space.range();
+            let mut entries: Vec<(String, bool)> = Vec::new();
+            loop {
+                let rows = scan(&trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
+                let complete = rows.len() < crate::MAX_SCAN_LIMIT;
+                for (key, value) in rows {
+                    let (label,): (String,) =
+                        space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                    let entry = decode_entry(&value)?;
+                    entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
+                    begin = key;
+                    begin.push(0);
+                }
+                if complete {
+                    break;
+                }
+            }
+            let legacy = trx
+                .get(
+                    &self.root.pack(&("credential", scope.to_string(), provider)),
+                    false,
+                )
+                .await?
+                .is_some();
+            if legacy && !entries.iter().any(|(label, _)| label == "default") {
+                // The legacy record is encrypted, so its status is unknown
+                // without the keyring; keep it a candidate. The gateway
+                // migrates it to a hinted entry on first resolution.
+                entries.push(("default".into(), true));
+            }
+            // Mirror the gateway pool: ready entries when any is ready, else
+            // every entry so a provider with no usable key still parks behind
+            // its breaker instead of spinning through the worker.
+            let any_ready = entries.iter().any(|(_, ready)| *ready);
+            let mut keys = Vec::new();
+            for (label, ready) in &entries {
+                if *ready || !any_ready {
+                    keys.push(CredentialKey::entry(provider, label));
+                }
+            }
+            if keys.is_empty() {
+                keys.push(CredentialKey::provider(provider));
+            }
+            let mut candidates = Vec::with_capacity(keys.len());
+            for key in &keys {
+                let breaker: Option<Breaker> = read(&trx, &self.breaker_key(key)).await?;
+                let open_until = breaker.as_ref().and_then(|record| {
+                    if record.open_until > now {
+                        Some(record.open_until)
+                    } else if record.probe_until.is_some_and(|until| until > now) {
+                        now.checked_add(Duration::from_secs(1)).ok()
+                    } else {
+                        None
+                    }
+                });
+                candidates.push(BreakerCandidate {
+                    key: key.clone(),
+                    reason: breaker
+                        .filter(|_| open_until.is_some())
+                        .map(|record| record.reason),
+                    open_until,
+                });
+            }
+            Ok(candidates)
+        })
+        .await
     }
 
     /// Fingerprint all entries so a change to any labelled entry invalidates gateway state.
@@ -140,7 +332,7 @@ impl Store {
             for (key, bytes) in rows {
                 found = true;
                 hash.update(&key);
-                let entry: EntryValue = decode(&bytes)?;
+                let entry: EntryValue = decode_entry(&bytes)?;
                 hash.update(&entry.ciphertext);
                 begin = key;
                 begin.push(0);
@@ -180,13 +372,16 @@ impl CredentialStore {
         if let Some(bytes) = trx.get(&old, false).await?.map(|value| value.to_vec()) {
             let record = decrypt(&self.keyring, scope, provider, &bytes)?;
             let entry = self.entry_key("credential_entry", scope, provider, "default");
-            let previous: Option<EntryValue> = read(trx, &entry).await?;
+            let previous: Option<EntryValue> = read_entry(trx, &entry).await?;
+            let (needs_login, expires_at) = entry_readiness(&record);
             write(
                 trx,
                 &entry,
                 &EntryValue {
                     created_at: previous.map_or(record.updated_at, |entry| entry.created_at),
                     last_used_at: None,
+                    needs_login,
+                    expires_at,
                     ciphertext: encrypt(
                         &self.keyring,
                         scope,
@@ -225,12 +420,13 @@ impl CredentialStore {
             record,
         )?;
         let key = self.entry_key("credential_entry", scope, provider, label);
+        let (needs_login, expires_at) = entry_readiness(record);
         self.store
             .transaction(|trx| {
                 let key = &key;
                 let ciphertext = &ciphertext;
                 async move {
-                    let previous: Option<EntryValue> = read(&trx, key).await?;
+                    let previous: Option<EntryValue> = read_entry(&trx, key).await?;
                     write(
                         &trx,
                         key,
@@ -238,6 +434,8 @@ impl CredentialStore {
                             created_at: previous
                                 .map_or_else(Timestamp::now, |entry| entry.created_at),
                             last_used_at: None,
+                            needs_login,
+                            expires_at,
                             ciphertext: ciphertext.clone(),
                         },
                     )?;
@@ -265,7 +463,7 @@ impl CredentialStore {
                 let key = &key;
                 async move {
                     self.migrate_legacy(&trx, scope, provider).await?;
-                    read(&trx, key).await
+                    read_entry(&trx, key).await
                 }
             })
             .await?;
@@ -295,7 +493,7 @@ impl CredentialStore {
             .transaction(|trx| {
                 let key = &key;
                 async move {
-                    let mut entry: EntryValue = read(&trx, key)
+                    let mut entry: EntryValue = read_entry(&trx, key)
                         .await?
                         .ok_or(StoreError::CredentialMissing)?;
                     entry.last_used_at = Some(Timestamp::now());
@@ -372,7 +570,7 @@ impl CredentialStore {
             for (key, value) in rows {
                 let (provider, label): (String, String) =
                     space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-                let entry: EntryValue = decode(&value)?;
+                let entry: EntryValue = decode_entry(&value)?;
                 let record = decrypt(
                     &self.keyring,
                     scope,
@@ -426,7 +624,7 @@ impl CredentialStore {
         let mut entries = Vec::new();
         for (key, value) in rows {
             let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-            let entry: EntryValue = decode(&value)?;
+            let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
                 scope,
@@ -487,7 +685,7 @@ impl CredentialStore {
             .store
             .transaction(|trx| {
                 let key = &key;
-                async move { read(&trx, key).await }
+                async move { read_entry(&trx, key).await }
             })
             .await?
             .ok_or(StoreError::CredentialMissing)?;
@@ -551,7 +749,7 @@ impl CredentialStore {
                 &replacement,
             )?
         };
-        self.finish_entry_refresh(&key, &lease_key, &observed, &bytes, &lease)
+        self.finish_entry_refresh(&key, &lease_key, &observed, &bytes, &replacement, &lease)
             .await?;
         if failed {
             Err(StoreError::CredentialRefresh)
@@ -576,7 +774,7 @@ impl CredentialStore {
         } = claim;
         self.store
             .transaction(|trx| async move {
-                let entry: EntryValue = read(&trx, key)
+                let entry: EntryValue = read_entry(&trx, key)
                     .await?
                     .ok_or(StoreError::CredentialMissing)?;
                 if entry.ciphertext != observed.ciphertext {
@@ -617,8 +815,12 @@ impl CredentialStore {
         lease_key: &[u8],
         observed: &EntryValue,
         bytes: &[u8],
+        replacement: &CredentialRecord,
         lease: &Lease,
     ) -> Result<()> {
+        // A failed refresh marks the replacement as needing login; record its
+        // hints alongside the new ciphertext so the scheduler pool stays exact.
+        let (needs_login, expires_at) = entry_readiness(replacement);
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -631,7 +833,7 @@ impl CredentialStore {
                     if held != *lease || held.expires_at <= Timestamp::now() {
                         return Err(StoreError::LeaseMismatch);
                     }
-                    let entry: EntryValue = read(&trx, key)
+                    let entry: EntryValue = read_entry(&trx, key)
                         .await?
                         .ok_or(StoreError::CredentialMissing)?;
                     if entry.ciphertext != observed.ciphertext {
@@ -643,6 +845,8 @@ impl CredentialStore {
                             key,
                             &EntryValue {
                                 ciphertext: bytes.to_vec(),
+                                needs_login,
+                                expires_at,
                                 ..entry
                             },
                         )?;

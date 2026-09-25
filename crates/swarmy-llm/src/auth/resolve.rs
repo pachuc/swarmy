@@ -87,6 +87,18 @@ impl Resolver {
             .await
     }
 
+    /// The stored entry label the next resolution would use, if any. Used for
+    /// providers that need no credentials to build a client (the fake
+    /// provider) so their breaker is still keyed per entry. Unavailable
+    /// stores resolve without a label.
+    pub async fn entry_label(&self, provider: &str) -> Option<String> {
+        self.store
+            .get_labelled(provider)
+            .await
+            .ok()?
+            .and_then(|(label, _)| label)
+    }
+
     async fn resolve_using(
         &self,
         provider: &str,

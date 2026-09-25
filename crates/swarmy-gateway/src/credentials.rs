@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use std::time::Duration;
 use swarmy_config::Keyring;
-use swarmy_core::{CredentialRecord, CredentialScope};
+use swarmy_core::{CredentialRecord, CredentialScope, CredentialStatus};
 use swarmy_llm::{
     Error,
     auth::{AuthStore, Login},
@@ -78,11 +78,47 @@ impl AuthStore for ClusterCredentials {
                 Ok(None)
             };
         };
-        let entry = credentials
-            .first_entry(CredentialScope::Cluster, provider)
+        let entries = credentials
+            .provider_entries(CredentialScope::Cluster, provider)
             .await
             .map_err(|error| store_error(&error))?;
-        Ok(entry.map(|(label, record)| (Some(label), record)))
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let now = jiff::Timestamp::now();
+        let mut pool: Vec<&(String, CredentialRecord)> = entries
+            .iter()
+            .filter(|(_, record)| record.status(now) == CredentialStatus::Ready)
+            .collect();
+        if pool.is_empty() {
+            pool = entries.iter().collect();
+        }
+        // Serve the first entry whose breaker is closed so a rate limit on one
+        // key leaves the provider's other entries usable. When every candidate
+        // is open, return the earliest retry so the caller parks behind it.
+        let mut earliest: Option<(jiff::Timestamp, usize)> = None;
+        for (index, (label, _)) in pool.iter().enumerate() {
+            let key = swarmy_store::CredentialKey::entry(provider, label);
+            match self
+                .store
+                .entry_open_until(&key, now)
+                .await
+                .map_err(|error| store_error(&error))?
+            {
+                None => {
+                    let (label, record) = &pool[index];
+                    return Ok(Some((Some(label.clone()), record.clone())));
+                }
+                Some(until) => {
+                    if earliest.is_none_or(|(at, _)| until < at) {
+                        earliest = Some((until, index));
+                    }
+                }
+            }
+        }
+        let (_, index) = earliest.unwrap_or((now, 0));
+        let (label, record) = &pool[index];
+        Ok(Some((Some(label.clone()), record.clone())))
     }
 
     async fn refresh(

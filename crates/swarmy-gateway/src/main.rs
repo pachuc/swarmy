@@ -418,22 +418,13 @@ impl Gateway {
         }
     }
 
-    async fn infer(
+    async fn stream(
         &self,
+        client: &Arc<dyn swarmy_llm::Provider>,
         job: &InferenceJob,
-        provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, Option<String>, Option<String>), swarmy_llm::Error> {
-        let model = self
-            .providers
-            .catalog
-            .model(provider, &job.request.settings.model)
-            .ok_or_else(|| swarmy_llm::Error::UnknownModel {
-                provider: provider.into(),
-                model: job.request.settings.model.clone(),
-            })?;
-        let (client, entry, entry_kind) = self.providers.client(provider, model).await?;
+    ) -> Result<Response, swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
@@ -492,7 +483,6 @@ impl Gateway {
             }
         }
         response
-            .map(|response| (response, entry, entry_kind))
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))
     }
 
@@ -646,7 +636,9 @@ impl Gateway {
             }
             Err(error) => Err(error),
         };
-        let (retryable, retry_at) = self.record_breaker(provider, job, &result, blocked).await?;
+        let (retryable, retry_at) = self
+            .record_breaker(provider, entry.as_deref(), job, &result, blocked)
+            .await?;
         if let Err(error) = &result {
             let kind = if rate_limited(error) {
                 swarmy_store::WaitKind::RateLimit
@@ -796,11 +788,33 @@ impl Gateway {
         Option<String>,
         Option<String>,
     )> {
-        let key = CredentialKey(provider.to_owned());
-        if let Some(until) = self.store.claim_provider(&key, Timestamp::now()).await? {
+        // Resolve the entry first so the breaker check and the call use the
+        // same key. Resolution already skips entries with open breakers; the
+        // claim below serializes the remaining race to a single probe.
+        let model = self
+            .providers
+            .catalog
+            .model(provider, &job.request.settings.model);
+        let Some(model) = model else {
+            return Ok((
+                Err(swarmy_llm::Error::UnknownModel {
+                    provider: provider.into(),
+                    model: job.request.settings.model.clone(),
+                }),
+                false,
+                None,
+                None,
+            ));
+        };
+        let (client, entry, entry_kind) = match self.providers.client(provider, model).await {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok((Err(error), false, None, None)),
+        };
+        let key = CredentialKey::for_label(provider, entry.clone());
+        if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
             let reason = self
                 .store
-                .provider_reason(&key)
+                .entry_reason(&key)
                 .await?
                 .unwrap_or_else(|| "provider temporarily unavailable".into());
             return Ok((
@@ -812,38 +826,37 @@ impl Gateway {
                     ),
                 }),
                 true,
-                None,
-                None,
+                entry,
+                entry_kind,
             ));
         }
-        Ok(match self.infer(job, provider, effort, turn).await {
-            Ok((response, entry, kind)) => (Ok(response), false, entry, kind),
-            Err(error) => (Err(error), false, None, None),
-        })
+        let outcome = self.stream(&client, job, effort, turn).await;
+        Ok((outcome, false, entry, entry_kind))
     }
 
     async fn record_breaker(
         &self,
         provider: &str,
+        entry: Option<&str>,
         job: &InferenceJob,
         result: &std::result::Result<Response, swarmy_llm::Error>,
         blocked: bool,
     ) -> Result<(bool, Option<Timestamp>)> {
-        let key = CredentialKey(provider.to_owned());
+        let key = CredentialKey::for_label(provider, entry.map(str::to_owned));
         let Some(error) = result.as_ref().err() else {
             if !blocked {
-                self.store.provider_success(&key).await?;
+                self.store.entry_success(&key).await?;
             }
             return Ok((false, None));
         };
         let (retryable, retry_after) = retryable_error(error);
         if !retryable {
             if !blocked {
-                self.store.provider_success(&key).await?;
+                self.store.entry_success(&key).await?;
             }
             return Ok((false, None));
         }
-        let failures = self.store.provider_failures(&key).await?;
+        let failures = self.store.entry_failures(&key).await?;
         let delay = retry_after.unwrap_or_else(|| {
             let exponent = failures.min(8);
             let base = Duration::from_secs(1_u64 << exponent).min(self.max_backoff);
@@ -853,9 +866,13 @@ impl Gateway {
         });
         let until = Timestamp::now().checked_add(delay)?;
         if !blocked {
-            self.store
-                .provider_failure(&key, until, &error.to_string())
-                .await?;
+            // Name the entry in the stored reason so waiting sessions show
+            // which key is limited; the unlabeled record keeps the raw error.
+            let reason = entry.map_or_else(
+                || error.to_string(),
+                |label| format!("{provider}/{label}: {error}"),
+            );
+            self.store.entry_failure(&key, until, &reason).await?;
         }
         Ok((true, Some(until)))
     }

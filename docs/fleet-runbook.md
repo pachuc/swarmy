@@ -123,7 +123,7 @@ Things learned on the way, all fixed in code or documented here:
 ## Subscription limits
 
 All ChatGPT workers and the codex-daytona lanes share one subscription's
-usage limit. When it trips, the gateway opens the provider's breaker, the
+usage limit. When it trips, the gateway opens that entry's breaker, the
 affected workers park without a lease, and `fleet status` shows the reason.
 They continue when the limit clears; a turn gives up only after
 `[inference] max_wait_seconds` (default one hour). OpenRouter workers are
