@@ -31,6 +31,12 @@ def cli(*args):
     return json.loads(run("swarmy", "--json", *args, capture=True))
 
 
+def vol(*args):
+    # Volume tools moved out of the client binary; the node daemon serves
+    # local devices directly from the store.
+    return json.loads(run("swarmyd", "--json", "vol", *args, capture=True))
+
+
 def report(metric, start, **extra):
     print(json.dumps({"metric": metric, "seconds": time.monotonic() - start,
                       **extra}), flush=True)
@@ -56,7 +62,7 @@ class Attached:
 
     def __enter__(self):
         self.process = subprocess.Popen(
-            ["swarmy", "--json", "vol", "attach", self.volume]
+            ["swarmyd", "--json", "vol", "attach", self.volume]
             + (["--background"] if self.background else []),
             stdout=subprocess.PIPE, text=True,
         )
@@ -79,7 +85,7 @@ class Attached:
         try:
             if self.mounted:
                 run("umount", str(self.mount))
-            cli("vol", "detach", self.volume)
+            vol("detach", self.volume)
             assert self.process.wait(timeout=60) == 0, "attachment failed"
         finally:
             if self.process.poll() is None:
@@ -94,7 +100,7 @@ def shell_trial(kind, trial):
         run("sync")
         Path("/proc/sys/vm/drop_caches").write_text("3\n")
     start = time.monotonic()
-    volume = cli("vol", "create", "bench-base:v1")["volume_id"]
+    volume = vol("create", "bench-base:v1")["volume_id"]
     with Attached(volume) as attached:
         attached.mount_disk()
         # script supplies a controlling terminal; bash is explicitly interactive.
@@ -110,7 +116,7 @@ def seconds(duration):
 
 
 def install_trial(background, trial, profile):
-    volume = cli("vol", "create", "bench-base:v1")["volume_id"]
+    volume = vol("create", "bench-base:v1")["volume_id"]
     # Give both modes the same warm base cache before starting the writer.
     with Attached(volume) as attached:
         run("dd", f"if={attached.device}", "of=/dev/null", "bs=4M",
@@ -137,7 +143,7 @@ def install_trial(background, trial, profile):
             for name in reversed(mounted):
                 run("umount", "-R", str(attached.mount / name))
         start = time.monotonic()
-        flushed = cli("vol", "flush", volume, "--mount", str(attached.mount))
+        flushed = vol("flush", volume, "--mount", str(attached.mount))
         report("install_and_flush", start, profile=profile, background=background,
                trial=trial, apt_update_seconds=update_seconds,
                install_seconds=install_seconds, frozen_seconds=seconds(flushed["frozen"]),
@@ -150,7 +156,7 @@ def install_trial(background, trial, profile):
                    if flushed["uploads"]["referenced_chunk_bytes"] else None),
                flush=flushed)
         run("chroot", str(attached.mount), "gcc", "--version")
-    clone = cli("vol", "clone", volume)["volume_id"]
+    clone = vol("clone", volume)["volume_id"]
     clear_cache()
     with Attached(clone) as attached:
         attached.mount_disk()
@@ -227,7 +233,7 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
     if not args.install_only:
         for trial_index in range(3):
             shell_trial("cold", trial_index)
-        volume = cli("vol", "create", "bench-base:v1")["volume_id"]
+        volume = vol("create", "bench-base:v1")["volume_id"]
         with Attached(volume) as attached:
             run("dd", f"if={attached.device}", "of=/dev/null", "bs=4M",
                 "iflag=direct", "status=none")
@@ -240,9 +246,9 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
         attached.mount_disk()
         run("dd", "if=/dev/urandom", f"of={attached.mount}/sequential.bin",
             "bs=1M", "count=128", "conv=fsync", "status=none")
-        cli("vol", "flush", volume, "--mount", str(attached.mount))
-    cli("vol", "snapshot", volume)
-    clone = cli("vol", "clone", volume)["volume_id"]
+        vol("flush", volume, "--mount", str(attached.mount))
+    vol("snapshot", volume)
+    clone = vol("clone", volume)["volume_id"]
     clear_cache()
     with Attached(clone) as attached:
         attached.mount_disk()
@@ -252,7 +258,7 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
             run("dd", f"if={attached.mount}/sequential.bin", "of=/dev/null",
                 "bs=256K", "iflag=direct", "status=none")
             report(f"sequential_{kind}", start, bytes=128 * 1024 * 1024)
-    cli("vol", "show", volume)
+    vol("show", volume)
     run("swarmy", "vol", "ls")
 
 

@@ -64,6 +64,8 @@ async fn run() -> Result<()> {
     });
     let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);
     state.gc = settings.gc;
+    state.upload_dir = std::path::PathBuf::from(&settings.state_dir).join("uploads");
+    state.upload_max_bytes = settings.image_upload_max_bytes;
     state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
     state.default_image = settings.default_image.clone();
     state.default_selection = swarmy_core::ResolvedSelection {

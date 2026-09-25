@@ -65,30 +65,49 @@ pub async fn start(
             return Ok(Json(snapshot(&run)));
         }
     }
-    let policy = state.gc;
-    let (run, lease, cutoff, started) =
-        swarmy_volume::gc::begin(&state.store, policy, body.dry_run)
-            .await
-            .map_err(|error| {
-                if matches!(
-                    error,
-                    swarmy_volume::VolumeError::Store(swarmy_store::StoreError::LeaseMismatch)
-                ) {
-                    busy()
-                } else {
-                    volume(error)
-                }
-            })?;
+    // Reserve the replay key before acquiring the collector lease. If the
+    // store fails after `begin`, the sweep is already running under the lease
+    // and a retry would only get a conflict; reserving first means a retry
+    // with the same key observes this attempt instead.
+    let owner = LeaseOwnerId::from_ulid(Ulid::generate());
+    let reserved = serde_json::to_value(owner.to_string()).expect("run id serializes");
     {
         let _guard = state.mutation_guard().await;
-        let value = serde_json::to_value(run.owner.to_string())
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
         state
             .store
-            .put_api_replay(&replay_key, value)
+            .put_api_replay(&replay_key, reserved.clone())
             .await
             .map_err(storage)?;
     }
+    // Benchmarks on isolated namespaces pass a short grace for one run; a
+    // zero grace would collect chunks still being published, so reject it.
+    let mut policy = state.gc;
+    if let Some(grace) = body.grace_seconds {
+        policy.grace_seconds = std::num::NonZeroU64::new(grace)
+            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+    }
+    let (run, lease, cutoff, started) = match swarmy_volume::gc::begin_with_owner(
+        &state.store,
+        policy,
+        body.dry_run,
+        owner,
+    )
+    .await
+    {
+        Ok(started) => started,
+        Err(error) => {
+            // The sweep never started; release the reservation so a retry
+            // with the same key starts a fresh attempt instead of
+            // replaying a run id that was never recorded.
+            let _ = state.store.remove_api_replay(&replay_key, &reserved).await;
+            return Err(match error {
+                swarmy_volume::VolumeError::Store(swarmy_store::StoreError::LeaseMismatch) => {
+                    busy()
+                }
+                other => volume(other),
+            });
+        }
+    };
     let initial = snapshot(&run);
     let background = state.clone();
     tokio::spawn(async move {
@@ -103,7 +122,19 @@ pub async fn start(
         )
         .await
         {
+            // `complete` already wrote the failure to the run record without
+            // the lease when it lost it; this covers the gap where the record
+            // write itself failed, so followers still stop with an error.
             tracing::warn!(%error, "background collection run failed");
+            if let Ok(Some(mut current)) = background.store.get_gc_run(owner).await
+                && !current.finished
+            {
+                current.finished = true;
+                if current.error.is_none() {
+                    current.error = Some(error.to_string());
+                }
+                let _ = background.store.fail_gc_run(owner, &current).await;
+            }
         }
     });
     Ok(Json(initial))

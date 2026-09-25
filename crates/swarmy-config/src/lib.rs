@@ -190,6 +190,8 @@ pub struct Settings {
     pub memory_max_bytes: std::num::NonZeroUsize,
     pub worker_kill_point: Option<String>,
     pub fake: Fake,
+    /// Largest streamed image upload the API accepts, in bytes.
+    pub image_upload_max_bytes: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -284,6 +286,7 @@ impl Default for Settings {
             memory_max_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
             worker_kill_point: None,
             fake: Fake::default(),
+            image_upload_max_bytes: 16 * 1024 * 1024 * 1024,
         }
     }
 }
@@ -667,6 +670,19 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_FAKE_CALL_LOG") {
             self.fake.call_log.clone_from(value);
         }
+        self.apply_image_environment(environment)?;
+        Ok(())
+    }
+
+    fn apply_image_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_IMAGE_UPLOAD_MAX_BYTES") {
+            self.image_upload_max_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_IMAGE_UPLOAD_MAX_BYTES".into()))?;
+        }
         Ok(())
     }
 
@@ -864,6 +880,10 @@ impl Settings {
             ("SWARMY_SYSTEM_PROMPT".into(), self.system_prompt.clone()),
             ("SWARMY_FAKE_SCRIPT".into(), self.fake.script.clone()),
             ("SWARMY_FAKE_CALL_LOG".into(), self.fake.call_log.clone()),
+            (
+                "SWARMY_IMAGE_UPLOAD_MAX_BYTES".into(),
+                self.image_upload_max_bytes.to_string(),
+            ),
         ]
         .into();
         environment.insert("SWARMY_STATE_DIR".into(), self.state_dir.clone());

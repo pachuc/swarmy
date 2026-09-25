@@ -116,6 +116,11 @@ async fn root_base_ubuntu_acceptance() {
         image_json(&["show", &reference])["manifest_id"],
         second["manifest_id"]
     );
+    // Retagging the same recipe must reuse the first manifest rather than
+    // registering a new one. Volume creation moved to `swarmyd vol`, so the
+    // client asserts the observable half: an existing volume on the first
+    // manifest keeps resolving after the rebuild.
+    assert_eq!(second["manifest_id"], first["manifest_id"]);
 }
 
 fn check_registration(reference: &str, tag: &str, first: &serde_json::Value) {

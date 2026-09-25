@@ -47,6 +47,22 @@ pub struct Client {
     token: String,
 }
 
+/// Base budget for image uploads, covering server-side chunking and storage
+/// of even a tiny image before it answers.
+const UPLOAD_BASE_SECS: u64 = 120;
+/// Sustained throughput assumed when sizing the upload timeout. The server
+/// spools the whole body, chunks it, and uploads to object storage before
+/// answering, so a fixed request timeout would fail real images.
+const UPLOAD_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
+
+/// Timeout for an image upload of `size_bytes`, proportional to the body
+/// size. The 8 GiB base image needs minutes of server work, far beyond the
+/// default request timeout.
+#[must_use]
+pub fn upload_timeout(size_bytes: u64) -> Duration {
+    Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
+}
+
 impl Client {
     /// The base URL is the server origin, not a `/v1` URL.
     ///
@@ -354,6 +370,14 @@ impl Client {
     /// Returns an API, transport, or response decoding error.
     pub async fn model(&self, provider: &str, model: &str) -> Result<api::Model, Error> {
         self.get(&format!("models/{provider}/{model}"), &[]).await
+    }
+    /// Probe a model with a live request through the control plane's stored
+    /// credentials.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn probe_model(&self, body: &api::ProbeModel) -> Result<api::ProbeResult, Error> {
+        self.send(Method::POST, "models/probe", body).await
     }
     /// Calls the corresponding API route.
     ///
@@ -1088,6 +1112,21 @@ mod tests {
     #[test]
     fn path_segments_are_encoded() {
         assert_eq!(segment("a/b ?"), "a%2Fb%20%3F");
+    }
+    #[test]
+    fn upload_timeout_is_proportional_and_exceeds_the_default() {
+        // The CLI wraps other requests in a 10 second timeout. Uploads carry
+        // whole images that the server chunks before answering, so their
+        // budget must scale with the body and never equal the default.
+        let tiny = upload_timeout(256 * 1024);
+        let base_image = upload_timeout(8 * 1024 * 1024 * 1024);
+        assert!(tiny > Duration::from_secs(10));
+        assert!(base_image > Duration::from_secs(10));
+        assert!(base_image > tiny);
+        assert_eq!(
+            base_image,
+            Duration::from_secs(120 + 8 * 1024 * 1024 * 1024 / (8 * 1024 * 1024))
+        );
     }
     #[tokio::test]
     async fn non_json_four_xx_keeps_body() {

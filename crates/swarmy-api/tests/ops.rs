@@ -29,6 +29,12 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
+        Self::with_upload_max(16 * 1024 * 1024 * 1024).await
+    }
+
+    /// Serve the same routes with an overridden spool ceiling, so size-limit
+    /// tests need no multi-gigabyte bodies.
+    async fn with_upload_max(upload_max_bytes: u64) -> Option<Self> {
         let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE").ok()?;
         let nats = std::env::var("SWARMY_NATS_URL").ok()?;
         NETWORK.get_or_init(swarmy_store::boot);
@@ -42,13 +48,15 @@ impl Fixture {
         let bus = Bus::connect(&nats, Config::default()).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let state = AppState::new(
+        let mut state = AppState::new(
             store.clone(),
             bus.clone(),
             "test-token".into(),
             swarmy_llm::catalog::Catalog::get().clone(),
             Arc::new(object_store::memory::InMemory::new()),
         );
+        // Tests override the spool ceiling without uploading gigabytes.
+        state.upload_max_bytes = upload_max_bytes;
         let server = tokio::spawn(axum::serve(listener, router(state)).into_future());
         Some(Self {
             store,
@@ -175,6 +183,166 @@ async fn upload_registers_image_and_rejects_bad_requests() {
     assert!(empty.is_err());
 }
 
+async fn upload_image(
+    fixture: &Fixture,
+    raw: &std::path::Path,
+    tag: &str,
+    key: &str,
+    scratch: &[String],
+    memory_mib: Option<u64>,
+) -> Result<api::ImageUpload, swarmy_client::Error> {
+    fixture
+        .client
+        .upload_image(&swarmy_client::UploadImage {
+            name: "ops",
+            tag,
+            idempotency_key: key,
+            scratch,
+            memory_mib,
+            display: false,
+            file: raw,
+        })
+        .await
+}
+
+#[tokio::test]
+async fn upload_validates_requirements_before_chunking() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("disk.ext4");
+    std::fs::File::create(&raw)
+        .unwrap()
+        .set_len(u64::from(CHUNK_SIZE))
+        .unwrap();
+    // Scratch paths must be absolute and non-overlapping, like `Recipe::load`.
+    for scratch in [
+        vec!["relative/path".to_owned()],
+        vec!["/data".to_owned(), "/data/sub".to_owned()],
+        vec!["/".to_owned()],
+    ] {
+        assert!(
+            upload_image(
+                &fixture,
+                &raw,
+                &Ulid::generate().to_string(),
+                &Ulid::generate().to_string(),
+                &scratch,
+                None
+            )
+            .await
+            .is_err(),
+            "scratch {scratch:?} must be rejected"
+        );
+    }
+    for memory in [Some(0), Some(2 * 1024 * 1024)] {
+        assert!(
+            upload_image(
+                &fixture,
+                &raw,
+                &Ulid::generate().to_string(),
+                &Ulid::generate().to_string(),
+                &[],
+                memory,
+            )
+            .await
+            .is_err(),
+            "memory {memory:?} must be rejected"
+        );
+    }
+    assert!(
+        upload_image(
+            &fixture,
+            &raw,
+            &Ulid::generate().to_string(),
+            &Ulid::generate().to_string(),
+            &["/data".to_owned()],
+            Some(512),
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn upload_rejects_bodies_over_the_configured_limit() {
+    // A one-chunk body against a sub-chunk ceiling exercises the 413 path
+    // without staging gigabytes.
+    let Some(fixture) = Fixture::with_upload_max(u64::from(CHUNK_SIZE) - 1).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("disk.ext4");
+    std::fs::File::create(&raw)
+        .unwrap()
+        .set_len(u64::from(CHUNK_SIZE))
+        .unwrap();
+    let Err(swarmy_client::Error::Api { status, .. }) = fixture
+        .client
+        .upload_image(&swarmy_client::UploadImage {
+            name: "ops",
+            tag: "too-large",
+            idempotency_key: &Ulid::generate().to_string(),
+            scratch: &[],
+            memory_mib: None,
+            display: false,
+            file: &raw,
+        })
+        .await
+    else {
+        panic!("oversized upload must fail with an API error");
+    };
+    assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn probe_rejects_unknown_and_scripted_models_before_credentials() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let Err(swarmy_client::Error::Api { status, .. }) = fixture
+        .client
+        .probe_model(&api::ProbeModel {
+            provider: "no-such-provider".into(),
+            model: "no-such-model".into(),
+            label: None,
+            effort: None,
+        })
+        .await
+    else {
+        panic!("unknown model must fail with an API error");
+    };
+    assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+    let catalog = swarmy_llm::catalog::Catalog::get().clone();
+    let Some(scripted) = catalog
+        .providers()
+        .find(|provider| provider.api == swarmy_llm::catalog::Api::Fake)
+        .and_then(|provider| {
+            provider
+                .models
+                .keys()
+                .next()
+                .map(|model| (provider.id.clone(), model.clone()))
+        })
+    else {
+        return;
+    };
+    let Err(swarmy_client::Error::Api { status, .. }) = fixture
+        .client
+        .probe_model(&api::ProbeModel {
+            provider: scripted.0,
+            model: scripted.1,
+            label: None,
+            effort: None,
+        })
+        .await
+    else {
+        panic!("scripted provider must fail with an API error");
+    };
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn gc_run_starts_sweeps_and_reports_counts() {
     let Some(fixture) = Fixture::new().await else {
@@ -185,6 +353,7 @@ async fn gc_run_starts_sweeps_and_reports_counts() {
         .start_gc_run(&api::StartGcRun {
             idempotency_key: Ulid::generate().to_string(),
             dry_run: true,
+            grace_seconds: None,
         })
         .await
         .unwrap();

@@ -76,6 +76,9 @@ enum Command {
     Gc {
         #[arg(long)]
         dry_run: bool,
+        /// Override the service's grace window for this run only, in seconds
+        #[arg(long)]
+        grace_seconds: Option<u64>,
     },
     /// Build and inspect base filesystem images
     Image {
@@ -237,7 +240,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
         Command::Agent { .. } | Command::Session { .. } => unreachable!(),
         Command::Image { command } => image::run(command, cli.json).await?,
-        Command::Gc { dry_run } => gc::run(dry_run, cli.json).await?,
+        Command::Gc {
+            dry_run,
+            grace_seconds,
+        } => gc::run(dry_run, grace_seconds, cli.json).await?,
         Command::Doctor => {
             if !doctor::run(cli.json).await? {
                 std::process::exit(1);

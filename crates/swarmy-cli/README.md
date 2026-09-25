@@ -197,9 +197,11 @@ These tests skip when `SWARMY_FDB_CLUSTER_FILE` or `SWARMY_NATS_URL` is absent.
 
 ## Volumes
 
-`swarmy vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
+`swarmyd vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
 `snapshot VOLUME`, `clone VOLUME`, `detach VOLUME`, `ls`, and `show VOLUME`.
-All accept `--json`. Attach requires root and stays in the foreground, printing
+Volume tools moved out of the `swarmy` client, which no longer links the
+store; run them from the node daemon on a machine with store access (root for
+attach). All accept `--json`. Attach requires root and stays in the foreground, printing
 its `/dev/nbdX` device once ready. Use another terminal for mount and control
 commands. `attach --background` pre-uploads writes; `flush --mount PATH` freezes
 a known mount before publication. Detach unmounts, flushes, and disconnects.

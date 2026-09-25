@@ -15,6 +15,7 @@ mod cli;
 mod conversation;
 mod gc;
 mod images;
+mod models;
 mod stream;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
@@ -40,6 +41,12 @@ pub struct AppState {
     pub stream_poll_interval: std::time::Duration,
     pub resend_interval: std::time::Duration,
     pub gc: swarmy_config::GarbageCollection,
+    /// Directory on local disk (not tmpfs) where streamed image uploads are
+    /// spooled before chunking. Set from the control node's data directory.
+    pub upload_dir: std::path::PathBuf,
+    /// Largest streamed image upload accepted, in bytes. Larger bodies get a
+    /// 413 response after the validated prefix is drained.
+    pub upload_max_bytes: u64,
     pub default_image: Option<String>,
     pub default_selection: swarmy_core::ResolvedSelection,
     stream_connections:
@@ -66,6 +73,8 @@ impl AppState {
             stream_poll_interval: std::time::Duration::from_secs(20),
             resend_interval: std::time::Duration::from_secs(5),
             gc: swarmy_config::GarbageCollection::default(),
+            upload_dir: std::env::temp_dir().join("swarmy-uploads"),
+            upload_max_bytes: 16 * 1024 * 1024 * 1024,
             default_image: None,
             default_selection: swarmy_core::ResolvedSelection {
                 provider: "fake".into(),
@@ -258,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/gc/runs/{id}", get(gc::show))
         .route("/v1/models", get(models))
         .route("/v1/models/search", get(search_models))
+        .route("/v1/models/probe", post(models::probe))
         .route("/v1/models/{provider}/{model}", get(show_model))
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))

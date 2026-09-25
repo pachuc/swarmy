@@ -28,6 +28,24 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let model = catalog
         .model(provider_id, model_id)
         .with_context(|| format!("unknown model: {}", args.model))?;
+    // The control plane holds cluster credentials from `swarmy auth set`, so
+    // prefer a server-side probe there. Scripted providers and tool-call
+    // probes need local files and streaming, and run locally; without a
+    // configured API the local file and environment path is the fallback.
+    if provider.api != swarmy_llm::catalog::Api::Fake
+        && !args.tools
+        && let Ok((client, endpoint)) = crate::api_client::connect()
+    {
+        return server_probe(
+            &client,
+            &endpoint,
+            provider_id,
+            &model.id,
+            args.effort,
+            json,
+        )
+        .await;
+    }
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
         ClientAuth::Scripted(Arc::new(swarmy_llm::fake::FileFake::from_files(
             std::path::Path::new(&settings.fake.script),
@@ -202,4 +220,61 @@ async fn stream(client: &dyn Provider, request: Request, json: bool) -> anyhow::
         }
     }
     anyhow::bail!("provider stream ended without a completion")
+}
+
+/// Probe through the control plane so `swarmy auth set` credentials work
+/// without local files. The summary matches the local probe output.
+async fn server_probe(
+    client: &swarmy_client::Client,
+    endpoint: &str,
+    provider_id: &str,
+    model_id: &str,
+    effort: Option<swarmy_core::ReasoningEffort>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    let effort = effort
+        .map(|effort| {
+            serde_json::to_value(effort)
+                .ok()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .context("encoding probe effort")
+        })
+        .transpose()?;
+    // A live inference round trip can take minutes on a loaded provider.
+    let answer = crate::api_client::call_with_timeout(
+        endpoint,
+        std::time::Duration::from_secs(300),
+        client.probe_model(&swarmy_api_types::ProbeModel {
+            provider: provider_id.into(),
+            model: model_id.into(),
+            label: None,
+            effort,
+        }),
+    )
+    .await?;
+    let dollars = {
+        let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);
+        format!("{}.{:04}", units / 10_000, units % 10_000)
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"event":"probe_summary", "provider":answer.provider, "model":answer.model,
+            "usage":answer.usage, "cost_micros":answer.cost_micros, "effort":answer.effort, "elapsed_seconds":started.elapsed().as_secs_f64()})
+        );
+    } else {
+        println!("\nUsage: {}", serde_json::to_string(&answer.usage)?);
+        println!(
+            "Cost: ${} ({} micros; catalog estimate)\nEffort used: {}\nElapsed: {:.3}s",
+            dollars,
+            answer.cost_micros,
+            serde_json::to_value(&answer.effort)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".into()),
+            started.elapsed().as_secs_f64()
+        );
+    }
+    Ok(())
 }

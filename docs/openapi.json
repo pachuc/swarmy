@@ -1316,6 +1316,46 @@
         }
       }
     },
+    "/v1/models/probe": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "probe_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeModel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/models/search": {
       "get": {
         "tags": [
@@ -3427,6 +3467,71 @@
           "volume"
         ]
       },
+      "ProbeModel": {
+        "type": "object",
+        "description": "Probe a model with a live request through the control plane's stored\ncredentials. The optional label selects one labelled credential entry.",
+        "required": [
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
+      "ProbeResult": {
+        "type": "object",
+        "description": "The control plane's probe answer mirrors the CLI probe summary: catalog\nusage and cost for one short completion plus the effort actually used.",
+        "required": [
+          "provider",
+          "model",
+          "usage",
+          "cost_micros",
+          "effort",
+          "elapsed_seconds"
+        ],
+        "properties": {
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "elapsed_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "usage": {}
+        }
+      },
       "Provider": {
         "type": "object",
         "required": [
@@ -3613,6 +3718,15 @@
         "properties": {
           "dry_run": {
             "type": "boolean"
+          },
+          "grace_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Override the service's grace window for this run only, in seconds.\nBenchmarks on isolated namespaces use a short grace; production runs\nomit it and keep the configured window.",
+            "minimum": 0
           },
           "idempotency_key": {
             "type": "string"

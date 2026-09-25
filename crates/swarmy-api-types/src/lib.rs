@@ -316,6 +316,11 @@ pub struct DoctorService {
 pub struct StartGcRun {
     pub idempotency_key: String,
     pub dry_run: bool,
+    /// Override the service's grace window for this run only, in seconds.
+    /// Benchmarks on isolated namespaces use a short grace; production runs
+    /// omit it and keep the configured window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_seconds: Option<u64>,
 }
 
 /// Durable accounting for one collector attempt. An unfinished record means
@@ -467,6 +472,30 @@ pub struct DeleteRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CredentialDeleted {
     pub deleted: bool,
+}
+
+/// Probe a model with a live request through the control plane's stored
+/// credentials. The optional label selects one labelled credential entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProbeModel {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
+}
+
+/// The control plane's probe answer mirrors the CLI probe summary: catalog
+/// usage and cost for one short completion plus the effort actually used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProbeResult {
+    pub provider: String,
+    pub model: String,
+    pub usage: serde_json::Value,
+    pub cost_micros: u64,
+    pub effort: ReasoningEffort,
+    pub elapsed_seconds: f64,
 }
 
 /// A durable event has a cursor even when delivered on a multiplexed connection.
@@ -663,9 +692,10 @@ pub mod cli_paths {
 pub mod api_paths {
     use super::{
         Agent, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
-        CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest, Event, GcRun,
-        HealthResponse, Image, ImageUpload, InterruptOutcome, InterruptSession, Model, Provider,
-        Session, SessionClosed, StartGcRun, Subscription, UpdateAgent,
+        CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest, Event,
+        GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome, InterruptSession, Model,
+        ProbeModel, ProbeResult, Provider, Session, SessionClosed, StartGcRun, Subscription,
+        UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -815,6 +845,10 @@ pub mod api_paths {
     #[utoipa::path(get, path = "/v1/providers",
         responses((status = 200, body = Vec<Provider>), (status = 401, body = ApiError)))]
     pub fn list_providers() {}
+    #[utoipa::path(post, path = "/v1/models/probe",
+        request_body = ProbeModel,
+        responses((status = 200, body = ProbeResult), (status = 400, body = ApiError)))]
+    pub fn probe_model() {}
     #[utoipa::path(get, path = "/v1/credentials",
         responses((status = 200, body = Vec<Credential>), (status = 401, body = ApiError)))]
     pub fn list_credentials() {}
@@ -864,7 +898,7 @@ pub mod api_paths {
         api_paths::subscribe, api_paths::update_subscription,
         api_paths::list_images, api_paths::upload_image, api_paths::show_image,
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
-        api_paths::list_providers,
+        api_paths::list_providers, api_paths::probe_model,
         api_paths::start_gc_run, api_paths::gc_run,
         api_paths::list_credentials, api_paths::set_credential,
         api_paths::check_credential, api_paths::remove_credential,
@@ -877,7 +911,7 @@ pub mod api_paths {
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
-    Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
+    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StartGcRun, GcRun,
     CreateAgent, UpdateAgent, DeleteRequest,
@@ -990,10 +1024,13 @@ mod tests {
         check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
         check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
         check!(StartGcRun, {"idempotency_key":"k","dry_run":true});
+        check!(StartGcRun, {"idempotency_key":"k","dry_run":true,"grace_seconds":1});
         check!(GcRun, {"run_id":"r","started_at":"2026-09-23T12:00:00Z","dry_run":true,"finished":true,"error":null,"manifests":1,"scanned":2,"candidates":3,"candidate_bytes":4,"deleted":5,"bytes_freed":6,"duration_ms":7});
         check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
+        check!(ProbeModel, {"provider":"openai","model":"gpt-5","effort":"high"});
+        check!(ProbeResult, {"provider":"openai","model":"gpt-5","usage":{},"cost_micros":12,"effort":"high","elapsed_seconds":1.5});
     }
 
     #[test]

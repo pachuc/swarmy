@@ -12,11 +12,11 @@ import subprocess
 import sys
 import time
 
-from volume import Attached, cli, clear_cache, run
+from volume import Attached, cli, clear_cache, run, vol
 
 
 def prepare(image):
-    volume = cli("vol", "create", image)["volume_id"]
+    volume = vol("create", image)["volume_id"]
     snapshots = []
     with Attached(volume, background=True) as disk:
         disk.mount_disk()
@@ -33,7 +33,7 @@ with open(sys.argv[1], 'w', buffering=1) as file:
 ''', str(disk.mount / "root/timestamps")])
         try:
             time.sleep(1)
-            pause_checkpoint = cli("vol", "checkpoint", volume, "--mount", str(disk.mount))
+            pause_checkpoint = vol("checkpoint", volume, "--mount", str(disk.mount))
             time.sleep(1)
         finally:
             writer.terminate()
@@ -46,19 +46,20 @@ with open(sys.argv[1], 'w', buffering=1) as file:
                  "sample_count": len(stamps), "timestamps_around_max_ns": stamps[max(0, largest-2):largest+4],
                  "checkpoint": pause_checkpoint}
         snapshots.append({"manifest_id": pause_checkpoint["manifest_id"], "generation": 12, "sha256": digest})
-    shown = cli("vol", "show", volume)
+    shown = vol("show", volume)
     snapshots.append({"manifest_id": shown["record"]["head_manifest"], "generation": 12, "sha256": digest, "source": "detach"})
     retained = shown["manifests"]
     assert len(retained) == 10, retained
     expected = {item["manifest_id"]: item for item in snapshots}
-    # No publishers remain. This short grace is valid only in this isolated run.
+    # No publishers remain. Collection runs on the control plane, so the grace
+    # window travels on the run request; client SWARMY_GC_GRACE_SECONDS would
+    # be ignored. This short grace is valid only in this isolated run.
     time.sleep(3)
-    os.environ["SWARMY_GC_GRACE_SECONDS"] = "1"
     start = time.monotonic()
-    dry = cli("gc", "--dry-run")
+    dry = cli("gc", "--dry-run", "--grace-seconds", "1")
     dry_seconds = time.monotonic() - start
     start = time.monotonic()
-    real = cli("gc")
+    real = cli("gc", "--grace-seconds", "1")
     real_seconds = time.monotonic() - start
     assert dry["bytes_freed"] == 0, dry
     assert real["bytes_freed"] > 0, real
@@ -90,7 +91,7 @@ with open(sys.argv[1], 'wb', buffering=0) as file:
                 file.write(data)
                 file.flush()
                 os.fsync(file.fileno())
-            checkpoint = cli("vol", "checkpoint", disk.volume, "--mount", str(disk.mount))
+            checkpoint = vol("checkpoint", disk.volume, "--mount", str(disk.mount))
             assert writer.poll() is None, "concurrent writer exited during snapshots"
             snapshots.append({"manifest_id": checkpoint["manifest_id"], "generation": index, "sha256": digest})
         return digest

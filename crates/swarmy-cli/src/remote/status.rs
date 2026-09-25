@@ -341,3 +341,83 @@ async fn inventory(
         .collect();
     Ok((records, images, services))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn api_backed_status_reports_live_stale_absent_and_unavailable() {
+        let node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
+        let record = |seconds| {
+            (
+                swarmy_core::NodeRecord {
+                    node_id: swarmy_core::NodeId::from_ulid(ulid::Ulid::generate()),
+                    roles: vec![],
+                    capacity: Settings::default().node_capacity,
+                    last_heartbeat: jiff::Timestamp::from_second(
+                        jiff::Timestamp::now().as_second() - seconds,
+                    )
+                    .unwrap(),
+                    cached_images: vec![],
+                },
+                0,
+            )
+        };
+        let mut node = node;
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            instance_type: "m6i.large".into(),
+            disk_gb: 40,
+            ..Default::default()
+        });
+        let status = inspect(&node, true, true, || async {
+            Ok((
+                vec![record(1), record(90)],
+                vec![ImageRecord {
+                    name: "base-ubuntu".into(),
+                    tag: swarmy_core::ImageTag("test".into()),
+                    manifest_id: swarmy_core::ManifestId::from_ulid(ulid::Ulid::generate()),
+                }],
+                vec![ServiceSummary {
+                    role: "node".into(),
+                    instance_id: "i-node".into(),
+                    alive: true,
+                }],
+            ))
+        })
+        .await;
+        assert_eq!(status.sandboxes, 64);
+        assert_eq!(serde_json::to_value(&status).unwrap()["sandboxes"], 64);
+        let child = NodeStatus {
+            name: "test-2".into(),
+            instance_id: "i-child".into(),
+            instance_state: "running".into(),
+            instance_type: Some("m6id.4xlarge".into()),
+            private_ip: "10.0.0.2".into(),
+            sandboxes: 4,
+        };
+        assert_eq!(serde_json::to_value(&child).unwrap()["sandboxes"], 4);
+        assert_eq!(status.images[0].name, "base-ubuntu");
+        assert_eq!(status.images[0].tag.0, "test");
+        assert!(status.image_error.is_none());
+        assert_eq!(status.instance_type.as_deref(), Some("m6i.large"));
+        assert_eq!(status.services.len(), 1);
+        assert!(status.registrations[0].heartbeating);
+        assert!(!status.registrations[1].heartbeating);
+        let absent = inspect(&node, true, true, || async { Ok((vec![], vec![], vec![])) }).await;
+        assert!(absent.images.is_empty());
+        assert!(absent.image_error.is_none());
+        assert!(absent.registration_error.unwrap().contains("no swarmyd"));
+        let down = inspect(&node, false, false, || async {
+            panic!("disconnected status must not scan")
+        })
+        .await;
+        assert!(down.image_error.unwrap().contains("disconnected"));
+        assert!(down.instance_state.starts_with("unknown"));
+        let failed = inspect(&node, true, true, || async {
+            anyhow::bail!("fake failure")
+        })
+        .await;
+        assert!(failed.image_error.unwrap().contains("fake failure"));
+        assert!(failed.registration_error.unwrap().contains("fake failure"));
+    }
+}

@@ -1,10 +1,14 @@
-pub async fn run(dry_run: bool, json: bool) -> anyhow::Result<()> {
+pub async fn run(dry_run: bool, grace_seconds: Option<u64>, json: bool) -> anyhow::Result<()> {
     let (client, endpoint) = crate::api_client::connect()?;
+    if let Some(grace) = grace_seconds {
+        anyhow::ensure!(grace > 0, "grace window must be positive");
+    }
     let started = crate::api_client::call(
         &endpoint,
         client.start_gc_run(&swarmy_api_types::StartGcRun {
             idempotency_key: ulid::Ulid::generate().to_string(),
             dry_run,
+            grace_seconds,
         }),
     )
     .await
@@ -16,7 +20,8 @@ pub async fn run(dry_run: bool, json: bool) -> anyhow::Result<()> {
         }
     })?;
     // The sweep continues on the control plane; follow its durable record.
-    // Collection scans the whole object namespace, so allow it time.
+    // Collection scans the whole object namespace, so allow it time. A run
+    // that loses its lease records the failure, which stops this loop early.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
     let run = loop {
         let run = crate::api_client::call(&endpoint, client.gc_run(&started.run_id)).await?;
