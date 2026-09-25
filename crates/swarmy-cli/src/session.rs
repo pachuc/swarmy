@@ -47,7 +47,9 @@ pub async fn inspect(command: Command, json: bool) -> Result<()> {
                 json,
             )?;
         }
-        Command::Show { .. } | Command::List => unreachable!("session reads use the API"),
+        Command::Show { .. } | Command::List | Command::Metrics { .. } => {
+            unreachable!("session reads use the API")
+        }
     }
     Ok(())
 }
