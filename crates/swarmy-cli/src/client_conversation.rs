@@ -137,6 +137,30 @@ fn print_tools(record: &serde_json::Value) {
     }
 }
 
+/// Assign an explicit `--route` to the opened session only; the agent and
+/// swarm default keep their assignments.
+async fn apply_session_route(
+    client: &Client,
+    endpoint: &str,
+    session: api::Session,
+    route: Option<&str>,
+) -> Result<api::Session> {
+    if route.is_some() && session.route.as_deref() != route {
+        return crate::api_client::call(
+            endpoint,
+            client.set_session_route(
+                &session.id,
+                &api::SetSessionRoute {
+                    idempotency_key: ulid::Ulid::generate().to_string(),
+                    route: route.map(str::to_owned),
+                },
+            ),
+        )
+        .await;
+    }
+    Ok(session)
+}
+
 impl Conversation {
     pub async fn open(
         client: Client,
@@ -213,21 +237,7 @@ impl Conversation {
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
         let endpoint = crate::api_client::endpoint()?;
-        if route.is_some() && session.route != route {
-            // An explicit --route overrides the session only; the agent and
-            // swarm default keep their assignments.
-            session = crate::api_client::call(
-                &endpoint,
-                client.set_session_route(
-                    &session.id,
-                    &api::SetSessionRoute {
-                        idempotency_key: ulid::Ulid::generate().to_string(),
-                        route: route.clone(),
-                    },
-                ),
-            )
-            .await?;
-        }
+        session = apply_session_route(&client, &endpoint, session, route.as_deref()).await?;
         let head = session.head_sequence;
         Ok(Self {
             provider,

@@ -916,14 +916,7 @@ impl Settings {
             "SWARMY_PLACEMENT_LEASE_SECONDS".into(),
             self.placement_lease_seconds.to_string(),
         );
-        environment.insert(
-            "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
-            self.inference.gateway_wait_seconds.to_string(),
-        );
-        environment.insert(
-            "SWARMY_INFERENCE_DEFAULT_ROUTE".into(),
-            self.inference.default_route.clone().unwrap_or_default(),
-        );
+        self.inference_environment(&mut environment);
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
             self.volume_snapshots.period_seconds.to_string(),
@@ -940,6 +933,17 @@ impl Settings {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
         environment
+    }
+
+    fn inference_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
+            self.inference.gateway_wait_seconds.to_string(),
+        );
+        environment.insert(
+            "SWARMY_INFERENCE_DEFAULT_ROUTE".into(),
+            self.inference.default_route.clone().unwrap_or_default(),
+        );
     }
 
     fn provider_environment(&self, environment: &mut BTreeMap<String, String>) {

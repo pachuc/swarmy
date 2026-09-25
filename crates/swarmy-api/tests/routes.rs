@@ -413,14 +413,38 @@ async fn check_doctor(base: &str) {
     }));
 }
 
-#[tokio::test]
-async fn inference_routes_round_trip_through_cli_and_resource_api() {
-    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-        return;
-    };
-    let Ok(nats) = std::env::var("SWARMY_NATS_URL") else {
-        return;
-    };
+fn fallback_steps() -> Vec<swarmy_api_types::RouteStep> {
+    vec![
+        swarmy_api_types::RouteStep {
+            provider: "openai".into(),
+            entry: "work-key".into(),
+            model: None,
+        },
+        swarmy_api_types::RouteStep {
+            provider: "azure".into(),
+            entry: "prod".into(),
+            model: Some("gpt-5.5".into()),
+        },
+    ]
+}
+
+fn route_input(
+    name: &str,
+    steps: Vec<swarmy_api_types::RouteStep>,
+) -> swarmy_api_types::CliRouteInput {
+    swarmy_api_types::CliRouteInput {
+        idempotency_key: Ulid::generate().to_string(),
+        name: name.into(),
+        steps,
+    }
+}
+
+async fn route_server() -> Option<(
+    swarmy_client::Client,
+    tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>,
+)> {
+    let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE").ok()?;
+    let nats = std::env::var("SWARMY_NATS_URL").ok()?;
     NETWORK.get_or_init(swarmy_store::boot);
     let path = vec![
         "swarmy-api-route-test".to_owned(),
@@ -462,41 +486,26 @@ async fn inference_routes_round_trip_through_cli_and_resource_api() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
     let client = swarmy_client::Client::new(&base, "test-token").unwrap();
-    let steps = || {
-        vec![
-            swarmy_api_types::RouteStep {
-                provider: "openai".into(),
-                entry: "work-key".into(),
-                model: None,
-            },
-            swarmy_api_types::RouteStep {
-                provider: "azure".into(),
-                entry: "prod".into(),
-                model: Some("gpt-5.5".into()),
-            },
-        ]
-    };
+    Some((client, task))
+}
+
+async fn assert_route_crud(client: &swarmy_client::Client) {
     // Unknown providers fail at set time instead of wedging turns later.
     assert!(
         client
-            .cli_set_route(&swarmy_api_types::CliRouteInput {
-                idempotency_key: Ulid::generate().to_string(),
-                name: "bad".into(),
-                steps: vec![swarmy_api_types::RouteStep {
+            .cli_set_route(&route_input(
+                "bad",
+                vec![swarmy_api_types::RouteStep {
                     provider: "no-such-provider".into(),
                     entry: "default".into(),
                     model: None,
                 }],
-            })
+            ))
             .await
             .is_err()
     );
     client
-        .cli_set_route(&swarmy_api_types::CliRouteInput {
-            idempotency_key: Ulid::generate().to_string(),
-            name: "fallback".into(),
-            steps: steps(),
-        })
+        .cli_set_route(&route_input("fallback", fallback_steps()))
         .await
         .unwrap();
     let listed = client.cli_routes().await.unwrap();
@@ -504,8 +513,14 @@ async fn inference_routes_round_trip_through_cli_and_resource_api() {
     assert_eq!(listed[0].steps.len(), 2);
     assert_eq!(listed[0].steps[1].model.as_deref(), Some("gpt-5.5"));
     assert_eq!(client.cli_route("fallback").await.unwrap().name, "fallback");
-    assert_eq!(client.route("fallback").await.unwrap().steps, steps());
+    assert_eq!(
+        client.route("fallback").await.unwrap().steps,
+        fallback_steps()
+    );
     assert_eq!(client.routes().await.unwrap().len(), 1);
+}
+
+async fn assert_agent_route(client: &swarmy_client::Client) {
     // Agent assignment and clearing round-trips through the resource API.
     let agent = client
         .create_agent(&swarmy_api_types::CreateAgent {
@@ -541,6 +556,9 @@ async fn inference_routes_round_trip_through_cli_and_resource_api() {
         .await
         .unwrap();
     assert_eq!(agent.route.as_deref(), Some("fallback"));
+}
+
+async fn route_session(client: &swarmy_client::Client) -> swarmy_api_types::Session {
     // Session overrides apply per conversation; missing routes are rejected.
     let session = client
         .create_session(&swarmy_api_types::CreateSession {
@@ -595,6 +613,10 @@ async fn inference_routes_round_trip_through_cli_and_resource_api() {
         .await
         .unwrap();
     assert_eq!(session.route, None);
+    session
+}
+
+async fn assert_route_deletion(client: &swarmy_client::Client) {
     // Deletion reports and assigned sessions fall back afterwards.
     assert!(
         client
@@ -604,5 +626,16 @@ async fn inference_routes_round_trip_through_cli_and_resource_api() {
     );
     assert!(client.cli_route("fallback").await.is_err());
     assert_eq!(client.routes().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn inference_routes_round_trip_through_cli_and_resource_api() {
+    let Some((client, task)) = route_server().await else {
+        return;
+    };
+    assert_route_crud(&client).await;
+    assert_agent_route(&client).await;
+    route_session(&client).await;
+    assert_route_deletion(&client).await;
     task.abort();
 }
