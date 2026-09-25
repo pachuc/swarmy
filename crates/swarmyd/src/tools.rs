@@ -3,8 +3,8 @@ use base64::Engine as _;
 use std::{sync::Arc, time::Duration};
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::{
-    LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, Sandbox, SandboxArguments, ToolJob,
-    ToolResult, VolumeId,
+    LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ProcessListArguments, Sandbox,
+    SandboxArguments, ToolJob, ToolResult, VolumeId,
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime, SandboxRuntime};
 use swarmy_store::{Store, StoreError};
@@ -131,9 +131,56 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             "display tool requires a display image"
         );
     }
-    let mut result = match &claim.job.arguments {
+    let mut result = execute_arguments(store, runtime, &sandbox, claim).await?;
+    if let ToolResult::Completed { metadata, .. } = &mut result
+        && let Some(encoded) = metadata.remove("image_base64")
+    {
+        let encoded = encoded.as_str().context("image payload must be base64")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+        let key = store.put_tool_blob(bytes).await?;
+        metadata.insert("image_object_key".into(), serde_json::json!(key));
+    }
+    if let ToolResult::Completed { output, title, .. } = &mut result {
+        let capped = cap_output(
+            runtime,
+            &sandbox,
+            title,
+            &claim.job.call_id.0,
+            std::mem::take(output),
+        )
+        .await;
+        *output = capped;
+    }
+    if store.interrupt_requested(claim.job.session_id).await? {
+        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
+    }
+    commit_result(store, claim, &result).await
+}
+
+async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResult) -> Result<()> {
+    // A single call usually remains at its request head. Concurrent calls and
+    // rebuild notices return the actual head from the same fenced transaction.
+    let mut head = claim.job.step;
+    loop {
+        match store.complete_placed_tool(claim, head, result).await {
+            Ok(()) => break,
+            Err(StoreError::StaleSequence { actual, .. }) => head = actual,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
+    Ok(())
+}
+
+async fn execute_arguments(
+    store: &Store,
+    runtime: &RuncRuntime,
+    sandbox: &Sandbox,
+    claim: &PlacedToolClaim,
+) -> Result<ToolResult> {
+    let result = match &claim.job.arguments {
         SandboxArguments::Checkpoint(_) => {
-            let manifest_id = runtime.checkpoint(&sandbox).await?;
+            let manifest_id = runtime.checkpoint(sandbox).await?;
             completed(
                 "checkpoint",
                 &serde_json::json!({"manifest_id": manifest_id}),
@@ -141,7 +188,7 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
         }
         arguments => {
             let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
-            let (exit, stdout, stderr) = exec(runtime, &sandbox, request).await?;
+            let (exit, stdout, stderr) = exec(runtime, sandbox, request).await?;
             if exit.timed_out {
                 ToolResult::Error {
                     error: format!(
@@ -185,29 +232,7 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             }
         }
     };
-    if let ToolResult::Completed { metadata, .. } = &mut result
-        && let Some(encoded) = metadata.remove("image_base64")
-    {
-        let encoded = encoded.as_str().context("image payload must be base64")?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-        let key = store.put_tool_blob(bytes).await?;
-        metadata.insert("image_object_key".into(), serde_json::json!(key));
-    }
-    if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
-    }
-    // A single call usually remains at its request head. Concurrent calls and
-    // rebuild notices return the actual head from the same fenced transaction.
-    let mut head = claim.job.step;
-    loop {
-        match store.complete_placed_tool(claim, head, &result).await {
-            Ok(()) => break,
-            Err(StoreError::StaleSequence { actual, .. }) => head = actual,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
-    Ok(())
+    Ok(result)
 }
 
 async fn stop_result_process(
@@ -263,6 +288,38 @@ fn completed(name: &str, value: &serde_json::Value) -> ToolResult {
         output: value.to_string(),
         metadata: std::collections::BTreeMap::new(),
     }
+}
+
+async fn cap_output(
+    runtime: &RuncRuntime,
+    sandbox: &Sandbox,
+    tool: &str,
+    call_id: &str,
+    output: String,
+) -> String {
+    if output.len() <= swarmy_core::MAX_TOOL_OUTPUT_BYTES {
+        return output;
+    }
+    let spill = swarmy_core::tool_spill_path(call_id);
+    let script = format!(
+        "import pathlib, sys; p = pathlib.Path({}); p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(sys.stdin.buffer.read())",
+        serde_json::json!(spill)
+    );
+    let request = ExecRequest {
+        args: vec!["/usr/bin/python3".into(), "-c".into(), script],
+        stdin: output.clone().into_bytes(),
+        timeout_ms: 10_000,
+    };
+    match exec(runtime, sandbox, request).await {
+        Ok((exit, _, _)) if exit.exit_code == 0 && !exit.timed_out => {}
+        Ok((exit, _, stderr)) => {
+            tracing::warn!(tool, %spill, exit_code = exit.exit_code, timed_out = exit.timed_out, %stderr, "tool spill write failed; truncating anyway");
+        }
+        Err(error) => {
+            tracing::warn!(%error, tool, %spill, "tool spill write failed; truncating anyway");
+        }
+    }
+    swarmy_core::cap_tool_output(tool, call_id, output)
 }
 
 fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecRequest {
@@ -368,7 +425,10 @@ pub(crate) async fn exec(
 }
 
 pub async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -> Result<bool> {
-    let arguments = SandboxArguments::ProcessList(swarmy_core::EmptyArguments {});
+    let arguments = SandboxArguments::ProcessList(ProcessListArguments {
+        limit: 20,
+        all: false,
+    });
     let (exit, stdout, stderr) = exec(
         runtime,
         &Sandbox {
@@ -406,12 +466,34 @@ mod tests {
 
     impl Processes {
         fn call(&self, action: &str, id: &str, command: &str, epoch: u64) -> serde_json::Value {
+            self.call_with_options(action, id, command, epoch, None)
+        }
+
+        fn call_with_options(
+            &self,
+            action: &str,
+            id: &str,
+            command: &str,
+            epoch: u64,
+            options: Option<serde_json::Value>,
+        ) -> serde_json::Value {
             let script = include_str!("processes.py").replace(
                 "Path('/var/lib/swarmy/processes')",
                 &format!("Path({})", serde_json::json!(self.0.path())),
             );
+            let mut args = vec![
+                "-c".to_owned(),
+                script,
+                action.to_owned(),
+                epoch.to_string(),
+                id.to_owned(),
+                command.to_owned(),
+            ];
+            if let Some(options) = options {
+                args.push(options.to_string());
+            }
             let output = std::process::Command::new("python3")
-                .args(["-c", &script, action, &epoch.to_string(), id, command])
+                .args(&args)
                 .output()
                 .unwrap();
             assert!(
@@ -420,6 +502,23 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             serde_json::from_slice(&output.stdout).unwrap()
+        }
+
+        fn list(&self, options: serde_json::Value, epoch: u64) -> Vec<serde_json::Value> {
+            let value = self.call_with_options("process_list", "", "", epoch, Some(options));
+            value.as_array().cloned().unwrap_or_default()
+        }
+
+        fn start_exited(&self, command: &str, epoch: u64) -> String {
+            let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
+            self.call("process_start", &id, command, epoch);
+            let exit = self.0.path().join(&id).join("exit.json");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !exit.exists() {
+                assert!(std::time::Instant::now() < deadline, "process did not exit");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            id
         }
     }
 
@@ -469,6 +568,74 @@ mod tests {
             processes.call("process_list", "", "", 1)[0]["status"],
             "exited"
         );
+    }
+
+    fn seed_exited(processes: &Processes, count: usize, epoch: u64) -> Vec<String> {
+        let mut ids = Vec::with_capacity(count);
+        for index in 0..count {
+            ids.push(processes.start_exited(&format!("true # {index}"), epoch));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        ids
+    }
+
+    fn assert_newest_first(records: &[serde_json::Value]) {
+        // Running records lead; within each group the order is newest first.
+        let mut seen_exited = false;
+        for window in records.windows(2) {
+            let running = window[0]["status"] == "running";
+            assert!(
+                !(running && seen_exited),
+                "running process listed after an exited one"
+            );
+            seen_exited |= !running;
+            if window[0]["status"] == window[1]["status"] {
+                let first = window[0]["started_at"].as_f64().unwrap_or_default();
+                let second = window[1]["started_at"].as_f64().unwrap_or_default();
+                assert!(first >= second, "process list is not newest first");
+            }
+        }
+    }
+
+    #[test]
+    fn process_list_is_bounded_newest_first_with_overrides() {
+        let processes = Processes(tempfile::tempdir().unwrap());
+        let exited = seed_exited(&processes, 30, 1);
+        let running = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
+        processes.call("process_start", &running, "sleep 300", 1);
+        let default = processes.list(serde_json::json!({}), 1);
+        assert_eq!(default.len(), 21);
+        assert_newest_first(&default);
+        assert!(default.iter().any(|item| item["process_id"] == running));
+        assert_eq!(default[0]["process_id"], running);
+        let newest_exited: Vec<&String> = exited.iter().rev().take(20).collect();
+        for id in &newest_exited {
+            assert!(default.iter().any(|item| item["process_id"] == **id));
+        }
+        let oldest = &exited[0];
+        assert!(!default.iter().any(|item| item["process_id"] == *oldest));
+        let limited = processes.list(serde_json::json!({"limit": 5}), 1);
+        assert_eq!(limited.len(), 6);
+        assert_newest_first(&limited);
+        let all = processes.list(serde_json::json!({"all": true}), 1);
+        assert_eq!(all.len(), 31);
+        assert_newest_first(&all);
+    }
+
+    #[test]
+    fn process_list_truncates_long_commands() {
+        let processes = Processes(tempfile::tempdir().unwrap());
+        let long = "x".repeat(2000);
+        let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
+        processes.call("process_start", &id, &long, 1);
+        let listed = processes.list(serde_json::json!({"all": true}), 1);
+        let record = listed
+            .iter()
+            .find(|item| item["process_id"] == id)
+            .expect("long command missing");
+        let command = record["command"].as_str().unwrap_or_default();
+        assert_eq!(command.len(), 512);
+        assert!(command.ends_with("..."));
     }
 }
 
