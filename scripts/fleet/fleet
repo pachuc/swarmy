@@ -462,6 +462,370 @@ def reset(worker, config):
     print(f"deleted {worker}; the next launch recreates it from the image")
 
 
+def percentile(samples, percent):
+    """Nearest-rank percentile matching the store rollup: sort ascending and
+    take index len * p // 100, capped at the last sample. Empty input is None."""
+    values = sorted(value for value in samples if isinstance(value, (int, float)) and math.isfinite(value))
+    if not values:
+        return None
+    return values[min(len(values) * int(percent) // 100, len(values) - 1)]
+
+
+def mean(values):
+    finite = [value for value in values if isinstance(value, (int, float)) and math.isfinite(value)]
+    if not finite:
+        return None
+    return sum(finite) / len(finite)
+
+
+def parse_report_time(value):
+    """Parse an ISO 8601 time; a missing offset means UTC."""
+    if not value or not str(value).strip():
+        raise RuntimeError("report --since requires a time value")
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        raise RuntimeError(f"report --since cannot parse {value!r}; use ISO 8601") from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def parse_report_argv(tokens):
+    """Split report tokens into groups so repeated --label keeps its members.
+
+    Everything after `--label NAME` belongs to that label until the next
+    --label. argparse cannot preserve that grouping, so the report entry
+    point re-scans the raw tokens instead of using the parsed namespace.
+    """
+    as_json = False
+    since = None
+    groups = []
+    current = None
+
+    def group():
+        nonlocal current
+        if current is None:
+            current = {"label": None, "tasks": [], "sessions": []}
+            groups.append(current)
+        return current
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--json":
+            as_json = True
+            index += 1
+        elif token == "--since":
+            if index + 1 >= len(tokens):
+                raise RuntimeError("report --since requires a time value")
+            since = tokens[index + 1]
+            index += 2
+        elif token == "--label":
+            if index + 1 >= len(tokens):
+                raise RuntimeError("report --label requires a name")
+            current = {"label": tokens[index + 1], "tasks": [], "sessions": []}
+            groups.append(current)
+            index += 2
+        elif token == "--session":
+            if index + 1 >= len(tokens):
+                raise RuntimeError("report --session requires a session id")
+            group()["sessions"].append(tokens[index + 1])
+            index += 2
+        elif token.startswith("--"):
+            raise RuntimeError(f"report: unknown flag {token}")
+        else:
+            group()["tasks"].append(token)
+            index += 1
+    return as_json, since, groups
+
+
+def tasks_since(config, since):
+    """Every launched task whose assignment started at or after the time."""
+    moment = parse_report_time(since)
+    base = state_path(config)
+    found = []
+    if not base.exists():
+        return found
+    for path in sorted(base.glob("*.json")):
+        if path.name == "workers.json":
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or "task_id" not in data or "session_id" not in data:
+            continue
+        try:
+            started = parse_report_time(data.get("started_at")) if data.get("started_at") else None
+        except RuntimeError:
+            continue
+        if started is not None and started >= moment:
+            found.append((str(data["task_id"]), str(data["session_id"])))
+    return found
+
+
+def fetch_turn_metrics(config, session_id):
+    """Read one session's durable per-turn records through the CLI."""
+    output = command(swarmy(config, "session", "metrics", session_id, "--json"))
+    text = output.strip()
+    if not text:
+        return []
+    try:
+        value = json.loads(text)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            return [value]
+    except json.JSONDecodeError:
+        pass
+    turns = []
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, list):
+            turns.extend(item for item in value if isinstance(item, dict))
+        elif isinstance(value, dict):
+            turns.append(value)
+    return turns
+
+
+def turn_duration_s(turn):
+    """One turn's wall time: its append-to-idle latency, or its stage span."""
+    idle = turn.get("append_to_idle_ms")
+    if isinstance(idle, (int, float)) and math.isfinite(idle) and idle >= 0:
+        return float(idle) / 1000.0
+    stamps = [stage.get("unix_ns") for stage in turn.get("stages", [])
+              if isinstance(stage, dict) and isinstance(stage.get("unix_ns"), int)]
+    if len(stamps) >= 2:
+        span = max(stamps) - min(stamps)
+        if span >= 0:
+            return span / 1_000_000_000.0
+    return 0.0
+
+
+def summarize_turns(name, session_id, turns):
+    """Aggregate raw per-turn records into one comparable row.
+
+    Latency percentiles pool every observed turn; counts and token totals
+    sum; waits pool rate-limit, gateway, and provider-failure waits while
+    retries and errors keep their own totals.
+    """
+    first_token, inference, rates, tools, placements = [], [], [], [], []
+    duration = 0.0
+    waits = retries = errors = 0
+    input_tokens = cached_tokens = output_tokens = reasoning_tokens = 0
+    cost_micros = chunks = 0
+    bytes_fetched = 0
+    cold = warm = 0
+    for turn in turns:
+        duration += turn_duration_s(turn)
+        for key, bucket in (("append_to_first_token_ms", first_token),
+                            ("inference_duration_ms", inference)):
+            value = turn.get(key)
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                bucket.append(float(value))
+        if turn.get("error"):
+            errors += 1
+        for request in turn.get("inference", []) if isinstance(turn.get("inference"), list) else []:
+            if not isinstance(request, dict):
+                continue
+            for key in ("input_tokens", "cached_input_tokens", "output_tokens",
+                        "reasoning_tokens", "cost_micros"):
+                value = request.get(key)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    continue
+                if key == "input_tokens":
+                    input_tokens += value
+                elif key == "cached_input_tokens":
+                    cached_tokens += value
+                elif key == "output_tokens":
+                    output_tokens += value
+                elif key == "reasoning_tokens":
+                    reasoning_tokens += value
+                else:
+                    cost_micros += value
+            rate = request.get("output_tokens_per_second")
+            if isinstance(rate, (int, float)) and math.isfinite(rate):
+                rates.append(float(rate))
+            retries += int(request.get("retries") or 0)
+            waits += int(request.get("rate_limit_waits") or 0)
+            waits += int(request.get("gateway_waits") or 0)
+            waits += int(request.get("provider_failures") or 0)
+            if request.get("error"):
+                errors += 1
+        for tool in turn.get("tools", []) if isinstance(turn.get("tools"), list) else []:
+            if not isinstance(tool, dict):
+                continue
+            start, end = tool.get("dispatched_ns"), tool.get("completed_ns")
+            if isinstance(start, int) and isinstance(end, int) and end >= start:
+                tools.append((end - start) / 1_000_000.0)
+        computer = turn.get("computer")
+        if isinstance(computer, dict):
+            placement = computer.get("placement_ms")
+            if isinstance(placement, (int, float)) and math.isfinite(placement):
+                placements.append(float(placement))
+            if computer.get("cold") is True:
+                cold += 1
+            else:
+                warm += 1
+            fetched = computer.get("chunks_fetched")
+            if isinstance(fetched, int) and fetched > 0:
+                chunks += fetched
+            fetched_bytes = computer.get("bytes_fetched")
+            if isinstance(fetched_bytes, int) and fetched_bytes > 0:
+                bytes_fetched += fetched_bytes
+    return {
+        "task": name,
+        "session_id": session_id,
+        "turns": len(turns),
+        "duration_s": duration,
+        "a2f_p50_ms": percentile(first_token, 50),
+        "a2f_p95_ms": percentile(first_token, 95),
+        "infer_p50_ms": percentile(inference, 50),
+        "infer_p95_ms": percentile(inference, 95),
+        "tps_mean": mean(rates),
+        "tps_p95": percentile(rates, 95),
+        "tool_calls": len(tools),
+        "tool_p50_ms": percentile(tools, 50),
+        "tool_p95_ms": percentile(tools, 95),
+        "place_cold": cold,
+        "place_warm": warm,
+        "place_p50_ms": percentile(placements, 50),
+        "chunks_fetched": chunks,
+        "bytes_fetched": bytes_fetched,
+        "waits": waits,
+        "retries": retries,
+        "errors": errors,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "cost_dollars": cost_micros / 1_000_000.0,
+    }
+
+
+MEDIAN_KEYS = ("turns", "duration_s", "a2f_p50_ms", "a2f_p95_ms", "infer_p50_ms",
+               "infer_p95_ms", "tps_mean", "tps_p95", "tool_calls", "tool_p50_ms",
+               "tool_p95_ms", "place_cold", "place_warm", "place_p50_ms",
+               "chunks_fetched", "bytes_fetched", "waits", "retries", "errors",
+               "input_tokens", "cached_input_tokens", "output_tokens",
+               "reasoning_tokens", "cost_dollars")
+
+
+def median_row(label, rows):
+    """The per-label median: the p50 across that label's per-task values."""
+    medians = {"label": label, "tasks": len(rows)}
+    for key in MEDIAN_KEYS:
+        medians[key] = percentile([row[key] for row in rows
+                                   if isinstance(row.get(key), (int, float))
+                                   and math.isfinite(row[key])], 50)
+    return medians
+
+
+REPORT_COLUMNS = ("task", "turns", "duration_s", "a2f_p50_ms", "a2f_p95_ms",
+                  "infer_p50_ms", "infer_p95_ms", "tps_mean", "tps_p95",
+                  "tool_calls", "tool_p50_ms", "tool_p95_ms", "place_cold",
+                  "place_warm", "place_p50_ms", "chunks_fetched", "bytes_fetched",
+                  "waits", "retries", "errors",
+                  "input_tokens", "cached_input_tokens", "output_tokens",
+                  "reasoning_tokens", "cost_dollars")
+
+
+def format_cell(key, value):
+    if value is None:
+        return "-"
+    if key in ("turns", "tool_calls", "place_cold", "place_warm", "waits",
+               "retries", "errors", "input_tokens", "cached_input_tokens",
+               "output_tokens", "reasoning_tokens", "chunks_fetched", "bytes_fetched"):
+        return str(int(value))
+    if key == "cost_dollars":
+        return f"{value:.4f}"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def markdown_table(rows, total):
+    header = "| " + " | ".join(REPORT_COLUMNS) + " |"
+    divider = "| " + " | ".join("---" for _ in REPORT_COLUMNS) + " |"
+    lines = [header, divider]
+    for row in rows:
+        lines.append("| " + " | ".join(format_cell(key, row.get(key)) for key in REPORT_COLUMNS) + " |")
+    lines.append("| " + " | ".join(
+        format_cell(key, total.get(key)) if key != "task" else "total"
+        for key in REPORT_COLUMNS) + " |")
+    return "\n".join(lines)
+
+
+def report_command(tokens, config):
+    """Aggregate per-turn metrics for tasks or sessions into a table.
+
+    Each entry resolves to a session id (task ids through their fleet
+    assignment, --session ids directly, --since through assignment start
+    times), its records load through `swarmy session metrics --json`, and
+    the per-task rows pool into a totals row. Repeated --label prints one
+    table per label plus a final table of the per-label medians.
+    """
+    as_json, since, groups = parse_report_argv(tokens)
+    if since is not None and not groups:
+        groups.append({"label": None, "tasks": [], "sessions": []})
+    if not groups:
+        raise RuntimeError("report requires task ids, --session ids, or --since TIME")
+    labeled = any(group["label"] for group in groups)
+    tables = []
+    for group in groups:
+        entries = [(task, None) for task in group["tasks"]]
+        entries += [(session, session) for session in group["sessions"]]
+        if since is not None and not entries:
+            entries = tasks_since(config, since)
+            if not entries:
+                raise RuntimeError(f"no tasks launched since {since}")
+        if not entries:
+            raise RuntimeError("report requires task ids, --session ids, or --since TIME")
+        rows, pooled, session_ids = [], [], None
+        for display, direct in entries:
+            if direct is None:
+                _, data = assignment(config, display)
+                session_id = data["session_id"]
+            else:
+                session_id = direct
+            turns = fetch_turn_metrics(config, session_id)
+            rows.append(summarize_turns(display, session_id, turns))
+            pooled.extend(turns)
+            session_ids = session_id if len(entries) == 1 else None
+        total = summarize_turns("total", session_ids or "", pooled)
+        tables.append({"label": group["label"], "rows": rows, "total": total})
+    if as_json:
+        if labeled:
+            print(json.dumps({"labels": tables,
+                              "medians": [median_row(table["label"], table["rows"])
+                                          for table in tables]}, indent=2))
+        else:
+            print(json.dumps({"rows": tables[0]["rows"], "total": tables[0]["total"]}, indent=2))
+        return 0
+    parts = []
+    for table in tables:
+        if table["label"]:
+            parts.append(f"## {table['label']}")
+        parts.append(markdown_table(table["rows"], table["total"]))
+    if labeled:
+        medians = [median_row(table["label"], table["rows"]) for table in tables]
+        parts.append("## medians")
+        header = "| label | " + " | ".join(key for key in MEDIAN_KEYS) + " |"
+        divider = "| --- | " + " | ".join("---" for _ in MEDIAN_KEYS) + " |"
+        lines = [header, divider]
+        for row in medians:
+            lines.append("| " + str(row["label"]) + " | " +
+                         " | ".join(format_cell(key, row.get(key)) for key in MEDIAN_KEYS) + " |")
+        parts.append("\n".join(lines))
+    print("\n\n".join(parts))
+    return 0
+
+
 def benchmark(args):
     """Run one isolated benchmark session without tasky or a persistent worker."""
     if not args.prompt_file.is_file():
@@ -501,10 +865,21 @@ def main():
     bench.add_argument("--model", required=True)
     bench.add_argument("--effort", required=True)
     bench.add_argument("--prompt-file", required=True, type=Path)
+    report_parser = sub.add_parser("report", help="aggregate per-turn session metrics into a comparison table")
+    report_parser.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
+    report_parser.add_argument("--since", default=None, help="include every task launched at or after this ISO 8601 time")
+    report_parser.add_argument("--label", action="append", default=[], help="start a labeled group; repeat for side-by-side tables")
+    report_parser.add_argument("--session", action="append", default=[], dest="sessions", help="report a session id directly; may repeat")
+    report_parser.add_argument("tasks", nargs="*", help="tasky task ids (full id or six-character suffix)")
     args = parser.parse_args()
     try:
         if args.action == "benchmark":
             return benchmark(args)
+        if args.action == "report":
+            # argparse cannot keep the order of repeated --label groups, so the
+            # report re-scans the raw tokens to know which ids belong together.
+            raw = sys.argv[sys.argv.index("report") + 1:]
+            return report_command(raw, load())
         config = load()
         if args.action == "launch":
             launch(args, config)
