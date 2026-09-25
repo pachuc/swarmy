@@ -81,12 +81,15 @@ async fn show_metrics(store: &swarmy_store::Store, id: SessionId, json: bool) ->
         println!("{}", serde_json::to_string(&rows)?);
     } else {
         for row in rows {
+            let ms = |value: Option<f64>| value.map_or_else(|| "-".into(), |ms| format!("{ms:.1}"));
             println!(
-                "{} append_to_idle_ms={:?} inference_ms={:?} tools={}",
+                "{} append_to_first_token_ms={} inference_ms={} append_to_idle_ms={} tools={} error={}",
                 row.turn_id,
-                row.append_to_idle_ms,
-                row.inference_duration_ms,
-                row.tools.len()
+                ms(row.append_to_first_token_ms),
+                ms(row.inference_duration_ms),
+                ms(row.append_to_idle_ms),
+                row.tools.len(),
+                row.error.as_deref().unwrap_or("-"),
             );
         }
     }

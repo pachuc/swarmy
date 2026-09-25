@@ -951,6 +951,17 @@ impl Worker {
             };
             self.kill("after_release");
             self.publish_events(session.session_id, &events).await?;
+            // Record each tool name once; publish_tools only emits the stage.
+            if let Some(turn) = turn {
+                for job in &jobs {
+                    self.tool_name(
+                        session.session_id,
+                        Some(turn),
+                        job.request_id,
+                        job.arguments.name(),
+                    );
+                }
+            }
             return self
                 .publish_tools(session.session_id, &placement, jobs, turn)
                 .await;
@@ -1012,17 +1023,6 @@ impl Worker {
         futures::future::try_join_all(jobs.into_iter().map(|job| async move {
             self.tool_stage(id, turn, TurnStage::ToolDispatched, job.request_id)
                 .await;
-            if let Some(turn) = turn {
-                self.store.observe_turn_metric(
-                    id,
-                    turn,
-                    swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
-                        request_id: job.request_id.to_string(),
-                        name: job.arguments.name().into(),
-                        ..Default::default()
-                    }),
-                );
-            }
             self.bus
                 .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
                 .await

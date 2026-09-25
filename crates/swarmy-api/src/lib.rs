@@ -469,9 +469,15 @@ async fn session_metrics(
     ))
 }
 
+#[derive(Deserialize)]
+struct AgentMetricsPage {
+    limit: Option<usize>,
+    since: Option<String>,
+}
 async fn agent_metrics(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    Query(page): Query<AgentMetricsPage>,
 ) -> ApiResult<api::AgentMetrics> {
     let record = if let Ok(value) = name.parse::<Ulid>() {
         state.store.get_agent(AgentId::from_ulid(value)).await
@@ -480,10 +486,15 @@ async fn agent_metrics(
     }
     .map_err(storage)?
     .ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?;
+    let since = page
+        .since
+        .as_deref()
+        .map(|value| id(value, swarmy_core::MessageId::from_ulid))
+        .transpose()?;
     Ok(Json(
         state
             .store
-            .agent_turn_metrics(record.agent_id)
+            .agent_turn_metrics(record.agent_id, page.limit.unwrap_or(200), since)
             .await
             .map_err(storage)?,
     ))

@@ -186,11 +186,21 @@ impl Client {
         .await
     }
 
-    /// Roll up the main session of a named agent.
+    /// Roll up at most `limit` of the most recent turns of a named agent's
+    /// main session, optionally after the `since` turn id.
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn agent_metrics(&self, id: &str) -> Result<api::AgentMetrics, Error> {
-        self.get(&format!("agents/{}/metrics", segment(id)), &[])
+    pub async fn agent_metrics(
+        &self,
+        id: &str,
+        limit: usize,
+        since: Option<&str>,
+    ) -> Result<api::AgentMetrics, Error> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(since) = since {
+            query.push(("since", since.into()));
+        }
+        self.get(&format!("agents/{}/metrics", segment(id)), &query)
             .await
     }
 

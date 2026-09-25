@@ -1,13 +1,16 @@
 //! Compact, independently committed observations; no conversation event is added.
 use std::collections::BTreeMap;
 
+use foundationdb::{RangeOption, Transaction};
+use futures::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use swarmy_api_types::{
     AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, StageTiming, ToolMetric,
     TurnMetrics,
 };
 use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent};
 
-use crate::{MAX_SCAN_LIMIT, Result, Store, decode, read, scan, write};
+use crate::{MAX_SCAN_LIMIT, Result, Store, decode, scan, write};
 
 #[derive(Clone)]
 pub enum MetricPatch {
@@ -25,6 +28,71 @@ pub enum WaitKind {
     RateLimit,
     MissingGateway,
     ProviderFailure,
+}
+
+/// Private storage layout for a turn record. The public `TurnMetrics` type
+/// is the API contract and may gain display fields; this struct pins the
+/// `FoundationDB` encoding so API changes never make existing rows undecodable.
+/// New fields go at the end with `#[serde(default)]`. See the compatibility
+/// test below, which plays the same role as the session header one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct StoredTurnMetrics {
+    session_id: String,
+    turn_id: String,
+    stages: Vec<StageTiming>,
+    inference: Vec<InferenceMetric>,
+    tools: Vec<ToolMetric>,
+    computer: Option<ComputerMetric>,
+    append_to_first_token_ms: Option<f64>,
+    inference_duration_ms: Option<f64>,
+    append_to_idle_ms: Option<f64>,
+    error: Option<String>,
+    #[serde(default)]
+    dropped_stages: u64,
+    #[serde(default)]
+    dropped_inference: u64,
+    #[serde(default)]
+    dropped_tools: u64,
+}
+
+impl StoredTurnMetrics {
+    fn into_api(self) -> TurnMetrics {
+        TurnMetrics {
+            session_id: self.session_id,
+            turn_id: self.turn_id,
+            stages: self.stages,
+            inference: self.inference,
+            tools: self.tools,
+            computer: self.computer,
+            append_to_first_token_ms: self.append_to_first_token_ms,
+            inference_duration_ms: self.inference_duration_ms,
+            append_to_idle_ms: self.append_to_idle_ms,
+            error: self.error,
+            dropped_stages: self.dropped_stages,
+            dropped_inference: self.dropped_inference,
+            dropped_tools: self.dropped_tools,
+        }
+    }
+}
+
+impl From<TurnMetrics> for StoredTurnMetrics {
+    fn from(value: TurnMetrics) -> Self {
+        Self {
+            session_id: value.session_id,
+            turn_id: value.turn_id,
+            stages: value.stages,
+            inference: value.inference,
+            tools: value.tools,
+            computer: value.computer,
+            append_to_first_token_ms: value.append_to_first_token_ms,
+            inference_duration_ms: value.inference_duration_ms,
+            append_to_idle_ms: value.append_to_idle_ms,
+            error: value.error,
+            dropped_stages: value.dropped_stages,
+            dropped_inference: value.dropped_inference,
+            dropped_tools: value.dropped_tools,
+        }
+    }
 }
 
 fn clipped(value: &str, max: usize) -> String {
@@ -55,9 +123,13 @@ fn apply_stage(record: &mut TurnMetrics, event: &TurnEvent) {
         monotonic_ns: event.monotonic_ns,
         unix_ns: i64::try_from(event.unix_ns).unwrap_or(i64::MAX),
     };
-    if record.stages.len() < 64 && !record.stages.contains(&row) {
+    if record.stages.contains(&row) {
+        // Duplicate delivery; the row is already recorded.
+    } else if record.stages.len() < 64 {
         record.stages.push(row.clone());
         record.stages.sort_by_key(|item| item.unix_ns);
+    } else {
+        record.dropped_stages = record.dropped_stages.saturating_add(1);
     }
     if let Some(id) = &row.request_id
         && (stage == "tool_dispatched" || stage == "tool_completed")
@@ -72,12 +144,19 @@ fn apply_stage(record: &mut TurnMetrics, event: &TurnEvent) {
 }
 
 fn apply_inference(record: &mut TurnMetrics, update: &InferenceMetric) {
+    // A failed request carries its error on the row and the turn so the
+    // rollup counts it even when the terminal Error patch lands first; a
+    // success clears a previous turn error for the same turn.
+    if update.error.is_some() {
+        record.error.clone_from(&update.error);
+    } else {
+        record.error = None;
+    }
     let existing = record
         .inference
         .iter_mut()
         .find(|row| row.request_id == update.request_id);
     if let Some(row) = existing {
-        record.error = None;
         let (retries, rate_limit_waits, gateway_waits, provider_failures) = (
             row.retries,
             row.rate_limit_waits,
@@ -90,8 +169,9 @@ fn apply_inference(record: &mut TurnMetrics, update: &InferenceMetric) {
         row.gateway_waits = row.gateway_waits.max(gateway_waits);
         row.provider_failures = row.provider_failures.max(provider_failures);
     } else if record.inference.len() < 16 {
-        record.error = None;
         record.inference.push(update.clone());
+    } else {
+        record.dropped_inference = record.dropped_inference.saturating_add(1);
     }
 }
 
@@ -145,6 +225,21 @@ fn apply_computer(record: &mut TurnMetrics, value: &ComputerMetric) {
     if value.fetch_p95_ms.is_some() {
         current.fetch_p95_ms = value.fetch_p95_ms;
     }
+    // The boot sample arrives before the first tool runs; the re-sampled
+    // first-tool counters arrive after. The first re-sample wins so later
+    // tools do not overwrite what the first command observed.
+    if current.first_tool_chunks_fetched.is_none() {
+        current.first_tool_chunks_fetched = value.first_tool_chunks_fetched;
+    }
+    if current.first_tool_bytes_fetched.is_none() {
+        current.first_tool_bytes_fetched = value.first_tool_bytes_fetched;
+    }
+    if current.first_tool_fetch_p50_ms.is_none() {
+        current.first_tool_fetch_p50_ms = value.first_tool_fetch_p50_ms;
+    }
+    if current.first_tool_fetch_p95_ms.is_none() {
+        current.first_tool_fetch_p95_ms = value.first_tool_fetch_p95_ms;
+    }
 }
 
 fn apply_wait(record: &mut TurnMetrics, request_id: &str, kind: WaitKind) {
@@ -161,7 +256,10 @@ fn apply_wait(record: &mut TurnMetrics, request_id: &str, kind: WaitKind) {
             });
             record.inference.len() - 1
         }
-        None => return,
+        None => {
+            record.dropped_inference = record.dropped_inference.saturating_add(1);
+            return;
+        }
     };
     let row = &mut record.inference[index];
     match kind {
@@ -183,6 +281,7 @@ fn tool_entry<'a>(record: &'a mut TurnMetrics, request_id: &str) -> Option<&'a m
         return Some(&mut record.tools[index]);
     }
     if record.tools.len() >= 64 {
+        record.dropped_tools = record.dropped_tools.saturating_add(1);
         return None;
     }
     record.tools.push(ToolMetric {
@@ -190,6 +289,28 @@ fn tool_entry<'a>(record: &'a mut TurnMetrics, request_id: &str) -> Option<&'a m
         ..ToolMetric::default()
     });
     record.tools.last_mut()
+}
+
+/// Bounded reverse scan for newest-first pagination. Mirrors the forward
+/// [`scan`](crate::scan) bound so rollups stay under transaction limits.
+async fn scan_reverse(
+    trx: &Transaction,
+    range: (Vec<u8>, Vec<u8>),
+    limit: usize,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    if !(1..=MAX_SCAN_LIMIT).contains(&limit) {
+        return Err(crate::StoreError::InvalidLimit);
+    }
+    let options = RangeOption {
+        limit: Some(limit),
+        reverse: true,
+        ..range.into()
+    };
+    Ok(trx
+        .get_ranges_keyvalues(options, false)
+        .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
+        .try_collect()
+        .await?)
 }
 
 impl Store {
@@ -211,16 +332,23 @@ impl Store {
             let key = &key;
             let patch = &patch;
             async move {
-                let mut record =
-                    read::<TurnMetrics>(&trx, key)
-                        .await?
-                        .unwrap_or_else(|| TurnMetrics {
-                            session_id: session.to_string(),
-                            turn_id: turn.to_string(),
-                            ..TurnMetrics::default()
-                        });
+                let mut record = match trx.get(key, false).await? {
+                    None => TurnMetrics {
+                        session_id: session.to_string(),
+                        turn_id: turn.to_string(),
+                        ..TurnMetrics::default()
+                    },
+                    Some(value) => decode::<StoredTurnMetrics>(&value)
+                        .or_else(|_| {
+                            // Rows written before the storage type was split
+                            // from the API type share the same field prefix.
+                            decode::<TurnMetrics>(&value).map(StoredTurnMetrics::from)
+                        })
+                        .map(StoredTurnMetrics::into_api)
+                        .map_err(crate::StoreError::from)?,
+                };
                 apply(&mut record, patch);
-                write(&trx, key, &record)?;
+                write(&trx, key, &StoredTurnMetrics::from(record))?;
                 Ok(())
             }
         })
@@ -267,42 +395,129 @@ impl Store {
     }
 
     /// Read a bounded page of per-turn records, ordered by turn id.
+    /// Rows that fail to decode are skipped with a warning so one bad row
+    /// never fails the whole page; storage and API types evolve independently.
     /// # Errors
-    /// Returns database or decoding failures.
+    /// Returns database failures. Callers must still validate `limit` through
+    /// the shared scan bound.
     pub async fn list_turn_metrics(
         &self,
         session: SessionId,
         after: Option<MessageId>,
         limit: usize,
     ) -> Result<Vec<TurnMetrics>> {
-        self.transaction(|trx| async move {
-            let (mut begin, end) = self
-                .root
-                .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
-                .range();
-            if let Some(turn) = after {
-                begin = self.root.pack(&(
+        let raw = self
+            .transaction(|trx| async move {
+                let (mut begin, end) = self
+                    .root
+                    .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+                    .range();
+                if let Some(turn) = after {
+                    begin = self.root.pack(&(
+                        "turn_metrics",
+                        session.as_ulid().to_bytes().as_slice(),
+                        turn.as_ulid().to_bytes().as_slice(),
+                    ));
+                    begin.push(0);
+                }
+                scan(&trx, (begin, end), limit).await
+            })
+            .await?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(_, bytes)| {
+                match decode::<StoredTurnMetrics>(&bytes)
+                    .or_else(|_| decode::<TurnMetrics>(&bytes).map(StoredTurnMetrics::from))
+                {
+                    Ok(record) => Some(record.into_api()),
+                    Err(error) => {
+                        tracing::warn!(%error, "skipping undecodable turn metric");
+                        None
+                    }
+                }
+            })
+            .collect())
+    }
+
+    /// Most recent turns first, without paging the whole session. The rollup
+    /// only needs the tail, so pages walk the key range in reverse.
+    async fn recent_turn_metrics(
+        &self,
+        session: SessionId,
+        since: Option<MessageId>,
+        limit: usize,
+    ) -> Result<Vec<TurnMetrics>> {
+        let mut turns = Vec::new();
+        let mut end = self
+            .root
+            .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+            .range()
+            .1;
+        let begin = match since {
+            Some(turn) => {
+                let mut key = self.root.pack(&(
                     "turn_metrics",
                     session.as_ulid().to_bytes().as_slice(),
                     turn.as_ulid().to_bytes().as_slice(),
                 ));
-                begin.push(0);
+                key.push(0);
+                key
             }
-            scan(&trx, (begin, end), limit)
-                .await?
-                .into_iter()
-                .map(|(_, bytes)| decode(&bytes).map_err(Into::into))
-                .collect()
-        })
-        .await
+            None => {
+                self.root
+                    .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+                    .range()
+                    .0
+            }
+        };
+        while turns.len() < limit {
+            let take = (limit - turns.len()).min(MAX_SCAN_LIMIT);
+            let raw = self
+                .transaction(|trx| {
+                    let (begin, end) = (begin.clone(), end.clone());
+                    async move { scan_reverse(&trx, (begin, end), take).await }
+                })
+                .await?;
+            if raw.is_empty() {
+                break;
+            }
+            // Reverse pages arrive in descending key order; the last key of
+            // the page is the exclusive end of the next (older) page.
+            end = raw
+                .last()
+                .map_or_else(|| begin.clone(), |(key, _)| key.clone());
+            for (_, bytes) in raw {
+                match decode::<StoredTurnMetrics>(&bytes)
+                    .or_else(|_| decode::<TurnMetrics>(&bytes).map(StoredTurnMetrics::from))
+                {
+                    Ok(record) => turns.push(record.into_api()),
+                    Err(error) => {
+                        tracing::warn!(%error, "skipping undecodable turn metric");
+                    }
+                }
+                if turns.len() >= limit {
+                    break;
+                }
+            }
+        }
+        // Collected newest-first; restore ascending order for the rollup.
+        turns.reverse();
+        Ok(turns)
     }
 
-    /// Roll up the named agent's current main session.
+    /// Roll up at most `limit` of the most recent turns of the named agent's
+    /// current main session, optionally after `since`. The 200-turn cap keeps
+    /// the rollup bounded no matter how long the session runs.
     /// # Errors
-    /// Returns agent lookup, database or decoding failures.
+    /// Returns agent lookup or database failures.
     // Aggregate rates and durations have only approximate floating-point precision.
     #[allow(clippy::cast_precision_loss)]
-    pub async fn agent_turn_metrics(&self, agent: AgentId) -> Result<AgentMetrics> {
+    pub async fn agent_turn_metrics(
+        &self,
+        agent: AgentId,
+        limit: usize,
+        since: Option<MessageId>,
+    ) -> Result<AgentMetrics> {
         let record = self
             .get_agent(agent)
             .await?
@@ -315,20 +530,12 @@ impl Store {
         let Some(session) = record.main_session else {
             return Ok(output);
         };
-        let mut after = None;
+        // A zero limit means the default tail; larger requests are capped.
+        let limit = if limit == 0 { 200 } else { limit.min(200) };
         let mut latency: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         let mut rates = Vec::new();
-        loop {
-            let page = self
-                .list_turn_metrics(session, after, MAX_SCAN_LIMIT)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            after = page
-                .last()
-                .and_then(|row| row.turn_id.parse::<ulid::Ulid>().ok())
-                .map(MessageId::from_ulid);
+        {
+            let page = self.recent_turn_metrics(session, since, limit).await?;
             for turn in page {
                 output.turns += 1;
                 for (name, value) in [
@@ -361,11 +568,6 @@ impl Store {
                         latency.entry("tool_process").or_default().push(ms);
                     }
                 }
-                output.errors += u64::from(
-                    turn.tools
-                        .iter()
-                        .any(|tool| tool.exit_status.is_some_and(|code| code != 0)),
-                );
                 for request in turn.inference {
                     output.input_tokens += request.input_tokens;
                     output.cached_input_tokens += request.cached_input_tokens;
@@ -406,6 +608,76 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stored_layout_round_trips_and_converts_to_the_api_type() {
+        // Pins the FoundationDB encoding the way the session header test
+        // pins its layout: storage bytes must decode after API-only changes.
+        let stored = StoredTurnMetrics {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            stages: vec![StageTiming {
+                stage: "appended".into(),
+                request_id: None,
+                clock_id: "boot".into(),
+                monotonic_ns: 1_000_000,
+                unix_ns: 1_000_000,
+            }],
+            inference: vec![InferenceMetric {
+                request_id: "r".into(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                output_tokens: 4,
+                ..InferenceMetric::default()
+            }],
+            dropped_stages: 1,
+            dropped_inference: 2,
+            dropped_tools: 3,
+            ..StoredTurnMetrics::default()
+        };
+        let bytes = swarmy_core::encode(&stored).unwrap();
+        let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(decoded, stored);
+        assert_eq!(swarmy_core::encode(&decoded).unwrap(), bytes);
+        let api = decoded.into_api();
+        assert_eq!(api.session_id, "s");
+        assert_eq!(api.dropped_stages, 1);
+        assert_eq!(api.dropped_inference, 2);
+        assert_eq!(api.dropped_tools, 3);
+        // The API type converts back without losing counters.
+        let round_trip = StoredTurnMetrics::from(api);
+        assert_eq!(round_trip, stored);
+    }
+    #[test]
+    fn caps_count_dropped_rows_instead_of_growing() {
+        let mut turn = TurnMetrics::default();
+        let event = |stage: &str, index: u64| TurnEvent {
+            session_id: SessionId::from_ulid(ulid::Ulid::nil()),
+            turn_id: MessageId::from_ulid(ulid::Ulid::nil()),
+            stage: serde_json::from_value(serde_json::json!(stage)).unwrap(),
+            request_id: None,
+            clock_id: "boot".into(),
+            monotonic_ns: index,
+            unix_ns: i128::from(index),
+        };
+        for index in 0..70_u64 {
+            // Cycle valid stage names; rows stay distinct through the clock.
+            let name = ["submitted", "appended", "nudged"][usize::try_from(index % 3).unwrap()];
+            apply(&mut turn, &MetricPatch::Stage(event(name, index)));
+        }
+        assert_eq!(turn.stages.len(), 64);
+        assert_eq!(turn.dropped_stages, 6);
+        for index in 0..20_u32 {
+            apply(
+                &mut turn,
+                &MetricPatch::Inference(InferenceMetric {
+                    request_id: format!("r-{index}"),
+                    ..InferenceMetric::default()
+                }),
+            );
+        }
+        assert_eq!(turn.inference.len(), 16);
+        assert_eq!(turn.dropped_inference, 4);
+    }
     #[test]
     fn incremental_stages_and_zero_throughput() {
         let mut turn = TurnMetrics::default();

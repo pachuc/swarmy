@@ -897,6 +897,40 @@
             ],
             "format": "double"
           },
+          "first_tool_bytes_fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Total bytes re-sampled after the first tool call completes.",
+            "minimum": 0
+          },
+          "first_tool_chunks_fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Volume counters re-sampled after the first tool call of the turn\ncompletes. The boot sample above is taken before the first command\nruns, so lazy chunk hydration during that command is invisible in it.",
+            "minimum": 0
+          },
+          "first_tool_fetch_p50_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Fetch p50 re-sampled after the first tool call completes."
+          },
+          "first_tool_fetch_p95_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Fetch p95 re-sampled after the first tool call completes."
+          },
           "placement_ms": {
             "type": [
               "number",
@@ -2241,6 +2275,24 @@
                 "$ref": "#/components/schemas/ComputerMetric"
               }
             ]
+          },
+          "dropped_inference": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Model requests dropped when the 16-entry cap is hit.",
+            "minimum": 0
+          },
+          "dropped_stages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stages dropped when the 64-entry cap is hit.",
+            "minimum": 0
+          },
+          "dropped_tools": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tool calls dropped when the 64-entry cap is hit.",
+            "minimum": 0
           },
           "error": {
             "type": [

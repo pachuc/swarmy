@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, SandboxSpec, SessionId, ToolJob,
+    AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, RequestId, SandboxSpec,
+    SessionId, ToolJob, VolumeId,
 };
 use swarmy_sandbox::{RuncRuntime, SandboxRuntime};
 use swarmy_store::Store;
@@ -254,6 +255,36 @@ impl Hosting {
                         bytes_fetched: stats.fetched_bytes,
                         fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
                         fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                        ..Default::default()
+                    }),
+                );
+            }
+        });
+    }
+
+    /// Re-sample volume counters after a tool call completes. The boot sample
+    /// is taken before the first command runs; this sample shows what that
+    /// command hydrated. The store keeps the first re-sample per turn.
+    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
+    #[allow(clippy::cast_precision_loss)]
+    fn observe_computer_first_tool(&self, session: SessionId, request: RequestId, agent: AgentId) {
+        let store = self.store.clone();
+        let runtime = self.runtime.clone();
+        tokio::spawn(async move {
+            let volume = VolumeId::from_ulid(agent.as_ulid());
+            if let (Ok(Some(turn)), Ok(stats)) = (
+                store.request_turn_id(request).await,
+                runtime.volume_stats(volume).await,
+            ) {
+                store.observe_turn_metric(
+                    session,
+                    turn,
+                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                        first_tool_chunks_fetched: Some(stats.fetched_chunks),
+                        first_tool_bytes_fetched: Some(stats.fetched_bytes),
+                        first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                        first_tool_fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                        ..Default::default()
                     }),
                 );
             }
@@ -380,10 +411,16 @@ impl Hosting {
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
+        let session = call.job.session_id;
+        let request = call.job.request_id;
+        let agent = placement.agent_id;
         let result = tokio::select! {
             result = crate::tools::execute(&self.store, &self.runtime, placement, call.job) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };
+        // Lazy chunk hydration during the first command is invisible in the
+        // boot sample, so re-sample after every tool and keep the first.
+        self.observe_computer_first_tool(session, request, agent);
         let failed = result.is_err();
         let _ = call.reply.send(result);
         if failed {

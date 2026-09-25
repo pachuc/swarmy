@@ -294,11 +294,16 @@ and user-message (turn) ID. Components submit observations after their stage
 completes; metrics writes use a separate asynchronous transaction so neither
 append nor nudge waits for instrumentation. The record holds up to 64 raw
 stage timestamps (clock ID, monotonic and UTC nanoseconds, request ID), 16
-model requests, 64 tool calls, and one computer-boot sample. It includes
+model requests, 64 tool calls, and one computer sample, with counters for
+rows dropped beyond each cap. It includes
 per-request provider/model, token usage and cost, first-token and streaming
 latency, waits/retries and final error; tool dispatch, start, completion,
 exit status, output size, queue and process time; and placement time, cold
 hydration, chunks/bytes fetched, and volume GET latency histogram percentiles.
+The computer sample has two observations: a boot sample taken before the first
+tool runs, and a re-sample after the first tool call of the turn completes.
+Lazy chunk hydration during that first command is invisible in the boot sample
+and shows up in the re-sampled counters.
 The session metrics API pages these records; agent metrics rolls up the current
 main session's p50/p95 latencies, tokens, throughput, errors, retries, and cost.
 The individual wall and monotonic timestamps remain available so consumers

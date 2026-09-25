@@ -65,6 +65,20 @@ pub struct ComputerMetric {
     pub bytes_fetched: u64,
     pub fetch_p50_ms: Option<f64>,
     pub fetch_p95_ms: Option<f64>,
+    /// Volume counters re-sampled after the first tool call of the turn
+    /// completes. The boot sample above is taken before the first command
+    /// runs, so lazy chunk hydration during that command is invisible in it.
+    #[serde(default)]
+    pub first_tool_chunks_fetched: Option<u64>,
+    /// Total bytes re-sampled after the first tool call completes.
+    #[serde(default)]
+    pub first_tool_bytes_fetched: Option<u64>,
+    /// Fetch p50 re-sampled after the first tool call completes.
+    #[serde(default)]
+    pub first_tool_fetch_p50_ms: Option<f64>,
+    /// Fetch p95 re-sampled after the first tool call completes.
+    #[serde(default)]
+    pub first_tool_fetch_p95_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -79,6 +93,15 @@ pub struct TurnMetrics {
     pub inference_duration_ms: Option<f64>,
     pub append_to_idle_ms: Option<f64>,
     pub error: Option<String>,
+    /// Stages dropped when the 64-entry cap is hit.
+    #[serde(default)]
+    pub dropped_stages: u64,
+    /// Model requests dropped when the 16-entry cap is hit.
+    #[serde(default)]
+    pub dropped_inference: u64,
+    /// Tool calls dropped when the 64-entry cap is hit.
+    #[serde(default)]
+    pub dropped_tools: u64,
 }
 
 impl TurnMetrics {
