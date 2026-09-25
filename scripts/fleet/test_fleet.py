@@ -31,7 +31,7 @@ elif args[:2] == ['--remote', 'dev']:
         (root / 'process_args').write_text(subprocess.check_output(
             ['ps', '-o', 'args=', '-p', str(os.getpid())], text=True))
         print('{}')
-    elif rest[:2] == ['run', '--agent']:
+    elif rest[:2] == ['run', '--agent'] or rest[:2] == ['run', '--session']:
         if 'Repair widget' in args[-1]:
             (root / ('prompt-' + rest[2])).write_text(args[-1])
         else:
@@ -105,6 +105,7 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn("private-token", (self.root / "process_args").read_text())
         self.assertEqual((self.root / "token_ok").read_text(), "True")
         run_call = next(call for call in self.calls() if call[2:4] == ["run", "--agent"])
+        self.assertIn("--new", run_call)
         for flag in ("--provider", "--model", "--effort"):
             self.assertNotIn(flag, run_call)
         prompt = (self.root / "prompt-worker-1").read_text()

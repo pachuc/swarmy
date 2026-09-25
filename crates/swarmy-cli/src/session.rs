@@ -60,11 +60,18 @@ pub async fn run(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
+    session: Option<ulid::Ulid>,
     selection: swarmy_core::InferenceSelection,
     json: bool,
 ) -> Result<()> {
-    let mut conversation =
-        Conversation::open(None, image.as_deref(), agent.as_deref(), new, selection).await?;
+    let mut conversation = Conversation::open(
+        session.map(swarmy_core::SessionId::from_ulid),
+        image.as_deref(),
+        agent.as_deref(),
+        new,
+        selection,
+    )
+    .await?;
     announce(&conversation, json)?;
     conversation.send(prompt).await?;
     let outcome = until_idle(&mut conversation, json, true).await?;

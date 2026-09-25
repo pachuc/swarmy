@@ -155,6 +155,7 @@ fn main() -> anyhow::Result<()> {
                 image,
                 agent,
                 new,
+                session,
                 selection,
             } => {
                 session::run(
@@ -162,6 +163,7 @@ fn main() -> anyhow::Result<()> {
                     image,
                     agent,
                     new,
+                    session,
                     crate::selection::normalize(selection.into())?,
                     cli.json,
                 )

@@ -218,7 +218,10 @@ def launch(args, config):
         os.chmod(log, 0o600)
         # run --agent takes the agent's own provider, model, and effort and
         # rejects overrides, so selection only applies at worker creation.
-        process = subprocess.Popen(swarmy(config, "run", "--agent", worker,
+        # Each task runs in a fresh side conversation on the worker: same disk
+        # and memory files, empty context, so a metered provider is not billed
+        # for every earlier task on every turn.
+        process = subprocess.Popen(swarmy(config, "run", "--agent", worker, "--new",
                                           "--json", prompt(args.task_id, task, config, branch)),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
@@ -303,9 +306,6 @@ def status(config):
     stalled = False
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
-        session_id = detail.get("main_session")
-        events = session_events(config, session_id) if session_id else []
-        session = sessions.get(session_id)
         data = {}
         logged = []
         if task_id:
@@ -314,6 +314,11 @@ def status(config):
             data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
             run_log = state_path(config) / (suffix + ".jsonl")
             logged = records(run_log.read_text()) if run_log.exists() else []
+        # A task runs in its own side conversation; fall back to the main one
+        # for launches recorded before that change.
+        session_id = data.get("session_id") or detail.get("main_session")
+        events = session_events(config, session_id) if session_id else []
+        session = sessions.get(session_id)
         state, reasons = state_for(session, events, logged) if task_id else ("idle", "")
         age = state_age(session)
         if task_id and state in ("waiting_inference", "leased") and age is not None and age > threshold:
@@ -357,7 +362,7 @@ def verify_pr(url, data, config, *, merged=False):
 def collect(task_id, config):
     path, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = agent.get("main_session") or data["session_id"]
+    session_id = data["session_id"]
     message = last_message(session_events(config, session_id))
     match = URL.search(message)
     if match:
@@ -385,8 +390,8 @@ def collect(task_id, config):
 
 def resume(task_id, message, config):
     _, data = assignment(config, task_id)
-    # A follow-up on the worker's main conversation continues the task.
-    args = swarmy(config, "run", "--agent", data["worker"], "--json", message)
+    # A follow-up on the task's own conversation continues it.
+    args = swarmy(config, "run", "--session", data["session_id"], "--json", message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)
@@ -416,7 +421,7 @@ def release(task_id, config, *, force=False):
 def kill(task_id, config, timeout_seconds):
     _, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = agent.get("main_session") or data["session_id"]
+    session_id = data["session_id"]
     command(swarmy(config, "session", "interrupt", session_id))
     deadline = time.monotonic() + timeout_seconds
     while True:
