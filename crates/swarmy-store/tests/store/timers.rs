@@ -443,6 +443,108 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
     test.cleanup().await;
 }
 
+async fn open_side(store: &Store, agent: AgentId) -> (SessionId, Lease) {
+    let side = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+        .await
+        .unwrap();
+    store.wake_session(side, Timestamp::now()).await.unwrap();
+    let lease = store
+        .claim_lease(
+            side,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    (side, lease)
+}
+
+async fn release(store: &Store, id: SessionId, lease: &Lease) {
+    store
+        .set_state(id, SessionState::Idle, Some(lease), Timestamp::now())
+        .await
+        .unwrap();
+}
+
+/// A timer set from a side session wakes that idle session, not the main
+/// conversation. This is the 2026-09-25 worker-3 report: the side went idle
+/// after `set_timer` and was never woken because delivery always resolved
+/// the main pointer.
+#[tokio::test]
+async fn idle_side_session_receives_its_own_timer() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (agent, main, main_lease) = setup(store).await;
+    release(store, main, &main_lease).await;
+    let (side, lease) = open_side(store, agent).await;
+    let timer = set(store, side, &lease).await;
+    release(store, side, &lease).await;
+    let (id, event) = store
+        .fire_timer(agent, timer.timer_id, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(id, side);
+    assert_eq!(event.seq(), 2);
+    assert_eq!(
+        store.fetch_session(side).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    assert_eq!(
+        store.fetch_session(main).await.unwrap().unwrap().state,
+        SessionState::Idle
+    );
+    assert_eq!(
+        store
+            .get_timer(agent, timer.timer_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TimerStatus::Fired {
+            session_id: side,
+            seq: 2
+        }
+    );
+    test.cleanup().await;
+}
+
+/// A busy origin cannot take the note, so delivery falls back to the idle
+/// main conversation instead of leaving the timer pending forever.
+#[tokio::test]
+async fn busy_origin_falls_back_to_the_idle_main_conversation() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (agent, main, main_lease) = setup(store).await;
+    release(store, main, &main_lease).await;
+    let (side, lease) = open_side(store, agent).await;
+    let timer = set(store, side, &lease).await;
+    // The side worker is still mid-turn, so the note must go to main.
+    let (id, _) = store
+        .fire_timer(agent, timer.timer_id, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(id, main);
+    assert_eq!(
+        store.fetch_session(main).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    assert_eq!(
+        store.fetch_session(side).await.unwrap().unwrap().state,
+        SessionState::Leased
+    );
+    test.cleanup().await;
+}
+
 async fn assert_delivery(store: &Store, main: SessionId, timer: &TimerRecord) {
     assert_eq!(
         store

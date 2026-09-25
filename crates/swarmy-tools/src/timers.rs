@@ -25,7 +25,7 @@ macro_rules! timer_tool {
 timer_tool!(
     SetTimer,
     "set_timer",
-    "Wake your named agent's main conversation with a system note at or after the requested time. Supply exactly one of delay_seconds or at (RFC 3339 absolute timestamp). A busy conversation receives the note after its turn ends. Timers survive summarization and service restarts. At most 32 pending timers per agent; note must be 1-1024 UTF-8 bytes. Returns timer_id and due_at.",
+    "Wake this conversation with a system note at or after the requested time. Supply exactly one of delay_seconds or at (RFC 3339 absolute timestamp). A busy conversation receives the note after its turn ends; if this conversation is closed or summarized away, the note goes to your named agent's main conversation instead. Timers survive summarization and service restarts. At most 32 pending timers per agent; note must be 1-1024 UTF-8 bytes. Returns timer_id and due_at.",
     json!({"type":"object","properties":{
         "delay_seconds":{"type":"integer","minimum":1},
         "at":{"type":"string","format":"date-time"},
