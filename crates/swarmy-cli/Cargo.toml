@@ -65,6 +65,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 swarmy-api = { path = "../swarmy-api" }
+reqwest.workspace = true
 axum.workspace = true
 portable-pty.workspace = true
 vt100.workspace = true

@@ -245,23 +245,59 @@ fn handle_key(view: &mut View, input: &mut Input, key: KeyEvent) -> Option<Strin
     }
 }
 
-/// Send a line now, or keep it queued when the send does not go through.
-/// The readiness render and the store check are separate steps, and the store
-/// can flip between them (scheduler or sweep touches, head races); neither
-/// case may drop keystrokes or kill the client. A queued line sends exactly
-/// once on the next idle state.
+/// Send a line now, or keep it queued when the send loses the busy-session
+/// race. The readiness render and the store check are separate steps, and the
+/// store can flip between them (scheduler or sweep touches, head races);
+/// neither case may drop keystrokes. Only the busy race requeues: a permanent
+/// failure (rejected token, deleted session, API down) still returns the
+/// error so the client exits with the message instead of waiting forever on
+/// `input locked (queued)`. A queued line sends exactly once on the next idle
+/// state.
 async fn send_or_queue(
     view: &mut View,
     conversation: &mut Conversation,
     text: String,
 ) -> Result<()> {
-    if let Ok(turn) = conversation.send(text.clone()).await {
-        view.sent(&text, turn);
-        Ok(())
-    } else {
-        view.queued = Some(text);
-        view.ready = false;
-        Ok(())
+    match conversation.send(text.clone()).await {
+        Ok(turn) => {
+            view.sent(&text, turn);
+            Ok(())
+        }
+        Err(error) if is_busy_send_error(&error) => {
+            view.queued = Some(text);
+            view.ready = false;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether a send failure is the transient busy-session race that may be
+/// retried on the next idle state. The API reports it as a 409 conflict with
+/// code `session_not_idle` (or `stale_head` when the head moved between the
+/// ready render and the append); the local idle guard reports it as
+/// `session is not idle`. `api_client::call` wraps the client error in a
+/// string, so match the wrapped text as well as the typed error.
+fn is_busy_send_error(error: &anyhow::Error) -> bool {
+    if let Some(client) = error.downcast_ref::<swarmy_client::Error>() {
+        return is_busy_client_error(client);
+    }
+    let text = format!("{error:#}");
+    text.contains("session_not_idle")
+        || text.contains("stale_head")
+        || text.contains("session is not idle")
+}
+
+fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
+    match error {
+        swarmy_client::Error::Api { status, body } => {
+            status.as_u16() == 409 && (body.code == "session_not_idle" || body.code == "stale_head")
+        }
+        swarmy_client::Error::Status { status, body } => {
+            status.as_u16() == 409
+                && (body.contains("session_not_idle") || body.contains("stale_head"))
+        }
+        _ => false,
     }
 }
 
@@ -596,5 +632,55 @@ mod tests {
         );
         assert_eq!(view.queued, None);
         assert!(input.text.is_empty());
+    }
+
+    fn api_error(status: reqwest::StatusCode, code: &str) -> anyhow::Error {
+        swarmy_client::Error::Api {
+            status,
+            body: swarmy_api_types::ApiError {
+                code: code.into(),
+                message: code.into(),
+                provider_text: None,
+            },
+        }
+        .into()
+    }
+
+    #[test]
+    fn only_busy_race_requeues_and_permanent_errors_propagate() {
+        // Typed busy races requeue: the session flipped after the ready
+        // render, or the head moved between the render and the append.
+        assert!(is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "session_not_idle"
+        )));
+        assert!(is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "stale_head"
+        )));
+        // The local idle guard reports the same race without a status code.
+        assert!(is_busy_send_error(&anyhow::anyhow!("session is not idle")));
+        // The retry path wraps the client error in a string; the code text
+        // must still count as busy.
+        assert!(is_busy_send_error(&anyhow::anyhow!(
+            "API at http://example: session_not_idle"
+        )));
+        // Permanent failures propagate so the client exits with the message
+        // instead of waiting forever on `input locked (queued)`.
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::NOT_FOUND,
+            "session_not_found"
+        )));
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "unauthorized"
+        )));
+        assert!(!is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "main_session_close"
+        )));
+        assert!(!is_busy_send_error(&anyhow::anyhow!(
+            "API at http://example: request timed out"
+        )));
     }
 }
