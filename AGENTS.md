@@ -259,8 +259,9 @@ keep its own disk in order. The rules, which the task prompt repeats:
 - Every task is a fresh clone under `~/work/<task suffix>` and one new
   branch `swarmy/<task suffix>` from `origin/master`. Never reuse a
   directory or a branch, and never force-push.
-- Before starting a task, remove the other directories under `~/work` and
-  run `cargo clean` if `~/.cargo-target` is over 40 GiB. The target
+- Before starting a task, remove other directories under `~/work` only when
+  their branch is pushed and they have no uncommitted changes; never delete
+  unpushed work. Run `cargo clean` if `~/.cargo-target` is over 40 GiB. The target
   directory is shared across clones and lives outside them.
 - Leave nothing uncommitted at the end, and stop the dev stack with
   `scripts/dev-stack.sh stop` so its processes and ports are free for the
