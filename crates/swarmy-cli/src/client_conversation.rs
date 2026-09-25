@@ -590,13 +590,10 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
         }
-        if let Some(error) = progress.error.take() {
-            bail!("{error}");
+        if let Some(outcome) = turn_outcome(progress, run) {
+            progress.error.take();
+            bail!("{outcome}");
         }
-        ensure!(
-            !run || progress.reply,
-            "turn ended without a completed assistant reply"
-        );
         Ok(true)
     }
 
@@ -608,24 +605,13 @@ impl Conversation {
             self.tool_count += 1;
             self.tool_result = Some(result.clone());
         }
-        if let Some(failure) = record
-            .get("tool_call_completed")
-            .and_then(|v| v.get("result"))
-            .and_then(|v| v.get("error"))
-        {
-            progress.error = Some(format!(
-                "tool failed: {}",
-                failure
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown error")
-            ));
+        if let Some(error) = tool_error(record) {
+            progress.error = Some(error);
         }
-        if let Some(failure) = record.get("inference_failed") {
-            progress.error = failure
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
+        // An inference record supersedes a tool error, and one without an
+        // error string still clears a previous error.
+        if record.get("inference_failed").is_some() {
+            progress.error = inference_error(record);
         }
     }
 
@@ -636,25 +622,9 @@ impl Conversation {
         quiet: bool,
         progress: &mut TurnProgress,
     ) -> Result<()> {
-        if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        let Some(text) = assistant_reply_text(message) else {
             return Ok(());
-        }
-        let parts = message.get("parts").and_then(serde_json::Value::as_array);
-        if parts.is_some_and(|parts| parts.iter().any(|part| part.get("tool_call").is_some())) {
-            return Ok(());
-        }
-        let text = parts
-            .into_iter()
-            .flatten()
-            .filter_map(|part| {
-                part.get("text")
-                    .and_then(|v| v.get("text"))
-                    .and_then(serde_json::Value::as_str)
-            })
-            .collect::<String>();
-        if text.is_empty() {
-            return Ok(());
-        }
+        };
         progress.reply = true;
         progress.error = None;
         self.last_text.clone_from(&text);
@@ -680,6 +650,64 @@ impl Conversation {
         }
         Ok(())
     }
+}
+
+/// The tool failure a record reports for the current turn, if any. A later
+/// assistant text reply clears it (see `assistant_reply_text`).
+fn tool_error(record: &serde_json::Value) -> Option<String> {
+    let failure = record
+        .get("tool_call_completed")?
+        .get("result")?
+        .get("error")?;
+    Some(format!(
+        "tool failed: {}",
+        failure
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown error")
+    ))
+}
+
+/// The inference failure a record reports, if the record is an inference
+/// failure. Missing error strings clear a previous error.
+fn inference_error(record: &serde_json::Value) -> Option<String> {
+    record
+        .get("inference_failed")?
+        .get("error")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The text of an assistant message that finishes a text turn: a non-empty
+/// text reply with no tool call. Tool-call messages do not finish the turn.
+fn assistant_reply_text(message: &serde_json::Value) -> Option<String> {
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let parts = message.get("parts").and_then(serde_json::Value::as_array)?;
+    if parts.iter().any(|part| part.get("tool_call").is_some()) {
+        return None;
+    }
+    let text = parts
+        .iter()
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(|v| v.get("text"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .collect::<String>();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// The idle-time failure for a turn, if the turn did not succeed.
+fn turn_outcome(progress: &TurnProgress, run: bool) -> Option<String> {
+    if let Some(error) = progress.error.as_deref() {
+        return Some(error.to_owned());
+    }
+    if run && !progress.reply {
+        return Some("turn ended without a completed assistant reply".into());
+    }
+    None
 }
 
 #[derive(Default)]
@@ -816,6 +844,64 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn inference_error_fails_the_turn() {
+        // Ported from the removed store-backed run path: an inference
+        // failure fails the turn with the provider error.
+        let progress = TurnProgress {
+            error: inference_error(
+                &serde_json::json!({"inference_failed": {"error": "provider unavailable"}}),
+            ),
+            ..TurnProgress::default()
+        };
+        assert_eq!(
+            turn_outcome(&progress, true).as_deref(),
+            Some("provider unavailable")
+        );
+    }
+
+    #[test]
+    fn idle_after_assistant_reply_completes_the_turn() {
+        // Ported from the removed store-backed run path: a text reply
+        // without a tool call completes the turn and clears a prior error.
+        let mut progress = TurnProgress {
+            error: Some("provider unavailable".into()),
+            ..TurnProgress::default()
+        };
+        let text = assistant_reply_text(
+            &serde_json::json!({"role": "assistant", "parts": [{"text": {"text": "ready"}}]}),
+        );
+        assert_eq!(text.as_deref(), Some("ready"));
+        progress.reply = true;
+        progress.error = None;
+        assert_eq!(turn_outcome(&progress, true), None);
+    }
+
+    #[test]
+    fn tool_call_message_does_not_finish_the_turn() {
+        // Tool-call assistant messages do not finish a text turn.
+        let text = assistant_reply_text(
+            &serde_json::json!({"role": "assistant", "parts": [{"tool_call": {"id": "1"}}]}),
+        );
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn tool_error_without_followup_reply_fails_the_turn() {
+        // Ported from the removed store-backed run path: a tool error with
+        // no follow-up reply fails the turn.
+        let progress = TurnProgress {
+            error: tool_error(
+                &serde_json::json!({"tool_call_completed": {"result": {"error": {"error": "timeout"}}}}),
+            ),
+            ..TurnProgress::default()
+        };
+        assert_eq!(
+            turn_outcome(&progress, true).as_deref(),
+            Some("tool failed: timeout")
+        );
     }
 
     #[test]
