@@ -1860,6 +1860,8 @@ async fn assert_volume_listing(store: &Store, head: ManifestId) {
     );
 }
 
+#[path = "store/metering.rs"]
+mod metering;
 #[path = "store/tools.rs"]
 mod tools;
 #[path = "store/turns.rs"]

@@ -226,6 +226,7 @@ impl Providers {
                     auth: ClientAuth::Scripted(client),
                     version: [0; 32],
                     entry: None,
+                    entry_kind: None,
                 })
                 .map_err(swarmy_llm::Error::Credentials);
         }
@@ -244,7 +245,7 @@ impl Providers {
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
-    ) -> Result<(Arc<dyn Provider>, Option<String>), swarmy_llm::Error> {
+    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
         let served = self
             .state
             .read()
@@ -259,13 +260,13 @@ impl Providers {
         let key = (provider.to_owned(), model.id.clone(), resolved.version);
         let mut clients = self.clients.lock().await;
         if let Some(client) = clients.get(&key) {
-            return Ok((client.clone(), resolved.entry));
+            return Ok((client.clone(), resolved.entry, resolved.entry_kind));
         }
         let client = swarmy_llm::client_for(info, model, resolved.auth)?;
         // Retire obsolete credential versions without retaining their secrets indefinitely.
         clients.retain(|(id, name, _), _| id != provider || name != &model.id);
         clients.insert(key, client.clone());
-        Ok((client, resolved.entry))
+        Ok((client, resolved.entry, resolved.entry_kind))
     }
 }
 

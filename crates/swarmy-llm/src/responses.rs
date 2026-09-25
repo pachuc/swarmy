@@ -317,6 +317,7 @@ pub struct SseParser {
     saw_tool_arguments: bool,
     context: Option<(String, String)>,
     completed: bool,
+    quota_remaining: BTreeMap<String, u64>,
 }
 
 impl SseParser {
@@ -348,6 +349,11 @@ impl SseParser {
     #[must_use]
     pub const fn is_completed(&self) -> bool {
         self.completed
+    }
+
+    /// Capture `OpenAI` remaining-quota headers before streaming starts.
+    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
+        self.quota_remaining = quota;
     }
 
     /// # Errors
@@ -548,6 +554,7 @@ impl SseParser {
             parts,
             stop_reason,
             usage: usage(&response["usage"]),
+            quota_remaining: std::mem::take(&mut self.quota_remaining),
         }));
         self.completed = true;
         Ok(())

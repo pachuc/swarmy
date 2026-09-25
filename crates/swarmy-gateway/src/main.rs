@@ -331,6 +331,18 @@ async fn refresh(
     Ok(())
 }
 
+struct TerminalInput<'a> {
+    job: &'a InferenceJob,
+    provider: &'a str,
+    model: Option<&'a swarmy_llm::catalog::ModelInfo>,
+    effort_used: Option<swarmy_core::ReasoningEffort>,
+    effort_requested: Option<swarmy_core::ReasoningEffort>,
+    effort_clamped: bool,
+    retryable: bool,
+    retry_at: Option<jiff::Timestamp>,
+    result: &'a std::result::Result<Response, swarmy_llm::Error>,
+}
+
 impl Gateway {
     async fn completed(&self, request: RequestId) -> Result<bool> {
         Ok(self
@@ -412,7 +424,7 @@ impl Gateway {
         provider: &str,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, Option<String>), swarmy_llm::Error> {
+    ) -> Result<(Response, Option<String>, Option<String>), swarmy_llm::Error> {
         let model = self
             .providers
             .catalog
@@ -421,7 +433,7 @@ impl Gateway {
                 provider: provider.into(),
                 model: job.request.settings.model.clone(),
             })?;
-        let (client, entry) = self.providers.client(provider, model).await?;
+        let (client, entry, entry_kind) = self.providers.client(provider, model).await?;
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
@@ -480,7 +492,7 @@ impl Gateway {
             }
         }
         response
-            .map(|response| (response, entry))
+            .map(|response| (response, entry, entry_kind))
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))
     }
 
@@ -609,7 +621,7 @@ impl Gateway {
         let turn = Self::turn_id(job);
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
             .await;
-        let (result, blocked, entry) = self
+        let (result, blocked, entry, entry_kind) = self
             .attempt_provider(job, provider, effort_used, turn)
             .await?;
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
@@ -646,36 +658,26 @@ impl Gateway {
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
             }
         }
-        let event = match &result {
-            Ok(response) => Event::InferenceCompleted {
-                provider: provider.clone(),
-                model: job.request.settings.model.clone(),
-                effort_used,
-                usage: response.usage.clone(),
-                cost_micros: model.map_or(0, |model| cost_micros(&model.cost, &response.usage)),
-                effort_requested,
-                effort_clamped,
-                seq: 0,
-                request_id: job.request_id,
-                message: Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: MessageRole::Assistant,
-                    parts: response.parts.clone(),
-                },
-            },
-            Err(error) => Event::InferenceFailed {
-                seq: 0,
-                request_id: job.request_id,
-                error: error.to_string(),
-                retryable,
-                retry_at,
-            },
-        };
+        let event = Self::terminal_event(&TerminalInput {
+            job,
+            provider,
+            model,
+            effort_used,
+            effort_requested,
+            effort_clamped,
+            retryable,
+            retry_at,
+            result: &result,
+        });
+        self.record_entry_attribution(
+            job,
+            provider,
+            entry.as_deref(),
+            entry_kind.as_deref(),
+            &result,
+        )
+        .await;
         let stored_result = result.map_err(|error| error.to_string());
-        if stored_result.is_ok() {
-            self.record_entry_usage(job.request_id, provider, entry.as_deref())
-                .await;
-        }
         self.persist_response(job, claim, event.clone(), &stored_result, turn)
             .await?;
         self.observe_terminal_metric(job, turn, provider, &event);
@@ -686,7 +688,59 @@ impl Gateway {
         Ok(())
     }
 
-    async fn record_entry_usage(&self, request: RequestId, provider: &str, entry: Option<&str>) {
+    fn terminal_event(input: &TerminalInput<'_>) -> Event {
+        match input.result {
+            Ok(response) => Event::InferenceCompleted {
+                provider: input.provider.to_owned(),
+                model: input.job.request.settings.model.clone(),
+                effort_used: input.effort_used,
+                usage: response.usage.clone(),
+                cost_micros: input
+                    .model
+                    .map_or(0, |model| cost_micros(&model.cost, &response.usage)),
+                effort_requested: input.effort_requested,
+                effort_clamped: input.effort_clamped,
+                seq: 0,
+                request_id: input.job.request_id,
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts: response.parts.clone(),
+                },
+            },
+            Err(error) => Event::InferenceFailed {
+                seq: 0,
+                request_id: input.job.request_id,
+                error: error.to_string(),
+                retryable: input.retryable,
+                retry_at: input.retry_at,
+            },
+        }
+    }
+
+    async fn record_entry_attribution(
+        &self,
+        job: &InferenceJob,
+        provider: &str,
+        entry: Option<&str>,
+        entry_kind: Option<&str>,
+        result: &std::result::Result<Response, swarmy_llm::Error>,
+    ) {
+        let Ok(response) = result.as_ref() else {
+            return;
+        };
+        self.record_entry_usage(job.request_id, provider, entry, entry_kind)
+            .await;
+        self.record_entry_quota(provider, entry, response).await;
+    }
+
+    async fn record_entry_usage(
+        &self,
+        request: RequestId,
+        provider: &str,
+        entry: Option<&str>,
+        kind: Option<&str>,
+    ) {
         let Some(label) = entry else {
             return;
         };
@@ -694,6 +748,14 @@ impl Gateway {
         // and must still be persisted when this bookkeeping fails.
         if let Err(error) = self.store.set_inference_entry(request, Some(label)).await {
             warn!(%error, "inference entry attribution failed");
+        }
+        if let Some(kind) = kind
+            && let Err(error) = self
+                .store
+                .set_inference_entry_kind(request, Some(kind))
+                .await
+        {
+            warn!(%error, "inference entry kind attribution failed");
         }
         if let Ok(keyring) = swarmy_config::Keyring::load()
             && let Err(error) = self
@@ -706,6 +768,22 @@ impl Gateway {
         }
     }
 
+    async fn record_entry_quota(&self, provider: &str, entry: Option<&str>, response: &Response) {
+        let Some(label) = entry else {
+            return;
+        };
+        if response.quota_remaining.is_empty() {
+            return;
+        }
+        if let Err(error) = self
+            .store
+            .observe_entry_quota(provider, label, &response.quota_remaining)
+            .await
+        {
+            warn!(%error, "entry quota observation failed");
+        }
+    }
+
     async fn attempt_provider(
         &self,
         job: &InferenceJob,
@@ -715,6 +793,7 @@ impl Gateway {
     ) -> Result<(
         std::result::Result<Response, swarmy_llm::Error>,
         bool,
+        Option<String>,
         Option<String>,
     )> {
         let key = CredentialKey(provider.to_owned());
@@ -734,11 +813,12 @@ impl Gateway {
                 }),
                 true,
                 None,
+                None,
             ));
         }
         Ok(match self.infer(job, provider, effort, turn).await {
-            Ok((response, entry)) => (Ok(response), false, entry),
-            Err(error) => (Err(error), false, None),
+            Ok((response, entry, kind)) => (Ok(response), false, entry, kind),
+            Err(error) => (Err(error), false, None, None),
         })
     }
 
@@ -1044,6 +1124,7 @@ mod retry_tests {
                 }],
                 stop_reason: swarmy_llm::StopReason::EndTurn,
                 usage: swarmy_llm::TokenUsage::default(),
+                quota_remaining: std::collections::BTreeMap::new(),
             },
         );
         runtime.block_on(async {

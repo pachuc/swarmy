@@ -5,6 +5,7 @@ pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod fake;
+pub mod quota;
 pub mod responses;
 pub mod retry;
 pub mod selection;
@@ -168,6 +169,10 @@ pub struct Response {
     pub parts: Vec<Part>,
     pub stop_reason: StopReason,
     pub usage: TokenUsage,
+    /// Latest published remaining-quota headers, empty when the provider
+    /// publishes nothing. The gateway records these on the auth entry.
+    #[serde(default)]
+    pub quota_remaining: BTreeMap<String, u64>,
 }
 
 /// Output indices correlate concurrent text, reasoning, and function arguments.

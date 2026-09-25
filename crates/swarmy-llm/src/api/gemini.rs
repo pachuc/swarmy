@@ -602,6 +602,7 @@ impl StreamState {
             parts,
             stop_reason,
             usage: self.usage,
+            quota_remaining: std::collections::BTreeMap::new(),
         })
     }
 }

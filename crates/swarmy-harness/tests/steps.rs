@@ -402,6 +402,7 @@ fn fake_provider() -> FakeProvider {
             }],
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
         },
     );
     provider.tool_calls = Some(BTreeMap::from([(

@@ -113,8 +113,10 @@ impl Provider for CompletionsProvider {
             {
                 Err(error_from_json(&response.json::<Value>().await?))?;
             } else {
+                let quota = crate::quota::openai_remaining(response.headers());
                 let mut bytes = response.bytes_stream();
                 let mut parser = SseParser::new(&provider.provider, &provider.model.id);
+                parser.set_quota(quota);
                 while let Some(chunk) = bytes.next().await {
                     for delta in parser.push(&chunk?)? { yield delta; }
                     if parser.completed { break; }
@@ -504,6 +506,7 @@ pub struct SseParser {
     tools: BTreeMap<u64, usize>,
     stop_reason: Option<StopReason>,
     usage: TokenUsage,
+    quota_remaining: BTreeMap<String, u64>,
 }
 
 impl SseParser {
@@ -522,7 +525,13 @@ impl SseParser {
             tools: BTreeMap::new(),
             stop_reason: None,
             usage: TokenUsage::default(),
+            quota_remaining: BTreeMap::new(),
         }
+    }
+
+    /// Capture `OpenAI` remaining-quota headers before streaming starts.
+    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
+        self.quota_remaining = quota;
     }
 
     /// # Errors
@@ -753,6 +762,7 @@ impl SseParser {
             parts,
             stop_reason,
             usage: self.usage.clone(),
+            quota_remaining: std::mem::take(&mut self.quota_remaining),
         }));
         self.completed = true;
         Ok(())

@@ -156,6 +156,7 @@ impl RequestScript {
                 total_tokens: 10 + output_tokens,
                 ..TokenUsage::default()
             },
+            quota_remaining: std::collections::BTreeMap::new(),
         })
     }
 }

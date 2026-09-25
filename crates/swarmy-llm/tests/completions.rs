@@ -162,6 +162,7 @@ async fn text_turn_reports_usage_and_uses_catalog_dispatch() {
                 total_tokens: 30,
                 cache_write_input_tokens: 0,
             },
+            quota_remaining: std::collections::BTreeMap::new(),
         }
     );
     assert_eq!(

@@ -196,8 +196,10 @@ impl Provider for AnthropicProvider {
         Box::pin(async_stream::try_stream! {
             let body = request_json(&request, &provider.model, &provider.endpoint)?;
             let response = with_retry(&RetryPolicy::default(), || provider.send(&body)).await?;
+            let quota = crate::quota::anthropic_remaining(response.headers());
             let mut bytes = response.bytes_stream();
             let mut parser = SseParser::new(&provider.model.id, provider.endpoint.provider());
+            parser.set_quota(quota);
             while let Some(chunk) = bytes.next().await {
                 for delta in parser.push(&chunk?)? { yield delta; }
                 if parser.completed { break; }
@@ -535,6 +537,7 @@ pub struct SseParser {
     parts: BTreeMap<usize, Part>,
     stop_reason: Option<StopReason>,
     usage: Value,
+    quota_remaining: BTreeMap<String, u64>,
 }
 
 impl SseParser {
@@ -552,7 +555,13 @@ impl SseParser {
             parts: BTreeMap::new(),
             stop_reason: None,
             usage: json!({}),
+            quota_remaining: BTreeMap::new(),
         }
+    }
+
+    /// Capture Anthropic remaining-quota headers before streaming starts.
+    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
+        self.quota_remaining = quota;
     }
 
     /// # Errors
@@ -662,6 +671,7 @@ impl SseParser {
                     parts: std::mem::take(&mut self.parts).into_values().collect(),
                     stop_reason,
                     usage: self.token_usage(),
+                    quota_remaining: std::mem::take(&mut self.quota_remaining),
                 }));
                 self.completed = true;
             }

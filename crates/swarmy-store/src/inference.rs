@@ -283,6 +283,7 @@ impl Store {
                 usage,
                 cost_micros,
                 provider,
+                model,
                 ..
             } = &completion.event
             {
@@ -290,9 +291,11 @@ impl Store {
                     &trx,
                     session.session_id,
                     session.agent_id,
-                    crate::usage::UsageAttribution {
+                    &crate::usage::UsageAttribution {
                         request: claim.request_id,
                         provider,
+                        model,
+                        recorded_at: now,
                     },
                     usage,
                     *cost_micros,

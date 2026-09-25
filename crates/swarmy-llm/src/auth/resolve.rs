@@ -42,6 +42,22 @@ pub struct ResolvedAuth {
     pub auth: ClientAuth,
     pub version: [u8; 32],
     pub entry: Option<String>,
+    /// Kind behind the resolved entry (`subscription`, `api-key`, `cloud`).
+    pub entry_kind: Option<String>,
+}
+
+/// Derive the rollup kind from a stored record without exposing secrets.
+#[must_use]
+pub fn entry_kind_for(record: &CredentialRecord) -> String {
+    match &record.kind {
+        CredentialKind::OAuth { .. } => "subscription".into(),
+        CredentialKind::ApiKey { extra, .. }
+            if extra.get("auth_kind").is_some_and(|kind| kind == "cloud") =>
+        {
+            "cloud".into()
+        }
+        CredentialKind::ApiKey { .. } => "api-key".into(),
+    }
 }
 
 #[derive(Clone)]
@@ -88,11 +104,13 @@ impl Resolver {
                     account,
                 })),
                 version: version(&record)?,
+                entry_kind: Some(entry_kind_for(&record)),
                 entry,
             });
         }
         if let Some(record) = record {
             let version = version(&record)?;
+            let kind = entry_kind_for(&record);
             let auth = if is_vertex(provider) {
                 vertex_from_record(record.kind)
             } else {
@@ -102,6 +120,7 @@ impl Resolver {
                 auth,
                 version,
                 entry,
+                entry_kind: Some(kind),
             });
         }
         environment(provider, environment_value)
@@ -213,6 +232,7 @@ fn environment(
             auth,
             version: [0; 32],
             entry: None,
+            entry_kind: None,
         })
     };
     if provider == "fake" {
@@ -267,6 +287,7 @@ fn environment(
             auth,
             version,
             entry: None,
+            entry_kind: None,
         });
     }
     if is_vertex(provider) {
@@ -283,6 +304,7 @@ fn environment(
                     auth,
                     version: *hasher.finalize().as_bytes(),
                     entry: None,
+                    entry_kind: None,
                 })
             }
             Err(_) => ambient(ClientAuth::Ambient),
