@@ -235,10 +235,11 @@ def main():
         if include_all:
             result = collected
         else:
-            running = [item for item in collected if item['status'] == 'running']
+            # Named to avoid shadowing the module-level running() helper.
+            live = [item for item in collected if item['status'] == 'running']
             others = [item for item in collected if item['status'] != 'running']
             # Running processes are always included; only the rest count to the limit.
-            result = running + others[:limit]
+            result = live + others[:limit]
             # Newest first overall so recent work is visible without paging.
             result.sort(key=lambda item: (item['started_at'], item['process_id']), reverse=True)
     else:
