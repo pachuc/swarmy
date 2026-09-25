@@ -11,6 +11,7 @@ mod client_conversation;
 mod dev;
 mod doctor;
 mod image_command;
+mod input;
 mod models;
 mod models_probe_command;
 mod provider_report;

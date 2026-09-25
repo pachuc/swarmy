@@ -1,7 +1,6 @@
 //! Terminal renderer for the API conversation stream.
-#[path = "chat/input.rs"]
-mod input;
 
+use crate::input::Input;
 use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
 use anyhow::{Context, Result, ensure};
 use crossterm::{
@@ -10,7 +9,6 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
-use input::Input;
 use ratatui::{
     DefaultTerminal,
     widgets::{List, ListItem, ListState, Paragraph, Wrap},

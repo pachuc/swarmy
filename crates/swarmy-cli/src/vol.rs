@@ -1,4 +1,4 @@
-use crate::{conversation::store, vol_command::Command};
+use crate::{session::store, vol_command::Command};
 use anyhow::{Context, Result};
 use std::fmt::Write;
 use swarmy_core::{ImageTag, VolumeId};
