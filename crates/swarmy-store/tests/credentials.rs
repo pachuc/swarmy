@@ -410,7 +410,7 @@ async fn legacy_api_key_migrates_once_to_default() {
     let record = CredentialRecord {
         kind: CredentialKind::ApiKey {
             key: "synthetic".into(),
-            extra: Default::default(),
+            extra: std::collections::BTreeMap::default(),
         },
         updated_at: Timestamp::now(),
     };

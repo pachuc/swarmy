@@ -191,7 +191,7 @@ mod tests {
         };
         let credentials = store.credentials(Keyring::from_bytes([3; 32]));
         credentials
-            .put_credential(CredentialScope::Cluster, "chatgpt", &imported())
+            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &imported())
             .await
             .unwrap();
         let server = MockServer::start().await;
@@ -253,7 +253,7 @@ mod tests {
             .await
             .unwrap();
         let mut updated = credentials
-            .get_credential(CredentialScope::Cluster, "chatgpt")
+            .get_entry(CredentialScope::Cluster, "chatgpt", "default")
             .await
             .unwrap()
             .unwrap();
@@ -262,7 +262,7 @@ mod tests {
         };
         *access = "externally-replaced".into();
         credentials
-            .put_credential(CredentialScope::Cluster, "chatgpt", &updated)
+            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &updated)
             .await
             .unwrap();
         provider
@@ -271,7 +271,7 @@ mod tests {
             .await
             .unwrap();
         credentials
-            .delete_credential(CredentialScope::Cluster, "chatgpt")
+            .delete_entry(CredentialScope::Cluster, "chatgpt", "default")
             .await
             .unwrap();
         assert!(
@@ -290,7 +290,7 @@ mod tests {
         };
         let credentials = store.credentials(Keyring::from_bytes([5; 32]));
         credentials
-            .put_credential(CredentialScope::Cluster, "chatgpt", &imported())
+            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &imported())
             .await
             .unwrap();
         let server = MockServer::start().await;
@@ -313,7 +313,7 @@ mod tests {
             ));
         }
         let record = credentials
-            .get_credential(CredentialScope::Cluster, "chatgpt")
+            .get_entry(CredentialScope::Cluster, "chatgpt", "default")
             .await
             .unwrap()
             .unwrap();
@@ -359,9 +359,10 @@ mod tests {
         let login = OpenRouterLogin::with_base(&server.uri()).unwrap();
         let kind = login.login(&Ui).await.unwrap();
         credentials
-            .put_credential(
+            .put_entry(
                 CredentialScope::Cluster,
                 login.provider(),
+                "default",
                 &CredentialRecord {
                     kind,
                     updated_at: jiff::Timestamp::now(),

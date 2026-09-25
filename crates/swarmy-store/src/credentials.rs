@@ -632,6 +632,7 @@ impl CredentialStore {
             .await
     }
 
+    /// Legacy single-record read used by migration tests; entry reads migrate.
     /// # Errors
     /// Returns `Keyring` for failed authentication, or storage/encoding errors.
     pub async fn get_credential(
@@ -639,7 +640,10 @@ impl CredentialStore {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Option<CredentialRecord>> {
-        self.get_entry(scope, provider, "default").await
+        self.raw(scope, provider)
+            .await?
+            .map(|bytes| decrypt(&self.keyring, scope, provider, &bytes))
+            .transpose()
     }
 
     /// # Errors
@@ -656,11 +660,34 @@ impl CredentialStore {
             .await
     }
 
+    /// Legacy single-scope listing; entry reads migrate instead.
     /// Page through encrypted records, decrypting each once to derive status.
     /// # Errors
     /// Returns keyring, encoding, or database errors.
     pub async fn list_credentials(&self, scope: CredentialScope) -> Result<Vec<CredentialSummary>> {
-        self.list_entries(scope).await
+        let space = self.store.root.subspace(&("credential", scope.to_string()));
+        let (mut begin, end) = space.range();
+        let mut result = Vec::new();
+        loop {
+            let rows = self
+                .store
+                .transaction(|trx| {
+                    let range = (begin.clone(), end.clone());
+                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                })
+                .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for (key, value) in rows {
+                let (provider,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let record = decrypt(&self.keyring, scope, &provider, &value)?;
+                result.push(CredentialSummary::new(provider, &record, Timestamp::now()));
+                begin = key;
+                begin.push(0);
+            }
+        }
+        Ok(result)
     }
 
     /// Serialize refresh outside retryable transactions. Waiters use the winner's

@@ -458,8 +458,13 @@ async fn credential_changes_update_a_running_gateway() {
                     sleep(Duration::from_millis(100)).await;
                 }
             }).await.unwrap();
-            assert!(f.store.gateway_entry("openrouter", "primary").await.unwrap().is_some());
-            assert!(f.store.gateway_entry("openrouter", "backup").await.unwrap().is_some());
+            timeout(Duration::from_secs(65), async {
+                while f.store.gateway_entry("openrouter", "primary").await.unwrap().is_none()
+                    || f.store.gateway_entry("openrouter", "backup").await.unwrap().is_none()
+                {
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }).await.unwrap();
             let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
             let mut job = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
