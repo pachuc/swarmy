@@ -433,3 +433,54 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn token_subscription_is_ready_before_open_returns() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+    let session = fixture
+        .client
+        .create_session(&api::CreateSession {
+            idempotency_key: Ulid::generate().to_string(),
+            agent_id: None,
+            new: false,
+            image: Some(api::ImageRef {
+                name: "fixture".into(),
+                tag: "test".into(),
+            }),
+            provider: None,
+            model: None,
+            effort: None,
+        })
+        .await
+        .unwrap();
+    let mut stream = fixture.client.stream(api::Subscription {
+        cursors: vec![api::Cursor {
+            log_id: session.log_id,
+            sequence: session.head_sequence,
+        }],
+        token_deltas: true,
+    });
+    stream.open().await.unwrap();
+    let id = SessionId::from_ulid(session.id.parse().unwrap());
+    fixture
+        .bus
+        .publish_live(
+            LiveFeed::ApiTokenDeltas(id),
+            &LiveTokenDelta {
+                turn_id: "turn".into(),
+                position: 0,
+                text: "first".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let item = tokio::time::timeout(Duration::from_secs(3), stream.next_item())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(item, StreamItem::TokenDelta { payload: api::EventPayload::TokenDelta { text, .. }, .. } if text == "first")
+    );
+}

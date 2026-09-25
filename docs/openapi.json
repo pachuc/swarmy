@@ -1727,6 +1727,12 @@
           "last_seen": {
             "type": "string"
           },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "role": {
             "type": "string"
           },
@@ -1759,6 +1765,16 @@
           "created_at": {
             "type": "string"
           },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -1772,6 +1788,24 @@
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/SessionState"

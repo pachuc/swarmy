@@ -4,6 +4,10 @@ mod api_commands;
 mod auth;
 mod auth_command;
 mod bench_command;
+mod client_bench;
+mod client_chat;
+mod client_commands;
+mod client_conversation;
 mod dev;
 mod doctor;
 mod image_command;
@@ -197,11 +201,8 @@ fn main() -> anyhow::Result<()> {
             | Command::Remote {
                 command: remote_command::Command::Status
             }
-            | Command::Bench { .. }
-            | Command::Run { .. }
             | Command::Agent { .. }
             | Command::Session { .. }
-            | Command::Chat { .. }
             | Command::Vol { .. }
             | Command::Image { .. }
             | Command::Gc { .. }
@@ -221,16 +222,51 @@ fn main() -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Models { command } => models::run(command, cli.json).await?,
+        Command::Bench { command } => {
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_bench::run(client, command, cli.json).await?;
+        }
+        Command::Run {
+            prompt,
+            image,
+            agent,
+            new,
+            session,
+            selection,
+        } => {
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_commands::run(
+                client, prompt, image, agent, new, session, selection, cli.json,
+            )
+            .await?;
+        }
+        Command::Chat {
+            session_id,
+            image,
+            agent,
+            new,
+            selection,
+        } => {
+            let (client, endpoint) = api_client::connect()?;
+            api_client::call(&endpoint, client.health()).await?;
+            client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
+                .await?;
+            if cli.json {
+                client_commands::chat(client, session_id, image, agent, new, selection, true)
+                    .await?;
+            } else {
+                client_chat::run(client, session_id, image, agent, new, selection).await?;
+            }
+        }
         #[cfg(feature = "remote")]
         Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
         #[cfg(not(feature = "remote"))]
         Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Bench { .. }
-        | Command::Run { .. }
-        | Command::Agent { .. }
+        Command::Agent { .. }
         | Command::Session { .. }
-        | Command::Chat { .. }
         | Command::Vol { .. }
         | Command::Image { .. }
         | Command::Gc { .. } => unreachable!(),
