@@ -140,7 +140,29 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
             .unwrap_or_default(),
         computer_deleted: record.computer_deleted,
         waiting: None,
+        provider: record.inference.provider.clone(),
+        model: record.inference.model.clone(),
+        effort: record
+            .inference
+            .effort
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| serde_json::from_value(v).ok()),
+        next_session: None,
     }
+}
+async fn session_with_next(
+    store: &Store,
+    record: &swarmy_core::SessionRecord,
+) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
+    let mut result = session(record);
+    if record.state == swarmy_core::SessionState::Completed {
+        result.next_session = store
+            .next_session(record.session_id)
+            .await
+            .map_err(storage)?
+            .map(|id| id.to_string());
+    }
+    Ok(result)
 }
 async fn authorize(
     State(state): State<AppState>,
@@ -235,12 +257,17 @@ async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse>
             version: s.heartbeat.version,
             alive: s.alive,
             last_seen: s.heartbeat.last_seen.to_string(),
+            providers: match s.heartbeat.detail {
+                swarmy_store::ServiceDetail::Providers(providers) => providers,
+                _ => Vec::new(),
+            },
         })
         .collect();
     Ok(Json(api::HealthResponse {
         version: swarmy_version::VERSION.into(),
         git_commit: swarmy_version::GIT_COMMIT.into(),
         api_version: api::API_VERSION.into(),
+        default_provider: state.default_selection.provider.clone(),
         services,
         node_count: u64::try_from(node_count).unwrap_or(u64::MAX),
     }))
@@ -413,30 +440,29 @@ async fn sessions(
         .as_deref()
         .map(|v| id(v, SessionId::from_ulid))
         .transpose()?;
-    Ok(Json(
-        state
-            .store
-            .list_sessions(after, limit(page.limit))
-            .await
-            .map_err(storage)?
-            .iter()
-            .map(session)
-            .collect(),
-    ))
+    let records = state
+        .store
+        .list_sessions(after, limit(page.limit))
+        .await
+        .map_err(storage)?;
+    let mut result = Vec::with_capacity(records.len());
+    for record in &records {
+        result.push(session_with_next(&state.store, record).await?);
+    }
+    Ok(Json(result))
 }
 async fn show_session(
     State(state): State<AppState>,
     Path(text): Path<String>,
 ) -> ApiResult<api::Session> {
     let id = id(&text, SessionId::from_ulid)?;
-    Ok(Json(session(
-        &state
-            .store
-            .fetch_session(id)
-            .await
-            .map_err(storage)?
-            .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?,
-    )))
+    let record = state
+        .store
+        .fetch_session(id)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+    Ok(Json(session_with_next(&state.store, &record).await?))
 }
 #[derive(Deserialize)]
 struct EventsPage {

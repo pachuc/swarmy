@@ -1,0 +1,137 @@
+[
+ {
+  "seq": 2469,
+  "event": "inference_completed",
+  "message": {
+   "id": "01M39285MEWR8VQNX8P0M6W7R0",
+   "parts": [
+    {
+     "reasoning": {
+      "metadata": {
+       "openai_responses": {
+        "redacted": "encrypted reasoning item removed from fixture"
+       }
+      },
+      "text": ""
+     }
+    },
+    {
+     "tool_call": {
+      "call_id": "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+      "input": {
+       "new_string": "    if (( pid == 0 )); then return 0; fi\n    if ! sudo -n test -e \"/proc/$pid/exe\"; then\n        [[ -d /proc/$pid ]] || return 0\n        echo \"Cannot inspect running executable for $unit (pid $pid)\" >&2\n        return 2\n    fi",
+       "old_string": "    if (( pid == 0 )) || [[ ! -e /proc/$pid/exe ]]; then return 0; fi",
+       "path": "/home/agent/work/kk29zb/scripts/remote-upgrade-lib.sh"
+      },
+      "tool": "edit"
+     }
+    }
+   ],
+   "role": "assistant"
+  }
+ },
+ {
+  "seq": 2472,
+  "event": "message_appended",
+  "message": {
+   "id": "6JK9T0868EA5FVYHV8RQB5DT9D",
+   "parts": [
+    {
+     "tool_result": {
+      "call_id": "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+      "result": {
+       "completed": {
+        "metadata": {
+         "match_mode": "exact",
+         "replacements": 1
+        },
+        "output": "Matched using exact; replaced 1 occurrence(s).\n--- /home/agent/work/kk29zb/scripts/remote-upgrade-lib.sh\n+++ /home/agent/work/kk29zb/scripts/remote-upgrade-lib.sh\n@@ -20,7 +20,12 @@\n     local unit=$1",
+        "title": "edit"
+       }
+      }
+     }
+    }
+   ],
+   "role": "tool"
+  }
+ },
+ {
+  "seq": 2474,
+  "event": "inference_completed",
+  "message": {
+   "id": "01M3928NNNZM3EQCP836R0599S",
+   "parts": [
+    {
+     "reasoning": {
+      "metadata": {
+       "openai_responses": {
+        "redacted": "encrypted reasoning item removed from fixture"
+       }
+      },
+      "text": ""
+     }
+    },
+    {
+     "tool_call": {
+      "call_id": "call_rqd1dzkZ3kl2nd118QaUdWYW",
+      "input": {
+       "command": "cd ~/work/kk29zb; bash scripts/test-remote-upgrade.sh && bash -n scripts/remote-upgrade.sh scripts/remote-upgrade-lib.sh && cargo fmt --all --check && git -c safe.directory=/home/agent/work/kk29zb diff --check; echo status:$?",
+       "timeout_ms": 120000
+      },
+      "tool": "bash"
+     }
+    }
+   ],
+   "role": "assistant"
+  }
+ },
+ {
+  "seq": 2476,
+  "event": "message_appended",
+  "message": {
+   "id": "01M394QT48XAFZ30D3WCS5YD1E",
+   "parts": [
+    {
+     "text": {
+      "text": "Your computer was evicted while idle. Recovery began at 2026-09-24T07:23:05.22078174Z from its final checkpoint at 2026-09-24T06:39:45.733Z, which was 2599 seconds before recovery. Running processes and file changes after that checkpoint were lost. Any interrupted tool call failed; check external side effects before retrying."
+     }
+    }
+   ],
+   "role": "system"
+  }
+ },
+ {
+  "seq": 2478,
+  "event": "message_appended",
+  "message": {
+   "id": "3CCHBVWAQ4T1YHM58D6YRZ76NQ",
+   "parts": [
+    {
+     "tool_result": {
+      "call_id": "call_rqd1dzkZ3kl2nd118QaUdWYW",
+      "result": {
+       "completed": {
+        "metadata": {
+         "backgrounded": false,
+         "elided_bytes": 0,
+         "exit_code": 0,
+         "log_path": "/home/agent/.swarmy/output/call_rqd1dzkZ3kl2nd118QaUdWYW.log",
+         "manifest_id": "01M3928FJ5D2RBNJWMZ54B0503",
+         "process_id": "01M394QTF9BTY4JN4A8VRZZZWM",
+         "status": "exited",
+         "stderr": "",
+         "stdout": "remote upgrade arguments and hashes: ok\nstatus:0\n",
+         "timed_out": false,
+         "truncated": false
+        },
+        "output": "{\"backgrounded\":false,\"elided_bytes\":0,\"exit_code\":0,\"log_path\":\"/home/agent/.swarmy/output/call_rqd1dzkZ3kl2nd118QaUdWYW.log\",\"manifest_id\":\"01M3928FJ5D2RBNJWMZ54B0503\",\"process_id\":\"01M394QTF9BTY4JN",
+        "title": "bash"
+       }
+      }
+     }
+    }
+   ],
+   "role": "tool"
+  }
+ }
+]

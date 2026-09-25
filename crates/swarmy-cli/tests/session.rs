@@ -26,11 +26,11 @@ use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
-    Event, LeaseOwnerId, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
-    SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
+    Event, LeaseOwnerId, LiveTokenDelta, Message, MessageId, MessageRole, Nudge, Part, RequestId,
+    SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -74,6 +74,20 @@ impl Fixture {
             .await
             .expect("CLI hung")
             .unwrap()
+    }
+
+    async fn publish_token(&self, id: SessionId, text: &str, position: u64) {
+        self.bus
+            .publish_live(
+                LiveFeed::ApiTokenDeltas(id),
+                &LiveTokenDelta {
+                    turn_id: id.to_string(),
+                    position,
+                    text: text.into(),
+                },
+            )
+            .await
+            .unwrap();
     }
 
     async fn cleanup(&self) {
@@ -132,6 +146,31 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     )
     .await
     .unwrap();
+    // These tests drive fake workers and gateways directly; advertise their
+    // availability so the API chat health gate does not wait for real daemons.
+    for role in [
+        ServiceRole::Worker,
+        ServiceRole::Scheduler,
+        ServiceRole::Gateway,
+    ] {
+        let detail = if role == ServiceRole::Gateway {
+            ServiceDetail::Providers(vec!["fake".into(), "openai".into()])
+        } else {
+            ServiceDetail::None
+        };
+        store
+            .put_service_heartbeat(&ServiceHeartbeat {
+                role,
+                instance_id: Ulid::generate().to_string(),
+                version: "test".into(),
+                host: "test".into(),
+                started_at: Timestamp::now(),
+                last_seen: Timestamp::now(),
+                detail,
+            })
+            .await
+            .unwrap();
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let api_token = Ulid::generate().to_string();
@@ -142,6 +181,11 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         swarmy_llm::catalog::Catalog::get().clone(),
     );
     api.default_image = Some("fixture:test".into());
+    // Several terminal tests append events directly to the store without a
+    // live publication, so the stream's store poll is the only repair path.
+    // Keep it below the 15 second test wait but above the 3 second client
+    // poll tick the missed-event test measures against.
+    api.stream_poll_interval = Duration::from_secs(5);
     let api_server = tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
     let fixture = Fixture {
         store: store.clone(),
@@ -275,7 +319,7 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
         .await
         .unwrap();
     if live {
-        for text in ["scripted ", "answer"] {
+        for (position, text) in [(0, "scripted "), (9, "answer")] {
             fixture
                 .bus
                 .publish_live(
@@ -287,6 +331,7 @@ async fn worker(fixture: &Fixture, id: SessionId, live: bool) {
                 )
                 .await
                 .unwrap();
+            fixture.publish_token(id, text, position).await;
         }
     }
     let request_id = RequestId::for_step(id, lease.seq);
@@ -501,6 +546,136 @@ async fn run_recovers_without_live_publications_or_idle_event() {
     .await;
 }
 
+async fn serve_delayed(fixture: &Fixture) -> tokio::task::JoinHandle<()> {
+    let mut messages = nudges(fixture).await;
+    let delayed = fixture.clone();
+    tokio::spawn(async move {
+        while let Some(message) = messages.next().await {
+            let nudge: Nudge = decode(&message.payload).unwrap();
+            delayed_turn(&delayed, nudge.session_id).await;
+        }
+    })
+}
+
+async fn delayed_turn(fixture: &Fixture, id: SessionId) {
+    let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
+    fixture
+        .store
+        .wake_session(id, Timestamp::now())
+        .await
+        .unwrap();
+    let lease = fixture
+        .store
+        .claim_lease(
+            id,
+            LeaseOwnerId::from_ulid(Ulid::generate()),
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    for (position, text) in [(0, "scripted "), (9, "answer")] {
+        fixture
+            .bus
+            .publish_live(
+                LiveFeed::ModelDeltas(id),
+                &Delta::Text {
+                    output_index: 0,
+                    text: text.into(),
+                },
+            )
+            .await
+            .unwrap();
+        fixture.publish_token(id, text, position).await;
+    }
+    let request_id = RequestId::for_step(id, lease.seq);
+    let call_id = ToolCallId("clock".into());
+    let events = vec![
+        assistant(),
+        Event::ToolCallRequested {
+            seq: 0,
+            request_id,
+            call: ToolCallRecord {
+                call_id: call_id.clone(),
+                tool: "get_time".into(),
+                arguments: serde_json::json!({}),
+                result: None,
+            },
+        },
+        Event::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id,
+            result: successful_tool_result(),
+        },
+        Event::StateChanged {
+            seq: 0,
+            from: SessionState::Leased,
+            to: SessionState::Idle,
+        },
+    ];
+    fixture
+        .store
+        .append_events(id, session.head_seq, &events)
+        .await
+        .unwrap();
+    fixture
+        .store
+        .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
+        .await
+        .unwrap();
+    // Let the client's poll tick observe Idle before SSE arrives.
+    sleep(Duration::from_millis(3500)).await;
+    for event in fixture
+        .store
+        .read_events(id, session.head_seq, 64)
+        .await
+        .unwrap()
+    {
+        fixture
+            .bus
+            .publish_live(LiveFeed::SessionEvents(id), &event)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn poll_idle_does_not_duplicate_live_turn_and_next_turn_is_clean() {
+    run(|fixture| async move {
+        // Force the three-second poll tick to observe Idle after the store
+        // commit but before SSE delivery, while the stream stays healthy.
+        // Without delivered-cursor replay the tick re-queues the whole turn.
+        let server = serve_delayed(&fixture).await;
+        let output = fixture.output(&["run", "hello"]).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines[0], "scripted answer");
+        let id = fixture.store.list_sessions(None, 1).await.unwrap()[0]
+            .session_id
+            .to_string();
+        // A leftover synthetic idle in the client's queue would make the next
+        // turn return immediately without an assistant reply.
+        let second = fixture.output(&["run", "hello", "--session", &id]).await;
+        server.abort();
+        assert!(
+            second.status.success(),
+            "{}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        let text = String::from_utf8(second.stdout).unwrap();
+        assert_eq!(text.lines().count(), 3, "{text}");
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn run_json_emits_only_machine_readable_records() {
     run(|fixture| async move {
@@ -610,6 +785,7 @@ async fn text_is_flushed_before_the_turn_finishes() {
             )
             .await
             .unwrap();
+        fixture.publish_token(id, "scripted ", 0).await;
         let mut prefix = [0; 9];
         timeout(WAIT, child.stdout.as_mut().unwrap().read_exact(&mut prefix))
             .await
@@ -661,29 +837,35 @@ async fn text_is_flushed_before_the_turn_finishes() {
 }
 
 #[tokio::test]
-async fn run_requires_default_image_and_explicit_image_overrides_it() {
+async fn run_uses_server_default_image_and_explicit_image_overrides_it() {
     run(|fixture| async move {
-        let missing = fixture
+        // The API server, not the client settings, owns the default image.
+        let server = serve(&fixture, true).await;
+        let default = fixture
             .command(&["run", "hello"])
             .env("SWARMY_DEFAULT_IMAGE", "")
             .output()
             .await
             .unwrap();
-        assert!(!missing.status.success());
-        let error = String::from_utf8_lossy(&missing.stderr);
         assert!(
-            error.contains("default_image") && error.contains("SWARMY_DEFAULT_IMAGE"),
-            "{error}"
+            default.status.success(),
+            "{}",
+            String::from_utf8_lossy(&default.stderr)
         );
-        assert!(
+        let sessions = fixture.store.list_sessions(None, 64).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
             fixture
                 .store
-                .list_sessions(None, 64)
+                .session_image(sessions[0].session_id)
+                .await
+                .unwrap(),
+            fixture
+                .store
+                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
                 .await
                 .unwrap()
-                .is_empty()
         );
-        let server = serve(&fixture, true).await;
         let output = timeout(
             WAIT,
             fixture
@@ -716,6 +898,37 @@ async fn run_rejects_unknown_images_before_creating_a_session() {
             error.contains("missing:tag") && error.contains("registered images: fixture:test"),
             "{error}"
         );
+        assert!(
+            fixture
+                .store
+                .list_sessions(None, 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn unavailable_api_reports_endpoint_before_creating_a_session() {
+    run(|fixture| async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let output = timeout(
+            WAIT,
+            fixture
+                .command(&["run", "hello", "--image", "fixture:test"])
+                .env("SWARMY_API_URL", &endpoint)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("API at {endpoint}:")), "{stderr}");
         assert!(
             fixture
                 .store

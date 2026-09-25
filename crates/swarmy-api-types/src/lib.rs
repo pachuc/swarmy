@@ -134,6 +134,14 @@ pub struct Session {
     pub created_at: String,
     pub computer_deleted: bool,
     pub waiting: Option<WaitingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_session: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -246,6 +254,8 @@ pub struct ServiceHealth {
     pub version: String,
     pub alive: bool,
     pub last_seen: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
 }
 
 /// The unauthenticated health projection. `api_version` carries the document
@@ -255,6 +265,8 @@ pub struct HealthResponse {
     pub version: String,
     pub git_commit: String,
     pub api_version: String,
+    /// The provider new conversations use when the request names none.
+    pub default_provider: String,
     pub services: Vec<ServiceHealth>,
     pub node_count: u64,
 }
@@ -815,6 +827,7 @@ mod tests {
         check!(ImageRef, {"name":"base","tag":"dev"});
         check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s"});
         check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]}});
+        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
         for role in ["user", "assistant", "tool", "system"] {
             check!(MessageRole, role);

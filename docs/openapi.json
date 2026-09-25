@@ -2663,12 +2663,17 @@
           "version",
           "git_commit",
           "api_version",
+          "default_provider",
           "services",
           "node_count"
         ],
         "properties": {
           "api_version": {
             "type": "string"
+          },
+          "default_provider": {
+            "type": "string",
+            "description": "The provider new conversations use when the request names none."
           },
           "git_commit": {
             "type": "string"
@@ -2966,6 +2971,12 @@
           "last_seen": {
             "type": "string"
           },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "role": {
             "type": "string"
           },
@@ -2998,6 +3009,16 @@
           "created_at": {
             "type": "string"
           },
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -3011,6 +3032,24 @@
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/SessionState"

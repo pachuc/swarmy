@@ -4406,6 +4406,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "ulid",
  "url",
  "wiremock",

@@ -128,7 +128,7 @@ impl Provider for CompletionsProvider {
 /// Build a request using the selected model's compatibility flags.
 ///
 /// # Errors
-/// Rejects mismatched models, invalid temperatures, or uncorrelated tool results.
+/// Rejects mismatched models or invalid temperatures.
 pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Result<Value, Error> {
     if !request.settings.model.is_empty() && request.settings.model != model.id {
         return Err(Error::Protocol(
@@ -147,7 +147,7 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
     for message in &request.messages {
         messages.extend(convert_message(message, provider, model, system_role)?);
     }
-    let mut messages = repair_tool_results(messages)?;
+    let mut messages = repair_tool_results(messages);
     if model.compat.cache_control_format() == Some("anthropic") {
         cache_messages(&mut messages);
     }
@@ -314,45 +314,97 @@ fn convert_message(
     Ok(messages)
 }
 
-fn repair_tool_results(mut messages: Vec<Value>) -> Result<Vec<Value>, Error> {
-    let mut output = Vec::new();
+/// Reorder wire messages so every tool result immediately follows the
+/// assistant message holding its call.
+///
+/// A system notice or a late user prompt can sit between a call and its
+/// result in the durable log; those messages are emitted after the results
+/// with their relative order preserved. A result whose call id appears
+/// nowhere in the history gets a neutral placeholder call so switching
+/// providers never fails.
+fn repair_tool_results(messages: Vec<Value>) -> Vec<Value> {
+    let mut call_sites: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    call_sites.entry(id.to_owned()).or_insert(index);
+                }
+            }
+        }
+    }
+    let mut taken = vec![false; messages.len()];
+    let mut messages = messages;
+    let mut repaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut output = Vec::with_capacity(messages.len() * 2);
     for index in 0..messages.len() {
+        if taken[index] {
+            continue;
+        }
         let message = std::mem::take(&mut messages[index]);
         if message.is_null() {
             continue;
         }
-        if message["role"] == "tool" {
-            return Err(Error::Protocol(
-                "tool result has no preceding tool call".into(),
-            ));
+        if message.get("role").and_then(Value::as_str) == Some("tool") {
+            let id = message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if call_sites.contains_key(&id) {
+                // The result is pulled forward to its assistant message below,
+                // or was already emitted there; never emit it twice.
+                continue;
+            }
+            taken[index] = true;
+            output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": "unknown_tool", "arguments": "{}"}}]}));
+            repaired.insert(id);
+            output.push(message);
+            continue;
         }
-        let calls = message["tool_calls"]
-            .as_array()
-            .cloned()
+        let calls: Vec<String> = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default();
         output.push(message);
-        for call in calls {
-            let mut result = None;
-            // Rebuild notices can separate calls from results in the durable log.
-            // Wire messages must keep every result next to its assistant turn.
-            for candidate in &mut messages[index + 1..] {
-                if candidate["role"] == "assistant" || candidate["role"] == "user" {
-                    break;
+        for id in calls {
+            let mut found = None;
+            for (candidate, message) in messages.iter().enumerate() {
+                if taken[candidate] {
+                    continue;
                 }
-                if candidate["role"] == "tool" && candidate["tool_call_id"] == call["id"] {
-                    result = Some(std::mem::take(candidate));
+                if message.get("role").and_then(Value::as_str) == Some("tool")
+                    && message.get("tool_call_id").and_then(Value::as_str) == Some(&id)
+                {
+                    found = Some(candidate);
                     break;
                 }
             }
-            output.push(result.unwrap_or_else(|| {
-                json!({
-                    "role": "tool", "tool_call_id": call["id"],
+            if let Some(candidate) = found {
+                taken[candidate] = true;
+                output.push(std::mem::take(&mut messages[candidate]));
+            } else {
+                output.push(json!({
+                    "role": "tool", "tool_call_id": id,
                     "content": json!({"error": "No result provided"}).to_string()
-                })
-            }));
+                }));
+            }
         }
     }
-    Ok(output)
+    if !repaired.is_empty() {
+        tracing::warn!(
+            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
+            "repaired tool result without a stored tool call; synthesized unknown_tool call"
+        );
+    }
+    output
 }
 
 fn cache_messages(messages: &mut [Value]) {

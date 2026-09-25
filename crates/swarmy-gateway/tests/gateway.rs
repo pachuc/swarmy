@@ -866,6 +866,269 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
     }).await;
 }
 
+fn switch_script() -> (Response, Response) {
+    let call = Part::ToolCall {
+        call_id: swarmy_core::ToolCallId("clock-0".into()),
+        tool: "get_time".into(),
+        input: serde_json::json!({}),
+    };
+    let first = Response {
+        parts: vec![
+            Part::Text {
+                text: "Checking.".into(),
+            },
+            call,
+        ],
+        stop_reason: StopReason::ToolCalls,
+        usage: TokenUsage::default(),
+    };
+    let second = Response {
+        parts: vec![Part::Text {
+            text: "done".into(),
+        }],
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage::default(),
+    };
+    (first, second)
+}
+
+fn switch_models() -> (
+    swarmy_config::CustomModel,
+    Vec<swarmy_config::CustomModel>,
+    std::collections::BTreeMap<String, swarmy_config::CustomProvider>,
+) {
+    let model = swarmy_config::CustomModel {
+        id: "scripted-model".into(),
+        api: Some(swarmy_llm::catalog::Api::Fake),
+        ..Default::default()
+    };
+    let models: Vec<_> = ["fake", "scripted"]
+        .map(|provider| swarmy_config::CustomModel {
+            provider: provider.into(),
+            ..model.clone()
+        })
+        .into();
+    let providers = std::collections::BTreeMap::from([(
+        "scripted".to_owned(),
+        swarmy_config::CustomProvider {
+            api: Some(swarmy_llm::catalog::Api::Fake),
+            base_url: Some("fake://scripted".into()),
+        },
+    )]);
+    (model, models, providers)
+}
+
+fn switch_user() -> swarmy_core::Message {
+    swarmy_core::Message {
+        id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+        role: swarmy_core::MessageRole::User,
+        parts: vec![Part::Text {
+            text: "What time is it?".into(),
+        }],
+    }
+}
+
+fn switch_tool_result() -> swarmy_core::Message {
+    swarmy_core::Message {
+        id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+        role: swarmy_core::MessageRole::Tool,
+        parts: vec![swarmy_core::Part::ToolResult {
+            call_id: swarmy_core::ToolCallId("clock-0".into()),
+            result: swarmy_core::ToolResult::Completed {
+                output: "12:00".into(),
+                title: "get_time".into(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+        }],
+    }
+}
+
+fn switch_notice() -> swarmy_core::Message {
+    swarmy_core::Message {
+        id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
+        role: swarmy_core::MessageRole::System,
+        parts: vec![Part::Text {
+            text: "Your computer was evicted while idle. Recovery began; check external side effects before retrying.".into(),
+        }],
+    }
+}
+
+fn logged_histories(f: &Fixture) -> Vec<Vec<swarmy_core::Message>> {
+    std::fs::read_to_string(f.files.path().join("calls"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            serde_json::from_value(entry["messages"].clone()).unwrap()
+        })
+        .collect()
+}
+
+fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
+    // The fake provider bypasses both wire adapters, so the gateway must
+    // forward the interleaved history intact: the call stays before its
+    // result, the notice stays present, and neither is duplicated. Wire
+    // pairing for real providers is covered by the protocol and completions
+    // suites in swarmy-llm.
+    let call = messages
+        .iter()
+        .position(|m| {
+            m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
+            })
+        })
+        .expect("call in logged history");
+    let result = messages
+        .iter()
+        .position(|m| {
+            m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
+            })
+        })
+        .expect("result in logged history");
+    assert!(call < result, "logged call must precede its result");
+    assert!(
+        messages.iter().any(|m| m.parts.iter().any(|p| matches!(
+            p,
+            Part::Text { text } if text.contains("Your computer was evicted")
+        ))),
+        "logged history must keep the notice"
+    );
+    for (kind, count) in [
+        (
+            "call",
+            messages
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
+            })
+                })
+                .count(),
+        ),
+        (
+            "result",
+            messages
+                .iter()
+                .filter(|m| {
+                    m.parts.iter().any(|p| {
+                matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
+            })
+                })
+                .count(),
+        ),
+    ] {
+        assert_eq!(count, 1, "logged history must not duplicate the {kind}");
+    }
+}
+
+async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
+    let scripted = WorkQueue::Inference(SubjectToken::new("scripted").unwrap());
+    f.bus.setup(std::slice::from_ref(&scripted)).await.unwrap();
+    let agent = AgentId::from_ulid(Ulid::generate());
+    let settings = GenerationSettings {
+        model: model.id.clone(),
+        ..Default::default()
+    };
+    let mut first = f
+        .job_for_agent_with_request(
+            agent,
+            Request {
+                system_prompt: String::new(),
+                messages: vec![switch_user()],
+                tools: Vec::new(),
+                settings: settings.clone(),
+            },
+        )
+        .await;
+    first.provider = "fake".into();
+    f.publish(&first).await;
+    let Event::InferenceCompleted { message, .. } = f.terminal(&first).await else {
+        panic!("first turn did not complete");
+    };
+    assert!(
+        message
+            .parts
+            .iter()
+            .any(|p| matches!(p, swarmy_core::Part::ToolCall { .. }))
+    );
+    let history = vec![
+        switch_user(),
+        message.clone(),
+        switch_notice(),
+        switch_tool_result(),
+    ];
+    let mut second = f
+        .job_for_agent_with_request(
+            agent,
+            Request {
+                system_prompt: String::new(),
+                messages: history.clone(),
+                tools: Vec::new(),
+                settings,
+            },
+        )
+        .await;
+    second.provider = "scripted".into();
+    f.bus
+        .publish_work(&scripted, &InferenceJobRef::from(&second))
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.terminal(&second).await,
+        Event::InferenceCompleted { .. }
+    ));
+    let histories = logged_histories(f);
+    assert_eq!(histories.len(), 2, "one log entry per turn so far");
+    assert_logged_history_order(&histories[1]);
+    let mut back = f
+        .job_for_agent_with_request(
+            agent,
+            Request {
+                system_prompt: String::new(),
+                messages: history,
+                tools: Vec::new(),
+                settings: GenerationSettings {
+                    model: model.id.clone(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await;
+    back.provider = "fake".into();
+    f.publish(&back).await;
+    assert!(matches!(
+        f.terminal(&back).await,
+        Event::InferenceCompleted { .. }
+    ));
+    let histories = logged_histories(f);
+    assert_eq!(histories.len(), 3, "one log entry per turn");
+    assert_logged_history_order(&histories[2]);
+}
+
+#[tokio::test]
+async fn provider_switch_preserves_tool_history() {
+    run(|mut f| async move {
+        let (first, second) = switch_script();
+        std::fs::write(
+            f.files.path().join("script.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "responses": {"0": first, "1": second, "2": second, "3": second},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (model, models, providers) = switch_models();
+        f.start_with(1, "fake,scripted", &providers, &models);
+        let result = AssertUnwindSafe(switch_turns(&mut f, &model))
+            .catch_unwind()
+            .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
     run(|mut f| async move {

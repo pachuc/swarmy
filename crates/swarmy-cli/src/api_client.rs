@@ -2,18 +2,23 @@
 use anyhow::{Context, Result};
 use swarmy_client::Client;
 
-pub fn connect() -> Result<(Client, String)> {
+pub fn endpoint() -> Result<String> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let endpoint = settings
-        .api
-        .url
-        .clone()
-        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
     anyhow::ensure!(
         !settings.api.token.is_empty(),
         "no [api] token configured; run swarmy dev up"
     );
-    let client = Client::new(&endpoint, settings.api.token)
+    Ok(settings
+        .api
+        .url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", settings.api.listen)))
+}
+
+pub fn connect() -> Result<(Client, String)> {
+    let endpoint = endpoint()?;
+    let token = swarmy_config::Settings::load()?.settings.api.token;
+    let client = Client::new(&endpoint, token)
         .with_context(|| format!("invalid API endpoint {endpoint}"))?;
     Ok((client, endpoint))
 }
