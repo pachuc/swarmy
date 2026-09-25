@@ -2,7 +2,7 @@
 mod credentials;
 mod runc;
 use async_trait::async_trait;
-pub use runc::{RuncRuntime, ScratchPolicy};
+pub use runc::{RuncRuntime, ScratchPolicy, pasta_pid_file};
 pub use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
     SandboxSpec,

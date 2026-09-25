@@ -32,6 +32,17 @@ impl Store {
         ))
     }
 
+    /// The session whose worker set the timer. Timers stay agent-scoped so a
+    /// summarized or closed origin cannot strand a note, but delivery prefers
+    /// this idle session over the main conversation.
+    fn timer_origin_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
+        self.root.pack(&(
+            "timer_origin",
+            agent.as_ulid().to_bytes().as_slice(),
+            timer.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
         write(trx, &self.timer_key(timer.agent_id, timer.timer_id), timer)?;
         let active = self.active_timers(timer.agent_id).pack(&(timer
@@ -45,6 +56,7 @@ impl Store {
         } else {
             trx.clear(&active);
             trx.clear(&self.timer_due_key(timer));
+            trx.clear(&self.timer_origin_key(timer.agent_id, timer.timer_id));
         }
         Ok(())
     }
@@ -109,7 +121,7 @@ impl Store {
             }
             self.check_computer(&trx, session.agent_id).await?;
             let result = if self.read_agent(&trx, session.agent_id).await?.is_some() {
-                self.timer_tool_in(&trx, session.agent_id, timer_id, call, now)
+                self.timer_tool_in(&trx, session.agent_id, id, timer_id, call, now)
                     .await?
             } else {
                 Err("timers require a named agent".into())
@@ -144,6 +156,7 @@ impl Store {
         &self,
         trx: &Transaction,
         agent: AgentId,
+        origin: SessionId,
         timer_id: TimerId,
         call: &ToolCallRecord,
         now: Timestamp,
@@ -169,6 +182,7 @@ impl Store {
                     status: TimerStatus::Pending,
                 };
                 self.save_timer(trx, &timer)?;
+                write(trx, &self.timer_origin_key(agent, timer_id), &origin)?;
                 serde_json::to_string(&timer)
             }
             "cancel_timer" => {
@@ -228,8 +242,9 @@ impl Store {
         .await
     }
 
-    /// Append a due note and its delivery receipt atomically, resolving the current main session.
-    /// Busy main sessions leave the timer pending until a later tick. A lost nudge is
+    /// Append a due note and its delivery receipt atomically, preferring the idle
+    /// session that set the timer and falling back to the current main session.
+    /// Busy sessions leave the timer pending until a later tick. A lost nudge is
     /// recovered by the runnable scan; a failed append never marks the timer fired.
     /// # Errors
     /// Returns database, encoding, or sequence overflow failures.
@@ -252,6 +267,27 @@ impl Store {
                 self.save_timer(&trx, &timer)?;
                 return Ok(None);
             };
+            if let Some(origin) =
+                read::<SessionId>(&trx, &self.timer_origin_key(timer.agent_id, timer.timer_id))
+                    .await?
+            {
+                // Timers are lease-fenced to their agent, so a mismatched origin
+                // only means stale state: fall through to the main conversation.
+                if let Some(session) =
+                    read::<crate::StoredSession>(&trx, &self.session_key(origin)).await?
+                    && session.agent_id == agent.agent_id
+                    && session.state == SessionState::Idle
+                {
+                    self.check_computer(&trx, agent.agent_id).await?;
+                    let (id, event) = self.deliver_timer(&trx, session, &timer, now).await?;
+                    timer.status = TimerStatus::Fired {
+                        session_id: id,
+                        seq: event.seq(),
+                    };
+                    self.save_timer(&trx, &timer)?;
+                    return Ok(Some((id, event)));
+                }
+            }
             let id = if let Some(id) = agent.main_session {
                 id
             } else {
@@ -275,37 +311,51 @@ impl Store {
                 write(&trx, &self.agent_key(agent.agent_id), &agent)?;
                 id
             };
-            let mut session = self.session(&trx, id).await?;
+            let session = self.session(&trx, id).await?;
             if session.state != SessionState::Idle {
                 return Ok(None);
             }
             self.check_computer(&trx, agent.agent_id).await?;
-            let seq = session
-                .head_seq
-                .checked_add(1)
-                .ok_or(StoreError::SequenceOverflow)?;
-            let event = Event::MessageAppended {
-                seq,
-                message: Message {
-                    id: MessageId::from_ulid(timer.timer_id.as_ulid()),
-                    role: MessageRole::System,
-                    parts: vec![Part::Text {
-                        text: timer.note.clone(),
-                    }],
-                },
-            };
-            let value = self.prepare(&event).await?;
-            trx.set(&self.event_space(id).pack(&(seq,)), &value);
-            session.head_seq = seq;
-            self.transition(&trx, session, SessionState::Runnable, now)
-                .await?;
+            let (id, event) = self.deliver_timer(&trx, session, &timer, now).await?;
             timer.status = TimerStatus::Fired {
                 session_id: id,
-                seq,
+                seq: event.seq(),
             };
             self.save_timer(&trx, &timer)?;
             Ok(Some((id, event)))
         })
         .await
+    }
+
+    /// Append the timer note to an idle session and make it runnable. Callers
+    /// check idleness first so a busy session leaves the timer pending.
+    async fn deliver_timer(
+        &self,
+        trx: &Transaction,
+        mut session: crate::StoredSession,
+        timer: &TimerRecord,
+        now: Timestamp,
+    ) -> Result<(SessionId, Event)> {
+        let id = session.session_id;
+        let seq = session
+            .head_seq
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        let event = Event::MessageAppended {
+            seq,
+            message: Message {
+                id: MessageId::from_ulid(timer.timer_id.as_ulid()),
+                role: MessageRole::System,
+                parts: vec![Part::Text {
+                    text: timer.note.clone(),
+                }],
+            },
+        };
+        let value = self.prepare(&event).await?;
+        trx.set(&self.event_space(id).pack(&(seq,)), &value);
+        session.head_seq = seq;
+        self.transition(trx, session, SessionState::Runnable, now)
+            .await?;
+        Ok((id, event))
     }
 }

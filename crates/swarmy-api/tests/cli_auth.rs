@@ -154,9 +154,15 @@ fn set_list_check_remove_and_import() {
     let row: Value = serde_json::from_str(rows.trim()).unwrap();
     assert_eq!(row["provider"], "anthropic");
     assert_eq!(row["status"], "ready");
-    assert_eq!(row["kind"], "api_key");
+    assert_eq!(row["kind"], "api-key");
     f.success(&["auth", "check", "anthropic", "--json"]);
-    f.success(&["auth", "rm", "anthropic", "--json"]);
+    f.success(&[
+        "auth",
+        "rm",
+        "anthropic",
+        row["label"].as_str().unwrap(),
+        "--json",
+    ]);
     assert!(f.success(&["auth", "ls", "--json"]).is_empty());
     let missing = f.run(&["auth", "check", "anthropic"]);
     assert!(!missing.status.success());
@@ -166,7 +172,7 @@ fn set_list_check_remove_and_import() {
     let rows = f.success(&["auth", "ls", "--json"]);
     let row: Value = serde_json::from_str(rows.trim()).unwrap();
     assert_eq!(row["provider"], "chatgpt");
-    assert_eq!(row["kind"], "oauth");
+    assert_eq!(row["kind"], "subscription");
     assert_eq!(fs::read(f.dir.path().join("auth.json")).unwrap(), original);
     let check = f.run(&["auth", "check", "chatgpt", "--json"]);
     let row: Value = serde_json::from_slice(&check.stdout).unwrap();
@@ -235,7 +241,7 @@ printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:
     assert!(!String::from_utf8_lossy(&result.stdout).contains("secret-azure-fixture"));
     let row: Value =
         serde_json::from_str(&f.success(&["auth", "check", "azure", "--json"])).unwrap();
-    assert_eq!(row["kind"], "oauth");
+    assert_eq!(row["kind"], "subscription");
     assert_eq!(row["status"], "ready");
     assert_eq!(fs::read(f.dir.path().join("auth.json")).unwrap(), original);
     fs::remove_file(az).unwrap();
@@ -246,4 +252,56 @@ printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:
         .unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("requires az on this host"));
+}
+
+#[test]
+fn two_labels_under_one_provider_are_independent() {
+    let Some(f) = Fixture::new() else { return };
+    for label in ["primary", "backup"] {
+        f.success(&[
+            "auth",
+            "set",
+            "--provider",
+            "openai",
+            "--label",
+            label,
+            "--api-key",
+            "sk-test",
+        ]);
+    }
+    let rows = f.success(&["auth", "ls", "--json"]);
+    let entries: Vec<Value> = rows
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .any(|row| row["provider"] == "openai" && row["label"] == "primary")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|row| row["provider"] == "openai" && row["label"] == "backup")
+    );
+    f.success(&["auth", "rm", "openai", "primary"]);
+    let remaining = f.success(&["auth", "ls", "--json"]);
+    let row: Value = serde_json::from_str(remaining.trim()).unwrap();
+    assert_eq!(row["label"], "backup");
+}
+
+#[test]
+fn labelless_set_replaces_the_default_entry() {
+    let Some(f) = Fixture::new() else { return };
+    for _ in 0..2 {
+        f.success(&["auth", "set", "openai", "--api-key", "sk-test"]);
+    }
+    let rows = f.success(&["auth", "ls", "--json"]);
+    let entries: Vec<Value> = rows
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["label"], "default");
 }

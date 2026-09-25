@@ -103,8 +103,8 @@ pub enum StoreError {
     InvalidMainSession,
     #[error("node does not exist")]
     NodeMissing,
-    #[error("node has no computer capacity available")]
-    NodeAtCapacity,
+    #[error("node has no computer capacity available: {detail}")]
+    NodeAtCapacity { detail: String },
     #[error("sandbox requirements can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
     #[error("placement already exists")]

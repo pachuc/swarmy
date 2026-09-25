@@ -15,6 +15,16 @@ pub trait AuthStore: Send + Sync {
     /// # Errors
     /// Returns database and decryption errors.
     async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error>;
+    /// The same record as `get` with its entry label, when the store holds
+    /// labelled entries. The default delegates to `get` without a label.
+    /// # Errors
+    /// Returns database and decryption errors.
+    async fn get_labelled(
+        &self,
+        provider: &str,
+    ) -> Result<Option<(Option<String>, CredentialRecord)>, Error> {
+        Ok(self.get(provider).await?.map(|record| (None, record)))
+    }
     /// Implementations must re-read under the lease and refresh only if unchanged.
     /// # Errors
     /// Returns lease, persistence, and provider refresh errors.
@@ -27,9 +37,11 @@ pub trait AuthStore: Send + Sync {
 }
 
 /// The version is opaque and must never be logged. It changes with credential content.
+/// The entry is the stored label behind this resolution, used for usage attribution.
 pub struct ResolvedAuth {
     pub auth: ClientAuth,
     pub version: [u8; 32],
+    pub entry: Option<String>,
 }
 
 #[derive(Clone)]
@@ -64,7 +76,7 @@ impl Resolver {
         provider: &str,
         environment_value: impl Fn(&str) -> Option<String>,
     ) -> Result<ResolvedAuth, Error> {
-        let record = self.record(provider).await?;
+        let (entry, record) = self.record(provider).await?;
         if provider == "chatgpt" {
             let record = record.ok_or_else(|| Error::NeedsLogin(provider.into()))?;
             let credentials = Credentials::from_record(&record)?;
@@ -76,6 +88,7 @@ impl Resolver {
                     account,
                 })),
                 version: version(&record)?,
+                entry,
             });
         }
         if let Some(record) = record {
@@ -85,14 +98,21 @@ impl Resolver {
             } else {
                 auth_from_kind(record.kind)?
             };
-            return Ok(ResolvedAuth { auth, version });
+            return Ok(ResolvedAuth {
+                auth,
+                version,
+                entry,
+            });
         }
         environment(provider, environment_value)
     }
 
-    async fn record(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
-        let Some(mut record) = self.store.get(provider).await? else {
-            return Ok(None);
+    async fn record(
+        &self,
+        provider: &str,
+    ) -> Result<(Option<String>, Option<CredentialRecord>), Error> {
+        let Some((label, mut record)) = self.store.get_labelled(provider).await? else {
+            return Ok((None, None));
         };
         if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
             return Err(Error::NeedsLogin(provider.into()));
@@ -121,7 +141,7 @@ impl Resolver {
         if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
             return Err(Error::NeedsLogin(provider.into()));
         }
-        Ok(Some(record))
+        Ok((label, Some(record)))
     }
 }
 
@@ -192,6 +212,7 @@ fn environment(
         Ok(ResolvedAuth {
             auth,
             version: [0; 32],
+            entry: None,
         })
     };
     if provider == "fake" {
@@ -242,7 +263,11 @@ fn environment(
         } else {
             ClientAuth::ApiKey(key)
         };
-        return Ok(ResolvedAuth { auth, version });
+        return Ok(ResolvedAuth {
+            auth,
+            version,
+            entry: None,
+        });
     }
     if is_vertex(provider) {
         // Host Google credentials build the shared Vertex auth; without them the
@@ -257,6 +282,7 @@ fn environment(
                 Ok(ResolvedAuth {
                     auth,
                     version: *hasher.finalize().as_bytes(),
+                    entry: None,
                 })
             }
             Err(_) => ambient(ClientAuth::Ambient),
@@ -291,6 +317,7 @@ impl CredentialStore for ChatGptCredentials {
                 .resolver
                 .record("chatgpt")
                 .await?
+                .1
                 .ok_or_else(|| Error::NeedsLogin("chatgpt".into()))?;
             self.check(&record)
         })

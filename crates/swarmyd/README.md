@@ -161,9 +161,21 @@ Listing reads disk records and checks `/proc`; it needs no daemon memory and can
 be reconstructed whenever the sandbox remains alive. The current node restart
 path rebuilds containers, so those processes are lost. Old records report
 `restarted` and cannot be used to stop a process in the new sandbox.
+`process_list` is bounded so a long-lived worker cannot overflow its context:
+running processes come first, followed by the 20 most recently started other
+records, newest first. Pass `limit` (1-200) to change how many non-running
+records to include, or `all: true` to include every record. Each record keeps
+`process_id`, `command`, `started_at`, `log_path`, and `status`; the command is
+truncated to 512 characters with a trailing `...` marker.
 
 Log reads return at most the last 64 KiB of combined stdout and stderr. Stop
 signals the managed process group with TERM, waits 250 ms, then sends KILL.
+Every tool result stored in `ToolCallCompleted` is capped at 128 KiB: larger
+outputs keep the first and last halves with a marker naming the tool, the
+dropped byte count, and the spill path. The full output is written to
+`/home/agent/.swarmy/output/<call id>.log` in the sandbox, the same location
+bash uses, so the system prompt claim that large tool output is saved to a
+spill file holds for every tool.
 Files persist across failures only up to the latest published snapshot, normally
 every ten minutes or when checkpoint is called. Neither snapshots nor idle
 eviction preserve process memory.

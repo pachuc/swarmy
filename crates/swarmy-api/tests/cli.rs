@@ -77,6 +77,21 @@ async fn projections_match_store_records_and_catalog() {
         .open_main_session(agent.agent_id, jiff::Timestamp::now())
         .await
         .unwrap();
+    assert_resource_projections(&client, &store, &agent, session).await;
+    assert_credential_entries(&client).await;
+    client
+        .remove_credential("test-provider", "remove")
+        .await
+        .unwrap();
+    server.abort();
+}
+
+async fn assert_resource_projections(
+    client: &swarmy_client::Client,
+    store: &Store,
+    agent: &swarmy_core::AgentRecord,
+    session: swarmy_core::SessionId,
+) {
     let rows: Vec<serde_json::Value> = client
         .cli_agents(None, 10)
         .await
@@ -117,6 +132,9 @@ async fn projections_match_store_records_and_catalog() {
             .is_empty()
     );
     assert!(!client.cli_providers().await.unwrap().is_empty());
+}
+
+async fn assert_credential_entries(client: &swarmy_client::Client) {
     let record = swarmy_core::CredentialRecord {
         kind: swarmy_core::CredentialKind::ApiKey {
             key: "synthetic-test-value".into(),
@@ -127,16 +145,43 @@ async fn projections_match_store_records_and_catalog() {
     client.cli_set_credential(&serde_json::from_value(serde_json::json!({"idempotency_key":"credential","provider":"test-provider","record":record})).unwrap()).await.unwrap();
     let summaries = client.cli_credentials().await.unwrap();
     assert_eq!(summaries[0].provider, "test-provider");
-    assert_eq!(summaries[0].kind, "api_key");
+    assert_eq!(summaries[0].kind, "api-key");
+    assert_eq!(summaries[0].label, "default");
     assert_eq!(
         client.cli_credential("test-provider").await.unwrap().status,
         "ready"
     );
-    client
-        .remove_credential("test-provider", "remove")
+    let cloud = client
+        .set_credential(&swarmy_api_types::CreateCredential {
+            idempotency_key: "cloud".into(),
+            provider: "test-provider".into(),
+            kind: swarmy_api_types::CredentialKind::Cloud,
+            label: "backup".into(),
+            secret: "synthetic-cloud-secret".into(),
+        })
         .await
         .unwrap();
-    server.abort();
+    assert_eq!(cloud.label, "backup");
+    assert_eq!(cloud.kind, swarmy_api_types::CredentialKind::Cloud);
+    assert_eq!(
+        client
+            .credential_entry("test-provider", "backup")
+            .await
+            .unwrap(),
+        cloud
+    );
+    let listed = client.cli_credentials().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(
+        listed
+            .iter()
+            .any(|row| row.label == "backup" && row.kind == "cloud")
+    );
+    client
+        .remove_credential_entry("test-provider", "backup", "remove-backup")
+        .await
+        .unwrap();
+    assert_eq!(client.cli_credentials().await.unwrap().len(), 1);
 }
 #[tokio::test]
 async fn stopped_api_reports_endpoint_quickly() {

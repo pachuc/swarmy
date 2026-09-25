@@ -280,13 +280,20 @@ impl Store {
                 return Err(StoreError::InvalidState);
             }
             if let Event::InferenceCompleted {
-                usage, cost_micros, ..
+                usage,
+                cost_micros,
+                provider,
+                ..
             } = &completion.event
             {
                 self.record_usage(
                     &trx,
                     session.session_id,
                     session.agent_id,
+                    crate::usage::UsageAttribution {
+                        request: claim.request_id,
+                        provider,
+                    },
                     usage,
                     *cost_micros,
                 )

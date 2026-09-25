@@ -228,6 +228,7 @@ impl Providers {
                 .map(|client| ResolvedAuth {
                     auth: ClientAuth::Scripted(client),
                     version: [0; 32],
+                    entry: None,
                 })
                 .map_err(swarmy_llm::Error::Credentials);
         }
@@ -238,14 +239,15 @@ impl Providers {
             .await
     }
 
-    /// Resolve the current credential version before reusing a client.
+    /// Resolve the current credential version before reusing a client. The
+    /// returned label identifies the stored entry behind the client, if any.
     /// # Errors
     /// Returns credential failures or an unsupported protocol.
     pub async fn client(
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
-    ) -> Result<Arc<dyn Provider>, swarmy_llm::Error> {
+    ) -> Result<(Arc<dyn Provider>, Option<String>), swarmy_llm::Error> {
         let served = self
             .state
             .read()
@@ -260,13 +262,13 @@ impl Providers {
         let key = (provider.to_owned(), model.id.clone(), resolved.version);
         let mut clients = self.clients.lock().await;
         if let Some(client) = clients.get(&key) {
-            return Ok(client.clone());
+            return Ok((client.clone(), resolved.entry));
         }
         let client = swarmy_llm::client_for(info, model, resolved.auth)?;
         // Retire obsolete credential versions without retaining their secrets indefinitely.
         clients.retain(|(id, name, _), _| id != provider || name != &model.id);
         clients.insert(key, client.clone());
-        Ok(client)
+        Ok((client, resolved.entry))
     }
 }
 

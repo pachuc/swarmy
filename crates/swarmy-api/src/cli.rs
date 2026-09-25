@@ -73,7 +73,7 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnaps
     let credentials = match super::credential_store(&state) {
         Ok(store) => Some(
             store
-                .list_credentials(swarmy_core::CredentialScope::Cluster)
+                .list_entries(swarmy_core::CredentialScope::Cluster)
                 .await
                 .map_err(storage)?
                 .into_iter()
@@ -659,7 +659,7 @@ pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Cl
     let store = super::credential_store(&state)?;
     Ok(Json(
         store
-            .list_credentials(swarmy_core::CredentialScope::Cluster)
+            .list_entries(swarmy_core::CredentialScope::Cluster)
             .await
             .map_err(storage)?
             .into_iter()
@@ -672,18 +672,14 @@ pub async fn credential(
     Path(provider): Path<String>,
 ) -> ApiResult<api::CliCredential> {
     let store = super::credential_store(&state)?;
-    let record = store
-        .get_credential(swarmy_core::CredentialScope::Cluster, &provider)
+    let summary = store
+        .list_entries(swarmy_core::CredentialScope::Cluster)
         .await
         .map_err(storage)?
+        .into_iter()
+        .find(|entry| entry.provider == provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(typed(json!(
-        swarmy_store::credentials::CredentialSummary::new(
-            provider,
-            &record,
-            jiff::Timestamp::now()
-        )
-    ))?))
+    Ok(Json(typed(json!(summary))?))
 }
 pub async fn credential_set(
     State(state): State<AppState>,
@@ -694,14 +690,22 @@ pub async fn credential_set(
     super::replay(
         &state,
         &body.idempotency_key,
-        &format!("cli:credentials:{provider}:set"),
+        &format!(
+            "cli:credentials:{provider}:{}:set",
+            body.label.as_deref().unwrap_or("default")
+        ),
         async move {
+            let record: swarmy_core::CredentialRecord = serde_json::from_value(body.record.clone())
+                .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_credential"))?;
+            // Without a label the provider's default entry is replaced so a
+            // rotation takes over serving; pass --label to keep a second entry.
+            let label = body.label.unwrap_or_else(|| "default".into());
             store
-                .put_credential(
+                .put_entry(
                     swarmy_core::CredentialScope::Cluster,
                     &provider,
-                    &serde_json::from_value(body.record.clone())
-                        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_credential"))?,
+                    &label,
+                    &record,
                 )
                 .await
                 .map_err(storage)?;

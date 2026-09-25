@@ -232,7 +232,7 @@ async fn placement_capacity_and_index_are_atomic() {
     ));
     assert!(matches!(
         test.store.place(agent, b, future(60)).await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     assert!(matches!(
         test.store.place(agent, a.node_id, timestamp(0)).await,
@@ -249,12 +249,12 @@ async fn placement_capacity_and_index_are_atomic() {
         test.store
             .place(session().agent_id, a.node_id, future(60))
             .await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     let expired = expire(&test, &first).await;
     assert!(matches!(
         test.store.take_over(&expired, b, future(60)).await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     assert_eq!(
         test.store.get_by_agent(agent).await.unwrap(),
@@ -264,7 +264,7 @@ async fn placement_capacity_and_index_are_atomic() {
         test.store
             .place(session().agent_id, a.node_id, future(60))
             .await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     // A rebuild on the same node can reuse its occupied slot.
     let next = test
@@ -353,7 +353,7 @@ async fn placement_capacity_race_and_paginated_node_listing() {
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
     assert!(matches!(
         left.as_ref().err().or(right.as_ref().err()),
-        Some(StoreError::NodeAtCapacity)
+        Some(StoreError::NodeAtCapacity { .. })
     ));
     let winner = left.or(right).unwrap();
     test.store.release(&winner).await.unwrap();
@@ -532,7 +532,7 @@ async fn placement_memory_budget_is_atomic_and_released() {
         test.store
             .place(second_agent, record.node_id, future(60))
             .await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     test.store.release(&first).await.unwrap();
     assert_eq!(
@@ -571,7 +571,7 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
         test.store
             .place(session().agent_id, record.node_id, future(60))
             .await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     for placed in &defaults {
         test.store.release(placed).await.unwrap();
@@ -604,7 +604,7 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
     }
     assert!(matches!(
         test.store.place(large[4], record.node_id, future(60)).await,
-        Err(StoreError::NodeAtCapacity)
+        Err(StoreError::NodeAtCapacity { .. })
     ));
     test.cleanup().await;
 }

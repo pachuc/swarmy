@@ -206,11 +206,43 @@ def main():
         else:
             result = dict(process_id=process_id, log_path=record['log_path'])
     elif action == 'process_list':
-        result = []
-        for path in sorted(ROOT.glob('*/record.json')):
-            record = json.loads(path.read_text())
+        options = json.loads(extra[0]) if extra else {}
+        limit = options.get('limit', 20)
+        include_all = options.get('all', False)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValueError('process_list limit must be an integer 1..200')
+        if not isinstance(include_all, bool):
+            raise ValueError('process_list all must be a boolean')
+        collected = []
+        for path in ROOT.glob('*/record.json'):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
             record['status'] = status(record, lifetime)
-            result.append({key: record[key] for key in ('process_id', 'command', 'started_at', 'log_path', 'status')})
+            command = record.get('command', '')
+            if len(command) > 512:
+                command = command[:509] + '...'
+            collected.append({
+                'process_id': record['process_id'],
+                'command': command,
+                'started_at': record['started_at'],
+                'log_path': record['log_path'],
+                'status': record['status'],
+            })
+        # Running processes lead the list, then the rest newest first, so a
+        # long-lived worker sees live work and recent history without paging.
+        def order(item):
+            return (item['status'] == 'running', item['started_at'], item['process_id'])
+        collected.sort(key=order, reverse=True)
+        if include_all:
+            result = collected
+        else:
+            # Named to avoid shadowing the module-level running() helper.
+            live = [item for item in collected if item['status'] == 'running']
+            others = [item for item in collected if item['status'] != 'running']
+            # Running processes are always included; only the rest count to the limit.
+            result = live + others[:limit]
     else:
         record = json.loads((directory / 'record.json').read_text())
         if record['lifetime'] != lifetime:

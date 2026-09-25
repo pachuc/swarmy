@@ -403,6 +403,36 @@ impl Client {
         )
         .await
     }
+    /// Inspect one labelled credential without exposing its secret.
+    /// # Errors
+    /// Returns an API, transport, or decoding failure.
+    pub async fn credential_entry(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<api::Credential, Error> {
+        self.get(
+            &format!("credentials/{}/{}", segment(provider), segment(label)),
+            &[],
+        )
+        .await
+    }
+    /// Remove one labelled credential.
+    /// # Errors
+    /// Returns an API, transport, or decoding failure.
+    pub async fn remove_credential_entry(
+        &self,
+        provider: &str,
+        label: &str,
+        key: &str,
+    ) -> Result<serde_json::Value, Error> {
+        self.send(
+            Method::DELETE,
+            &format!("credentials/{}/{}", segment(provider), segment(label)),
+            &serde_json::json!({"idempotency_key":key}),
+        )
+        .await
+    }
     /// Read a CLI compatibility projection without linking the store.
     /// # Errors
     /// Returns transport, API, or decoding failures.
