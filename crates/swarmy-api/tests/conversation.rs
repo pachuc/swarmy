@@ -651,6 +651,10 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     let turn = swarmy_core::MessageId::from_ulid(appended.turn_id.parse::<Ulid>().unwrap());
     emit_observed_turn(&f, session, turn).await;
     // Observation writes are spawned; poll until the record assembles.
+    // The appended stage arrives from a fire-and-forget write in the append
+    // handler, so it can land after the directly awaited stages below. Poll
+    // for the derived fields the assertions need, not just the stages, so a
+    // fast direct write cannot break the poll before the spawned write lands.
     let direct = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
@@ -660,6 +664,10 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
                     .stages
                     .iter()
                     .any(|row| row.stage == "first_token")
+                && records[0].stages.iter().any(|row| row.stage == "appended")
+                && records[0].append_to_first_token_ms.is_some()
+                && records[0].inference_duration_ms.is_some()
+                && records[0].append_to_idle_ms.is_some()
             {
                 break records;
             }
