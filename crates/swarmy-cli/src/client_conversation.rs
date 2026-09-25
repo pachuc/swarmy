@@ -145,8 +145,8 @@ impl Conversation {
     ) -> Result<Self> {
         ensure!(!new || agent.is_some(), "--new requires --agent");
         ensure!(
-            id.is_none() || (image.is_none() && agent.is_none()),
-            "session id cannot be combined with --image or --agent"
+            id.is_none() || (image.is_none() && agent.is_none() && !new),
+            "session id cannot be combined with --image, --agent, or --new"
         );
         ensure!(
             agent.is_none() || image.is_none(),

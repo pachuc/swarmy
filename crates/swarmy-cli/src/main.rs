@@ -232,11 +232,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             image,
             agent,
             new,
+            session,
             selection,
         } => {
             let (client, endpoint) = api_client::connect()?;
             api_client::call(&endpoint, client.health()).await?;
-            client_commands::run(client, prompt, image, agent, new, selection, cli.json).await?;
+            client_commands::run(
+                client, prompt, image, agent, new, session, selection, cli.json,
+            )
+            .await?;
         }
         Command::Chat {
             session_id,

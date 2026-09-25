@@ -10,11 +10,19 @@ pub async fn run(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
+    session: Option<ulid::Ulid>,
     selection: SelectionArgs,
     json: bool,
 ) -> Result<()> {
-    let mut conversation =
-        Conversation::open(client, None, image, agent, new, selection.into()).await?;
+    let mut conversation = Conversation::open(
+        client,
+        session.map(|id| id.to_string()),
+        image,
+        agent,
+        new,
+        selection.into(),
+    )
+    .await?;
     announce(&conversation, json);
     conversation.send(prompt).await?;
     let result = conversation.until_idle(json, true).await;
