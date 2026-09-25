@@ -57,6 +57,12 @@ elif args[:2] == ['--remote', 'dev']:
         print(json.dumps({'inference_completed': {'message': {'role':'assistant',
             'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
             'Done https://github.com/pachuc/swarmy/pull/42')}}]}}}))
+    elif rest[:2] == ['session', 'metrics']:
+        # Fake durable per-turn records for fleet report tests. REPORT_METRICS
+        # maps a session id to its JSON array of turn records.
+        mapping = json.loads(os.environ.get('REPORT_METRICS', '{}'))
+        sid = rest[2] if len(rest) > 2 else ''
+        print(json.dumps(mapping.get(sid, [])))
     elif rest[:3] == ['session', 'interrupt', '01AAAA']:
         (root / 'interrupted').write_text('yes')
     else:
@@ -296,6 +302,154 @@ class FleetTests(unittest.TestCase):
         result = self.call("status")
         self.assertEqual(result.returncode, 1)
         self.assertIn("owner-only", result.stderr)
+
+    def report_env(self):
+        """Two fake sessions with hand-computed aggregates for report tests."""
+        def request(input_tokens, cached, output, reasoning, micros, tps,
+                    retries=0, waits=(0, 0, 0), error=None):
+            return {"request_id": "r", "provider": "fake", "model": "fake",
+                    "input_tokens": input_tokens, "cached_input_tokens": cached,
+                    "output_tokens": output, "reasoning_tokens": reasoning,
+                    "cost_micros": micros, "output_tokens_per_second": tps,
+                    "retries": retries, "rate_limit_waits": waits[0],
+                    "gateway_waits": waits[1], "provider_failures": waits[2],
+                    "error": error}
+
+        def tool(dispatched_ns, completed_ns):
+            return {"request_id": "t", "name": "bash",
+                    "dispatched_ns": dispatched_ns, "completed_ns": completed_ns}
+
+        def turn(a2f, infer, idle, requests, tools, computer, error=None):
+            return {"session_id": "SESA", "turn_id": "t",
+                    "append_to_first_token_ms": a2f, "inference_duration_ms": infer,
+                    "append_to_idle_ms": idle, "inference": requests,
+                    "tools": tools, "computer": computer, "error": error}
+
+        sesa = [
+            turn(100.0, 200.0, 1000.0, [request(100, 10, 50, 5, 2000, 10.0, retries=1, waits=(1, 0, 0))],
+                 [tool(0, 100_000_000)],
+                 {"placement_ms": 50.0, "cold": True, "chunks_fetched": 4, "bytes_fetched": 1000}),
+            turn(200.0, 300.0, 2000.0, [request(200, 20, 150, 15, 4000, 20.0)],
+                 [tool(0, 200_000_000), tool(0, 300_000_000)],
+                 {"placement_ms": 150.0, "cold": False, "chunks_fetched": 2, "bytes_fetched": 500}),
+            turn(300.0, 400.0, 3000.0, [request(300, 30, 100, 10, 6000, 30.0, retries=2, waits=(0, 2, 1), error="boom")],
+                 [], None, error="boom"),
+        ]
+        sesb = [
+            turn(1000.0, 2000.0, 5000.0, [request(1000, 0, 500, 0, 100000, 50.0)],
+                 [tool(0, 1_000_000_000)],
+                 {"placement_ms": 500.0, "cold": False, "chunks_fetched": 1, "bytes_fetched": 100}),
+        ]
+        return dict(self.env, REPORT_METRICS=json.dumps({"SESA": sesa, "SESB": sesb}))
+
+    def test_report_table_and_json_with_hand_computed_percentiles(self):
+        env = self.report_env()
+        table = self.call("report", "--session", "SESA", "--session", "SESB", env=env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        # Percentiles use the store rollup's nearest rank: three append-to-idle
+        # samples [100, 200, 300] give p50 200 and p95 300.
+        self.assertIn("| SESA | 3 | 6.0 | 200.0 | 300.0 | 300.0 | 400.0 | 20.0 | 30.0 | 3 | 200.0 | 300.0 |", table.stdout)
+        self.assertIn("| SESB | 1 | 5.0 | 1000.0 | 1000.0 | 2000.0 | 2000.0 | 50.0 | 50.0 | 1 | 1000.0 | 1000.0 |", table.stdout)
+        # The totals row pools every turn: four append-to-first-token samples
+        # [100, 200, 300, 1000] give p50 300 and p95 1000.
+        self.assertIn("| total | 4 | 11.0 | 300.0 | 1000.0 | 400.0 | 2000.0 | 27.5 | 50.0 | 4 | 300.0 | 1000.0 |", table.stdout)
+        as_json = self.call("report", "--session", "SESA", "--session", "SESB", "--json", env=env)
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        payload = json.loads(as_json.stdout)
+        first, second, total = payload["rows"][0], payload["rows"][1], payload["total"]
+        self.assertEqual((first["turns"], first["waits"], first["retries"], first["errors"]), (3, 4, 3, 2))
+        self.assertEqual((first["input_tokens"], first["cached_input_tokens"],
+                          first["output_tokens"], first["reasoning_tokens"]), (600, 60, 300, 30))
+        self.assertAlmostEqual(first["cost_dollars"], 0.012)
+        self.assertEqual((first["place_cold"], first["place_warm"]), (1, 1))
+        self.assertEqual(first["place_p50_ms"], 150.0)
+        self.assertEqual((first["chunks_fetched"], first["bytes_fetched"]), (6, 1500))
+        self.assertEqual((total["turns"], total["waits"], total["retries"], total["errors"]), (4, 4, 3, 2))
+        self.assertEqual((total["input_tokens"], total["output_tokens"]), (1600, 800))
+        self.assertAlmostEqual(total["cost_dollars"], 0.112)
+        self.assertAlmostEqual(total["tps_mean"], 27.5)
+        self.assertEqual(second["session_id"], "SESB")
+
+    def test_report_task_ids_and_since_select_assignments(self):
+        env = self.report_env()
+        self.assertEqual(self.call("launch", "RRRPT1", env=env).returncode, 0)
+        self.assertEqual(self.call("launch", "RRRPT2", env=env).returncode, 0)
+        state = self.root / "state"
+        first = json.loads((state / "rrrpt1.json").read_text())
+        first["session_id"] = "SESA"
+        first["started_at"] = "2026-09-20T00:00:00+00:00"
+        (state / "rrrpt1.json").write_text(json.dumps(first))
+        second = json.loads((state / "rrrpt2.json").read_text())
+        second["session_id"] = "SESB"
+        second["started_at"] = "2026-09-24T00:00:00+00:00"
+        (state / "rrrpt2.json").write_text(json.dumps(second))
+        both = self.call("report", "RRRPT1", "RRRPT2", env=env)
+        self.assertEqual(both.returncode, 0, both.stderr)
+        self.assertIn("| RRRPT1 | 3 |", both.stdout)
+        self.assertIn("| RRRPT2 | 1 |", both.stdout)
+        recent = self.call("report", "--since", "2026-09-23T00:00:00Z", env=env)
+        self.assertEqual(recent.returncode, 0, recent.stderr)
+        self.assertNotIn("| RRRPT1 |", recent.stdout)
+        self.assertIn("| RRRPT2 | 1 |", recent.stdout)
+
+    def test_report_labels_print_side_by_side_tables_and_medians(self):
+        env = self.report_env()
+        labeled = self.call("report", "--label", "dev", "--session", "SESA",
+                            "--label", "dev2", "--session", "SESB", env=env)
+        self.assertEqual(labeled.returncode, 0, labeled.stderr)
+        self.assertIn("## dev\n", labeled.stdout)
+        self.assertIn("## dev2\n", labeled.stdout)
+        self.assertIn("## medians\n", labeled.stdout)
+        self.assertIn("| SESA | 3 |", labeled.stdout)
+        self.assertIn("| SESB | 1 |", labeled.stdout)
+        as_json = self.call("report", "--label", "dev", "--session", "SESA",
+                            "--label", "dev2", "--session", "SESB", "--json", env=env)
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        payload = json.loads(as_json.stdout)
+        self.assertEqual([table["label"] for table in payload["labels"]], ["dev", "dev2"])
+        self.assertEqual(payload["labels"][0]["rows"][0]["turns"], 3)
+        self.assertEqual(payload["labels"][0]["total"]["turns"], 3)
+        medians = {row["label"]: row for row in payload["medians"]}
+        # Each label holds one task, so its medians equal that task's row.
+        self.assertEqual(medians["dev"]["turns"], 3)
+        self.assertEqual(medians["dev2"]["turns"], 1)
+        self.assertEqual(medians["dev"]["a2f_p50_ms"], 200.0)
+        self.assertEqual(medians["dev2"]["a2f_p50_ms"], 1000.0)
+
+
+    def test_report_released_task_resolves_from_launch_log(self):
+        env = self.report_env()
+        self.assertEqual(self.call("launch", "RRRPT1", env=env).returncode, 0)
+        state = self.root / "state"
+        log = state / "rrrpt1.jsonl"
+        # Point the launch log at the fixture session so aggregates are known.
+        log.write_text(log.read_text().replace("01AAAA", "SESA"))
+        self.assertEqual(self.call("release", "RRRPT1", "--force", env=env).returncode, 0)
+        self.assertFalse((state / "rrrpt1.json").exists())
+        self.assertTrue(log.exists())
+        table = self.call("report", "RRRPT1", env=env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        self.assertIn("| RRRPT1 | 3 |", table.stdout)
+        as_json = self.call("report", "RRRPT1", "--json", env=env)
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        payload = json.loads(as_json.stdout)
+        self.assertEqual(payload["rows"][0]["session_id"], "SESA")
+        self.assertEqual(payload["rows"][0]["turns"], 3)
+        # The released log has a fresh mtime, so an old --since still finds it
+        # under its file stem.
+        recent = self.call("report", "--since", "2026-09-20T00:00:00Z", env=env)
+        self.assertEqual(recent.returncode, 0, recent.stderr)
+        self.assertIn("| rrrpt1 | 3 |", recent.stdout)
+        # An event timestamp takes precedence over the file mtime: backdate
+        # the first event and the same --since stops matching.
+        lines = log.read_text().splitlines()
+        first = json.loads(lines[0])
+        first["timestamp"] = "2020-01-01T00:00:00Z"
+        lines[0] = json.dumps(first)
+        log.write_text("\n".join(lines) + "\n")
+        stale = self.call("report", "--since", "2026-09-20T00:00:00Z", env=env)
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn("no tasks launched since", stale.stderr)
 
 
 if __name__ == "__main__":
