@@ -291,19 +291,25 @@ async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, 
         turn.inference[0].time_to_first_token_ms.is_some(),
         "{turn:?}"
     );
+    assert!(
+        turn.inference[0].streaming_duration_ms.is_some(),
+        "{turn:?}"
+    );
+    assert!(
+        turn.inference[0].output_tokens_per_second.is_some()
+            || turn.inference[0].output_tokens == 0,
+        "{turn:?}"
+    );
 }
 
 /// A real fake-provider turn must land a first-token stage and derived
-/// latencies in the durable record. Runs only beside the fake bench stack,
-/// like the comparison test above.
+/// latencies in the durable record. Runs on the fake stack with a registered
+/// image, like the other fixture tests.
 #[tokio::test]
 async fn fake_turn_records_first_token_metrics() {
     let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
         return;
     };
-    if std::env::var("SWARMY_API_FAKE_BENCH").as_deref() != Ok("1") {
-        return;
-    }
     let fixture = setup(&image).await;
     let agent = fixture
         .store

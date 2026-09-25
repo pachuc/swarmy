@@ -8,7 +8,7 @@ pub enum Command {
     /// List stored sessions in id order
     #[command(name = "ls", alias = "list")]
     List,
-    /// List durable per-turn metrics for a session
+    /// List durable per-turn metrics for a session (JSON prints one array)
     Metrics { session_id: Ulid },
     /// Close a side session, or an ephemeral session and its computer
     Close { session_id: Ulid },

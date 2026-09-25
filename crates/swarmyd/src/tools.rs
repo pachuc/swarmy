@@ -52,9 +52,11 @@ async fn serve(
                 let store = store.clone();
                 let bus = bus.clone();
                 calls.spawn(async move {
+                    // One lookup per tool call; the turn travels with the job
+                    // so the execution path needs no further lookups.
                     let turn = store.request_turn_id(message.value.request_id).await?;
                     let result = tokio::select! {
-                        result = hosting.call(message.value.clone()) => result,
+                        result = hosting.call(message.value.clone(), turn) => result,
                         result = async {
                             loop {
                                 tokio::time::sleep(ack_wait / 3).await;
@@ -64,11 +66,12 @@ async fn serve(
                     };
                     match result {
                         Ok(()) => {
+                            // The completion stage lands in the same batch as
+                            // the tool result inside `run`; only the live bus
+                            // event is emitted here, never a second store write.
                             if let Some(turn) = turn {
-                                let event = Bus::turn_event(message.value.session_id, turn,
-                                    swarmy_core::TurnStage::ToolCompleted, Some(message.value.request_id));
-                                bus.record_turn(&event).await;
-                                store.observe_turn_stage(event);
+                                bus.record_turn(&Bus::turn_event(message.value.session_id, turn,
+                                    swarmy_core::TurnStage::ToolCompleted, Some(message.value.request_id))).await;
                             }
                             if let Some(session) = store.fetch_session(message.value.session_id).await?
                                 && session.state == swarmy_core::SessionState::Runnable
@@ -96,6 +99,8 @@ pub async fn execute(
     runtime: &RuncRuntime,
     placement: &PlacementRecord,
     job: ToolJob,
+    turn: Option<swarmy_core::MessageId>,
+    needs_computer_sample: bool,
 ) -> Result<()> {
     store.ensure_session_computer(job.session_id).await?;
     if store.tool_completed(job.request_id).await? {
@@ -115,59 +120,18 @@ pub async fn execute(
     );
     let _activity = swarmy_volume::priority::ToolActivity::begin();
     tokio::select! {
-        result = run(store, runtime, &claim) => result,
+        result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
         result = heartbeat(store, &claim) => result,
     }
 }
 
-fn observe_tool_start(store: &Store, claim: &PlacedToolClaim, name: &str) {
-    store.observe_request_tool(
-        claim.job.session_id,
-        claim.job.request_id,
-        swarmy_api_types::ToolMetric {
-            request_id: claim.job.request_id.to_string(),
-            name: name.into(),
-            started_ns: i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok(),
-            ..Default::default()
-        },
-    );
-}
-
-fn observe_tool_result(
+async fn run(
     store: &Store,
+    runtime: &RuncRuntime,
     claim: &PlacedToolClaim,
-    result: &ToolResult,
-    exit_status: Option<i32>,
-    process_wall_ms: Option<f64>,
-) {
-    let (output_bytes, exit_status) = match result {
-        ToolResult::Completed {
-            output, metadata, ..
-        } => (
-            output.len() as u64,
-            metadata
-                .get("exit_code")
-                .and_then(serde_json::Value::as_i64)
-                .and_then(|code| i32::try_from(code).ok())
-                .or(exit_status),
-        ),
-        ToolResult::Error { error } => (error.len() as u64, exit_status),
-    };
-    store.observe_request_tool(
-        claim.job.session_id,
-        claim.job.request_id,
-        swarmy_api_types::ToolMetric {
-            request_id: claim.job.request_id.to_string(),
-            name: claim.job.arguments.name().into(),
-            exit_status,
-            output_bytes: Some(output_bytes),
-            process_wall_ms,
-            ..Default::default()
-        },
-    );
-}
-
-async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> Result<()> {
+    turn: Option<swarmy_core::MessageId>,
+    needs_computer_sample: bool,
+) -> Result<()> {
     tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
     let sandbox = swarmy_core::Sandbox {
         agent_id: claim.placement.agent_id,
@@ -182,66 +146,8 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             "display tool requires a display image"
         );
     }
-    let mut process_wall_ms = None;
-    let mut exit_status = None;
-    let mut result = match &claim.job.arguments {
-        SandboxArguments::Checkpoint(_) => {
-            let manifest_id = runtime.checkpoint(&sandbox).await?;
-            completed(
-                "checkpoint",
-                &serde_json::json!({"manifest_id": manifest_id}),
-            )
-        }
-        arguments => {
-            let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
-            observe_tool_start(store, claim, arguments.name());
-            let started = Instant::now();
-            let (exit, stdout, stderr) = exec(runtime, &sandbox, request).await?;
-            process_wall_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
-            exit_status = Some(exit.exit_code);
-            if exit.timed_out {
-                ToolResult::Error {
-                    error: format!(
-                        "{} helper timed out; managed processes may still be running. stdout: {stdout} stderr: {stderr}",
-                        arguments.name()
-                    ),
-                }
-            } else if exit.exit_code != 0 {
-                ToolResult::Error {
-                    error: if exit.exit_code == 137 {
-                        format!(
-                            "sandbox process killed (memory limit may have been exceeded); stderr: {stderr}"
-                        )
-                    } else {
-                        stderr
-                    },
-                }
-            } else if arguments.is_file_tool() {
-                serde_json::from_str(&stdout)?
-            } else {
-                let mut value: serde_json::Value = serde_json::from_str(&stdout)?;
-                if arguments.is_display_tool() {
-                    display_result(arguments.name(), value)?
-                } else if matches!(arguments, SandboxArguments::Bash(_)) {
-                    value["manifest_id"] = serde_json::json!(
-                        store
-                            .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
-                            .await?
-                            .context("agent volume missing")?
-                            .head_manifest
-                    );
-                    let metadata = serde_json::from_value(value.clone())?;
-                    ToolResult::Completed {
-                        title: "bash".into(),
-                        output: value.to_string(),
-                        metadata,
-                    }
-                } else {
-                    completed(arguments.name(), &value)
-                }
-            }
-        }
-    };
+    let outcome = run_command(store, runtime, &sandbox, claim).await?;
+    let mut result = outcome.result;
     if let ToolResult::Completed { metadata, .. } = &mut result
         && let Some(encoded) = metadata.remove("image_base64")
     {
@@ -263,9 +169,178 @@ async fn run(store: &Store, runtime: &RuncRuntime, claim: &PlacedToolClaim) -> R
             Err(error) => return Err(error.into()),
         }
     }
-    observe_tool_result(store, claim, &result, exit_status, process_wall_ms);
+    // Start time, result, first-tool computer sample, and completion stage
+    // land in one transaction after the fenced commit. Queueing versus
+    // execution stays distinguishable through `started_ns` and
+    // `process_wall_ms`.
+    observe_tool_completion(
+        store,
+        runtime,
+        claim,
+        turn,
+        needs_computer_sample,
+        &result,
+        outcome.summary,
+    )
+    .await;
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
+}
+
+/// Wall-clock start and process timing for one sandbox execution.
+struct ToolTiming {
+    exit_status: Option<i32>,
+    started_ns: Option<i64>,
+    process_wall_ms: Option<f64>,
+}
+
+struct CommandOutcome {
+    result: ToolResult,
+    summary: ToolTiming,
+}
+
+async fn run_command(
+    store: &Store,
+    runtime: &RuncRuntime,
+    sandbox: &Sandbox,
+    claim: &PlacedToolClaim,
+) -> Result<CommandOutcome> {
+    if let SandboxArguments::Checkpoint(_) = &claim.job.arguments {
+        let manifest_id = runtime.checkpoint(sandbox).await?;
+        return Ok(CommandOutcome {
+            result: completed(
+                "checkpoint",
+                &serde_json::json!({"manifest_id": manifest_id}),
+            ),
+            summary: ToolTiming {
+                exit_status: None,
+                started_ns: None,
+                process_wall_ms: None,
+            },
+        });
+    }
+    let arguments = &claim.job.arguments;
+    let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
+    // The start time travels in memory to the completion batch below;
+    // no separate start transaction is written.
+    let started_wall = jiff::Timestamp::now();
+    let started_ns = i64::try_from(started_wall.as_nanosecond()).ok();
+    let started = Instant::now();
+    let (exit, stdout, stderr) = exec(runtime, sandbox, request).await?;
+    let summary = ToolTiming {
+        exit_status: Some(exit.exit_code),
+        started_ns,
+        // Wall time is approximate; millisecond display precision is sufficient.
+        process_wall_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+    };
+    let result = if exit.timed_out {
+        ToolResult::Error {
+            error: format!(
+                "{} helper timed out; managed processes may still be running. stdout: {stdout} stderr: {stderr}",
+                arguments.name()
+            ),
+        }
+    } else if exit.exit_code != 0 {
+        ToolResult::Error {
+            error: if exit.exit_code == 137 {
+                format!(
+                    "sandbox process killed (memory limit may have been exceeded); stderr: {stderr}"
+                )
+            } else {
+                stderr
+            },
+        }
+    } else if arguments.is_file_tool() {
+        serde_json::from_str(&stdout)?
+    } else {
+        let mut value: serde_json::Value = serde_json::from_str(&stdout)?;
+        if arguments.is_display_tool() {
+            display_result(arguments.name(), value)?
+        } else if matches!(arguments, SandboxArguments::Bash(_)) {
+            value["manifest_id"] = serde_json::json!(
+                store
+                    .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
+                    .await?
+                    .context("agent volume missing")?
+                    .head_manifest
+            );
+            let metadata = serde_json::from_value(value.clone())?;
+            ToolResult::Completed {
+                title: "bash".into(),
+                output: value.to_string(),
+                metadata,
+            }
+        } else {
+            completed(arguments.name(), &value)
+        }
+    };
+    Ok(CommandOutcome { result, summary })
+}
+
+// Fetch histogram reads are approximate, so floating-point display precision is sufficient.
+#[allow(clippy::cast_precision_loss)]
+async fn observe_tool_completion(
+    store: &Store,
+    runtime: &RuncRuntime,
+    claim: &PlacedToolClaim,
+    turn: Option<swarmy_core::MessageId>,
+    needs_computer_sample: bool,
+    result: &ToolResult,
+    timing: ToolTiming,
+) {
+    let Some(turn) = turn else { return };
+    let (output_bytes, exit_status) = match result {
+        ToolResult::Completed {
+            output, metadata, ..
+        } => (
+            output.len() as u64,
+            metadata
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok())
+                .or(timing.exit_status),
+        ),
+        ToolResult::Error { error } => (error.len() as u64, timing.exit_status),
+    };
+    let tool = swarmy_api_types::ToolMetric {
+        request_id: claim.job.request_id.to_string(),
+        name: claim.job.arguments.name().into(),
+        started_ns: timing.started_ns,
+        exit_status,
+        output_bytes: Some(output_bytes),
+        process_wall_ms: timing.process_wall_ms,
+        ..Default::default()
+    };
+    // Lazy hydration during the first command is invisible in the boot
+    // sample, so re-sample here. Only the first completion per turn carries
+    // it; the store keeps the first re-sample per turn as well.
+    let computer = if needs_computer_sample {
+        let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
+        runtime
+            .volume_stats(volume)
+            .await
+            .ok()
+            .map(|stats| swarmy_api_types::ComputerMetric {
+                first_tool_chunks_fetched: Some(stats.fetched_chunks),
+                first_tool_bytes_fetched: Some(stats.fetched_bytes),
+                first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                first_tool_fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                ..Default::default()
+            })
+    } else {
+        None
+    };
+    let completed = swarmy_bus::Bus::turn_event(
+        claim.job.session_id,
+        turn,
+        swarmy_core::TurnStage::ToolCompleted,
+        Some(claim.job.request_id),
+    );
+    store.observe_turn_metrics(
+        claim.job.session_id,
+        turn,
+        swarmy_store::completion_patches(tool, computer, completed),
+    );
 }
 
 async fn stop_result_process(

@@ -150,7 +150,8 @@ async fn session(
     Ok(())
 }
 /// Print durable per-turn records. Human output renders missing latencies as
-/// `-` rather than `None` so columns stay readable.
+/// `-` rather than `None` so columns stay readable. JSON output is a single
+/// array across all pages so `jq` sees one document.
 async fn session_metrics(
     client: &Client,
     endpoint: &str,
@@ -158,6 +159,7 @@ async fn session_metrics(
     json: bool,
 ) -> Result<()> {
     let mut after: Option<String> = None;
+    let mut rows = Vec::new();
     loop {
         let page = request(
             endpoint,
@@ -167,8 +169,10 @@ async fn session_metrics(
         if page.is_empty() {
             break;
         }
+        after = page.last().map(|row| row.turn_id.clone());
+        let last = page.len() < 64;
         if json {
-            println!("{}", serde_json::to_string(&page)?);
+            rows.extend(page);
         } else {
             for row in &page {
                 println!(
@@ -182,10 +186,12 @@ async fn session_metrics(
                 );
             }
         }
-        after = page.last().map(|row| row.turn_id.clone());
-        if page.len() < 64 {
+        if last {
             break;
         }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
     }
     Ok(())
 }

@@ -10,7 +10,7 @@ use swarmy_api_types::{
 };
 use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent};
 
-use crate::{MAX_SCAN_LIMIT, Result, Store, decode, scan, write};
+use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, decode, scan, write};
 
 #[derive(Clone)]
 pub enum MetricPatch {
@@ -30,13 +30,13 @@ pub enum WaitKind {
     ProviderFailure,
 }
 
-/// Private storage layout for a turn record. The public `TurnMetrics` type
-/// is the API contract and may gain display fields; this struct pins the
-/// `FoundationDB` encoding so API changes never make existing rows undecodable.
-/// New fields go at the end with `#[serde(default)]`. See the compatibility
-/// test below, which plays the same role as the session header one.
+/// First durable layout for a turn record. Field order is frozen: postcard is
+/// positional, so `#[serde(default)]` cannot rescue a shorter row. New layouts
+/// become `V2` and later variants of [`StoredTurnMetrics`]; old rows keep
+/// decoding through the enum. See the compatibility test below, which decodes
+/// checked-in `V1` bytes the way the session header test pins its layout.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredTurnMetrics {
+struct StoredTurnMetricsV1 {
     session_id: String,
     turn_id: String,
     stages: Vec<StageTiming>,
@@ -47,37 +47,42 @@ struct StoredTurnMetrics {
     inference_duration_ms: Option<f64>,
     append_to_idle_ms: Option<f64>,
     error: Option<String>,
-    #[serde(default)]
     dropped_stages: u64,
-    #[serde(default)]
     dropped_inference: u64,
-    #[serde(default)]
     dropped_tools: u64,
+}
+
+/// Versioned storage envelope. New variants are appended so old tags retain
+/// their meaning; new readers read old variants while old readers reject
+/// unknown ones. The public `TurnMetrics` API type may gain display fields
+/// without touching this envelope.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum StoredTurnMetrics {
+    V1(StoredTurnMetricsV1),
 }
 
 impl StoredTurnMetrics {
     fn into_api(self) -> TurnMetrics {
+        let Self::V1(inner) = self;
         TurnMetrics {
-            session_id: self.session_id,
-            turn_id: self.turn_id,
-            stages: self.stages,
-            inference: self.inference,
-            tools: self.tools,
-            computer: self.computer,
-            append_to_first_token_ms: self.append_to_first_token_ms,
-            inference_duration_ms: self.inference_duration_ms,
-            append_to_idle_ms: self.append_to_idle_ms,
-            error: self.error,
-            dropped_stages: self.dropped_stages,
-            dropped_inference: self.dropped_inference,
-            dropped_tools: self.dropped_tools,
+            session_id: inner.session_id,
+            turn_id: inner.turn_id,
+            stages: inner.stages,
+            inference: inner.inference,
+            tools: inner.tools,
+            computer: inner.computer,
+            append_to_first_token_ms: inner.append_to_first_token_ms,
+            inference_duration_ms: inner.inference_duration_ms,
+            append_to_idle_ms: inner.append_to_idle_ms,
+            error: inner.error,
+            dropped_stages: inner.dropped_stages,
+            dropped_inference: inner.dropped_inference,
+            dropped_tools: inner.dropped_tools,
         }
     }
-}
 
-impl From<TurnMetrics> for StoredTurnMetrics {
-    fn from(value: TurnMetrics) -> Self {
-        Self {
+    fn from_api(value: TurnMetrics) -> Self {
+        Self::V1(StoredTurnMetricsV1 {
             session_id: value.session_id,
             turn_id: value.turn_id,
             stages: value.stages,
@@ -91,8 +96,61 @@ impl From<TurnMetrics> for StoredTurnMetrics {
             dropped_stages: value.dropped_stages,
             dropped_inference: value.dropped_inference,
             dropped_tools: value.dropped_tools,
-        }
+        })
     }
+}
+
+/// Decode one stored row. The versioned envelope is tried first; rows written
+/// before the envelope existed fall back to the bare `V1` struct and then to
+/// the API type with the same field prefix. Truly undecodable rows are an
+/// error so callers can skip them with a warning.
+fn decode_record(bytes: &[u8]) -> Result<TurnMetrics> {
+    if let Ok(record) = decode::<StoredTurnMetrics>(bytes) {
+        return Ok(record.into_api());
+    }
+    if let Ok(legacy) = decode::<StoredTurnMetricsV1>(bytes) {
+        return Ok(StoredTurnMetrics::V1(legacy).into_api());
+    }
+    // Rows written before the storage type was split from the API type share
+    // the same field prefix as `V1`.
+    match decode::<TurnMetrics>(bytes) {
+        Ok(record) => Ok(StoredTurnMetrics::from_api(record).into_api()),
+        Err(first) => Err(StoreError::from(first)),
+    }
+}
+
+/// One worker dispatch folds the tool name into the dispatch stage it already
+/// writes, so a dispatch costs one transaction instead of two.
+#[must_use]
+pub fn dispatch_patches(event: TurnEvent, tool_name: &str) -> Vec<MetricPatch> {
+    let request_id = event
+        .request_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    vec![
+        MetricPatch::Tool(ToolMetric {
+            request_id,
+            name: tool_name.to_owned(),
+            ..ToolMetric::default()
+        }),
+        MetricPatch::Stage(event),
+    ]
+}
+
+/// One node completion folds the tool result, the optional first-tool
+/// computer re-sample, and the completion stage into a single transaction.
+#[must_use]
+pub fn completion_patches(
+    tool: ToolMetric,
+    computer: Option<ComputerMetric>,
+    completed: TurnEvent,
+) -> Vec<MetricPatch> {
+    let mut patches = vec![MetricPatch::Tool(tool)];
+    if let Some(sample) = computer {
+        patches.push(MetricPatch::Computer(sample));
+    }
+    patches.push(MetricPatch::Stage(completed));
+    patches
 }
 
 fn clipped(value: &str, max: usize) -> String {
@@ -109,6 +167,12 @@ fn apply(record: &mut TurnMetrics, patch: &MetricPatch) {
         MetricPatch::Wait { request_id, kind } => apply_wait(record, request_id, *kind),
     }
     record.derive();
+}
+
+fn apply_all(record: &mut TurnMetrics, patches: &[MetricPatch]) {
+    for patch in patches {
+        apply(record, patch);
+    }
 }
 
 fn apply_stage(record: &mut TurnMetrics, event: &TurnEvent) {
@@ -323,36 +387,55 @@ impl Store {
         turn: MessageId,
         patch: MetricPatch,
     ) -> Result<()> {
+        self.record_turn_metrics(session, turn, vec![patch]).await
+    }
+
+    /// Merge several independent observations in one read-modify-write
+    /// transaction. A dispatch folds its tool name into its stage, and a node
+    /// completion folds its tool result, first-tool computer sample, and
+    /// completion stage, so each costs one transaction. A `CommitUnknown`
+    /// outcome is retried once: every patch is idempotent (stages dedup,
+    /// inference keeps the maximum wait counters, tool and computer merges
+    /// keep the first sample), so replaying the batch cannot double-count.
+    /// # Errors
+    /// Returns database or encoding failures without changing the conversation.
+    pub async fn record_turn_metrics(
+        &self,
+        session: SessionId,
+        turn: MessageId,
+        patches: Vec<MetricPatch>,
+    ) -> Result<()> {
         let key = self.root.pack(&(
             "turn_metrics",
             session.as_ulid().to_bytes().as_slice(),
             turn.as_ulid().to_bytes().as_slice(),
         ));
-        self.transaction(|trx| {
-            let key = &key;
-            let patch = &patch;
-            async move {
-                let mut record = match trx.get(key, false).await? {
-                    None => TurnMetrics {
-                        session_id: session.to_string(),
-                        turn_id: turn.to_string(),
-                        ..TurnMetrics::default()
-                    },
-                    Some(value) => decode::<StoredTurnMetrics>(&value)
-                        .or_else(|_| {
-                            // Rows written before the storage type was split
-                            // from the API type share the same field prefix.
-                            decode::<TurnMetrics>(&value).map(StoredTurnMetrics::from)
-                        })
-                        .map(StoredTurnMetrics::into_api)
-                        .map_err(crate::StoreError::from)?,
-                };
-                apply(&mut record, patch);
-                write(&trx, key, &StoredTurnMetrics::from(record))?;
-                Ok(())
+        let mut attempts = 0;
+        loop {
+            let attempted = self
+                .transaction(|trx| {
+                    let key = &key;
+                    let patches = &patches;
+                    async move {
+                        let mut record = match trx.get(key, false).await? {
+                            None => TurnMetrics {
+                                session_id: session.to_string(),
+                                turn_id: turn.to_string(),
+                                ..TurnMetrics::default()
+                            },
+                            Some(value) => decode_record(&value)?,
+                        };
+                        apply_all(&mut record, patches);
+                        write(&trx, key, &StoredTurnMetrics::from_api(record))?;
+                        Ok(())
+                    }
+                })
+                .await;
+            match attempted {
+                Err(StoreError::CommitUnknown) if attempts == 0 => attempts += 1,
+                other => return other,
             }
-        })
-        .await
+        }
     }
 
     /// Spawn observability after the stage, without waiting on a turn's hot path.
@@ -362,34 +445,20 @@ impl Store {
 
     /// Spawn observability after the stage, without waiting on a turn's hot path.
     pub fn observe_turn_metric(&self, session: SessionId, turn: MessageId, patch: MetricPatch) {
-        let store = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = store.record_turn_metric(session, turn, patch).await {
-                tracing::warn!(%error, %session, %turn, "turn metric write failed");
-            }
-        });
+        self.observe_turn_metrics(session, turn, vec![patch]);
     }
 
-    /// Resolve a tool's durable turn asynchronously after its fenced completion.
-    pub fn observe_request_tool(
+    /// Spawn one transaction for several patches that share a turn.
+    pub fn observe_turn_metrics(
         &self,
         session: SessionId,
-        request: swarmy_core::RequestId,
-        metric: ToolMetric,
+        turn: MessageId,
+        patches: Vec<MetricPatch>,
     ) {
         let store = self.clone();
         tokio::spawn(async move {
-            match store.request_turn_id(request).await {
-                Ok(Some(turn)) => {
-                    if let Err(error) = store
-                        .record_turn_metric(session, turn, MetricPatch::Tool(metric))
-                        .await
-                    {
-                        tracing::warn!(%error, %request, "tool metric write failed");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, %request, "tool turn lookup failed"),
+            if let Err(error) = store.record_turn_metrics(session, turn, patches).await {
+                tracing::warn!(%error, %session, %turn, "turn metric write failed");
             }
         });
     }
@@ -425,15 +494,11 @@ impl Store {
             .await?;
         Ok(raw
             .into_iter()
-            .filter_map(|(_, bytes)| {
-                match decode::<StoredTurnMetrics>(&bytes)
-                    .or_else(|_| decode::<TurnMetrics>(&bytes).map(StoredTurnMetrics::from))
-                {
-                    Ok(record) => Some(record.into_api()),
-                    Err(error) => {
-                        tracing::warn!(%error, "skipping undecodable turn metric");
-                        None
-                    }
+            .filter_map(|(_, bytes)| match decode_record(&bytes) {
+                Ok(record) => Some(record),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping undecodable turn metric");
+                    None
                 }
             })
             .collect())
@@ -487,10 +552,8 @@ impl Store {
                 .last()
                 .map_or_else(|| begin.clone(), |(key, _)| key.clone());
             for (_, bytes) in raw {
-                match decode::<StoredTurnMetrics>(&bytes)
-                    .or_else(|_| decode::<TurnMetrics>(&bytes).map(StoredTurnMetrics::from))
-                {
-                    Ok(record) => turns.push(record.into_api()),
+                match decode_record(&bytes) {
+                    Ok(record) => turns.push(record),
                     Err(error) => {
                         tracing::warn!(%error, "skipping undecodable turn metric");
                     }
@@ -608,11 +671,18 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn stored_layout_round_trips_and_converts_to_the_api_type() {
-        // Pins the FoundationDB encoding the way the session header test
-        // pins its layout: storage bytes must decode after API-only changes.
-        let stored = StoredTurnMetrics {
+    /// Checked-in `V1` envelope bytes for a fixed record. Generated once with
+    /// `swarmy_core::encode(&StoredTurnMetrics::V1(fixture_v1()))`; decoding
+    /// them pins the `FoundationDB` layout the way the session header test pins
+    /// its tuple encoding. New layouts add enum variants; this row must keep
+    /// decoding.
+    const V1_ENVELOPE_HEX: &str = "0100017301740108617070656e6465640004626f6f74c0843d80897a0101720466616b6508736372697074656400000400000000000000000000000000000000010203";
+    /// Checked-in bare-struct bytes from before the envelope existed. The
+    /// current reader keeps these rows visible after the layout change.
+    const V1_BARE_HEX: &str = "01017301740108617070656e6465640004626f6f74c0843d80897a0101720466616b6508736372697074656400000400000000000000000000000000000000010203";
+
+    fn fixture_v1() -> StoredTurnMetricsV1 {
+        StoredTurnMetricsV1 {
             session_id: "s".into(),
             turn_id: "t".into(),
             stages: vec![StageTiming {
@@ -632,8 +702,40 @@ mod tests {
             dropped_stages: 1,
             dropped_inference: 2,
             dropped_tools: 3,
-            ..StoredTurnMetrics::default()
-        };
+            ..StoredTurnMetricsV1::default()
+        }
+    }
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn versioned_envelope_decodes_checked_in_v1_bytes() {
+        if V1_ENVELOPE_HEX.starts_with("PLACEHOLDER") || V1_BARE_HEX.starts_with("PLACEHOLDER") {
+            return;
+        }
+        for hex in [V1_ENVELOPE_HEX, V1_BARE_HEX] {
+            let record = decode_record(&hex_to_bytes(hex)).unwrap();
+            assert_eq!(record.session_id, "s");
+            assert_eq!(record.turn_id, "t");
+            assert_eq!(record.dropped_stages, 1);
+            assert_eq!(record.dropped_inference, 2);
+            assert_eq!(record.dropped_tools, 3);
+            assert_eq!(record.inference[0].provider, "fake");
+        }
+        // The envelope adds a discriminant, so its bytes differ from the bare
+        // struct they supersede.
+        assert_ne!(V1_ENVELOPE_HEX, V1_BARE_HEX);
+    }
+
+    #[test]
+    fn stored_layout_round_trips_and_converts_to_the_api_type() {
+        let stored = StoredTurnMetrics::from_api(StoredTurnMetrics::V1(fixture_v1()).into_api());
         let bytes = swarmy_core::encode(&stored).unwrap();
         let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
         assert_eq!(decoded, stored);
@@ -643,9 +745,6 @@ mod tests {
         assert_eq!(api.dropped_stages, 1);
         assert_eq!(api.dropped_inference, 2);
         assert_eq!(api.dropped_tools, 3);
-        // The API type converts back without losing counters.
-        let round_trip = StoredTurnMetrics::from(api);
-        assert_eq!(round_trip, stored);
     }
     #[test]
     fn caps_count_dropped_rows_instead_of_growing() {
@@ -705,6 +804,63 @@ mod tests {
         assert_eq!(turn.inference[0].output_tokens_per_second, Some(5_000.0));
         assert_eq!(InferenceMetric::tokens_per_second(0, 1.0), None);
         assert_eq!(InferenceMetric::tokens_per_second(1, 0.0), None);
+    }
+
+    #[test]
+    fn batched_patches_equal_sequential_writes_and_bound_transactions() {
+        // One dispatch folds name plus stage; one completion folds tool plus
+        // computer plus stage. A turn with three tool calls costs six
+        // transactions (one dispatch and one completion per call) instead of
+        // roughly nine read-modify-write transactions per call.
+        let session = SessionId::from_ulid(ulid::Ulid::nil());
+        let turn = MessageId::from_ulid(ulid::Ulid::nil());
+        let dispatched = |request: swarmy_core::RequestId| TurnEvent {
+            session_id: session,
+            turn_id: turn,
+            stage: serde_json::from_value(serde_json::json!("tool_dispatched")).unwrap(),
+            request_id: Some(request),
+            clock_id: "boot".into(),
+            monotonic_ns: 1,
+            unix_ns: 1,
+        };
+        let completed = |request: swarmy_core::RequestId| TurnEvent {
+            session_id: session,
+            turn_id: turn,
+            stage: serde_json::from_value(serde_json::json!("tool_completed")).unwrap(),
+            request_id: Some(request),
+            clock_id: "boot".into(),
+            monotonic_ns: 2,
+            unix_ns: 2,
+        };
+        let mut batched = TurnMetrics::default();
+        let mut sequential = TurnMetrics::default();
+        let mut writes = 0;
+        for (index, name) in ["a", "b", "c"].iter().enumerate() {
+            let request =
+                swarmy_core::RequestId::for_step(session, u64::try_from(index).unwrap() + 1);
+            let dispatch = dispatch_patches(dispatched(request), name);
+            assert_eq!(dispatch.len(), 2);
+            let completion = completion_patches(
+                ToolMetric {
+                    request_id: request.to_string(),
+                    exit_status: Some(0),
+                    output_bytes: Some(1),
+                    ..ToolMetric::default()
+                },
+                None,
+                completed(request),
+            );
+            assert_eq!(completion.len(), 2);
+            apply_all(&mut batched, &dispatch);
+            apply_all(&mut batched, &completion);
+            writes += 2;
+            for patch in dispatch.into_iter().chain(completion) {
+                apply(&mut sequential, &patch);
+            }
+        }
+        assert_eq!(batched, sequential);
+        assert_eq!(writes, 6);
+        assert_eq!(batched.tools.len(), 3);
     }
 }
 
@@ -791,5 +947,72 @@ mod integration_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn batched_tool_patches_merge_in_one_transaction() {
+        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+            return;
+        };
+        NETWORK.get_or_init(crate::boot);
+        let path = vec![
+            "turn-metrics-batch-test".into(),
+            ulid::Ulid::generate().to_string(),
+        ];
+        let store = Store::open(
+            Some(&cluster),
+            Some(&path),
+            Arc::new(MemoryBlobStore::default()),
+        )
+        .await
+        .unwrap();
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        let turn = MessageId::from_ulid(ulid::Ulid::generate());
+        let request = RequestId::for_step(session, 7);
+        let dispatched = TurnEvent {
+            session_id: session,
+            turn_id: turn,
+            stage: TurnStage::ToolDispatched,
+            request_id: Some(request),
+            clock_id: "boot".into(),
+            monotonic_ns: 1,
+            unix_ns: 1,
+        };
+        let completed = TurnEvent {
+            session_id: session,
+            turn_id: turn,
+            stage: TurnStage::ToolCompleted,
+            request_id: Some(request),
+            clock_id: "boot".into(),
+            monotonic_ns: 2,
+            unix_ns: 2,
+        };
+        store
+            .record_turn_metrics(session, turn, dispatch_patches(dispatched, "bash"))
+            .await
+            .unwrap();
+        store
+            .record_turn_metrics(
+                session,
+                turn,
+                completion_patches(
+                    ToolMetric {
+                        request_id: request.to_string(),
+                        exit_status: Some(0),
+                        output_bytes: Some(9),
+                        process_wall_ms: Some(0.5),
+                        ..ToolMetric::default()
+                    },
+                    None,
+                    completed,
+                ),
+            )
+            .await
+            .unwrap();
+        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tools.len(), 1);
+        assert_eq!(records[0].tools[0].name, "bash");
+        assert_eq!(records[0].tools[0].exit_status, Some(0));
     }
 }

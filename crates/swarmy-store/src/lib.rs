@@ -18,7 +18,7 @@ mod inference_wait;
 mod interrupt;
 mod metrics;
 pub use interrupt::InterruptResult;
-pub use metrics::{MetricPatch, WaitKind};
+pub use metrics::{MetricPatch, WaitKind, completion_patches, dispatch_patches};
 mod selection;
 mod services;
 pub use selection::GatewayProvider;

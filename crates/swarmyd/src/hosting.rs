@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, bail};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, NodeId, PlacementRecord, RequestId, SandboxSpec,
-    SessionId, ToolJob, VolumeId,
+    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
+    SessionId, ToolJob,
 };
 use swarmy_sandbox::{RuncRuntime, SandboxRuntime};
 use swarmy_store::Store;
@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 struct Call {
     job: ToolJob,
+    turn: Option<MessageId>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
 }
@@ -74,6 +75,11 @@ pub struct Hosting {
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
     previous: Mutex<BTreeMap<AgentId, u64>>,
+    /// Turns whose first-tool computer re-sample already landed. The boot
+    /// sample is taken before the first command runs; only the first
+    /// completion per turn carries the re-sample, so later tools skip the
+    /// volume stat read and the extra transaction.
+    computer_sampled: Mutex<HashSet<MessageId>>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -136,11 +142,14 @@ impl Hosting {
             idle: Duration::from_secs(settings.sandbox_idle_seconds.get()),
             entries: Mutex::new(BTreeMap::new()),
             previous: Mutex::new(previous),
+            computer_sampled: Mutex::new(HashSet::new()),
             shutdown: watch::channel(false).0,
         }))
     }
 
-    pub async fn call(self: &Arc<Self>, job: ToolJob) -> Result<()> {
+    /// Serve one tool call with its durable turn already resolved by the
+    /// caller, so the execution path needs no `request_turn_id` lookup.
+    pub async fn call(self: &Arc<Self>, job: ToolJob, turn: Option<MessageId>) -> Result<()> {
         let Some(agent) = self.store.tool_agent(&job, self.node).await? else {
             return Ok(());
         };
@@ -173,6 +182,7 @@ impl Hosting {
         calls
             .send(Call {
                 job,
+                turn,
                 reply,
                 activity,
             })
@@ -234,17 +244,15 @@ impl Hosting {
     fn observe_computer_boot(
         &self,
         session: SessionId,
-        request: swarmy_core::RequestId,
+        turn: Option<MessageId>,
         volume: swarmy_core::VolumeId,
         elapsed: f64,
     ) {
+        let Some(turn) = turn else { return };
         let store = self.store.clone();
         let runtime = self.runtime.clone();
         tokio::spawn(async move {
-            if let (Ok(Some(turn)), Ok(stats)) = (
-                store.request_turn_id(request).await,
-                runtime.volume_stats(volume).await,
-            ) {
+            if let Ok(stats) = runtime.volume_stats(volume).await {
                 store.observe_turn_metric(
                     session,
                     turn,
@@ -255,35 +263,6 @@ impl Hosting {
                         bytes_fetched: stats.fetched_bytes,
                         fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
                         fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
-                        ..Default::default()
-                    }),
-                );
-            }
-        });
-    }
-
-    /// Re-sample volume counters after a tool call completes. The boot sample
-    /// is taken before the first command runs; this sample shows what that
-    /// command hydrated. The store keeps the first re-sample per turn.
-    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
-    #[allow(clippy::cast_precision_loss)]
-    fn observe_computer_first_tool(&self, session: SessionId, request: RequestId, agent: AgentId) {
-        let store = self.store.clone();
-        let runtime = self.runtime.clone();
-        tokio::spawn(async move {
-            let volume = VolumeId::from_ulid(agent.as_ulid());
-            if let (Ok(Some(turn)), Ok(stats)) = (
-                store.request_turn_id(request).await,
-                runtime.volume_stats(volume).await,
-            ) {
-                store.observe_turn_metric(
-                    session,
-                    turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
-                        first_tool_chunks_fetched: Some(stats.fetched_chunks),
-                        first_tool_bytes_fetched: Some(stats.fetched_bytes),
-                        first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
-                        first_tool_fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
                         ..Default::default()
                     }),
                 );
@@ -313,7 +292,7 @@ impl Hosting {
             .await?;
         self.observe_computer_boot(
             first.job.session_id,
-            first.job.request_id,
+            first.turn,
             volume,
             placement_started.elapsed().as_secs_f64() * 1_000.0,
         );
@@ -411,16 +390,30 @@ impl Hosting {
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-        let session = call.job.session_id;
-        let request = call.job.request_id;
-        let agent = placement.agent_id;
+        // Only the first completion per turn carries the computer re-sample;
+        // later tools skip the volume stat read entirely.
+        let needs_sample = match call.turn {
+            Some(turn) => !self.computer_sampled.lock().await.contains(&turn),
+            None => false,
+        };
+        let turn = call.turn;
         let result = tokio::select! {
-            result = crate::tools::execute(&self.store, &self.runtime, placement, call.job) => result,
+            result = crate::tools::execute(
+                &self.store,
+                &self.runtime,
+                placement,
+                call.job,
+                turn,
+                needs_sample,
+            ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };
-        // Lazy chunk hydration during the first command is invisible in the
-        // boot sample, so re-sample after every tool and keep the first.
-        self.observe_computer_first_tool(session, request, agent);
+        if needs_sample
+            && let Some(turn) = turn
+            && result.is_ok()
+        {
+            self.computer_sampled.lock().await.insert(turn);
+        }
         let failed = result.is_err();
         let _ = call.reply.send(result);
         if failed {
