@@ -167,9 +167,11 @@ impl Resolver {
                 })),
                 version: version(&record)?,
                 entry,
+                entry_kind: Some(entry_kind_for(&record)),
             });
         }
         let version = version(&record)?;
+        let entry_kind = Some(entry_kind_for(&record));
         let auth = if is_vertex(provider) {
             vertex_from_record(record.kind)
         } else {
@@ -179,6 +181,7 @@ impl Resolver {
             auth,
             version,
             entry,
+            entry_kind,
         })
     }
 
