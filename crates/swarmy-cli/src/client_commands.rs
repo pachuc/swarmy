@@ -4,6 +4,9 @@ use std::io::Write;
 use swarmy_api_types as api;
 use swarmy_client::Client;
 
+// The arguments mirror the `run` CLI flags plus the client and output mode,
+// so eight parameters is inherent to the dispatch shape.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     client: Client,
     prompt: String,
