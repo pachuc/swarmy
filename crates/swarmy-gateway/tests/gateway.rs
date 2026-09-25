@@ -650,12 +650,12 @@ async fn rate_limit_opens_durable_breaker_and_keeps_provider_text() {
             assert!(matches!(event, Event::InferenceFailed { retryable: true, retry_at: Some(at), error, .. }
                 if at >= started.checked_add(Duration::from_secs(2)).unwrap() && error.contains("quota reached")));
             assert!(f.store.get_inference_request::<Request>(job.request_id).await.unwrap().is_none());
-            let key = CredentialKey("fake".into());
-            assert!(f.store.provider_open_until(&key, Timestamp::now()).await.unwrap().is_some());
+            let key = CredentialKey::provider("fake");
+            assert!(f.store.entry_open_until(&key, Timestamp::now()).await.unwrap().is_some());
             assert_eq!(f.calls(), 1);
             f.kill().await;
             f.start(4);
-            assert!(f.store.provider_open_until(&key, Timestamp::now()).await.unwrap().is_some());
+            assert!(f.store.entry_open_until(&key, Timestamp::now()).await.unwrap().is_some());
         }).catch_unwind().await;
         f.cleanup().await;
         result.unwrap();
@@ -672,7 +672,7 @@ async fn authentication_failure_does_not_open_breaker() {
             f.publish(&job).await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. } if error.contains("invalid credentials")));
             assert!(f.store.get_inference_request::<Request>(job.request_id).await.unwrap().is_none());
-            assert!(f.store.provider_open_until(&CredentialKey("fake".into()), Timestamp::now()).await.unwrap().is_none());
+            assert!(f.store.entry_open_until(&CredentialKey::provider("fake"), Timestamp::now()).await.unwrap().is_none());
             assert_eq!(f.calls(), 1);
         }).catch_unwind().await;
         f.cleanup().await;

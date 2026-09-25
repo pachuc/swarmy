@@ -470,3 +470,49 @@ async fn legacy_api_key_migrates_once_to_default() {
             == record
     );
 }
+
+#[tokio::test]
+async fn entry_labels_list_without_decrypting_and_cover_legacy() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    let store = Store::with_subspace(
+        f.db.clone(),
+        f.root.clone(),
+        Arc::new(MemoryBlobStore::default()),
+    );
+    assert!(
+        store
+            .credential_entry_labels(SCOPE, "openai")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    f.credentials
+        .put_entry(SCOPE, "openai", "backup", &oauth("backup"))
+        .await
+        .unwrap();
+    f.credentials
+        .put_entry(SCOPE, "openai", "primary", &oauth("primary"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .credential_entry_labels(SCOPE, "openai")
+            .await
+            .unwrap(),
+        ["backup", "primary"]
+    );
+    // An unmigrated single record counts as the default entry.
+    f.credentials
+        .put_credential(SCOPE, "anthropic", &oauth("legacy"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .credential_entry_labels(SCOPE, "anthropic")
+            .await
+            .unwrap(),
+        ["default"]
+    );
+}

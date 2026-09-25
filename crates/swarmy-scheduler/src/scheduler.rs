@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 use swarmy_bus::Bus;
-use swarmy_core::{Event, SessionId, SessionState, WakeReply, WakeRequest};
+use swarmy_core::{CredentialScope, Event, SessionId, SessionState, WakeReply, WakeRequest};
 use swarmy_store::{CredentialKey, MAX_SCAN_LIMIT, Store, StoreError, runnable_partition};
 use tokio::time::MissedTickBehavior;
 
@@ -33,6 +33,44 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Resolve the session's entry behind its provider's breaker records.
+    /// Routes select the entry in a later task; until then every stored entry
+    /// is a candidate. Returns the earliest retry and its reason only when
+    /// every candidate is open; a usable entry means the session can run.
+    async fn breaker_park(
+        &self,
+        provider: &str,
+    ) -> Result<Option<(Timestamp, String)>, StoreError> {
+        // Without stored entries the provider shares one unlabeled record
+        // (fake, environment keys, ambient host chains).
+        let mut candidates = Vec::new();
+        for label in self
+            .store
+            .credential_entry_labels(CredentialScope::Cluster, provider)
+            .await?
+        {
+            candidates.push(CredentialKey::entry(provider, &label));
+        }
+        if candidates.is_empty() {
+            candidates.push(CredentialKey::provider(provider));
+        }
+        let mut earliest: Option<(Timestamp, String)> = None;
+        for key in &candidates {
+            let Some(until) = self.store.entry_open_until(key, Timestamp::now()).await? else {
+                return Ok(None);
+            };
+            let reason = self
+                .store
+                .entry_reason(key)
+                .await?
+                .unwrap_or_else(|| "provider temporarily unavailable".into());
+            if earliest.as_ref().is_none_or(|(at, _)| until < *at) {
+                earliest = Some((until, reason));
+            }
+        }
+        Ok(earliest)
+    }
+
     async fn nudge(&self, session_id: SessionId, force: bool) {
         let partition = runnable_partition(session_id);
         if !self.config.partitions.contains(&partition) {
@@ -60,11 +98,7 @@ impl Scheduler {
                     .provider
                     .as_deref()
                     .unwrap_or(&self.config.provider);
-                if let Some(until) = self
-                    .store
-                    .provider_open_until(&CredentialKey(provider.to_owned()), Timestamp::now())
-                    .await?
-                {
+                if let Some((until, reason)) = self.breaker_park(provider).await? {
                     let wait = self.store.inference_wait(session_id).await?;
                     let failure_pending = if session.head_seq == 0 {
                         false
@@ -83,14 +117,20 @@ impl Scheduler {
                             .checked_add(self.config.max_inference_wait)
                             .is_ok_and(|limit| limit <= Timestamp::now())
                     });
-                    if !failure_pending && !wait_expired {
-                        let reason = self.store.provider_reason(&CredentialKey(provider.to_owned())).await?
-                            .unwrap_or_else(|| "provider temporarily unavailable".into());
-                        if self.store.park_runnable_for_breaker(
-                            session_id, &reason, until, Timestamp::now(), self.config.max_inference_wait
-                        ).await? {
-                            return Ok(());
-                        }
+                    if !failure_pending
+                        && !wait_expired
+                        && self
+                            .store
+                            .park_runnable_for_breaker(
+                                session_id,
+                                &reason,
+                                until,
+                                Timestamp::now(),
+                                self.config.max_inference_wait,
+                            )
+                            .await?
+                    {
+                        return Ok(());
                     }
                 }
             }

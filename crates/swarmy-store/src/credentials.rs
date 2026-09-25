@@ -98,6 +98,49 @@ impl Store {
             .is_some())
     }
 
+    /// Entry labels for breaker checks, without decrypting. A legacy single
+    /// record that has not migrated yet counts as the `default` entry, placed
+    /// first because the migration keeps its original creation time.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn credential_entry_labels(
+        &self,
+        scope: CredentialScope,
+        provider: &str,
+    ) -> Result<Vec<String>> {
+        let space = self
+            .root
+            .subspace(&("credential_entry", scope.to_string(), provider));
+        let (begin, end) = space.range();
+        let rows = self
+            .transaction(|trx| {
+                let range = (begin.clone(), end.clone());
+                async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+            })
+            .await?;
+        let mut labels = Vec::new();
+        for (key, _) in rows {
+            let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+            labels.push(label);
+        }
+        let legacy = self
+            .transaction(|trx| async move {
+                Ok(trx
+                    .get(
+                        &self.root.pack(&("credential", scope.to_string(), provider)),
+                        false,
+                    )
+                    .await?
+                    .is_some())
+            })
+            .await?;
+        if legacy && !labels.iter().any(|label| label == "default") {
+            labels.insert(0, "default".into());
+        }
+        labels.sort();
+        Ok(labels)
+    }
+
     /// Fingerprint all entries so a change to any labelled entry invalidates gateway state.
     /// # Errors
     /// Returns database or decoding errors.
