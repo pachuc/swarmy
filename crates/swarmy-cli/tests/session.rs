@@ -541,6 +541,136 @@ async fn run_recovers_without_live_publications_or_idle_event() {
     .await;
 }
 
+async fn serve_delayed(fixture: &Fixture) -> tokio::task::JoinHandle<()> {
+    let mut messages = nudges(fixture).await;
+    let delayed = fixture.clone();
+    tokio::spawn(async move {
+        while let Some(message) = messages.next().await {
+            let nudge: Nudge = decode(&message.payload).unwrap();
+            delayed_turn(&delayed, nudge.session_id).await;
+        }
+    })
+}
+
+async fn delayed_turn(fixture: &Fixture, id: SessionId) {
+    let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
+    fixture
+        .store
+        .wake_session(id, Timestamp::now())
+        .await
+        .unwrap();
+    let lease = fixture
+        .store
+        .claim_lease(
+            id,
+            LeaseOwnerId::from_ulid(Ulid::generate()),
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    for (position, text) in [(0, "scripted "), (9, "answer")] {
+        fixture
+            .bus
+            .publish_live(
+                LiveFeed::ModelDeltas(id),
+                &Delta::Text {
+                    output_index: 0,
+                    text: text.into(),
+                },
+            )
+            .await
+            .unwrap();
+        fixture.publish_token(id, text, position).await;
+    }
+    let request_id = RequestId::for_step(id, lease.seq);
+    let call_id = ToolCallId("clock".into());
+    let events = vec![
+        assistant(),
+        Event::ToolCallRequested {
+            seq: 0,
+            request_id,
+            call: ToolCallRecord {
+                call_id: call_id.clone(),
+                tool: "get_time".into(),
+                arguments: serde_json::json!({}),
+                result: None,
+            },
+        },
+        Event::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id,
+            result: successful_tool_result(),
+        },
+        Event::StateChanged {
+            seq: 0,
+            from: SessionState::Leased,
+            to: SessionState::Idle,
+        },
+    ];
+    fixture
+        .store
+        .append_events(id, session.head_seq, &events)
+        .await
+        .unwrap();
+    fixture
+        .store
+        .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
+        .await
+        .unwrap();
+    // Let the client's poll tick observe Idle before SSE arrives.
+    sleep(Duration::from_millis(3500)).await;
+    for event in fixture
+        .store
+        .read_events(id, session.head_seq, 64)
+        .await
+        .unwrap()
+    {
+        fixture
+            .bus
+            .publish_live(LiveFeed::SessionEvents(id), &event)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn poll_idle_does_not_duplicate_live_turn_and_next_turn_is_clean() {
+    run(|fixture| async move {
+        // Force the three-second poll tick to observe Idle after the store
+        // commit but before SSE delivery, while the stream stays healthy.
+        // Without delivered-cursor replay the tick re-queues the whole turn.
+        let server = serve_delayed(&fixture).await;
+        let output = fixture.output(&["run", "hello"]).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines[0], "scripted answer");
+        let id = fixture.store.list_sessions(None, 1).await.unwrap()[0]
+            .session_id
+            .to_string();
+        // A leftover synthetic idle in the client's queue would make the next
+        // turn return immediately without an assistant reply.
+        let second = fixture.output(&["run", "hello", "--session", &id]).await;
+        server.abort();
+        assert!(
+            second.status.success(),
+            "{}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        let text = String::from_utf8(second.stdout).unwrap();
+        assert_eq!(text.lines().count(), 3, "{text}");
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn run_json_emits_only_machine_readable_records() {
     run(|fixture| async move {
@@ -702,7 +832,7 @@ async fn text_is_flushed_before_the_turn_finishes() {
 }
 
 #[tokio::test]
-async fn run_requires_default_image_and_explicit_image_overrides_it() {
+async fn run_uses_server_default_image_and_explicit_image_overrides_it() {
     run(|fixture| async move {
         // The API server, not the client settings, owns the default image.
         let server = serve(&fixture, true).await;

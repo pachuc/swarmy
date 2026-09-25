@@ -51,7 +51,7 @@ impl AppState {
             credential_keyring: None,
             catalog,
             mutations: Arc::new(Mutex::new(())),
-            stream_poll_interval: std::time::Duration::from_secs(5),
+            stream_poll_interval: std::time::Duration::from_secs(20),
             resend_interval: std::time::Duration::from_secs(5),
             default_image: None,
             default_selection: swarmy_core::ResolvedSelection {

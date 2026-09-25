@@ -145,7 +145,7 @@ async fn measure(
     let mut idle = false;
     let mut client_elapsed = Duration::ZERO;
     {
-        let done = conversation.until_idle(false, true);
+        let done = conversation.until_idle(false, true, true);
         tokio::pin!(done);
         loop {
             tokio::select! {

@@ -542,7 +542,7 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
 }
 
 #[tokio::test]
-async fn chat_requires_default_image_and_explicit_image_overrides_it() {
+async fn chat_uses_server_default_image_and_explicit_image_overrides_it() {
     run(|fixture| async move {
         let mut terminal = Terminal::with_image(&fixture, None, None, "");
         terminal

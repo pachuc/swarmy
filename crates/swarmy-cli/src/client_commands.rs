@@ -28,7 +28,7 @@ pub async fn run(
     .await?;
     announce(&conversation, json);
     conversation.send(prompt).await?;
-    let result = conversation.until_idle(json, true).await;
+    let result = conversation.until_idle(json, true, false).await;
     if json {
         match &result {
             Ok(()) => println!(
@@ -81,7 +81,7 @@ pub async fn chat(
         .wait_healthy(conversation.provider.as_deref())
         .await?;
     if conversation.session.state != api::SessionState::Idle {
-        conversation.until_idle(json, false).await?;
+        conversation.until_idle(json, false, false).await?;
     }
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
@@ -95,7 +95,7 @@ pub async fn chat(
                 if prompt.trim().is_empty() { continue; }
                 conversation.wait_healthy(conversation.provider.as_deref()).await?;
                 conversation.send(prompt).await?;
-                conversation.until_idle(json, false).await?;
+                conversation.until_idle(json, false, false).await?;
             }
             _ = tokio::signal::ctrl_c() => {
                 conversation.interrupt().await?;
@@ -104,7 +104,7 @@ pub async fn chat(
             item = conversation.next() => {
                 if let swarmy_client::StreamItem::Event(event) = item? {
                     conversation.queue(swarmy_client::StreamItem::Event(event));
-                    conversation.until_idle(json, false).await?;
+                    conversation.until_idle(json, false, false).await?;
                 }
             }
         }

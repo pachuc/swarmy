@@ -251,7 +251,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let (client, endpoint) = api_client::connect()?;
             api_client::call(&endpoint, client.health()).await?;
-            client_conversation::wait_healthy(&client, selection.provider.as_deref()).await?;
+            client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
+                .await?;
             if cli.json {
                 client_commands::chat(client, session_id, image, agent, new, selection, true)
                     .await?;

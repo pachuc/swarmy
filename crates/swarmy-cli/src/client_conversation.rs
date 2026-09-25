@@ -19,9 +19,11 @@ pub struct Conversation {
     pub tool_result: Option<serde_json::Value>,
     observer: Option<tokio::sync::mpsc::UnboundedSender<swarmy_core::TurnStage>>,
     client: Client,
+    endpoint: String,
     stream: EventStream,
     pending: std::collections::VecDeque<StreamItem>,
     min_sequence: u64,
+    delivered: u64,
     current_turn: Option<String>,
     poll: tokio::time::Interval,
 }
@@ -81,11 +83,10 @@ async fn create_session(
     }
 }
 
-pub async fn wait_healthy(client: &Client, provider: Option<&str>) -> Result<()> {
-    let (_, endpoint) = crate::api_client::connect()?;
+pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str>) -> Result<()> {
     let mut last = String::new();
     loop {
-        let health = crate::api_client::call(&endpoint, client.health()).await?;
+        let health = crate::api_client::call(endpoint, client.health()).await?;
         let services: Vec<api::ServiceHealth> = serde_json::from_value(
             health
                 .get("services")
@@ -204,12 +205,15 @@ impl Conversation {
             .clone()
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
+        let endpoint = crate::api_client::endpoint()?;
+        let head = session.head_sequence;
         Ok(Self {
             provider,
             id: session.id.clone(),
             agent_name: agent_record.map(|a| a.name),
             created,
-            min_sequence: session.head_sequence,
+            min_sequence: head,
+            delivered: head,
             current_turn: None,
             poll: tokio::time::interval_at(
                 tokio::time::Instant::now() + Duration::from_secs(3),
@@ -221,6 +225,7 @@ impl Conversation {
             tool_result: None,
             observer: None,
             client,
+            endpoint,
             stream,
             pending: std::collections::VecDeque::new(),
         })
@@ -231,6 +236,7 @@ impl Conversation {
         self.last_text.clear();
         self.tool_count = 0;
         self.tool_result = None;
+        self.pending.clear();
         ensure!(
             self.session.state == api::SessionState::Idle,
             "session is not idle"
@@ -246,21 +252,21 @@ impl Conversation {
                 status,
                 body: error,
             }) if status.as_u16() == 409 && error.code == "stale_head" => {
-                let (_, endpoint) = crate::api_client::connect()?;
                 self.session =
-                    crate::api_client::call(&endpoint, self.client.session(&self.id)).await?;
+                    crate::api_client::call(&self.endpoint, self.client.session(&self.id)).await?;
                 ensure!(
                     self.session.state == api::SessionState::Idle,
                     "session is not idle"
                 );
                 body.expected_head = self.session.head_sequence;
-                crate::api_client::call(&endpoint, self.client.append_message(&self.id, &body))
+                crate::api_client::call(&self.endpoint, self.client.append_message(&self.id, &body))
                     .await?
             }
             other => other?,
         };
         self.current_turn = Some(appended.turn_id.clone());
         self.min_sequence = appended.sequence;
+        self.delivered = self.delivered.max(appended.sequence.saturating_sub(1));
         self.session.head_sequence = appended.sequence;
         self.session.state = api::SessionState::Runnable;
         self.poll.reset_after(Duration::from_secs(3));
@@ -274,11 +280,122 @@ impl Conversation {
         self.observer = Some(sender);
     }
 
+    fn pending_after(&self) -> u64 {
+        let queued_max = self
+            .pending
+            .iter()
+            .filter_map(|item| match item {
+                StreamItem::Event(event) => Some(event.sequence),
+                StreamItem::TokenDelta { .. } => None,
+            })
+            .max()
+            .unwrap_or(self.delivered);
+        self.delivered.max(queued_max)
+    }
+
+    fn observe_idle(&mut self, sequence: u64) {
+        self.session.state = api::SessionState::Idle;
+        self.session.head_sequence = sequence;
+        self.min_sequence = sequence;
+        self.delivered = self.delivered.max(sequence);
+        self.current_turn = None;
+    }
+
+    fn is_duplicate(&self, event: &api::Event, queued: bool) -> bool {
+        if event.log_id != self.session.log_id {
+            return true;
+        }
+        if queued {
+            // Queued events were selected as fresh (> delivered) at queue
+            // time. They are all delivered, including a synthetic idle that
+            // reuses the head sequence when the store has no real idle event.
+            // Stale entries from a previous turn cannot survive send(), which
+            // clears the queue.
+            return false;
+        }
+        if event.sequence < self.min_sequence || event.sequence <= self.delivered {
+            return true;
+        }
+        // The poll path already queued this sequence; the queued copy drives
+        // the turn so the stream duplicate is dropped.
+        self.pending
+            .iter()
+            .any(|queued| matches!(queued, StreamItem::Event(e) if e.sequence == event.sequence))
+    }
+
+    async fn poll_tick(&mut self) -> Result<bool> {
+        let session = self.client.session(&self.id).await?;
+        if !(session.state == api::SessionState::Idle && session.head_sequence >= self.min_sequence)
+        {
+            return Ok(false);
+        }
+        // Replay only what the stream has not delivered yet. The delivered
+        // cursor advances on return, so also skip sequences already waiting
+        // in pending when two ticks fire before the queue drains.
+        let after = self.pending_after();
+        let history = self.client.events(&self.id, after, 100).await?;
+        let (fresh, has_idle) = select_fresh(history, after, session.head_sequence, &self.pending);
+        for event in fresh {
+            self.pending.push_back(StreamItem::Event(event));
+        }
+        self.session = session;
+        self.current_turn = None;
+        if !has_idle {
+            self.queue_synthetic_idle(after);
+        }
+        Ok(true)
+    }
+
+    fn queue_synthetic_idle(&mut self, after: u64) {
+        let head = self.session.head_sequence;
+        // The head was already delivered or queued (after covers both), so a
+        // synthetic idle would duplicate. Otherwise the store has no real
+        // idle event and the turn needs the synthetic to complete, even when
+        // a real tool event shares the head sequence.
+        if head <= after {
+            return;
+        }
+        self.pending.push_back(StreamItem::Event(api::Event {
+            log_id: self.session.log_id.clone(),
+            sequence: head,
+            payload: api::EventPayload::StoreRecord {
+                record: serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":head}}),
+            },
+        }));
+    }
+
+    async fn take_successor(&mut self) -> Result<Option<StreamItem>> {
+        let old = self.id.clone();
+        let session = self.client.session(&old).await?;
+        let Some(successor) = self.client.successor(&session).await? else {
+            return Ok(None);
+        };
+        let next = successor.id.clone();
+        self.stream.subscription_handle().set(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: successor.log_id.clone(),
+                sequence: 0,
+            }],
+            token_deltas: true,
+        });
+        self.id.clone_from(&next);
+        self.session = successor;
+        self.min_sequence = 0;
+        self.delivered = 0;
+        self.current_turn = None;
+        Ok(Some(StreamItem::Event(api::Event {
+            log_id: self.session.log_id.clone(),
+            sequence: 0,
+            payload: api::EventPayload::StoreRecord {
+                record: serde_json::json!({"session_summarized":{"previous_session_id":old,"session_id":next}}),
+            },
+        })))
+    }
+
     pub async fn interrupt(&mut self) -> Result<()> {
         if self.current_turn.is_some() {
-            let (_, endpoint) = crate::api_client::connect()?;
             crate::api_client::call(
-                &endpoint,
+                &self.endpoint,
                 self.client.interrupt(
                     &self.id,
                     &api::InterruptSession {
@@ -301,20 +418,7 @@ impl Conversation {
                     tokio::select! {
                         item = self.stream.next_item() => item?,
                         _ = self.poll.tick(), if self.current_turn.is_some() || self.session.state != api::SessionState::Idle => {
-                            let session = self.client.session(&self.id).await?;
-                            if session.state == api::SessionState::Idle && session.head_sequence >= self.min_sequence {
-                                let history = self.client.events(&self.id, self.min_sequence.saturating_sub(1), 100).await?;
-                                for event in history {
-                                    if event.sequence <= session.head_sequence { self.pending.push_back(StreamItem::Event(event)); }
-                                }
-                            self.session = session;
-                            self.current_turn = None;
-                            self.pending.push_back(StreamItem::Event(api::Event {
-                                    log_id: self.session.log_id.clone(), sequence: self.session.head_sequence,
-                                    payload: api::EventPayload::StoreRecord {
-                                        record: serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":self.session.head_sequence}}),
-                                    },
-                                }));
+                            if self.poll_tick().await? {
                                 continue;
                             }
                             continue;
@@ -324,48 +428,20 @@ impl Conversation {
                 )
             };
             if let StreamItem::Event(event) = &item {
-                if event.log_id != self.session.log_id
-                    || (!queued && event.sequence < self.min_sequence)
-                {
+                if self.is_duplicate(event, queued) {
                     continue;
                 }
-                if let api::EventPayload::StoreRecord { record } = &event.payload
-                    && record.get("state_changed").and_then(|v| v.get("to"))
-                        == Some(&serde_json::json!("completed"))
+                if is_completed_event(&event.payload)
+                    && let Some(summary) = self.take_successor().await?
                 {
-                    let old = self.id.clone();
-                    let session = self.client.session(&old).await?;
-                    if let Some(successor) = self.client.successor(&session).await? {
-                        let next = successor.id.clone();
-                        self.stream.subscription_handle().set(api::Subscription {
-                            cursors: vec![api::Cursor {
-                                log_id: successor.log_id.clone(),
-                                sequence: 0,
-                            }],
-                            token_deltas: true,
-                        });
-                        self.id.clone_from(&next);
-                        self.session = successor;
-                        self.min_sequence = 0;
-                        self.current_turn = None;
-                        return Ok(StreamItem::Event(api::Event {
-                            log_id: self.session.log_id.clone(),
-                            sequence: 0,
-                            payload: api::EventPayload::StoreRecord {
-                                record: serde_json::json!({"session_summarized":{"previous_session_id":old,"session_id":next}}),
-                            },
-                        }));
-                    }
+                    return Ok(summary);
                 }
-                if let api::EventPayload::StoreRecord { record } = &event.payload
-                    && record.get("state_changed").and_then(|v| v.get("to"))
-                        == Some(&serde_json::json!("idle"))
-                {
-                    self.session.state = api::SessionState::Idle;
-                    self.session.head_sequence = event.sequence;
-                    self.min_sequence = event.sequence;
-                    self.current_turn = None;
+                if is_idle_event(event) {
+                    self.observe_idle(event.sequence);
                 }
+            }
+            if let StreamItem::Event(event) = &item {
+                self.delivered = self.delivered.max(event.sequence);
             }
             return Ok(item);
         }
@@ -376,10 +452,10 @@ impl Conversation {
     }
 
     pub async fn wait_healthy(&self, provider: Option<&str>) -> Result<()> {
-        wait_healthy(&self.client, provider).await
+        wait_healthy(&self.client, &self.endpoint, provider).await
     }
 
-    pub async fn until_idle(&mut self, json: bool, run: bool) -> Result<()> {
+    pub async fn until_idle(&mut self, json: bool, run: bool, quiet: bool) -> Result<()> {
         let mut progress = TurnProgress::default();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -406,14 +482,16 @@ impl Conversation {
                     payload: api::EventPayload::TokenDelta { text, .. },
                     ..
                 } => {
-                    if json {
-                        println!(
-                            "{}",
-                            serde_json::json!({"event":"model_delta","delta":{"Text":{"output_index":0,"text":text}}})
-                        );
-                    } else {
-                        print!("{text}");
-                        io::stdout().flush()?;
+                    if !quiet {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"event":"model_delta","delta":{"Text":{"output_index":0,"text":text}}})
+                            );
+                        } else {
+                            print!("{text}");
+                            io::stdout().flush()?;
+                        }
                     }
                     progress.streamed.push_str(&text);
                 }
@@ -421,7 +499,14 @@ impl Conversation {
                     let api::EventPayload::StoreRecord { record } = event.payload else {
                         continue;
                     };
-                    if self.record_event(&record, event.sequence, json, run, &mut progress)? {
+                    if self.record_event(
+                        &record,
+                        event.sequence,
+                        json,
+                        run,
+                        quiet,
+                        &mut progress,
+                    )? {
                         return Ok(());
                     }
                 }
@@ -436,27 +521,18 @@ impl Conversation {
         sequence: u64,
         json: bool,
         run: bool,
+        quiet: bool,
         progress: &mut TurnProgress,
     ) -> Result<bool> {
         if sequence < self.min_sequence {
             return Ok(false);
         }
         if let Some(summary) = record.get("session_summarized") {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"event":"session_summarized","previous_session_id":summary["previous_session_id"],"session_id":summary["session_id"]})
-                );
-            } else {
-                eprintln!(
-                    "Conversation summarized. Session {} archived; continuing in {}.",
-                    summary["previous_session_id"], summary["session_id"]
-                );
-            }
+            report_summary(quiet, json, summary);
             progress.started = true;
             return Ok(false);
         }
-        if json {
+        if !quiet && json {
             println!(
                 "{}",
                 serde_json::json!({"event":"session_event","value":record})
@@ -470,38 +546,61 @@ impl Conversation {
                 bail!("session completed");
             }
             if state == "idle" {
-                if !json && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
-                    println!();
-                }
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"event":"session_idle","session_id":self.id})
-                    );
-                }
-                self.min_sequence = sequence;
-                self.session.head_sequence = sequence;
-                self.session.state = api::SessionState::Idle;
-                self.current_turn = None;
-                if let Some(sender) = &self.observer {
-                    let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
-                }
-                if let Some(error) = progress.error.take() {
-                    bail!("{error}");
-                }
-                ensure!(
-                    !run || progress.reply,
-                    "turn ended without a completed assistant reply"
-                );
-                return Ok(true);
+                return self.finish_idle(sequence, json, quiet, run, progress);
             }
         }
         if record.get("inference_requested").is_some() {
             progress.started = true;
         }
-        if !json {
+        if !quiet && !json {
             print_tools(record);
         }
+        self.track_tools(record, progress);
+        if let Some(message) = record
+            .get("inference_completed")
+            .or_else(|| record.get("message_appended"))
+            .and_then(|event| event.get("message"))
+        {
+            self.render_message(message, json, quiet, progress)?;
+        }
+        Ok(false)
+    }
+
+    fn finish_idle(
+        &mut self,
+        sequence: u64,
+        json: bool,
+        quiet: bool,
+        run: bool,
+        progress: &mut TurnProgress,
+    ) -> Result<bool> {
+        if !quiet && !json && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
+            println!();
+        }
+        if !quiet && json {
+            println!(
+                "{}",
+                serde_json::json!({"event":"session_idle","session_id":self.id})
+            );
+        }
+        self.min_sequence = sequence;
+        self.session.head_sequence = sequence;
+        self.session.state = api::SessionState::Idle;
+        self.current_turn = None;
+        if let Some(sender) = &self.observer {
+            let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
+        }
+        if let Some(error) = progress.error.take() {
+            bail!("{error}");
+        }
+        ensure!(
+            !run || progress.reply,
+            "turn ended without a completed assistant reply"
+        );
+        Ok(true)
+    }
+
+    fn track_tools(&mut self, record: &serde_json::Value, progress: &mut TurnProgress) {
         if let Some(result) = record
             .get("tool_call_completed")
             .and_then(|v| v.get("result"))
@@ -528,20 +627,13 @@ impl Conversation {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
         }
-        if let Some(message) = record
-            .get("inference_completed")
-            .or_else(|| record.get("message_appended"))
-            .and_then(|event| event.get("message"))
-        {
-            self.render_message(message, json, progress)?;
-        }
-        Ok(false)
     }
 
     fn render_message(
         &mut self,
         message: &serde_json::Value,
         json: bool,
+        quiet: bool,
         progress: &mut TurnProgress,
     ) -> Result<()> {
         if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
@@ -569,6 +661,9 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
         }
+        if quiet {
+            return Ok(());
+        }
         if json {
             println!(
                 "{}",
@@ -593,6 +688,58 @@ struct TurnProgress {
     error: Option<String>,
     streamed: String,
     started: bool,
+}
+
+fn is_idle_event(event: &api::Event) -> bool {
+    matches!(&event.payload, api::EventPayload::StoreRecord { record }
+        if record.get("state_changed").and_then(|v| v.get("to"))
+            == Some(&serde_json::json!("idle")))
+}
+
+fn is_completed_event(payload: &api::EventPayload) -> bool {
+    matches!(payload, api::EventPayload::StoreRecord { record }
+        if record.get("state_changed").and_then(|v| v.get("to"))
+            == Some(&serde_json::json!("completed")))
+}
+
+fn report_summary(quiet: bool, json: bool, summary: &serde_json::Value) {
+    if quiet {
+        return;
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"event":"session_summarized","previous_session_id":summary["previous_session_id"],"session_id":summary["session_id"]})
+        );
+    } else {
+        eprintln!(
+            "Conversation summarized. Session {} archived; continuing in {}.",
+            summary["previous_session_id"], summary["session_id"]
+        );
+    }
+}
+
+// Select the events a poll tick must queue: only what the stream has not
+// delivered yet, up to the observed head, and never what is already queued.
+// Returns the fresh events and whether they already contain the idle event,
+// so the caller can skip the synthetic idle when the real one is present.
+fn select_fresh(
+    history: Vec<api::Event>,
+    after: u64,
+    head: u64,
+    pending: &std::collections::VecDeque<StreamItem>,
+) -> (Vec<api::Event>, bool) {
+    let mut fresh: Vec<api::Event> = history
+        .into_iter()
+        .filter(|event| event.sequence > after && event.sequence <= head)
+        .collect();
+    fresh.retain(|event| {
+        !pending
+            .iter()
+            .any(|queued| matches!(queued, StreamItem::Event(e) if e.sequence == event.sequence))
+    });
+    let has_idle = fresh.iter().any(is_idle_event);
+    (fresh, has_idle)
 }
 
 fn service_problem(services: &[api::ServiceHealth], provider: Option<&str>) -> &'static str {
@@ -655,5 +802,53 @@ mod tests {
             "No gateway serves this session's provider"
         );
         assert_eq!(service_problem(&services, Some("fake")), "");
+    }
+
+    fn store_event(sequence: u64, idle: bool) -> api::Event {
+        api::Event {
+            log_id: api::LogId::Session("s".into()),
+            sequence,
+            payload: api::EventPayload::StoreRecord {
+                record: if idle {
+                    serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":sequence}})
+                } else {
+                    serde_json::json!({"message_appended":{"seq":sequence}})
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn poll_replays_only_undelivered_events_and_skips_synthetic_idle() {
+        use std::collections::VecDeque;
+        // A tick that lands between the store commit and SSE delivery must not
+        // replay the whole turn: only events after the delivered cursor.
+        let history = vec![
+            store_event(2, false),
+            store_event(3, false),
+            store_event(4, false),
+            store_event(5, true),
+        ];
+        let (fresh, has_idle) = select_fresh(history.clone(), 1, 5, &VecDeque::new());
+        assert_eq!(fresh.len(), 4);
+        assert!(has_idle);
+        // The stream already delivered through sequence 4 while the poll tick
+        // was in flight; the tick must queue only the idle event.
+        let (fresh, has_idle) = select_fresh(history.clone(), 4, 5, &VecDeque::new());
+        assert_eq!(
+            fresh.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            vec![5]
+        );
+        assert!(has_idle);
+        // Two ticks before the queue drains must not queue the same event
+        // twice, and the synthetic idle is skipped when the real one is queued.
+        let mut pending = VecDeque::new();
+        pending.push_back(StreamItem::Event(store_event(5, true)));
+        let (fresh, _) = select_fresh(history, 4, 5, &pending);
+        assert!(fresh.is_empty());
+        // Without an idle event in history the caller falls back to the
+        // synthetic idle; with one present it must not add a second.
+        assert!(is_idle_event(&store_event(5, true)));
+        assert!(!is_idle_event(&store_event(4, false)));
     }
 }
