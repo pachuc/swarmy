@@ -198,7 +198,7 @@ pub struct Provider {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     Subscription,
     ApiKey,
@@ -868,13 +868,13 @@ mod tests {
         check!(Image, {"id":"i","name":"base","tag":"dev"});
         check!(Model, {"id":"m","provider_id":"p","context_window":100});
         check!(Provider, {"id":"p","name":"provider","status":"available"});
-        for kind in ["subscription", "api-key", "cloud"] {
+        for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);
         }
         for status in ["ready", "expired", "needs_login"] {
             check!(CredentialStatus, status);
         }
-        check!(Credential, {"provider":"openai","kind":"api-key","label":"primary","status":"ready","updated_at":"2026-09-23T12:00:00Z"});
+        check!(Credential, {"provider":"openai","kind":"api_key","label":"primary","status":"ready","updated_at":"2026-09-23T12:00:00Z"});
         for role in ["sandbox", "volume"] {
             check!(NodeRole, role);
         }
@@ -910,7 +910,7 @@ mod tests {
         check!(CreateTurn, {"idempotency_key":"k","session_id":"s"});
         check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
         check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
-        check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api-key","label":"primary","secret":"input-only"});
+        check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
     }
 
