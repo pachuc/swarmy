@@ -503,8 +503,14 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
 
 fn call_count(files: &Path) -> Result<usize> {
     let log = std::fs::read_to_string(files.join("calls"))?;
+    // Each line is one JSON entry holding the messages the fake provider
+    // received, so provider-switch tests can assert on forwarded history.
     ensure!(
-        log.lines().all(|line| line == "call") && (log.is_empty() || log.ends_with('\n')),
+        log.lines().all(
+            |line| serde_json::from_str::<serde_json::Value>(line).is_ok_and(|entry| entry
+                .get("messages")
+                .is_some_and(serde_json::Value::is_array))
+        ) && (log.is_empty() || log.ends_with('\n')),
         "malformed provider call log"
     );
     Ok(log.lines().count())

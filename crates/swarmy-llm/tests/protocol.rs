@@ -311,3 +311,217 @@ fn responses_image_request_body() {
         json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"})
     );
 }
+
+fn stalled_session_messages() -> Vec<Message> {
+    let events: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/notice-between-call-and-result.json")).unwrap();
+    events
+        .iter()
+        .map(|event| serde_json::from_value(event["message"].clone()).unwrap())
+        .collect()
+}
+
+fn stalled_session_request() -> Request {
+    use swarmy_llm::catalog::Catalog;
+    let openai = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
+    let mut req = request();
+    req.settings.model = openai.id;
+    req.tools = vec![
+        ToolDefinition {
+            name: "edit".into(),
+            description: "Edit a file".into(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "bash".into(),
+            description: "Run a command".into(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+    req.messages = stalled_session_messages();
+    req
+}
+
+fn responses_input(req: &Request) -> Vec<Value> {
+    use swarmy_llm::catalog::Catalog;
+    let openai = Catalog::get().model("openai", "gpt-5.5").unwrap().clone();
+    let endpoint = swarmy_llm::api::responses::ResponsesEndpoint::from_catalog(
+        Catalog::get().provider("openai").unwrap(),
+        &openai,
+        swarmy_llm::ClientAuth::ApiKey("test-key".into()),
+    )
+    .unwrap();
+    swarmy_llm::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None).unwrap()
+        ["input"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn completions_messages(req: &Request) -> Vec<Value> {
+    use swarmy_llm::catalog::Catalog;
+    let openrouter = Catalog::get()
+        .model("openrouter", "openai/gpt-5.5")
+        .unwrap()
+        .clone();
+    let mut req = req.clone();
+    req.settings.model.clone_from(&openrouter.id);
+    swarmy_llm::api::completions::request_json(&req, "openrouter", &openrouter).unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn assert_responses_paired(input: &[Value], calls: &[&str], notice: &str) {
+    for id in calls {
+        let call = input
+            .iter()
+            .position(|i| i["type"] == "function_call" && i["call_id"] == *id)
+            .unwrap_or_else(|| panic!("call {id} in Responses input"));
+        let result = input
+            .iter()
+            .position(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+            .unwrap_or_else(|| panic!("result {id} in Responses input"));
+        assert_eq!(
+            call + 1,
+            result,
+            "result for {id} must directly follow its call"
+        );
+    }
+    let notice = input
+        .iter()
+        .position(|i| i.to_string().contains(notice))
+        .expect("notice in Responses input");
+    for id in calls {
+        let result = input
+            .iter()
+            .position(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+            .unwrap();
+        assert!(
+            notice > result,
+            "notice must come after the result for {id}"
+        );
+    }
+    for id in calls {
+        assert_eq!(
+            input
+                .iter()
+                .filter(|i| i["type"] == "function_call" && i["call_id"] == *id)
+                .count(),
+            1,
+            "call {id} emitted once"
+        );
+        assert_eq!(
+            input
+                .iter()
+                .filter(|i| i["type"] == "function_call_output" && i["call_id"] == *id)
+                .count(),
+            1,
+            "result {id} emitted once"
+        );
+    }
+}
+
+fn assert_completions_paired(messages: &[Value], calls: &[&str], notice: &str) {
+    for id in calls {
+        let call = messages
+            .iter()
+            .position(|m| {
+                m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                })
+            })
+            .unwrap_or_else(|| panic!("call {id} in wire messages"));
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap_or_else(|| panic!("result {id} in wire messages"));
+        assert_eq!(
+            call + 1,
+            result,
+            "result for {id} must directly follow its call"
+        );
+    }
+    let notice = messages
+        .iter()
+        .position(|m| m.to_string().contains(notice))
+        .expect("notice in wire messages");
+    for id in calls {
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap();
+        assert!(
+            notice > result,
+            "notice must come after the result for {id}"
+        );
+    }
+    for id in calls {
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                }))
+                .count(),
+            1,
+            "call {id} emitted once"
+        );
+        assert_eq!(
+            messages.iter().filter(|m| m["tool_call_id"] == *id).count(),
+            1,
+            "result {id} emitted once"
+        );
+    }
+}
+
+#[test]
+fn stalled_session_notice_between_call_and_result_pairs_in_both_protocols() {
+    // Worker-3's stalled session: every call is in the durable log, but a
+    // system notice sits between the second call and its result. Converting
+    // for either protocol must not fail; each result directly follows its
+    // call, the notice appears after the results, and nothing is duplicated.
+    let req = stalled_session_request();
+    let calls = [
+        "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+        "call_rqd1dzkZ3kl2nd118QaUdWYW",
+    ];
+    assert_responses_paired(&responses_input(&req), &calls, "Your computer was evicted");
+    assert_completions_paired(
+        &completions_messages(&req),
+        &calls,
+        "Your computer was evicted",
+    );
+}
+
+#[test]
+fn user_prompt_between_call_and_result_pairs_in_both_protocols() {
+    // Mirror case: the next task's user prompt was appended while a call was
+    // still in flight, so it sits between the call and its result.
+    let mut req = stalled_session_request();
+    let notice = req.messages.remove(3);
+    assert!(notice.parts.iter().any(
+        |part| matches!(part, Part::Text { text } if text.contains("Your computer was evicted"))
+    ));
+    req.messages.insert(
+        3,
+        message(
+            MessageRole::User,
+            vec![text("Continue with the next step while that runs.")],
+        ),
+    );
+    assert_responses_paired(
+        &responses_input(&req),
+        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        "Continue with the next step",
+    );
+    assert_completions_paired(
+        &completions_messages(&req),
+        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        "Continue with the next step",
+    );
+}

@@ -468,6 +468,185 @@ async fn tool_history_repairs_orphans_and_moves_results_before_notices() {
     assert_eq!(messages[6]["role"], "developer");
 }
 
+#[test]
+fn result_without_any_call_gets_a_neutral_placeholder() {
+    // A result whose call id appears nowhere in the history gets a neutral
+    // placeholder call: the name must not guess the first declared tool.
+    let model = model();
+    let mut req = request(&model);
+    req.tools.push(ToolDefinition {
+        name: "get_time".into(),
+        description: "Read time".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    });
+    req.messages.push(message(
+        MessageRole::Tool,
+        vec![Part::ToolResult {
+            call_id: ToolCallId("call_1".into()),
+            result: ToolResult::Completed {
+                output: "12:00".into(),
+                title: "get_time".into(),
+                metadata: BTreeMap::new(),
+            },
+        }],
+    ));
+    let body = request_json(&req, "openrouter", &model).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+        .expect("synthesized assistant tool call");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+    assert_eq!(
+        assistant["tool_calls"][0]["function"]["name"],
+        "unknown_tool"
+    );
+    let positions: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            (m.get("tool_calls").is_some() || m["tool_call_id"] == "call_1").then_some(i)
+        })
+        .collect();
+    assert_eq!(positions.len(), 2);
+    assert_eq!(positions[0] + 1, positions[1]);
+}
+
+fn stalled_session_messages() -> Vec<Message> {
+    let events: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/notice-between-call-and-result.json")).unwrap();
+    events
+        .iter()
+        .map(|event| serde_json::from_value(event["message"].clone()).unwrap())
+        .collect()
+}
+
+fn stalled_session_tools() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "edit".into(),
+            description: "Edit a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolDefinition {
+            name: "bash".into(),
+            description: "Run a command".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ]
+}
+
+fn assert_results_follow_calls(messages: &[Value], calls: &[&str], notice: &str) {
+    for id in calls {
+        let call = messages
+            .iter()
+            .position(|m| {
+                m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                })
+            })
+            .unwrap_or_else(|| panic!("call {id} in wire messages"));
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap_or_else(|| panic!("result {id} in wire messages"));
+        assert_eq!(
+            call + 1,
+            result,
+            "result for {id} must directly follow its call"
+        );
+    }
+    let notice = messages
+        .iter()
+        .position(|m| m.to_string().contains(notice))
+        .expect("notice in wire messages");
+    for id in calls {
+        let result = messages
+            .iter()
+            .position(|m| m["tool_call_id"] == *id)
+            .unwrap();
+        assert!(
+            notice > result,
+            "notice must come after the result for {id}"
+        );
+    }
+    for id in calls {
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.get("tool_calls").is_some_and(|calls| {
+                    calls
+                        .as_array()
+                        .is_some_and(|calls| calls.iter().any(|call| call["id"] == *id))
+                }))
+                .count(),
+            1,
+            "call {id} emitted once"
+        );
+        assert_eq!(
+            messages.iter().filter(|m| m["tool_call_id"] == *id).count(),
+            1,
+            "result {id} emitted once"
+        );
+    }
+}
+
+#[test]
+fn stalled_session_notice_between_call_and_result_stays_paired() {
+    // Worker-3's stalled session: every call is in the durable log, but a
+    // system notice sits between the second call and its result. Converting
+    // for chat completions must not fail; each result directly follows its
+    // call and the notice moves after the results.
+    let model = model();
+    let mut req = request(&model);
+    req.tools = stalled_session_tools();
+    req.messages.extend(stalled_session_messages());
+    let body = request_json(&req, "openrouter", &model).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_results_follow_calls(
+        messages,
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
+        "Your computer was evicted",
+    );
+}
+
+#[test]
+fn user_prompt_between_call_and_result_stays_paired() {
+    // Mirror case: the next task's user prompt was appended while a call was
+    // still in flight, so it sits between the call and its result.
+    let model = model();
+    let mut req = request(&model);
+    req.tools = stalled_session_tools();
+    let mut history = stalled_session_messages();
+    let notice = history.remove(3);
+    assert!(notice.parts.iter().any(
+        |part| matches!(part, Part::Text { text } if text.contains("Your computer was evicted"))
+    ));
+    history.insert(
+        3,
+        message(
+            MessageRole::User,
+            vec![text("Continue with the next step while that runs.")],
+        ),
+    );
+    req.messages.extend(history);
+    let body = request_json(&req, "openrouter", &model).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_results_follow_calls(
+        messages,
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
+        "Continue with the next step",
+    );
+}
+
 #[tokio::test]
 async fn errors_in_bodies_and_streams_are_classified_without_retrying_streams() {
     for (status, body, mime, overflow) in [
