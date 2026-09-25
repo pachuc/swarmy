@@ -849,7 +849,7 @@ mod tests {
         check!(NodeCapacity, {"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2});
         check!(Node, {"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
         check!(ServiceHealth, {"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
-        check!(HealthResponse, {"version":"0.1.0","git_commit":"abc","api_version":"1.0.0","services":[],"node_count":0});
+        check!(HealthResponse, {"version":"0.1.0","git_commit":"abc","api_version":"1.0.0","default_provider":"openai","services":[],"node_count":0});
         check!(ApiError, {"code":"provider_error","message":"failed","provider_text":"original"});
     }
 
