@@ -42,7 +42,7 @@ mod tools;
 mod turns;
 mod volumes;
 
-pub use inference_wait::{CredentialKey, InferenceFailureWait, InferenceWait};
+pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
 
 use std::{future::Future, sync::Arc};

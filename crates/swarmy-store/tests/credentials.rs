@@ -13,7 +13,9 @@ use swarmy_core::{
     CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
     encode,
 };
-use swarmy_store::{Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore};
+use swarmy_store::{
+    CredentialKey, Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore,
+};
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
@@ -515,4 +517,123 @@ async fn entry_labels_list_without_decrypting_and_cover_legacy() {
             .unwrap(),
         ["default"]
     );
+}
+
+fn api_key(key: &str) -> CredentialRecord {
+    CredentialRecord {
+        kind: CredentialKind::ApiKey {
+            key: key.into(),
+            extra: std::collections::BTreeMap::default(),
+        },
+        updated_at: Timestamp::now(),
+    }
+}
+
+fn login_needed() -> CredentialRecord {
+    let mut record = api_key("");
+    let CredentialKind::ApiKey { extra, .. } = &mut record.kind else {
+        unreachable!("api_key builds ApiKey records");
+    };
+    extra.insert("needs_login".into(), "true".into());
+    record
+}
+
+#[tokio::test]
+async fn breaker_snapshot_matches_the_gateway_pool_without_decrypting() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    let store = Store::with_subspace(
+        f.db.clone(),
+        f.root.clone(),
+        Arc::new(MemoryBlobStore::default()),
+    );
+    // Without stored entries the provider shares one unlabeled record.
+    let empty = store
+        .breaker_snapshot(SCOPE, "openai", Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(empty.len(), 1);
+    assert_eq!(empty[0].key, CredentialKey::provider("openai"));
+    assert!(empty[0].open_until.is_none());
+    assert!(empty[0].reason.is_none());
+
+    f.credentials
+        .put_entry(SCOPE, "openai", "ready", &api_key("live"))
+        .await
+        .unwrap();
+    f.credentials
+        .put_entry(SCOPE, "openai", "login", &login_needed())
+        .await
+        .unwrap();
+    f.credentials
+        .put_entry(SCOPE, "openai", "expired", &oauth("stale"))
+        .await
+        .unwrap();
+    // While a ready entry exists, entries needing login or past expiry are
+    // not candidates, matching the gateway pool.
+    let pool = store
+        .breaker_snapshot(SCOPE, "openai", Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(pool.len(), 1);
+    assert_eq!(pool[0].key, CredentialKey::entry("openai", "ready"));
+    assert!(pool[0].open_until.is_none());
+
+    // An open breaker attaches its retry time and entry-named reason.
+    let until = Timestamp::now()
+        .checked_add(Duration::from_secs(60))
+        .unwrap();
+    store
+        .entry_failure(
+            &CredentialKey::entry("openai", "ready"),
+            until,
+            "openai/ready: slow down",
+        )
+        .await
+        .unwrap();
+    let parked = store
+        .breaker_snapshot(SCOPE, "openai", Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].open_until, Some(until));
+    assert_eq!(parked[0].reason.as_deref(), Some("openai/ready: slow down"));
+
+    // With no ready entry every stored entry is a candidate, so a provider
+    // with no usable key still parks behind its breaker.
+    let fallback = store
+        .breaker_snapshot(SCOPE, "anthropic", Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(fallback.len(), 1);
+    f.credentials
+        .put_entry(SCOPE, "anthropic", "login", &login_needed())
+        .await
+        .unwrap();
+    f.credentials
+        .put_entry(SCOPE, "anthropic", "expired", &oauth("stale"))
+        .await
+        .unwrap();
+    let mut labels: Vec<String> = store
+        .breaker_snapshot(SCOPE, "anthropic", Timestamp::now())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|candidate| candidate.key.label.unwrap())
+        .collect();
+    labels.sort();
+    assert_eq!(labels, ["expired", "login"]);
+
+    // An unmigrated single record counts as the default entry.
+    f.credentials
+        .put_credential(SCOPE, "xai", &api_key("legacy"))
+        .await
+        .unwrap();
+    let legacy = store
+        .breaker_snapshot(SCOPE, "xai", Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].key, CredentialKey::entry("xai", "default"));
 }

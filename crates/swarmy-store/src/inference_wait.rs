@@ -61,6 +61,16 @@ pub struct Breaker {
     pub reason: String,
 }
 
+/// One pool candidate with its live breaker record, read in a single
+/// transaction by `Store::breaker_snapshot` for a scheduler tick. `reason`
+/// is present only while the breaker is open.
+#[derive(Clone, Debug)]
+pub struct BreakerCandidate {
+    pub key: CredentialKey,
+    pub open_until: Option<Timestamp>,
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InferenceWait {
     pub since: Timestamp,
@@ -81,7 +91,7 @@ impl Store {
     /// Breaker records live under `(provider, label)`. The previous
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
-    fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
+    pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
         self.root.pack(&(
             "inference_breaker",
             key.provider.as_str(),
