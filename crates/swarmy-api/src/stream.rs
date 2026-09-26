@@ -48,11 +48,9 @@ pub struct StreamQuery {
     subscription: Option<String>,
 }
 
-#[allow(deprecated)]
 fn key(log: &LogId) -> String {
     match log {
         LogId::Session(id) => format!("session:{id}"),
-        LogId::Channel(id) => format!("channel:{id}"),
         LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }
@@ -86,9 +84,6 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
         let id = match &cursor.log_id {
             LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
             LogId::Session(_) => session_id(&cursor.log_id)?,
-            // The deprecated channel namespace was never served.
-            #[allow(deprecated)]
-            LogId::Channel(_) => return Err(error(StatusCode::BAD_REQUEST, "unsupported_log")),
         };
         if state
             .store

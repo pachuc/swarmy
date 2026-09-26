@@ -34,17 +34,10 @@ pub fn same_major(left: &str, right: &str) -> bool {
 }
 
 /// A log namespace.
-/// TODO(channel-sunset): remove the deprecated `Channel` variant after its
-/// 2026-11-25 sunset date; it was never served and always rejected.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum LogId {
     Session(String),
-    /// Deprecated channel namespace. Never served: subscriptions naming it
-    /// are rejected with `unsupported_log`. Kept for the additive-only
-    /// `/v1` policy until the sunset date (`x-sunset: 2026-11-25`).
-    #[deprecated(note = "channel logs were never served; use session or timeline")]
-    Channel(String),
     /// Ephemeral turn timeline observations. Live-only: cursors are ignored
     /// and events are numbered per connection, so reconnects replay nothing.
     Timeline(String),
@@ -1245,10 +1238,6 @@ mod tests {
     #[test]
     fn resource_json_contract() {
         check!(LogId, {"kind":"session","id":"s"});
-        #[allow(deprecated)]
-        {
-            check!(LogId, {"kind":"channel","id":"c"});
-        }
         check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
         check!(Subscription, {"cursors":[],"token_deltas":false});

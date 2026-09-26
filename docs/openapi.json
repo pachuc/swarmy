@@ -4581,28 +4581,6 @@
           },
           {
             "type": "object",
-            "description": "Deprecated channel namespace. Never served: subscriptions naming it\nare rejected with `unsupported_log`. Kept for the additive-only\n`/v1` policy until the sunset date (`x-sunset: 2026-11-25`).",
-            "required": [
-              "id",
-              "kind"
-            ],
-            "properties": {
-              "id": {
-                "type": "string",
-                "description": "Deprecated channel namespace. Never served: subscriptions naming it\nare rejected with `unsupported_log`. Kept for the additive-only\n`/v1` policy until the sunset date (`x-sunset: 2026-11-25`).",
-                "deprecated": true
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "channel"
-                ]
-              }
-            },
-            "deprecated": true
-          },
-          {
-            "type": "object",
             "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing.",
             "required": [
               "id",
@@ -4622,7 +4600,7 @@
             }
           }
         ],
-        "description": "A log namespace.\nTODO(channel-sunset): remove the deprecated `Channel` variant after its\n2026-11-25 sunset date; it was never served and always rejected."
+        "description": "A log namespace."
       },
       "Message": {
         "type": "object",
