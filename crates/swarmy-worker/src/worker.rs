@@ -548,8 +548,10 @@ impl Worker {
     /// route for the next attempt, wrapping to a recovered earlier step when
     /// every later step is open. When every step is open the session waits
     /// for the earliest retry among them. The snapshot, the step move, and
-    /// the wait write commit in one store transaction; an unrouted
-    /// ephemeral session keeps the pre-routes single park instead.
+    /// the wait write commit in one store transaction, matching the
+    /// pre-routes park cost; unrouted sessions resolve the implicit chain
+    /// of their provider's entries here even though their first attempt
+    /// skipped the snapshot read.
     async fn failover_or_park(
         &self,
         session: &mut SessionRecord,
@@ -559,29 +561,6 @@ impl Worker {
         retry_at: Timestamp,
         now: Timestamp,
     ) -> Result<bool> {
-        if !session.needs_route_snapshot(self.config.default_route.as_deref()) {
-            let mut token = lease.lock().await;
-            let lease_ref = token.as_ref().context("lease released")?;
-            let parked = self
-                .store
-                .park_inference(
-                    session.session_id,
-                    lease_ref,
-                    &swarmy_store::InferenceFailureWait {
-                        seq,
-                        reason: error,
-                        wake_at: retry_at,
-                    },
-                    now,
-                    self.config.max_inference_wait,
-                )
-                .await?;
-            if parked {
-                *token = None;
-                return Ok(true);
-            }
-            return Ok(false);
-        }
         let outcome = {
             let token = lease.lock().await;
             let lease_ref = token.as_ref().context("lease released")?;
@@ -730,9 +709,11 @@ impl Worker {
                 .await;
         }
         let selection = session.inference.resolve(&defaults);
-        // Without any route assignment the implicit chain is one step and
-        // the gateway pool picks the entry, so unrouted ephemeral turns
-        // skip the snapshot read entirely.
+        // A first attempt without any route assignment uses the implicit
+        // single-step chain and the gateway pool picks the entry, so it
+        // skips the snapshot read entirely. Later attempts resolve: a
+        // failover may have moved the chain, and only the snapshot knows
+        // which step serves next.
         let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
             let snapshot = self.route_snapshot(session).await?;
             warn_on_route_fallback(session, snapshot.name.as_deref());

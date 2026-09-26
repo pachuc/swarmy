@@ -98,15 +98,17 @@ pub struct SessionRecord {
 impl SessionRecord {
     /// Whether resolving this session's route needs a store read. Named
     /// sessions always resolve, since the agent's assignment, provider, and
-    /// model may have changed. Ephemeral sessions resolve only when a route
-    /// is assigned to the session or the swarm; otherwise the worker uses
-    /// the implicit single-step chain and the gateway pool picks the entry,
-    /// so an unrouted ephemeral inference costs no route transaction.
+    /// model may have changed. Ephemeral sessions resolve when a route is
+    /// assigned to the session or the swarm, or when a previous failover
+    /// already moved the chain past its first step; otherwise the worker
+    /// uses the implicit single-step chain and the gateway pool picks the
+    /// entry, so a first attempt costs no route transaction.
     #[must_use]
     pub fn needs_route_snapshot(&self, default_route: Option<&str>) -> bool {
         !matches!(self.kind, SessionKind::Ephemeral)
             || self.route.is_some()
             || default_route.is_some()
+            || self.route_step > 0
     }
 }
 
@@ -240,6 +242,11 @@ mod tests {
         assert!(session.needs_route_snapshot(None));
         session.route = None;
         assert!(session.needs_route_snapshot(Some("fallback")));
+        // A chain already moved past its first step resolves even without
+        // an assignment, so the next attempt picks the right step.
+        session.route_step = 1;
+        assert!(session.needs_route_snapshot(None));
+        session.route_step = 0;
         // Named sessions always resolve against the agent record.
         session.kind = SessionKind::Named { agent_id: agent };
         assert!(session.needs_route_snapshot(None));

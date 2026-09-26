@@ -20,7 +20,7 @@ use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
-use swarmy_llm::{Response, StopReason, TokenUsage};
+use swarmy_llm::{InferenceJob, Response, StopReason, TokenUsage};
 use swarmy_store::{Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::{
@@ -1919,20 +1919,16 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // happened, with a short grace for the event publish.
             timeout(WAIT, async {
                 loop {
-                    let session =
-                        f.store.fetch_session(id).await.unwrap().unwrap();
+                    let session = f.store.fetch_session(id).await.unwrap().unwrap();
                     if session.state == SessionState::WaitingInference {
                         break;
                     }
-                    if f
-                        .store
+                    if f.store
                         .read_events(id, 0, 64)
                         .await
                         .unwrap()
                         .iter()
-                        .any(|event| {
-                            matches!(event, Event::InferenceRequested { .. })
-                        })
+                        .any(|event| matches!(event, Event::InferenceRequested { .. }))
                     {
                         break;
                     }
@@ -1960,12 +1956,63 @@ async fn failover_survives_worker_restart_without_second_advance() {
             );
             assert_eq!(f.calls(), 2);
             let record = f.store.fetch_session(id).await.unwrap().unwrap();
-            assert_eq!(record.route_step, 1, "no second step advance");
+            // Success restarts the chain for the next turn, so the stored
+            // position is back at zero while the completion still names the
+            // step that served it; a second advance would have wrapped to
+            // the open first entry and parked instead of completing.
+            assert_eq!(record.route_step, 0, "success restarts the chain");
             assert_eq!(
                 record.state,
                 SessionState::Idle,
                 "no park behind the failover"
             );
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn unrouted_ephemeral_first_attempt_skips_route_resolution() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            f.put_entry("backup").await;
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("openai").await;
+            let id = f.create().await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            // The gateway pool serves the oldest entry; the turn completes
+            // without any failover.
+            assert!(events.iter().any(|event| matches!(
+                event,
+                Event::InferenceCompleted {
+                    entry: Some(entry),
+                    ..
+                } if entry == "primary"
+            )));
+            // The worker skipped the snapshot read for this first attempt,
+            // so the stored job carries no pinned entry or step: the gateway
+            // pool chose the entry.
+            let request_id = events.iter().find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                _ => None,
+            });
+            let job: InferenceJob = f
+                .store
+                .get_inference_input(request_id.expect("one request"))
+                .await
+                .unwrap()
+                .expect("stored job");
+            assert_eq!(job.entry, None);
+            assert_eq!(job.route, None);
+            assert_eq!(job.route_step, 0);
+            assert_eq!(f.calls(), 1);
         })
     })
     .await;
