@@ -295,7 +295,7 @@ async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String
     };
     let events = timeout(
         Duration::from_secs(10),
-        fixture.store.read_events(id, 0, 128),
+        fixture.store.read_events(id, 0, 64),
     )
     .await;
     match events {
@@ -395,7 +395,9 @@ impl Services {
         self.children.push(command.spawn().unwrap());
     }
 
-    /// Last twenty lines of each service log for timeout diagnostics.
+    /// Last twenty lines of each service log for timeout diagnostics. Lines
+    /// are truncated to 500 characters: some startup lines embed hundreds of
+    /// partition ids and would otherwise flood the failure output.
     fn log_tails(&self) -> String {
         let mut tails = String::new();
         for name in ["scheduler", "worker", "gateway"] {
@@ -408,8 +410,13 @@ impl Services {
                         tails.push_str("(empty)\n");
                     }
                     for line in &lines[start..] {
-                        tails.push_str(line);
-                        tails.push('\n');
+                        let truncated: String = line.chars().take(500).collect();
+                        if truncated.len() < line.len() {
+                            let _ = writeln!(tails, "{truncated}… (truncated)");
+                        } else {
+                            tails.push_str(line);
+                            tails.push('\n');
+                        }
                     }
                 }
                 Err(error) => {
