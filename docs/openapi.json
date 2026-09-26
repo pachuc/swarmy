@@ -4787,7 +4787,7 @@
       },
       "QuotaEntry": {
         "type": "object",
-        "description": "One entry's quota with its identity, as listed by `swarmy auth quota`.\nThe CLI composes this from the credential list and one quota view per\nentry, so the JSON round-trips through these types.",
+        "description": "One entry's quota with its identity, as listed by `swarmy auth quota`.\nServed in one request by `GET /v1/quotas`, so the JSON round-trips\nthrough these types.",
         "required": [
           "provider",
           "label",
