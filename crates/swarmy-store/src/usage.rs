@@ -256,7 +256,16 @@ impl Store {
             ),
         ];
         for (dimension, key) in &singles {
-            self.metering_add_single(trx, dimension, key, hour, input.usage, input.cost);
+            self.metering_add_single(
+                trx,
+                key,
+                &crate::metering::BucketWrite {
+                    dimension,
+                    hour,
+                    usage: input.usage,
+                    cost_micros: input.cost,
+                },
+            );
         }
         // Combined dimensions keep per-owner entry attribution without
         // scanning completion records, which prune after their retention
@@ -275,12 +284,14 @@ impl Store {
         ] {
             self.metering_add_combined(
                 trx,
-                dimension,
                 owner,
                 &entry_id,
-                hour,
-                input.usage,
-                input.cost,
+                &crate::metering::BucketWrite {
+                    dimension,
+                    hour,
+                    usage: input.usage,
+                    cost_micros: input.cost,
+                },
             );
         }
     }

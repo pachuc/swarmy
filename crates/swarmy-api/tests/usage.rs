@@ -399,7 +399,11 @@ async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
         .await
         .unwrap();
     assert_eq!(
-        covering.groups.iter().map(|group| group.totals.completions).sum::<u64>(),
+        covering
+            .groups
+            .iter()
+            .map(|group| group.totals.completions)
+            .sum::<u64>(),
         1
     );
     // The `kind` alias reads the same buckets as `entry_kind`.

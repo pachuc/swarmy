@@ -161,6 +161,15 @@ fn add(trx: &Transaction, key: &[u8], delta: u64) {
     trx.atomic_op(key, &delta.to_le_bytes(), MutationType::Add);
 }
 
+/// One completion's bucket writes, shared by the single and combined
+/// dimension writers.
+pub(crate) struct BucketWrite<'a> {
+    pub dimension: &'a str,
+    pub hour: i64,
+    pub usage: &'a TokenUsage,
+    pub cost_micros: u64,
+}
+
 /// One completion's counter updates, shared by the single and combined
 /// bucket writers.
 fn bucket_deltas(usage: &TokenUsage, cost_micros: u64) -> [(&'static str, u64); 8] {
@@ -194,7 +203,8 @@ impl Store {
         key: &str,
         field: &str,
     ) -> Vec<u8> {
-        self.root.pack(&("metering_hour", dimension, hour, key, field))
+        self.root
+            .pack(&("metering_hour", dimension, hour, key, field))
     }
 
     pub(crate) fn metering_bucket_key_combined(
@@ -212,16 +222,13 @@ impl Store {
     pub(crate) fn metering_add_single(
         &self,
         trx: &Transaction,
-        dimension: &str,
         key: &str,
-        hour: i64,
-        usage: &TokenUsage,
-        cost_micros: u64,
+        write: &BucketWrite<'_>,
     ) {
-        for (field, delta) in bucket_deltas(usage, cost_micros) {
+        for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
             add(
                 trx,
-                &self.metering_bucket_key_single(dimension, hour, key, field),
+                &self.metering_bucket_key_single(write.dimension, write.hour, key, field),
                 delta,
             );
         }
@@ -230,17 +237,20 @@ impl Store {
     pub(crate) fn metering_add_combined(
         &self,
         trx: &Transaction,
-        dimension: &str,
         owner: &str,
         entry: &str,
-        hour: i64,
-        usage: &TokenUsage,
-        cost_micros: u64,
+        write: &BucketWrite<'_>,
     ) {
-        for (field, delta) in bucket_deltas(usage, cost_micros) {
+        for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
             add(
                 trx,
-                &self.metering_bucket_key_combined(dimension, owner, hour, entry, field),
+                &self.metering_bucket_key_combined(
+                    write.dimension,
+                    owner,
+                    write.hour,
+                    entry,
+                    field,
+                ),
                 delta,
             );
         }
@@ -472,10 +482,7 @@ fn totals_of(fields: &BTreeMap<String, u64>) -> (UsageTotals, u64) {
         },
         cost_micros: fields.get("cost").copied().unwrap_or(0),
     };
-    (
-        totals,
-        fields.get("completions").copied().unwrap_or(0),
-    )
+    (totals, fields.get("completions").copied().unwrap_or(0))
 }
 
 /// Fold an hourly map into calendar groups in time order.
@@ -522,11 +529,9 @@ impl Store {
         let rows = self.scan_bucket_range(begin, end).await?;
         let mut hours: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
         if is_combined(dimension) {
-            let prefix = self.root.subspace(&(
-                "metering_hour",
-                dimension.as_str(),
-                owner.as_str(),
-            ));
+            let prefix = self
+                .root
+                .subspace(&("metering_hour", dimension.as_str(), owner.as_str()));
             for (raw_key, value) in &rows {
                 let (hour, row_entry, field): (i64, String, String) =
                     prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
@@ -965,8 +970,7 @@ mod tests {
         let row = |owner: &str, hour: i64, entry: &str| {
             root.pack(&("metering_hour", "agent_entry", owner, hour, entry, "cost"))
         };
-        let (begin, end) =
-            owner_hour_range(&root, "agent_entry", "owner-a", Some((3_600, 7_200)));
+        let (begin, end) = owner_hour_range(&root, "agent_entry", "owner-a", Some((3_600, 7_200)));
         for hour in [3_600, 7_200] {
             for entry in ["openai/main", "openai/-"] {
                 let packed = row("owner-a", hour, entry);
@@ -994,12 +998,12 @@ mod tests {
     #[test]
     fn combined_keys_split_owner_from_entry() {
         assert_eq!(
-            split_combined_key("owner/openai/main"),
-            Ok(("owner".into(), "openai/main".into()))
+            split_combined_key("owner/openai/main").unwrap(),
+            ("owner".to_owned(), "openai/main".to_owned())
         );
         assert_eq!(
-            split_combined_key("owner/openai/-"),
-            Ok(("owner".into(), "openai/-".into()))
+            split_combined_key("owner/openai/-").unwrap(),
+            ("owner".to_owned(), "openai/-".to_owned())
         );
         assert!(split_combined_key("owner").is_err());
         assert_eq!(unknown_entry_key("openai"), "openai/-");

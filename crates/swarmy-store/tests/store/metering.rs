@@ -481,16 +481,25 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
     let id = test.create().await;
     let session = store.fetch_session(id).await.unwrap().unwrap();
     let owner = session.agent_id.to_string();
-    let day = Timestamp::from_second(1_700_000_000).unwrap();
-    let next = Timestamp::from_second(1_700_000_000 + 86_400).unwrap();
-    let far = Timestamp::from_second(1_700_000_000 + 30 * 86_400).unwrap();
+    // Midnight-aligned days, so the queried window holds exactly 24 buckets.
+    let day = Timestamp::from_second(1_699_920_000).unwrap();
+    let next = Timestamp::from_second(1_699_920_000 + 86_400).unwrap();
+    let far = Timestamp::from_second(1_699_920_000 + 30 * 86_400).unwrap();
     let (tokens, cost) = usage(10, 20, 500);
     // Same owner, queried day, two entries.
     for entry in ["primary", "secondary"] {
         complete_with(
             store,
             id,
-            &input("openai", "gpt-5", entry, "api-key", tokens.clone(), cost, day),
+            &input(
+                "openai",
+                "gpt-5",
+                entry,
+                "api-key",
+                tokens.clone(),
+                cost,
+                day,
+            ),
         )
         .await;
     }
@@ -499,7 +508,15 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         complete_with(
             store,
             id,
-            &input("openai", "gpt-5", "primary", "api-key", tokens.clone(), cost, at),
+            &input(
+                "openai",
+                "gpt-5",
+                "primary",
+                "api-key",
+                tokens.clone(),
+                cost,
+                at,
+            ),
         )
         .await;
     }
@@ -530,10 +547,7 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         .dimension_totals(swarmy_store::MeteringDimension::AgentEntry, &owner, None)
         .await
         .unwrap();
-    assert_eq!(
-        all.iter().map(|total| total.completions).sum::<u64>(),
-        4
-    );
+    assert_eq!(all.iter().map(|total| total.completions).sum::<u64>(), 4);
     test.cleanup().await;
 }
 

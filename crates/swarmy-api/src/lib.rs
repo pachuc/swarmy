@@ -1030,10 +1030,10 @@ pub(crate) fn entry_breakdown(
             let provider = total
                 .key
                 .split_once('/')
-                .map_or(total.key.as_str(), |(provider, _)| provider);
+                .map_or_else(|| total.key.clone(), |(provider, _)| provider.to_owned());
             api::EntryUsageView {
                 entry: total.key,
-                provider: provider.into(),
+                provider,
                 totals: totals_view(&total.totals, total.completions),
             }
         })

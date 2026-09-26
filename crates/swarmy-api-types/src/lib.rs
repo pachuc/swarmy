@@ -903,10 +903,9 @@ pub mod api_paths {
         Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
         CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
-        QuotaEntry,
-        InterruptSession, Model, ProbeModel, ProbeResult, Provider, Route, RouteDeleted, Session,
-        SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
-        TurnMetrics, UpdateAgent, UsageResponse,
+        InterruptSession, Model, ProbeModel, ProbeResult, Provider, QuotaEntry, Route,
+        RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun,
+        Subscription, TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
