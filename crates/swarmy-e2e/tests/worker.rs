@@ -1278,11 +1278,12 @@ async fn recover_at_each_kill_point() {
         Box::pin(async move {
             f.script(true, "get_time");
             f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            // One fixture for every kill point: the scheduler and gateway
-            // stay up while each iteration kills its worker, recovers the
-            // turn on a replacement, then stops both workers so the next
-            // point starts without a competing claimant.
+            // One fixture for every kill point: the scheduler stays up while
+            // each iteration restarts the gateway (its scripted responses
+            // are indexed by its own call count, so a fresh gateway serves
+            // the tool call and the final answer for every point), kills
+            // its worker, recovers the turn on a replacement, then stops
+            // all three so the next point starts without competition.
             for point in [
                 "after_claim",
                 "after_request_event",
@@ -1290,6 +1291,7 @@ async fn recover_at_each_kill_point() {
                 "after_release",
             ] {
                 let calls_before = f.calls();
+                let gateway = f.start("swarmy-gateway", None);
                 let worker = f.start("swarmy-worker", Some(point));
                 let id = f.create().await;
                 f.wake(id).await;
@@ -1302,7 +1304,7 @@ async fn recover_at_each_kill_point() {
                 let events = f.idle(id).await;
                 assert_requests(id, &events, 2);
                 assert_eq!(f.calls() - calls_before, 2, "kill point {point}");
-                for index in [worker, replacement] {
+                for index in [worker, replacement, gateway] {
                     let _ = f.children[index].kill().await;
                     let _ = f.children[index].wait().await;
                 }
