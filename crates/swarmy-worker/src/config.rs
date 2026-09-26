@@ -55,7 +55,11 @@ impl Config {
         ensure!(
             kill_point.as_deref().is_none_or(|value| matches!(
                 value,
-                "after_claim" | "after_request_event" | "before_release" | "after_release"
+                "after_claim"
+                    | "after_request_event"
+                    | "before_release"
+                    | "after_release"
+                    | "after_advance"
             )),
             "invalid SWARMY_WORKER_KILL_POINT"
         );

@@ -585,6 +585,7 @@ impl Worker {
             FailoverAction::AdvanceTo(step) => {
                 warn_on_route_fallback(session, outcome.route.as_deref());
                 session.route_step = step;
+                self.kill("after_advance");
                 Ok(false)
             }
             FailoverAction::Park => {

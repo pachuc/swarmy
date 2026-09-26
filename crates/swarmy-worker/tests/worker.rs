@@ -1938,6 +1938,25 @@ async fn failover_survives_worker_restart_without_second_advance() {
             .await
             .unwrap();
             sleep(Duration::from_secs(3)).await;
+            // The second worker recovers attempt one, records the 429 as a
+            // failover to the second step, and dies with the step lease
+            // still held, before it can submit attempt two.
+            f.start("swarmy-worker", Some("after_advance"));
+            timeout(WAIT, async {
+                loop {
+                    if f.store.fetch_session(id).await.unwrap().unwrap().route_step == 1 {
+                        break;
+                    }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // The replacement resumes after the failover: the handled
+            // failure advances nothing again and parks nothing behind the
+            // in-flight successor, so the turn completes on the second
+            // entry instead of sleeping behind the first entry's retry.
+            sleep(Duration::from_secs(3)).await;
             f.start("swarmy-worker", None);
             let events = f.idle(id).await;
             let completed = events.iter().find_map(|event| match event {
@@ -1952,7 +1971,7 @@ async fn failover_survives_worker_restart_without_second_advance() {
             assert_eq!(
                 completed,
                 Some((Some("second".into()), Some("ab".into()), Some(1))),
-                "the turn fails over exactly once across the restart"
+                "the turn fails over exactly once across the restarts"
             );
             assert_eq!(f.calls(), 2);
             // A second advance would have wrapped to the open first entry
