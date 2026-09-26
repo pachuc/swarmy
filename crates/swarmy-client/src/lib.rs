@@ -670,7 +670,7 @@ impl EventStream {
             if !response.status().is_success() {
                 let failure = decode::<serde_json::Value>(response).await.unwrap_err();
                 // A rejected change must not be sent again on the next poll.
-                if retryable(&failure) || expired_connection(&failure) {
+                if retryable(&failure) || expired_connection(&failure) || rewound_cursor(&failure) {
                     // A transient rejection may have happened after the update was
                     // applied. An expired connection was never applied, but the
                     // subscription itself already validated, so a fresh connect
@@ -804,6 +804,22 @@ fn expired_connection(error: &Error) -> bool {
             status.as_u16() == 404 && body.code == "connection_not_found"
         }
         Error::Status { status, .. } => status.as_u16() == 404,
+        _ => false,
+    }
+}
+
+/// Whether a subscription update was rejected because the server is already
+/// ahead of the requested cursor. The update future can be cancelled after
+/// the server applied it but before the client recorded it (a keystroke or
+/// poll tick wins the enclosing select while the PUT is in flight); the
+/// retry then replays the same cursors against the advanced progress, and
+/// the server reports `cursor_rewind`. Client cursors advance only on
+/// delivery, so nothing past the requested cursor was consumed and
+/// reconnecting with the requested selection replays safely instead of
+/// failing the chat after it already followed the successor.
+fn rewound_cursor(error: &Error) -> bool {
+    match error {
+        Error::Api { status, body } => status.as_u16() == 400 && body.code == "cursor_rewind",
         _ => false,
     }
 }
@@ -1092,6 +1108,86 @@ mod tests {
         });
         // The expired connection reconnects and waits for new-feed events
         // instead of returning the 404; the timeout below is the success
+        // case (still waiting), an immediate error is the failure case.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), stream.next_item())
+                .await
+                .is_err()
+        );
+        // The new selection survived instead of reverting to the old feed.
+        assert_eq!(stream.cursors().len(), 1);
+        assert_eq!(
+            stream.cursors()[0].log_id,
+            api::LogId::Session("new".into())
+        );
+        assert_eq!(stream.cursors()[0].sequence, 0);
+    }
+
+    #[tokio::test]
+    async fn rewound_update_reconnects_instead_of_failing_the_switch() {
+        use axum::{http::HeaderMap, routing::put};
+        // The update future can be cancelled after the server applied the
+        // switch but before the client recorded it; the retry replays the
+        // same cursors against the advanced progress and the server reports
+        // cursor_rewind. Nothing past the requested cursor was consumed, so
+        // the client must reconnect and replay instead of failing the chat.
+        let app = Router::new()
+            .route(
+                "/v1/events",
+                get(|| async {
+                    let stream = futures_util::stream::once(async {
+                        Ok::<_, Infallible>(SseEvent::default().event("connected").data("{}"))
+                    })
+                    .chain(futures_util::stream::pending());
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-swarmy-connection-id", "connection".parse().unwrap());
+                    (headers, Sse::new(stream))
+                }),
+            )
+            .route(
+                "/v1/events/connection/subscription",
+                put(|| async {
+                    (
+                        HttpStatus::BAD_REQUEST,
+                        Json(api::ApiError {
+                            code: "cursor_rewind".into(),
+                            message: "cursor rewind for log session:new".into(),
+                            provider_text: None,
+                        }),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("old".into()),
+                sequence: 3,
+            }],
+            token_deltas: true,
+        });
+        let handle = stream.subscription_handle();
+        // Poll next so the initial connection has opened before changing it.
+        let mut pending = Box::pin(stream.next());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pending)
+                .await
+                .is_err()
+        );
+        drop(pending);
+        handle.set(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("new".into()),
+                sequence: 0,
+            }],
+            token_deltas: true,
+        });
+        // The rewound update reconnects and waits for new-feed events
+        // instead of returning the 400; the timeout below is the success
         // case (still waiting), an immediate error is the failure case.
         assert!(
             tokio::time::timeout(Duration::from_secs(2), stream.next_item())
