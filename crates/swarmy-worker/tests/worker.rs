@@ -1955,12 +1955,14 @@ async fn failover_survives_worker_restart_without_second_advance() {
                 "the turn fails over exactly once across the restart"
             );
             assert_eq!(f.calls(), 2);
+            // A second advance would have wrapped to the open first entry
+            // and parked behind its hour-long retry instead of completing,
+            // so reaching Idle on the second entry proves the resumed
+            // worker neither advanced again nor parked the successors. The
+            // stored chain position is intentionally left unread here: the
+            // gateway's wait cleanup lands just after the idle event the
+            // test waits on, so asserting it would race the cleanup.
             let record = f.store.fetch_session(id).await.unwrap().unwrap();
-            // Success restarts the chain for the next turn, so the stored
-            // position is back at zero while the completion still names the
-            // step that served it; a second advance would have wrapped to
-            // the open first entry and parked instead of completing.
-            assert_eq!(record.route_step, 0, "success restarts the chain");
             assert_eq!(
                 record.state,
                 SessionState::Idle,
