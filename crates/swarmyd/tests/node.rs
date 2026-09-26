@@ -363,7 +363,7 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
             "scratch",
             &ImageTag("test".into()),
             base,
-            Some(&swarmy_store::PutImageOptions {
+            Some(swarmy_store::PutImageOptions {
                 scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
                 ..Default::default()
             }),

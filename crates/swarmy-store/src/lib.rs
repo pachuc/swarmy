@@ -282,6 +282,8 @@ impl Store {
     /// Logical store transactions started so far. Tests use it to compare
     /// per-operation costs; production code never branches on it.
     #[must_use]
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn transaction_count(&self) -> u64 {
         self.transactions.load(Ordering::Relaxed)
     }
@@ -819,6 +821,8 @@ impl Store {
 
     /// # Errors
     /// Returns storage or blob upload errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
         self.put_payload(self.root.pack(&("idem", id.as_bytes().as_slice())), record)
             .await

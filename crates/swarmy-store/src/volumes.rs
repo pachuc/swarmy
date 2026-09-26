@@ -111,9 +111,9 @@ impl Store {
         name: &str,
         tag: &ImageTag,
         manifest: ManifestId,
-        options: Option<&PutImageOptions>,
+        options: Option<PutImageOptions>,
     ) -> Result<()> {
-        let options = options.cloned().unwrap_or_default();
+        let options = options.unwrap_or_default();
         if options.memory_mib == Some(0) {
             return Err(StoreError::InvalidState);
         }
@@ -354,6 +354,8 @@ impl Store {
     /// a writer's authority beyond its expiry. The id makes commit retries safe.
     /// # Errors
     /// Rejects stale heads, invalid headers, reused ids, and absent or stale leases.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn advance_volume(
         &self,
         id: VolumeId,

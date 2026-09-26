@@ -333,6 +333,8 @@ impl Store {
     /// Validate the current epoch before local execution.
     /// # Errors
     /// Rejects stale or expired placements and storage failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn validate_placement(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move { self.check_live_placement(&trx, expected).await })
             .await

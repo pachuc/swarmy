@@ -404,6 +404,8 @@ impl Store {
     /// A replacement worker can resume submission without rebuilding the prompt.
     /// # Errors
     /// Rejects stale leases, heads, and storage failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn put_inference_input<T: Serialize>(
         &self,
         session_id: SessionId,

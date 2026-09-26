@@ -8,6 +8,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+# Test-only store entry points used by integration tests across crates.
+# Test crates enable it through dev-dependencies with no command change;
+# unit tests inside this crate see the same functions through `cfg(test)`.
+[features]
+test-support = []
+
 # The FoundationDB network boot function is the only local unsafe-code exception.
 [dependencies]
 aws-config.workspace = true

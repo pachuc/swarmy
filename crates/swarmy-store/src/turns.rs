@@ -10,6 +10,7 @@ use crate::{InferenceWait, Result, Store, StoreError, read, write};
 /// the picked step commits with the request event instead of in a separate
 /// transaction. Skipped-step reasons join the wait history; the failure
 /// sequence is untouched because no failure is handled here.
+#[derive(Clone, Debug)]
 pub struct SubmitRouteStep {
     pub step: u32,
     pub reasons: Vec<String>,
@@ -20,6 +21,7 @@ pub struct SubmitRouteStep {
 /// request commits alongside them, and the picked route step lands in the
 /// same transaction so a retryable failure advances from the attempt that
 /// actually ran.
+#[derive(Clone, Debug)]
 pub struct SubmitInferenceOptions<'a, R = ()> {
     /// Gateway request payload; a failed transaction leaves only an uploaded
     /// blob, which the collector can reclaim.
@@ -53,8 +55,9 @@ impl Store {
         lease: &Lease,
         record: &InflightRecord,
         input: &T,
-        options: SubmitInferenceOptions<'_, R>,
+        options: Option<SubmitInferenceOptions<'_, R>>,
     ) -> Result<Event> {
+        let options = options.unwrap_or_default();
         self.submit_inference_after_inner(
             expected_head,
             lease,

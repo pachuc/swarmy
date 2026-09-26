@@ -282,10 +282,10 @@ impl Fixture {
                     key_id: "fake".into(),
                 },
                 &job,
-                SubmitInferenceOptions {
+                Some(SubmitInferenceOptions {
                     request: Some(&job.request),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();

@@ -57,7 +57,10 @@ last seen time. Health records are not client-created or edited.
 
 `Event` has a `log_id`, a `sequence`, and a tagged `payload`. `LogId` is a
 namespace-tagged value (`{"kind":"session","id":"..."}`); timelines use
-`{"kind":"timeline","id":"..."}` for live-only turn observations. Sequences
+`{"kind":"timeline","id":"..."}` for live-only turn observations.
+`{"kind":"channel","id":"..."}` is deprecated: channel logs were never
+served, subscriptions naming one are rejected with `unsupported_log`, and the
+variant is removed after its 2026-11-25 sunset date. Sequences
 start at one, are contiguous
 within a log, and are independent between logs. The pair `(log_id, sequence)`
 is the durable cursor. There is no global order between logs.

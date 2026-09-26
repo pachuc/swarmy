@@ -46,6 +46,8 @@ impl Store {
     /// Read the entry and route step attributed to a completed inference request.
     /// # Errors
     /// Returns database or decoding errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn inference_usage_record(&self, request: RequestId) -> Result<Option<UsageRecord>> {
         self.transaction(|trx| async move {
             read(

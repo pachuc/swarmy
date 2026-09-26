@@ -24,8 +24,7 @@ impl Store {
         jobs: &[ToolJob],
         placement: &swarmy_core::PlacementRecord,
     ) -> Result<()> {
-        self.dispatch_jobs(id, lease, jobs, Some(placement), None)
-            .await
+        self.dispatch_jobs(id, lease, jobs, placement, None).await
     }
 
     /// Append sandbox call requests and persist their fenced handoff together.
@@ -68,14 +67,8 @@ impl Store {
                     .map_err(|_| StoreError::InvalidState)?,
             });
         }
-        self.dispatch_jobs(
-            id,
-            lease,
-            &jobs,
-            Some(placement),
-            Some((expected_head, &events)),
-        )
-        .await?;
+        self.dispatch_jobs(id, lease, &jobs, placement, Some((expected_head, &events)))
+            .await?;
         Ok((events.into_iter().map(|(event, _)| event).collect(), jobs))
     }
 
@@ -84,7 +77,7 @@ impl Store {
         id: SessionId,
         lease: &Lease,
         jobs: &[ToolJob],
-        placement: Option<&swarmy_core::PlacementRecord>,
+        placement: &swarmy_core::PlacementRecord,
         append: Option<(u64, &PreparedToolRequests)>,
     ) -> Result<()> {
         let mut values = Vec::new();
@@ -96,12 +89,7 @@ impl Store {
             async move {
                 futures::try_join!(
                     self.check_worker_lease(&trx, id, lease, Timestamp::now()),
-                    async {
-                        if let Some(placement) = placement {
-                            self.check_live_placement(&trx, placement).await?;
-                        }
-                        Ok::<_, StoreError>(())
-                    },
+                    self.check_live_placement(&trx, placement),
                 )?;
                 if jobs.is_empty() {
                     return Err(StoreError::InvalidState);
@@ -110,12 +98,10 @@ impl Store {
                     self.append_tool_requests(&trx, id, expected_head, events)
                         .await?;
                 }
-                if let Some(placement) = placement {
-                    if self.session(&trx, id).await?.agent_id != placement.agent_id {
-                        return Err(StoreError::InvalidState);
-                    }
-                    self.deliver_computer_notice(&trx, id, placement).await?;
+                if self.session(&trx, id).await?.agent_id != placement.agent_id {
+                    return Err(StoreError::InvalidState);
                 }
+                self.deliver_computer_notice(&trx, id, placement).await?;
                 for (job, value) in jobs.iter().zip(values) {
                     if job.session_id != id
                         || RequestId::for_step(id, job.step) != job.request_id
@@ -142,13 +128,11 @@ impl Store {
                         _ => return Err(StoreError::InvalidState),
                     }
                     trx.set(&self.tool_key("tool_job", job.request_id), value);
-                    if let Some(placement) = placement {
-                        write(
-                            &trx,
-                            &self.tool_key("tool_placement", job.request_id),
-                            placement,
-                        )?;
-                    }
+                    write(
+                        &trx,
+                        &self.tool_key("tool_placement", job.request_id),
+                        placement,
+                    )?;
                     write(
                         &trx,
                         &self

@@ -54,24 +54,15 @@ impl Store {
                     return Err(StoreError::LeaseMismatch);
                 }
             } else {
-                let legacy_key = self
-                    .root
-                    .pack(&("sandbox", session.as_ulid().to_bytes().as_slice()));
-                let manifest = if let Some(legacy) =
-                    read::<swarmy_core::SandboxRecord>(&trx, &legacy_key).await?
-                {
-                    legacy.manifest_id
-                } else {
-                    read::<ImageRecord>(
-                        &trx,
-                        &self
-                            .root
-                            .pack(&("session_image", session.as_ulid().to_bytes().as_slice())),
-                    )
-                    .await?
-                    .ok_or(StoreError::ManifestMissing)?
-                    .manifest_id
-                };
+                let manifest = read::<ImageRecord>(
+                    &trx,
+                    &self
+                        .root
+                        .pack(&("session_image", session.as_ulid().to_bytes().as_slice())),
+                )
+                .await?
+                .ok_or(StoreError::ManifestMissing)?
+                .manifest_id;
                 write(
                     &trx,
                     &self.volume_key(id),

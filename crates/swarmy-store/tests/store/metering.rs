@@ -1,5 +1,4 @@
 use super::*;
-use swarmy_store::SubmitInferenceOptions;
 
 struct CompletionInput<'a> {
     provider: &'a str,
@@ -55,13 +54,7 @@ async fn start_claim(store: &Store, id: SessionId) -> (u64, swarmy_store::Infere
         key_id: String::new(),
     };
     store
-        .submit_inference(
-            head,
-            &lease,
-            &record,
-            &"input",
-            SubmitInferenceOptions::<()>::default(),
-        )
+        .submit_inference::<_, ()>(head, &lease, &record, &"input", None)
         .await
         .unwrap();
     let request_id = RequestId::for_step(id, step);

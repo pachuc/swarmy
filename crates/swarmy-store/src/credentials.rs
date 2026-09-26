@@ -10,14 +10,13 @@ use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use swarmy_config::Keyring;
 use swarmy_core::{
-    CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
-    decode, encode,
+    AgentId, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease,
+    LeaseOwnerId, decode, encode,
 };
 
-use crate::{
-    BreakerCandidate, CredentialKey, Result, Store, StoreError, inference_wait::Breaker, read,
-    scan, write,
-};
+#[cfg(any(test, feature = "test-support"))]
+use crate::{BreakerCandidate, CredentialKey, inference_wait::Breaker};
+use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::RetryableTransaction;
 
 /// No secrets are returned by list operations. Each encrypted value is read once.
@@ -54,6 +53,18 @@ impl CredentialSummary {
 
 fn entry_identity(provider: &str, label: &str) -> String {
     format!("{provider}\0{label}")
+}
+
+/// Invert the scope display encoding (`cluster` or `agent:<ULID>`) used in
+/// the legacy `("credential", scope, provider)` keys. Returns `None` for
+/// corrupt encodings so the boot migration leaves the row in place.
+fn parse_scope(text: &str) -> Option<CredentialScope> {
+    if text == "cluster" {
+        return Some(CredentialScope::Cluster);
+    }
+    let id = text.strip_prefix("agent:")?;
+    let ulid: ulid::Ulid = id.parse().ok()?;
+    Some(CredentialScope::Agent(AgentId::from_ulid(ulid)))
 }
 
 fn entry_kind(record: &CredentialRecord) -> String {
@@ -146,6 +157,8 @@ impl Store {
     /// Entry labels for breaker checks, without decrypting.
     /// # Errors
     /// Returns database or decoding errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn credential_entry_labels(
         &self,
         scope: CredentialScope,
@@ -178,6 +191,8 @@ impl Store {
     /// instead of truncating at 64 entries.
     /// # Errors
     /// Returns database or decoding errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn breaker_snapshot(
         &self,
         scope: CredentialScope,
@@ -280,11 +295,11 @@ impl Store {
     }
 
     /// Count rows written by the retired single-record credential API at
-    /// `("credential", scope, provider)`. Entry storage replaced those rows,
-    /// and this crate no longer reads them, so any remaining row means a
-    /// deployment upgraded without running the entry migration. Services call
-    /// [`Store::require_no_legacy_credentials`] at startup and refuse to
-    /// start until the count is zero.
+    /// `("credential", scope, provider)`. Entry storage replaced those rows.
+    /// Boot migrates them with
+    /// [`CredentialStore::migrate_legacy_credentials`]; any row left after
+    /// that failed to decrypt with the local keyring. `swarmy doctor`
+    /// reports this count; the message states the count.
     /// # Errors
     /// Returns database errors.
     pub async fn legacy_credential_count(&self) -> Result<u64> {
@@ -313,16 +328,21 @@ impl Store {
         Ok(count)
     }
 
-    /// Fail startup when retired single-record credential rows remain.
+    /// Migrate retired single-record credential rows without failing boot.
+    /// Each `("credential", scope, provider)` row is decrypted with the
+    /// cluster keyring and written as the provider's `default` entry when no
+    /// such entry exists; the legacy row is cleared in the same transaction.
+    /// Rows are read in batches of one hundred. Rows that fail to decrypt
+    /// (wrong or missing key) are left in place and skipped, so a later boot
+    /// with the right keyring can still migrate them. Returns the migrated
+    /// count for the startup log; database errors still propagate so the
+    /// caller can log them, but callers must not refuse to start.
     /// # Errors
-    /// Returns [`StoreError::Corrupt`] with the remaining row count, or
-    /// database errors.
-    pub async fn require_no_legacy_credentials(&self) -> Result<()> {
-        let count = self.legacy_credential_count().await?;
-        if count > 0 {
-            return Err(StoreError::Corrupt);
-        }
-        Ok(())
+    /// Returns database, encoding, or encryption errors.
+    pub async fn migrate_legacy_credentials(&self, keyring: &Keyring) -> Result<u64> {
+        self.credentials(keyring.clone())
+            .migrate_legacy_credentials()
+            .await
     }
 }
 
@@ -454,6 +474,108 @@ impl CredentialStore {
             self.store.clear_entry_quota(provider, label).await?;
         }
         Ok(())
+    }
+
+    /// One-shot boot migration of retired single-record credential rows.
+    /// Reads `("credential", scope, provider)` rows in batches of one hundred,
+    /// decrypts each with the cluster keyring, writes it as the provider's
+    /// `default` entry when no such entry exists, and clears the legacy row
+    /// in the same transaction. Rows that fail to decrypt are left in place
+    /// so a later boot with the right keyring retries them; corrupt scope
+    /// encodings are left as well. Returns the migrated count for the
+    /// startup log line. Boot never fails on this: database errors propagate
+    /// for logging, but callers continue starting.
+    /// # Errors
+    /// Returns database, encoding, or encryption errors.
+    pub async fn migrate_legacy_credentials(&self) -> Result<u64> {
+        const BATCH: usize = 100;
+        let space = self.store.root.subspace(&("credential",));
+        let (mut begin, end) = space.range();
+        let mut migrated: u64 = 0;
+        loop {
+            let rows = self
+                .store
+                .transaction(|trx| {
+                    let range = (begin.clone(), end.clone());
+                    async move { scan(&trx, range, BATCH).await }
+                })
+                .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let complete = rows.len() < BATCH;
+            for (key, bytes) in &rows {
+                let (scope_text, provider): (String, String) = match space.unpack(key) {
+                    Ok(parts) => parts,
+                    Err(_) => continue,
+                };
+                let Some(scope) = parse_scope(&scope_text) else {
+                    continue;
+                };
+                let Ok(record) = decrypt(&self.keyring, scope, provider.as_str(), bytes) else {
+                    tracing::warn!(provider = %provider, "legacy credential row did not decrypt; leaving it for a later boot");
+                    continue;
+                };
+                let (needs_login, expires_at) = entry_readiness(&record);
+                let Ok(ciphertext) = encrypt(
+                    &self.keyring,
+                    scope,
+                    &entry_identity(provider.as_str(), "default"),
+                    &record,
+                ) else {
+                    continue;
+                };
+                let entry_key =
+                    self.entry_key("credential_entry", scope, provider.as_str(), "default");
+                let legacy_key =
+                    self.store
+                        .root
+                        .pack(&("credential", scope.to_string(), provider.as_str()));
+                let lease_key = self.store.root.pack(&(
+                    "credential_lease",
+                    scope.to_string(),
+                    provider.as_str(),
+                ));
+                let created_at = record.updated_at;
+                self.store
+                    .transaction(|trx| {
+                        let entry_key = &entry_key;
+                        let legacy_key = &legacy_key;
+                        let lease_key = &lease_key;
+                        let ciphertext = &ciphertext;
+                        async move {
+                            if read_entry(&trx, entry_key).await?.is_none() {
+                                write(
+                                    &trx,
+                                    entry_key,
+                                    &EntryValue {
+                                        created_at,
+                                        last_used_at: None,
+                                        ciphertext: ciphertext.clone(),
+                                        needs_login,
+                                        expires_at,
+                                    },
+                                )?;
+                            }
+                            trx.clear(legacy_key);
+                            trx.clear(lease_key);
+                            Ok(())
+                        }
+                    })
+                    .await?;
+                migrated += 1;
+            }
+            if complete {
+                break;
+            }
+            if let Some((last, _)) = rows.last() {
+                begin.clone_from(last);
+                begin.push(0);
+            } else {
+                break;
+            }
+        }
+        Ok(migrated)
     }
 
     /// # Errors

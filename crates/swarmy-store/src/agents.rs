@@ -21,11 +21,6 @@ pub struct CreateAgentOptions<'a> {
     pub replay_key: Option<&'a str>,
 }
 
-struct CreationOptions<'a> {
-    github_token: Option<&'a str>,
-    replay_key: Option<&'a str>,
-}
-
 impl Store {
     pub(crate) async fn session_kind(
         &self,
@@ -50,33 +45,9 @@ impl Store {
     ) -> Result<AgentRecord> {
         let options = options.unwrap_or_default();
         let defaults = AgentSettings::default();
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            options.settings.unwrap_or(&defaults),
-            now,
-            CreationOptions {
-                github_token: options.github_token,
-                replay_key: options.replay_key,
-            },
-        )
-        .await
-    }
-
-    async fn create_agent_with_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        options: CreationOptions<'_>,
-    ) -> Result<AgentRecord> {
-        let CreationOptions {
-            github_token,
-            replay_key,
-        } = options;
+        let settings = options.settings.unwrap_or(&defaults);
+        let github_token = options.github_token;
+        let replay_key = options.replay_key;
         validate_github_token(github_token)?;
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);

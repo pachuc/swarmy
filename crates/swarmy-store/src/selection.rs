@@ -78,6 +78,8 @@ impl Store {
     /// Read the last advertisement for a provider, expired or not.
     /// # Errors
     /// Returns database or decoding errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn gateway_provider(&self, provider: &str) -> Result<Option<GatewayProvider>> {
         self.transaction(|trx| async move {
             read(&trx, &self.root.pack(&("gateway_provider", provider))).await

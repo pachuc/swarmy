@@ -3730,6 +3730,12 @@
               "type": "string"
             }
           },
+          "legacy_credential_rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Retired single-record credential rows still stored. Boot migrates\nthem to entries; any remainder failed to decrypt. Older servers omit\nthis; clients must treat a missing count as unknown, not zero.",
+            "minimum": 0
+          },
           "nodes": {
             "type": "array",
             "items": {
@@ -4575,6 +4581,28 @@
           },
           {
             "type": "object",
+            "description": "Deprecated channel namespace. Never served: subscriptions naming it\nare rejected with `unsupported_log`. Kept for the additive-only\n`/v1` policy until the sunset date (`x-sunset: 2026-11-25`).",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Deprecated channel namespace. Never served: subscriptions naming it\nare rejected with `unsupported_log`. Kept for the additive-only\n`/v1` policy until the sunset date (`x-sunset: 2026-11-25`).",
+                "deprecated": true
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              }
+            },
+            "deprecated": true
+          },
+          {
+            "type": "object",
             "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing.",
             "required": [
               "id",
@@ -4594,7 +4622,7 @@
             }
           }
         ],
-        "description": "A log namespace."
+        "description": "A log namespace.\nTODO(channel-sunset): remove the deprecated `Channel` variant after its\n2026-11-25 sunset date; it was never served and always rejected."
       },
       "Message": {
         "type": "object",

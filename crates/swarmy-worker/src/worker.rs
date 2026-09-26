@@ -980,11 +980,11 @@ impl Worker {
                         key_id: job.entry.clone().unwrap_or_default(),
                     },
                     &job,
-                    SubmitInferenceOptions {
+                    Some(SubmitInferenceOptions {
                         request: Some(&job.request),
                         before: &preceding,
                         route,
-                    },
+                    }),
                 )
                 .await?;
             *token = None;
