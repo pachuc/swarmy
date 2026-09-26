@@ -10,6 +10,7 @@ use jiff::Timestamp;
 use std::collections::HashMap;
 use swarmy_core::{
     AgentId, AgentRecord, CredentialScope, ExpandedRouteStep, Lease, RouteRecord, SessionId,
+    SessionKind,
 };
 
 use crate::{
@@ -18,6 +19,65 @@ use crate::{
     inference_wait::Breaker,
     read, scan, write,
 };
+
+/// One stored entry label with its readiness hint, in creation order.
+#[derive(Clone, Debug)]
+pub struct PoolEntry {
+    pub label: String,
+    pub ready: bool,
+}
+
+/// What one atomic failover step decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailoverAction {
+    /// The session advanced to another step; the worker continues the turn.
+    AdvanceTo(u32),
+    /// The session parked until a retry; the worker releases its lease.
+    Park,
+    /// The failure was already handled by an earlier attempt; the worker
+    /// continues without advancing or parking, so a resumed worker never
+    /// moves a second step for the same failure.
+    AlreadyHandled,
+}
+
+/// The outcome of one atomic failover step with the resolved route name, so
+/// the worker can warn when an assigned route fell back to the implicit chain.
+#[derive(Clone, Debug)]
+pub struct FailoverOutcome {
+    pub action: FailoverAction,
+    pub route: Option<String>,
+}
+
+/// Reasons recorded when a failover moves past steps: the failure itself,
+/// the named steps skipped as missing or unready, and the open breakers
+/// between the failed step and the target. A wrap to a recovered earlier
+/// step skips every open step after the failure; a forward move skips the
+/// open steps between the two.
+#[must_use]
+pub fn failover_reasons(
+    snapshot: &RouteSnapshot,
+    from: u32,
+    target: u32,
+    error: &str,
+) -> Vec<String> {
+    let mut reasons = vec![error.to_owned()];
+    reasons.extend(snapshot.skipped.iter().cloned());
+    let end = if target > from {
+        usize::try_from(target).unwrap_or(usize::MAX)
+    } else {
+        snapshot.steps.len()
+    };
+    for skipped in from.saturating_add(1)..u32::try_from(end).unwrap_or(u32::MAX) {
+        if let Some(reason) = snapshot
+            .steps
+            .get(usize::try_from(skipped).unwrap_or(usize::MAX))
+            .and_then(|step| step.reason.clone())
+        {
+            reasons.push(reason);
+        }
+    }
+    reasons
+}
 
 /// One expanded step with its live breaker state, resolved in a single
 /// transaction so scheduler and worker agree on the same chain.
@@ -52,6 +112,23 @@ pub struct ExpandedChain {
 
 fn skipped_step_reason(provider: &str, label: &str) -> String {
     format!("{provider}/{label} names an entry with no ready credential; trying the next step")
+}
+
+/// Labels a route step may use from one provider's pool, mirroring the
+/// gateway pool: ready entries in creation order, or every entry when none
+/// is ready. The fallback keeps implicit chains working exactly as before
+/// when every stored entry is unready.
+fn usable_labels(pool: &[PoolEntry]) -> Vec<String> {
+    let ready: Vec<String> = pool
+        .iter()
+        .filter(|entry| entry.ready)
+        .map(|entry| entry.label.clone())
+        .collect();
+    if ready.is_empty() {
+        pool.iter().map(|entry| entry.label.clone()).collect()
+    } else {
+        ready
+    }
 }
 
 impl RouteSnapshot {
@@ -234,21 +311,22 @@ impl Store {
         Ok(entries.into_iter().map(|(_, label)| label).collect())
     }
 
-    /// Readiness hints without decrypting, mirroring the gateway pool: ready
-    /// entries when any is ready, otherwise every entry.
+    /// Entry labels with readiness hints, without decrypting. Callers apply
+    /// the gateway pool rule themselves: ready entries in creation order,
+    /// or every entry when none is ready.
     async fn pool_labels_in(
         &self,
         trx: &foundationdb::Transaction,
         provider: &str,
         now: Timestamp,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<PoolEntry>> {
         let space = self.root.subspace(&(
             "credential_entry",
             CredentialScope::Cluster.to_string(),
             provider,
         ));
         let (mut begin, end) = space.range();
-        let mut entries = Vec::new();
+        let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
         loop {
             let rows = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
             let complete = rows.len() < crate::MAX_SCAN_LIMIT;
@@ -257,8 +335,10 @@ impl Store {
                 let entry = decode_entry(&value)?;
                 entries.push((
                     entry.created_at,
-                    label,
-                    entry_ready(entry.needs_login, entry.expires_at, now),
+                    PoolEntry {
+                        label,
+                        ready: entry_ready(entry.needs_login, entry.expires_at, now),
+                    },
                 ));
                 begin = key;
                 begin.push(0);
@@ -267,13 +347,12 @@ impl Store {
                 break;
             }
         }
-        entries.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        let any_ready = entries.iter().any(|(_, _, ready)| *ready);
-        Ok(entries
-            .into_iter()
-            .filter(|(_, _, ready)| *ready || !any_ready)
-            .map(|(_, label, _)| label)
-            .collect())
+        // Creation order is the failover order; labels break ties for
+        // entries written in the same transaction.
+        entries.sort_by(|left, right| {
+            left.0.cmp(&right.0).then(left.1.label.cmp(&right.1.label))
+        });
+        Ok(entries.into_iter().map(|(_, entry)| entry).collect())
     }
 
     /// Resolve one session's failover chain in a single transaction: session
@@ -343,16 +422,16 @@ impl Store {
         .await
     }
 
-    /// Entry pools for several providers in one transaction, in creation
-    /// order with the gateway pool's ready-first rule. The scheduler fills
-    /// its per-tick cache with one call instead of one scan per session.
+    /// Entry pools for several providers in one transaction, with readiness
+    /// hints in creation order. The scheduler fills its per-tick cache with
+    /// one call instead of one scan per session.
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn route_pools(
         &self,
         providers: &[String],
         now: Timestamp,
-    ) -> Result<HashMap<String, Vec<String>>> {
+    ) -> Result<HashMap<String, Vec<PoolEntry>>> {
         self.transaction(|trx| async move {
             let mut pools = HashMap::with_capacity(providers.len());
             for provider in providers {
@@ -388,17 +467,21 @@ impl Store {
         .await
     }
 
-    /// Expand a named route against ready-first entry pools without touching
-    /// breaker states, so the worker's transaction and the scheduler's tick
-    /// cache resolve the same chain. Steps naming a missing or unready entry
-    /// are skipped with a recorded reason; a provider with no stored entries
-    /// keeps its explicit steps for environment, ambient, and scripted keys.
-    /// A named route that selects nothing usable expands to nothing and the
-    /// caller falls back to the implicit route.
+    /// Expand a named route against entry pools without touching breaker
+    /// states, so the worker's transaction and the scheduler's tick cache
+    /// resolve the same chain. A named step whose label is missing, expired,
+    /// or otherwise not ready is skipped with a recorded reason, so the
+    /// turn fails over to the next step instead of failing on a dead entry;
+    /// a provider with no stored entries keeps its explicit steps for
+    /// environment, ambient, and scripted keys. Wildcards and the implicit
+    /// fallback keep the gateway pool order: ready entries in creation
+    /// order, or every entry when none is ready. A named route that selects
+    /// nothing usable expands to nothing and the caller falls back to the
+    /// implicit route.
     #[must_use]
     pub fn expand_chain(
         record: Option<&RouteRecord>,
-        pools: &HashMap<String, Vec<String>>,
+        pools: &HashMap<String, Vec<PoolEntry>>,
         fallback_provider: &str,
     ) -> ExpandedChain {
         let mut expanded = Vec::new();
@@ -408,13 +491,10 @@ impl Store {
                 if step.entry == swarmy_core::ANY_ENTRY {
                     match pools.get(&step.provider) {
                         Some(pool) if !pool.is_empty() => {
-                            // The wildcard keeps the gateway pool order: ready
-                            // entries in creation order, or every entry when
-                            // none is ready.
-                            for label in pool {
+                            for label in usable_labels(pool) {
                                 expanded.push(ExpandedRouteStep {
                                     provider: step.provider.clone(),
-                                    label: Some(label.clone()),
+                                    label: Some(label),
                                     model: step.model.clone(),
                                 });
                             }
@@ -429,17 +509,25 @@ impl Store {
                     }
                     continue;
                 }
-                let usable = pools
-                    .get(&step.provider)
-                    .is_none_or(|pool| pool.is_empty() || pool.contains(&step.entry));
-                if usable {
-                    expanded.push(ExpandedRouteStep {
-                        provider: step.provider.clone(),
-                        label: Some(step.entry.clone()),
-                        model: step.model.clone(),
-                    });
-                } else {
-                    skipped.push(skipped_step_reason(&step.provider, &step.entry));
+                // A stored but unready entry skips exactly like a missing
+                // label; only a provider with no stored entries at all keeps
+                // the step for keys the store cannot see.
+                match pools.get(&step.provider) {
+                    Some(pool)
+                        if !pool.is_empty()
+                            && !pool
+                                .iter()
+                                .any(|entry| entry.ready && entry.label == step.entry) =>
+                    {
+                        skipped.push(skipped_step_reason(&step.provider, &step.entry));
+                    }
+                    _ => {
+                        expanded.push(ExpandedRouteStep {
+                            provider: step.provider.clone(),
+                            label: Some(step.entry.clone()),
+                            model: step.model.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -453,10 +541,10 @@ impl Store {
         if expanded.is_empty() {
             match pools.get(fallback_provider) {
                 Some(pool) if !pool.is_empty() => {
-                    for label in pool {
+                    for label in usable_labels(pool) {
                         expanded.push(ExpandedRouteStep {
                             provider: fallback_provider.to_owned(),
-                            label: Some(label.clone()),
+                            label: Some(label),
                             model: None,
                         });
                     }
@@ -587,32 +675,174 @@ impl Store {
             if step == current && reasons.is_empty() {
                 return Ok(());
             }
-            write(&trx, &key, &step)?;
-            if !reasons.is_empty() {
-                let wait_key = self.wait_key(id);
-                let mut wait =
-                    read::<InferenceWait>(&trx, &wait_key)
-                        .await?
-                        .unwrap_or(InferenceWait {
-                            since: now,
-                            wake_at: now,
-                            last_failure_seq: 0,
-                            reasons: Vec::new(),
-                            attempts: 0,
-                        });
-                if wait.last_failure_seq != seq {
-                    wait.attempts = wait.attempts.saturating_add(1);
-                }
-                wait.last_failure_seq = seq;
-                for reason in reasons {
-                    let summary: String = reason.chars().take(256).collect();
-                    if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
-                        wait.reasons.push(summary);
-                    }
-                }
-                write(&trx, &wait_key, &wait)?;
+            self.write_route_step_in(&trx, id, step, seq, reasons, now)
+                .await
+        })
+        .await
+    }
+
+    /// Persist one route step with the failure marked handled and the reasons
+    /// merged into the session's wait history. Shared by explicit step moves
+    /// and the atomic failover, so both record the same history.
+    async fn write_route_step_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        step: u32,
+        seq: u64,
+        reasons: &[String],
+        now: Timestamp,
+    ) -> Result<()> {
+        write(trx, &self.session_route_step_key(id), &step)?;
+        if !reasons.is_empty() {
+            let wait_key = self.wait_key(id);
+            let mut wait = read::<InferenceWait>(trx, &wait_key)
+                .await?
+                .unwrap_or(InferenceWait {
+                    since: now,
+                    wake_at: now,
+                    last_failure_seq: 0,
+                    reasons: Vec::new(),
+                    attempts: 0,
+                });
+            if wait.last_failure_seq != seq {
+                wait.attempts = wait.attempts.saturating_add(1);
             }
-            Ok(())
+            wait.last_failure_seq = seq;
+            for reason in reasons {
+                let summary: String = reason.chars().take(256).collect();
+                if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
+                    wait.reasons.push(summary);
+                }
+            }
+            write(trx, &wait_key, &wait)?;
+        }
+        Ok(())
+    }
+
+    /// Failures from `fail_unserved` carry this prefix. The provider may
+    /// appear on the next gateway advertisement, so the session waits out
+    /// the gateway interval on its current step instead of consuming a
+    /// route step.
+    #[must_use]
+    pub fn is_unserved_error(error: &str) -> bool {
+        error.starts_with("no gateway serves provider ")
+    }
+
+    /// Resolve one retryable failure against the session's route and either
+    /// advance to the next usable step or park the exhausted chain, in a
+    /// single transaction: the snapshot, the step move, and the wait write
+    /// commit together, so the failure path costs one transaction like the
+    /// pre-routes park. A failure already recorded as handled returns
+    /// without reading pools or writing, so a worker that restarts or loses
+    /// its lease after the advance never moves a second step for the same
+    /// failure or parks the session with the successor's request in flight.
+    /// # Errors
+    /// Rejects stale leases or returns storage failures.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn failover_route_step(
+        &self,
+        id: SessionId,
+        lease: &Lease,
+        seq: u64,
+        error: &str,
+        retry_at: Timestamp,
+        route_step: u32,
+        session_route: Option<&str>,
+        session_provider: Option<&str>,
+        default_route: Option<&str>,
+        default_provider: &str,
+        now: Timestamp,
+        max_wait: std::time::Duration,
+    ) -> Result<FailoverOutcome> {
+        self.transaction(|trx| async move {
+            self.check_worker_lease(&trx, id, lease, now).await?;
+            let stored = self.session(&trx, id).await?;
+            if let Some(wait) = read::<InferenceWait>(&trx, &self.wait_key(id)).await?
+                && wait.last_failure_seq == seq
+            {
+                return Ok(FailoverOutcome {
+                    action: FailoverAction::AlreadyHandled,
+                    route: None,
+                });
+            }
+            // Ephemeral sessions carry no agent record, so only named
+            // sessions read one here; the snapshot covers both either way.
+            let (agent_route, agent_provider) =
+                if matches!(self.session_kind(&trx, id).await?, SessionKind::Named { .. }) {
+                    self.read_agent(&trx, stored.agent_id)
+                        .await?
+                        .map_or((None, None), |record| (record.route, record.provider))
+                } else {
+                    (None, None)
+                };
+            let snapshot = self
+                .route_snapshot_in(
+                    &trx,
+                    session_route,
+                    agent_route.as_deref(),
+                    session_provider,
+                    agent_provider.as_deref(),
+                    default_route,
+                    default_provider,
+                    now,
+                )
+                .await?;
+            let route = snapshot.name.clone();
+            if Self::is_unserved_error(error) {
+                self.park_leased_in(
+                    &trx,
+                    id,
+                    stored,
+                    &InferenceFailureWait {
+                        seq,
+                        reason: error,
+                        wake_at: retry_at,
+                    },
+                    now,
+                    max_wait,
+                )
+                .await?;
+                return Ok(FailoverOutcome {
+                    action: FailoverAction::Park,
+                    route,
+                });
+            }
+            if let Some(target) = snapshot.pick(route_step.saturating_add(1)) {
+                let target = u32::try_from(target).unwrap_or(u32::MAX);
+                if target != route_step {
+                    let reasons = failover_reasons(&snapshot, route_step, target, error);
+                    self.write_route_step_in(&trx, id, target, seq, &reasons, now)
+                        .await?;
+                    return Ok(FailoverOutcome {
+                        action: FailoverAction::AdvanceTo(target),
+                        route,
+                    });
+                }
+                // The failed step still reads as closed: the breaker write
+                // has not propagated to this snapshot, so parking until the
+                // failure's retry time is safer than retrying the same step
+                // in a tight loop.
+            }
+            let earliest = Self::earliest_retry(&snapshot.steps, retry_at);
+            self.park_leased_in(
+                &trx,
+                id,
+                stored,
+                &InferenceFailureWait {
+                    seq,
+                    reason: error,
+                    wake_at: earliest,
+                },
+                now,
+                max_wait,
+            )
+            .await?;
+            write(&trx, &self.session_route_step_key(id), &0_u32)?;
+            Ok(FailoverOutcome {
+                action: FailoverAction::Park,
+                route,
+            })
         })
         .await
     }
@@ -653,14 +883,17 @@ impl Store {
         Ok(parked)
     }
 
-    /// Earliest retry across one snapshot's steps for an exhausted chain.
-    /// Steps without an open breaker need no wait; callers only park when no
-    /// step is usable, so an empty result falls back to the failure's time.
+    /// Earliest retry across one snapshot's steps for an exhausted chain,
+    /// bounded by the failure's own retry time. The snapshot may predate the
+    /// failure's breaker write and name a later retry than the failure
+    /// itself carries, so the minimum of the two wakes the session as soon
+    /// as any step could serve it.
     #[must_use]
     pub fn earliest_retry(steps: &[RouteStepStatus], fallback: Timestamp) -> Timestamp {
         steps
             .iter()
             .filter_map(|step| step.open_until)
+            .chain(std::iter::once(fallback))
             .min()
             .unwrap_or(fallback)
     }

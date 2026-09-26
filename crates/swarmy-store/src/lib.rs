@@ -35,7 +35,10 @@ pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
 mod routes;
-pub use routes::{ExpandedChain, RouteSnapshot, RouteStepStatus};
+pub use routes::{
+    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
+    failover_reasons,
+};
 mod nodes;
 mod placed_tools;
 mod placements;
@@ -52,7 +55,13 @@ mod volumes;
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
 
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use foundationdb::{
     Database, FdbBindingError, RangeOption, RetryableTransaction, Transaction,
@@ -219,6 +228,10 @@ pub struct Store {
     root: Subspace,
     blobs: Arc<dyn BlobStore>,
     images: session_images::ImageCache,
+    /// Logical store transactions started through [`Store::transaction`].
+    /// Binding-level retries inside one call count once; the counter exists
+    /// so tests can compare per-operation transaction costs.
+    transactions: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -249,6 +262,7 @@ impl Store {
             root: Subspace::from_bytes(prefix),
             images: Arc::default(),
             blobs,
+            transactions: Arc::default(),
         })
     }
 
@@ -260,7 +274,15 @@ impl Store {
             root,
             blobs,
             images: Arc::default(),
+            transactions: Arc::default(),
         }
+    }
+
+    /// Logical store transactions started so far. Tests use it to compare
+    /// per-operation costs; production code never branches on it.
+    #[must_use]
+    pub fn transaction_count(&self) -> u64 {
+        self.transactions.load(Ordering::Relaxed)
     }
 
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
@@ -268,6 +290,7 @@ impl Store {
         F: Fn(RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
+        self.transactions.fetch_add(1, Ordering::Relaxed);
         let result = self
             .db
             .run(|trx, maybe_committed| {
@@ -352,13 +375,35 @@ impl Store {
             .await
     }
 
+    /// Fetch a session without its agent record. Callers that also need the
+    /// agent's route assignment use [`Store::fetch_session_with_agent`].
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn fetch_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
-        Ok(self
-            .fetch_session_with_agent(id)
-            .await?
-            .map(|(session, _)| session))
+        let stored = self
+            .transaction(|trx| async move {
+                let Some(session) = read::<StoredSession>(&trx, &self.session_key(id)).await?
+                else {
+                    return Ok(None);
+                };
+                let snapshot = if let Some(seq) = session.snapshot_seq {
+                    Some(
+                        trx.get(&self.snapshot_key(id, seq), false)
+                            .await?
+                            .ok_or(StoreError::Corrupt)?
+                            .to_vec(),
+                    )
+                } else {
+                    None
+                };
+                let session = self.session_metadata(&trx, session).await?;
+                Ok(Some((session, snapshot)))
+            })
+            .await?;
+        let Some((session, snapshot)) = stored else {
+            return Ok(None);
+        };
+        Ok(Some(self.hydrate_session(session, snapshot).await?))
     }
 
     /// Fetch a session with its agent record in one transaction, so the

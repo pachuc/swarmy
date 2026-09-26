@@ -617,12 +617,19 @@ mod tests {
     }
 
     #[test]
-    fn pre_routes_decoder_reads_attributed_completions() {
+    fn attributed_completions_default_route_fields_for_old_rows() {
         let request_id = crate::RequestId::for_step(
             crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
             4,
         );
-        let routed = Event::InferenceCompleted {
+        // Rows written before routes carry no trailing attribution. The
+        // production decoder rejects trailing bytes, so an old reader still
+        // fails on rows a new gateway writes: rollouts must upgrade readers
+        // (workers, API servers, CLI clients, chaos checkers) before
+        // gateways. What the trailing fields do guarantee is the other
+        // direction, tested here: new readers decode old rows with
+        // defaulted attribution.
+        let old = PreRoutesBinaryEvent::MeteredInferenceCompleted {
             seq: 9,
             request_id,
             message: crate::message::tests::message(),
@@ -633,33 +640,7 @@ mod tests {
             cost_micros: 11,
             effort_requested: None,
             effort_clamped: false,
-            entry: Some("backup".into()),
-            route: Some("fallback".into()),
-            route_step: Some(1),
         };
-        let bytes = crate::encode(&routed).unwrap();
-        // The discriminant is unchanged, so the pre-routes schema recognizes
-        // the variant and decodes the prefix it understands, leaving only
-        // the trailing route fields unread.
-        let payload = &bytes[1..];
-        let (old, _remainder): (PreRoutesBinaryEvent, _) =
-            postcard::take_from_bytes(payload).unwrap();
-        assert_eq!(
-            old,
-            PreRoutesBinaryEvent::MeteredInferenceCompleted {
-                seq: 9,
-                request_id,
-                message: crate::message::tests::message(),
-                provider: "openai".into(),
-                model: "gpt-5.5".into(),
-                effort_used: None,
-                usage: crate::TokenUsage::default(),
-                cost_micros: 11,
-                effort_requested: None,
-                effort_clamped: false,
-            }
-        );
-        // Rows written before routes decode with defaulted attribution.
         let old_bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
         assert_eq!(
             crate::decode::<Event>(&old_bytes).unwrap(),
@@ -678,6 +659,26 @@ mod tests {
                 route: None,
                 route_step: None,
             }
+        );
+        // New rows keep their attribution through the same decoder.
+        let routed = Event::InferenceCompleted {
+            seq: 9,
+            request_id,
+            message: crate::message::tests::message(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            effort_used: None,
+            usage: crate::TokenUsage::default(),
+            cost_micros: 11,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: Some("backup".into()),
+            route: Some("fallback".into()),
+            route_step: Some(1),
+        };
+        assert_eq!(
+            crate::decode::<Event>(&crate::encode(&routed).unwrap()).unwrap(),
+            routed
         );
     }
 

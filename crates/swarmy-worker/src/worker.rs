@@ -10,7 +10,9 @@ use swarmy_core::{
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::{InferenceJob, InferenceJobRef};
-use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition};
+use swarmy_store::{
+    FailoverAction, MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition,
+};
 use tokio::{
     sync::Mutex,
     time::{Instant, MissedTickBehavior, interval, interval_at},
@@ -48,45 +50,11 @@ impl Worker {
     }
 }
 
-fn failover_reasons(
-    snapshot: &swarmy_store::RouteSnapshot,
-    from: u32,
-    target: u32,
-    error: &str,
-) -> Vec<String> {
-    let mut reasons = vec![error.to_owned()];
-    reasons.extend(snapshot.skipped.iter().cloned());
-    // A wrap to a recovered earlier step skips every open step after the
-    // failure; a forward move skips the open steps between the two.
-    let end = if target > from {
-        usize::try_from(target).unwrap_or(usize::MAX)
-    } else {
-        snapshot.steps.len()
-    };
-    for skipped in from.saturating_add(1)..u32::try_from(end).unwrap_or(u32::MAX) {
-        if let Some(reason) = snapshot
-            .steps
-            .get(usize::try_from(skipped).unwrap_or(usize::MAX))
-            .and_then(|step| step.reason.clone())
-        {
-            reasons.push(reason);
-        }
-    }
-    reasons
-}
-
-/// Failures from `fail_unserved` carry this prefix. The provider may appear
-/// on the next gateway advertisement, so the session waits out the gateway
-/// interval on its current step instead of consuming a route step.
-fn is_unserved_error(error: &str) -> bool {
-    error.starts_with("no gateway serves provider ")
-}
-
-fn warn_on_route_fallback(session: &SessionRecord, snapshot: &swarmy_store::RouteSnapshot) {
+fn warn_on_route_fallback(session: &SessionRecord, resolved: Option<&str>) {
     // A deleted or renamed route falls back to the implicit chain; say so
     // once per resolution so the operator can fix the assignment.
     let requested = session.route.as_deref();
-    if requested.is_some() && snapshot.name != requested.map(str::to_owned) {
+    if requested.is_some() && resolved != requested {
         tracing::warn!(
             session_id = %session.session_id,
             route = requested,
@@ -579,9 +547,9 @@ impl Worker {
     /// retryable failure moves the session to the next usable step of its
     /// route for the next attempt, wrapping to a recovered earlier step when
     /// every later step is open. When every step is open the session waits
-    /// for the earliest retry among them. Unserved-provider waits never
-    /// consume a step: the gateway may advertise the provider next, so the
-    /// session waits on its current step instead.
+    /// for the earliest retry among them. The snapshot, the step move, and
+    /// the wait write commit in one store transaction; an unrouted
+    /// ephemeral session keeps the pre-routes single park instead.
     async fn failover_or_park(
         &self,
         session: &mut SessionRecord,
@@ -591,10 +559,9 @@ impl Worker {
         retry_at: Timestamp,
         now: Timestamp,
     ) -> Result<bool> {
-        let snapshot = self.route_snapshot(session).await?;
-        let mut token = lease.lock().await;
-        let lease_ref = token.as_ref().context("lease released")?;
-        if is_unserved_error(error) {
+        if !session.needs_route_snapshot(self.config.default_route.as_deref()) {
+            let mut token = lease.lock().await;
+            let lease_ref = token.as_ref().context("lease released")?;
             let parked = self
                 .store
                 .park_inference(
@@ -615,51 +582,43 @@ impl Worker {
             }
             return Ok(false);
         }
-        if let Some(target) = snapshot.pick(session.route_step.saturating_add(1)) {
-            let target = u32::try_from(target).unwrap_or(u32::MAX);
-            if target == session.route_step {
-                // The failed step still reads as closed: the breaker write
-                // has not propagated to this snapshot, so parking until the
-                // failure's retry time is safer than retrying the same step
-                // in a tight loop.
-            } else {
-                let reasons = failover_reasons(&snapshot, session.route_step, target, error);
-                self.store
-                    .set_session_route_step(
-                        session.session_id,
-                        lease_ref,
-                        target,
-                        seq,
-                        &reasons,
-                        now,
-                    )
-                    .await?;
-                session.route_step = target;
-                return Ok(false);
-            }
-        }
-        let earliest = swarmy_store::Store::earliest_retry(&snapshot.steps, retry_at);
-        let parked = self
-            .store
-            .park_exhausted_route(
-                session.session_id,
-                lease_ref,
-                &swarmy_store::InferenceFailureWait {
+        let outcome = {
+            let token = lease.lock().await;
+            let lease_ref = token.as_ref().context("lease released")?;
+            self.store
+                .failover_route_step(
+                    session.session_id,
+                    lease_ref,
                     seq,
-                    reason: error,
-                    wake_at: earliest,
-                },
-                earliest,
-                now,
-                self.config.max_inference_wait,
-            )
-            .await?;
-        if parked {
-            session.route_step = 0;
-            *token = None;
-            return Ok(true);
+                    error,
+                    retry_at,
+                    session.route_step,
+                    session.route.as_deref(),
+                    session.inference.provider.as_deref(),
+                    self.config.default_route.as_deref(),
+                    &self.config.provider,
+                    now,
+                    self.config.max_inference_wait,
+                )
+                .await?
+        };
+        match outcome.action {
+            FailoverAction::AdvanceTo(step) => {
+                warn_on_route_fallback(session, outcome.route.as_deref());
+                session.route_step = step;
+                Ok(false)
+            }
+            FailoverAction::Park => {
+                warn_on_route_fallback(session, outcome.route.as_deref());
+                session.route_step = 0;
+                *lease.lock().await = None;
+                Ok(true)
+            }
+            // The failure was already handled before a restart or lease
+            // lapse: continue the turn without moving again or parking
+            // behind the successor's in-flight request.
+            FailoverAction::AlreadyHandled => Ok(false),
         }
-        Ok(false)
     }
 
     async fn fold_results(
@@ -757,7 +716,7 @@ impl Worker {
                     request.system_prompt = prompt;
                 }
             }
-            warn_on_route_fallback(session, &snapshot);
+            warn_on_route_fallback(session, snapshot.name.as_deref());
             let selection = session.inference.resolve(&defaults);
             return self
                 .finish_prepare(
@@ -770,9 +729,28 @@ impl Worker {
                 )
                 .await;
         }
-        let snapshot = self.route_snapshot(session).await?;
-        warn_on_route_fallback(session, &snapshot);
         let selection = session.inference.resolve(&defaults);
+        // Without any route assignment the implicit chain is one step and
+        // the gateway pool picks the entry, so unrouted ephemeral turns
+        // skip the snapshot read entirely.
+        let snapshot =
+            if session.needs_route_snapshot(self.config.default_route.as_deref()) {
+                let snapshot = self.route_snapshot(session).await?;
+                warn_on_route_fallback(session, snapshot.name.as_deref());
+                snapshot
+            } else {
+                swarmy_store::RouteSnapshot {
+                    name: None,
+                    steps: vec![swarmy_store::RouteStepStatus {
+                        provider: selection.provider.clone(),
+                        label: None,
+                        model: None,
+                        open_until: None,
+                        reason: None,
+                    }],
+                    skipped: Vec::new(),
+                }
+            };
         self.finish_prepare(
             session,
             request,

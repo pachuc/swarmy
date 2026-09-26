@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use swarmy_bus::Bus;
 use swarmy_core::{AgentRecord, Event, SessionId, SessionState, WakeReply, WakeRequest};
-use swarmy_store::{MAX_SCAN_LIMIT, RouteStepStatus, Store, StoreError, runnable_partition};
+use swarmy_store::{MAX_SCAN_LIMIT, PoolEntry, RouteStepStatus, Store, StoreError, runnable_partition};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
@@ -20,7 +20,7 @@ type BreakerState = (Option<Timestamp>, Option<String>);
 #[derive(Default)]
 struct TickCache {
     routes: HashMap<String, Option<swarmy_core::RouteRecord>>,
-    pools: HashMap<String, Vec<String>>,
+    pools: HashMap<String, Vec<PoolEntry>>,
     breakers: HashMap<(String, Option<String>), BreakerState>,
 }
 

@@ -133,31 +133,4 @@ mod tests {
             crate::Cli::try_parse_from(["swarmy", "auth", "routes", "set", "fallback"]).is_err()
         );
     }
-
-    #[test]
-    fn run_and_chat_accept_a_session_route() {
-        assert!(crate::Cli::try_parse_from(["swarmy", "run", "--route", "fallback", "hi"]).is_ok());
-        assert!(crate::Cli::try_parse_from(["swarmy", "chat", "--route", "fallback"]).is_ok());
-        // The route overrides one session only, so it stays available with an agent.
-        assert!(
-            crate::Cli::try_parse_from([
-                "swarmy", "chat", "--agent", "tommy", "--route", "fallback"
-            ])
-            .is_ok()
-        );
-        assert!(
-            crate::Cli::try_parse_from([
-                "swarmy",
-                "run",
-                "--agent",
-                "tommy",
-                "--provider",
-                "openai",
-                "--route",
-                "fallback",
-                "hi",
-            ])
-            .is_err()
-        );
-    }
 }

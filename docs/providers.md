@@ -144,7 +144,10 @@ across a failover, the request builder does not replay reasoning blocks
 from the previous provider: reasoning signatures are provider- and
 model-specific, so the thinking text travels as plain text instead. Every
 completion records the entry and route step used, so metering attributes
-cost to the entry that earned it.
+cost to the entry that earned it. Those route fields are trailing bytes on
+the completion row, which older readers reject: when rolling this out,
+upgrade readers (workers, API servers, CLI clients, chaos checkers) before
+gateways.
 
 Three common shapes, from the design discussion:
 

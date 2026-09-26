@@ -95,6 +95,21 @@ pub struct SessionRecord {
     pub route_step: u32,
 }
 
+impl SessionRecord {
+    /// Whether resolving this session's route needs a store read. Named
+    /// sessions always resolve, since the agent's assignment, provider, and
+    /// model may have changed. Ephemeral sessions resolve only when a route
+    /// is assigned to the session or the swarm; otherwise the worker uses
+    /// the implicit single-step chain and the gateway pool picks the entry,
+    /// so an unrouted ephemeral inference costs no route transaction.
+    #[must_use]
+    pub fn needs_route_snapshot(&self, default_route: Option<&str>) -> bool {
+        !matches!(self.kind, SessionKind::Ephemeral)
+            || self.route.is_some()
+            || default_route.is_some()
+    }
+}
+
 /// Lease times are supplied by callers; this crate never reads the clock.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
@@ -200,5 +215,33 @@ mod tests {
                 seq: u64::MAX,
             });
         }
+    }
+
+    #[test]
+    fn unrouted_ephemeral_sessions_need_no_route_snapshot() {
+        let agent = AgentId::from_ulid(Ulid::from_parts(2, 3));
+        let mut session = SessionRecord {
+            interrupt_requested: false,
+            session_id: SessionId::from_ulid(Ulid::from_parts(1, 2)),
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_ref: None,
+            inference: crate::InferenceSelection::default(),
+            kind: SessionKind::Ephemeral,
+            computer_deleted: false,
+            plan: Vec::new(),
+            route: None,
+            route_step: 0,
+        };
+        assert!(!session.needs_route_snapshot(None));
+        // Any route assignment forces a resolution read.
+        session.route = Some("fallback".into());
+        assert!(session.needs_route_snapshot(None));
+        session.route = None;
+        assert!(session.needs_route_snapshot(Some("fallback")));
+        // Named sessions always resolve against the agent record.
+        session.kind = SessionKind::Named { agent_id: agent };
+        assert!(session.needs_route_snapshot(None));
     }
 }
