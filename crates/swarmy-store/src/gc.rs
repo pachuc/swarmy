@@ -81,6 +81,30 @@ impl Store {
         .await
     }
 
+    /// Record a finished run without holding the collector lease. A sweep that
+    /// loses its lease can no longer release it, but followers poll `finished`
+    /// on the run record; without this write they wait until their deadline.
+    /// # Errors
+    /// Rejects a mismatched run id and transaction failures.
+    pub async fn fail_gc_run(&self, owner: LeaseOwnerId, run: &GcRun) -> Result<()> {
+        if run.owner != owner {
+            return Err(StoreError::LeaseMismatch);
+        }
+        let mut failed = run.clone();
+        failed.finished = true;
+        if failed.error.is_none() {
+            failed.error = Some("gc lease lost".into());
+        }
+        self.transaction(|trx| {
+            let failed = &failed;
+            async move {
+                write(&trx, &self.gc_run_key(owner), failed)?;
+                Ok(())
+            }
+        })
+        .await
+    }
+
     /// # Errors
     /// Returns decoding or transaction errors.
     pub async fn get_gc_run(&self, owner: LeaseOwnerId) -> Result<Option<GcRun>> {

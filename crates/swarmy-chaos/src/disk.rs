@@ -216,6 +216,6 @@ pub fn cleanup(root: &Path) {
 
 fn objects() -> Result<Arc<dyn object_store::ObjectStore>> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let objects = settings.object_store()?;
+    let objects = swarmy_store::objects::from_settings(&settings)?;
     Ok(objects)
 }

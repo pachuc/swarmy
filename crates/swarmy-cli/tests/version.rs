@@ -141,7 +141,7 @@ fn doctor_reports_each_identity_and_flags_stale_service() {
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     for name in [
-        "swarmy-session",
+        "swarmy-api",
         "swarmy-scheduler",
         "swarmy-worker",
         "swarmy-gateway",
@@ -167,11 +167,8 @@ fn doctor_reports_each_identity_and_flags_stale_service() {
 }
 
 #[test]
-fn cli_and_companion_report_same_identity_in_text_and_json() {
-    for (name, path) in [
-        ("swarmy", CLI),
-        ("swarmy-session", env!("CARGO_BIN_EXE_swarmy-session")),
-    ] {
+fn cli_reports_identity_in_text_and_json() {
+    for (name, path) in [("swarmy", CLI)] {
         let output = Command::new(path).arg("--version").output().unwrap();
         assert!(output.status.success());
         assert_eq!(

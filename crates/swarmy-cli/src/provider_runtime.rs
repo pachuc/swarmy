@@ -1,17 +1,32 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 use swarmy_core::CredentialRecord;
 use swarmy_llm::{
     Error,
-    auth::{AuthStore, Login},
+    auth::{AuthStore, Credentials, Login},
 };
-use swarmy_store::{Store, blob::MemoryBlobStore};
 
-struct EmptyStore;
+/// File credentials for providers that keep a local login file. Everything
+/// else resolves from provider environment and ambient cloud chains through
+/// the resolver. Cluster credentials stay on the control plane: the client
+/// never opens the credential store directly.
+struct FileAuthStore {
+    path: PathBuf,
+}
 
 #[async_trait::async_trait]
-impl AuthStore for EmptyStore {
-    async fn get(&self, _: &str) -> Result<Option<CredentialRecord>, Error> {
-        Ok(None)
+impl AuthStore for FileAuthStore {
+    async fn get(&self, provider: &str) -> Result<Option<CredentialRecord>, Error> {
+        if provider != "chatgpt" {
+            return Ok(None);
+        }
+        let bytes = match tokio::fs::read(&self.path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(Error::Protocol(error.to_string())),
+            Ok(bytes) => bytes,
+        };
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Protocol(error.to_string()))?;
+        Ok(Some(Credentials::from_json(value)?.to_record()?))
     }
     async fn refresh(
         &self,
@@ -23,31 +38,8 @@ impl AuthStore for EmptyStore {
     }
 }
 
-async fn open(settings: &swarmy_config::Settings) -> anyhow::Result<Store> {
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    Ok(Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(&directory),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await?)
-}
-
-pub async fn auth_store(settings: &swarmy_config::Settings) -> anyhow::Result<Arc<dyn AuthStore>> {
-    // An uninitialized local checkout can still probe environment credentials.
-    // A configured but unavailable store must never bypass a stored credential.
-    if !Path::new(&settings.fdb_cluster_file).exists() {
-        return Ok(Arc::new(EmptyStore));
-    }
-    tokio::time::timeout(Duration::from_secs(5), async {
-        Ok(Arc::new(
-            swarmy_gateway::credentials::ClusterCredentials::new(open(settings).await?).await?,
-        ) as Arc<dyn AuthStore>)
+pub fn auth_store(settings: &swarmy_config::Settings) -> Arc<dyn AuthStore> {
+    Arc::new(FileAuthStore {
+        path: settings.credential_file.clone().into(),
     })
-    .await
-    .map_err(|_| anyhow::anyhow!("credential store timed out"))?
 }

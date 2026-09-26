@@ -39,6 +39,7 @@ pub use routes::{
     ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
 };
 mod nodes;
+pub mod objects;
 mod placed_tools;
 mod placements;
 pub use placements::ScratchRecord;

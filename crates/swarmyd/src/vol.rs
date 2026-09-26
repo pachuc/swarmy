@@ -1,8 +1,31 @@
-use crate::{session::store, vol_command::Command};
+use crate::vol_command::Command;
 use anyhow::{Context, Result};
-use std::fmt::Write;
+use std::{fmt::Write, sync::Arc};
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
+
+/// Developer volume tools, served from the node daemon: attach and snapshot
+/// need local devices and the store, neither of which the client links.
+#[derive(clap::Parser)]
+#[command(name = "vol", about = "Create, attach, and snapshot durable volumes")]
+pub struct VolCli {
+    /// Emit compact machine-readable JSON
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+pub async fn run_cli() -> Result<()> {
+    let cli = match <VolCli as clap::Parser>::try_parse_from(
+        std::iter::once("vol".to_owned()).chain(std::env::args().skip(2)),
+    ) {
+        Ok(cli) => cli,
+        // Help and version exit from here with their own status codes.
+        Err(error) => error.exit(),
+    };
+    run(cli.command, cli.json).await
+}
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
     match command {
@@ -137,4 +160,21 @@ pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
     }
     std::io::stdout().flush()?;
     Ok(())
+}
+
+/// Open the cluster store for volume commands.
+pub(crate) async fn store() -> Result<swarmy_store::Store> {
+    let settings = swarmy_config::Settings::load()?.settings;
+    let cluster = settings.fdb_cluster_file;
+    let directory: Vec<_> = settings
+        .store_directory
+        .split('/')
+        .map(str::to_owned)
+        .collect();
+    Ok(swarmy_store::Store::open(
+        Some(&cluster),
+        Some(&directory),
+        Arc::new(swarmy_store::blob::ObjectBlobStore::from_env()?),
+    )
+    .await?)
 }

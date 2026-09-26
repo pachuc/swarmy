@@ -1,14 +1,17 @@
-#[path = "session/agent_settings.rs"]
+#[path = "cli_session/agent_settings.rs"]
 mod agent_settings;
 
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
-#[path = "session/agents.rs"]
+#[path = "cli_session/agents.rs"]
 mod agents;
 
-#[path = "session/chat.rs"]
+#[path = "cli_session/chat.rs"]
 mod chat;
+
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
 
 use std::{
     future::Future,
@@ -53,7 +56,7 @@ struct Fixture {
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
+        let mut command = Command::new(cli_bin::swarmy());
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
@@ -179,6 +182,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         bus.clone(),
         api_token.clone(),
         swarmy_llm::catalog::Catalog::get().clone(),
+        std::sync::Arc::new(object_store::memory::InMemory::new()),
     );
     api.default_image = Some("fixture:test".into());
     // Several terminal tests append events directly to the store without a

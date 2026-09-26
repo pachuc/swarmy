@@ -44,9 +44,46 @@ pub async fn collect(
     policy: GarbageCollection,
     dry_run: bool,
 ) -> Result<GcRun> {
+    let (run, lease, cutoff, started) = begin(store, policy, dry_run).await?;
+    complete(store, objects, policy, run, lease, cutoff, started).await
+}
+
+/// Acquire the collector lease and record the started run before sweeping.
+/// A busy lease returns `LeaseMismatch`. The API starts runs this way so a
+/// client can follow progress while the sweep continues in the background.
+/// # Errors
+/// Rejects invalid policy and returns `LeaseMismatch` when another collector
+/// holds the lease.
+pub async fn begin(
+    store: &Store,
+    policy: GarbageCollection,
+    dry_run: bool,
+) -> Result<(GcRun, swarmy_core::Lease, Timestamp, Instant)> {
+    begin_with_owner(
+        store,
+        policy,
+        dry_run,
+        LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+    )
+    .await
+}
+
+/// Acquire the collector lease for a caller-chosen run id. The API reserves
+/// its idempotency replay key before acquiring the lease, so a store failure
+/// after `begin` cannot leave a sweep running that a retry answers with a
+/// conflict for.
+/// # Errors
+/// Rejects invalid policy and returns `LeaseMismatch` when another collector
+/// holds the lease.
+pub async fn begin_with_owner(
+    store: &Store,
+    policy: GarbageCollection,
+    dry_run: bool,
+    owner: LeaseOwnerId,
+) -> Result<(GcRun, swarmy_core::Lease, Timestamp, Instant)> {
     let started = Instant::now();
-    let mut run = GcRun {
-        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+    let run = GcRun {
+        owner,
         started_at: Timestamp::now(),
         dry_run,
         finished: false,
@@ -67,9 +104,25 @@ pub async fn collect(
         .checked_sub(grace)
         .ok_or(VolumeError::InvalidGcPolicy)?;
     let cutoff = Timestamp::from_second(cutoff).map_err(|_| VolumeError::InvalidGcPolicy)?;
+    let lease = store.acquire_gc_lease(&run, expiry()?).await?;
+    Ok((run, lease, cutoff, started))
+}
+
+/// Sweep, delete, and record the final counters for a run from [`begin`].
+/// # Errors
+/// Fails closed on incomplete marking, storage errors, or lease loss. Failed
+/// attempts retain partial accounting when the lease is still live.
+pub async fn complete(
+    store: &Store,
+    objects: Arc<dyn ObjectStore>,
+    policy: GarbageCollection,
+    mut run: GcRun,
+    mut lease: swarmy_core::Lease,
+    cutoff: Timestamp,
+    started: Instant,
+) -> Result<GcRun> {
     let mut references = References::new(policy.filter_bytes.get())?;
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    let mut lease = store.acquire_gc_lease(&run, expiry()?).await?;
     let result = {
         let work = sweep(store, &*objects, &mut references, cutoff, policy, &mut run);
         tokio::pin!(work);
@@ -97,10 +150,21 @@ pub async fn collect(
     run.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     run.finished = true;
     run.error = result.as_ref().err().map(ToString::to_string);
-    let recorded = store.finish_gc_run(&lease, &run).await;
-    result?;
-    recorded?;
-    Ok(run)
+    match store.finish_gc_run(&lease, &run).await {
+        Ok(()) => {
+            result?;
+            Ok(run)
+        }
+        Err(record_error) => {
+            // The lease is gone, so the fenced write above cannot apply. The
+            // follower polls `finished` on the run record; record the failure
+            // without the lease so it stops instead of waiting out its
+            // deadline while the lease expires underneath the sweep.
+            let _ = store.fail_gc_run(run.owner, &run).await;
+            result?;
+            Err(record_error.into())
+        }
+    }
 }
 
 fn expiry() -> Result<Timestamp> {

@@ -1,17 +1,20 @@
 # One-command install and check for swarmy.
 #
-#   make install       build and install every swarmy binary into ~/.cargo/bin
+#   make install       install the client plus every service binary into ~/.cargo/bin
+#   make install-client install only the client (needs no libfdb_c)
+#   make install-core   install the service binaries (need libfdb_c)
 #   make install-node  also install swarmyd (only useful on a machine with root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models        regenerate the provider and model catalog
 #   make check         the three CI commands: fmt, test, clippy
 #   make uninstall     remove the installed swarmy binaries
 #
-# The store links against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
+# The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
 # directory holding it; when unset, the first directory below that contains the
 # library is used. Run `make dev-tools` first on a machine without it.
+# The client (swarmy-cli) links no database library and needs no libfdb_c.
 
-CRATES ?= cli scheduler worker gateway
+CORE_CRATES ?= scheduler worker gateway api
 NODE_CRATES ?= swarmyd
 CARGO ?= cargo
 FDB_CANDIDATES := $(HOME)/.local/lib /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
@@ -20,7 +23,7 @@ ifeq ($(strip $(FDB_LIB_DIR)),)
 FDB_LIB_DIR := $(firstword $(foreach dir,$(FDB_CANDIDATES),$(if $(wildcard $(dir)/libfdb_c.so $(dir)/libfdb_c.dylib),$(dir),)))
 endif
 
-.PHONY: help install install-node dev-tools check uninstall fdb-check models
+.PHONY: help install install-client install-core install-node dev-tools check uninstall fdb-check models
 
 help:
 	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
@@ -33,13 +36,20 @@ fdb-check:
 	fi
 	@echo "Using FoundationDB client library from $(FDB_LIB_DIR)"
 
-install: fdb-check
-	@for crate in $(CRATES); do \
+# The client links no database library and installs without libfdb_c.
+install-client:
+	@echo "==> swarmy-cli"
+	@$(CARGO) install --locked --path "crates/swarmy-cli" || exit 1
+	@echo "Installed: $$(ls $(HOME)/.cargo/bin | grep '^swarmy' | tr '\n' ' ')"
+	@$(HOME)/.cargo/bin/swarmy --version
+
+install-core: fdb-check
+	@for crate in $(CORE_CRATES); do \
 		echo "==> swarmy-$$crate"; \
 		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/swarmy-$$crate" || exit 1; \
 	done
-	@echo "Installed: $$(ls $(HOME)/.cargo/bin | grep '^swarmy' | tr '\n' ' ')"
-	@$(HOME)/.cargo/bin/swarmy --version
+
+install: install-client install-core
 
 install-node: install
 	@for crate in $(NODE_CRATES); do \
@@ -65,6 +75,6 @@ check:
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 
 uninstall:
-	@for bin in swarmy swarmy-session swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
+	@for bin in swarmy swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done

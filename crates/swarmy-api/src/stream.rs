@@ -24,7 +24,7 @@ use std::{
 };
 use swarmy_api_types::{self as api, LogId, Subscription};
 use swarmy_bus::LiveFeed;
-use swarmy_core::{LiveTokenDelta, SessionId};
+use swarmy_core::{LiveTokenDelta, SessionId, TurnEvent};
 use swarmy_store::MAX_SCAN_LIMIT;
 use tokio::{
     sync::{mpsc, watch},
@@ -52,10 +52,21 @@ fn key(log: &LogId) -> String {
     match log {
         LogId::Session(id) => format!("session:{id}"),
         LogId::Channel(id) => format!("channel:{id}"),
+        LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }
 fn session_id(log: &LogId) -> Result<SessionId, ApiError> {
     let LogId::Session(text) = log else {
+        return Err(error(StatusCode::BAD_REQUEST, "unsupported_log"));
+    };
+    text.parse::<Ulid>()
+        .map(SessionId::from_ulid)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_log_id"))
+}
+/// Timeline cursors name the session whose turn observations are followed.
+/// The session must exist, but observations are live-only and never replayed.
+fn timeline_id(log: &LogId) -> Result<SessionId, ApiError> {
+    let LogId::Timeline(text) = log else {
         return Err(error(StatusCode::BAD_REQUEST, "unsupported_log"));
     };
     text.parse::<Ulid>()
@@ -71,7 +82,10 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
         if !seen.insert(key(&cursor.log_id)) {
             return Err(error(StatusCode::BAD_REQUEST, "duplicate_log"));
         }
-        let id = session_id(&cursor.log_id)?;
+        let id = match &cursor.log_id {
+            LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
+            _ => session_id(&cursor.log_id)?,
+        };
         if state
             .store
             .fetch_session(id)
@@ -245,6 +259,7 @@ impl Drop for ConnectionGuard {
 enum FeedItem {
     Durable(SessionId),
     Token(LogId, LiveTokenDelta),
+    Timeline(LogId, u64, TurnEvent),
 }
 async fn feeds(
     state: &AppState,
@@ -252,6 +267,26 @@ async fn feeds(
 ) -> Result<SelectAll<BoxStream<'static, FeedItem>>, swarmy_bus::Error> {
     let mut all = SelectAll::new();
     for cursor in &subscription.cursors {
+        if matches!(cursor.log_id, LogId::Timeline(_)) {
+            let id = timeline_id(&cursor.log_id).expect("validated subscription");
+            let log = cursor.log_id.clone();
+            // Live-only observations are numbered per connection from the
+            // subscribed cursor, so a reconnect resumes without duplicates.
+            let mut sequence = cursor.sequence;
+            let mut observations = state
+                .bus
+                .subscribe_live::<TurnEvent>(LiveFeed::TurnTimeline(id))
+                .await?;
+            all.push(Box::pin(async_stream::stream! {
+                while let Some(value) = observations.next().await {
+                    if let Ok(event) = value {
+                        sequence += 1;
+                        yield FeedItem::Timeline(log.clone(), sequence, event);
+                    }
+                }
+            }) as BoxStream<'static, FeedItem>);
+            continue;
+        }
         let id = session_id(&cursor.log_id).expect("validated subscription");
         let mut events = state
             .bus
@@ -299,6 +334,9 @@ async fn catch_up(
     changes: &watch::Receiver<Subscription>,
     progress: &Arc<std::sync::Mutex<Subscription>>,
 ) -> Replay {
+    if matches!(sub.cursors[index].log_id, LogId::Timeline(_)) {
+        return Replay::Done;
+    }
     let id = session_id(&sub.cursors[index].log_id).expect("validated subscription");
     loop {
         let after = sub.cursors[index].sequence;
@@ -466,6 +504,15 @@ async fn produce(
                             };
                             let Ok(data) = serde_json::to_string(&serde_json::json!({"log_id": log, "payload": payload})) else { return };
                             if !deliver(&sender, Event::default().event("token_delta").data(data), Duration::from_secs(2)).await { return; }
+                        }
+                        Some(FeedItem::Timeline(log, sequence, observation)) => {
+                            let Ok(record) = serde_json::to_value(&observation) else { return };
+                            let Ok(data) = serde_json::to_string(&api::Event {
+                                log_id: log,
+                                sequence,
+                                payload: api::EventPayload::StoreRecord { record },
+                            }) else { return };
+                            if !deliver(&sender, Event::default().event("event").data(data), Duration::from_secs(2)).await { return; }
                         }
                         None => break,
                     }

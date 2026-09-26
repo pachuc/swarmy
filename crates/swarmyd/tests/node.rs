@@ -294,7 +294,9 @@ async fn store(settings: &swarmy_config::Settings) -> Store {
         Some(&settings.fdb_cluster_file),
         Some(&directory),
         // The node reads large tool payloads in a separate process.
-        Arc::new(ObjectBlobStore::new(settings.object_store().unwrap())),
+        Arc::new(ObjectBlobStore::new(
+            swarmy_store::objects::from_settings(settings).unwrap(),
+        )),
     )
     .await
     .unwrap()
@@ -451,7 +453,7 @@ async fn scratch_snapshots(node: &Node, store: &Store, sandbox: &Sandbox) {
         Response::Checkpointed(manifest) => manifest,
         response => panic!("checkpoint: {response:?}"),
     };
-    let objects = node.settings.object_store().unwrap();
+    let objects = swarmy_store::objects::from_settings(&node.settings).unwrap();
     let first_manifest =
         swarmy_volume::Manifest::load(&*objects, store.get_manifest(first).await.unwrap().unwrap())
             .await
@@ -995,7 +997,7 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
         directory: node.root.path().join(".swarmy/volumes"),
         node: node.id,
         store: store.clone(),
-        objects: node.settings.object_store().unwrap(),
+        objects: swarmy_store::objects::from_settings(&node.settings).unwrap(),
     };
     let command = "sleep 0.1; echo tool-priority";
     let start = std::time::Instant::now();

@@ -1,5 +1,4 @@
 [package]
-build = "../swarmy-store/build.rs"
 name = "swarmy-cli"
 default-run = "swarmy"
 version.workspace = true
@@ -18,16 +17,11 @@ workspace = true
 name = "swarmy"
 path = "src/main.rs"
 
-[[bin]]
-name = "swarmy-session"
-path = "src/runtime.rs"
-
-# Doctor alone loads the FoundationDB library through a small, documented FFI boundary.
+# The client talks to the control plane API only. It links no database,
+# message bus, or object store library, so it builds without libfdb_c.
 [dependencies]
 async-trait.workspace = true
-swarmy-gateway.workspace = true
 swarmy-version.workspace = true
-async-nats.workspace = true
 aws-config = { workspace = true, optional = true }
 aws-sdk-ec2 = { workspace = true, optional = true }
 aws-sdk-ssm = { workspace = true, optional = true }
@@ -38,35 +32,28 @@ ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true
 futures-util.workspace = true
-libloading.workspace = true
 url.workspace = true
 toml.workspace = true
 serde.workspace = true
 fs2.workspace = true
 tempfile.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix.workspace = true
 swarmy-config.workspace = true
 swarmy-client.workspace = true
 swarmy-api-types.workspace = true
 clap.workspace = true
 swarmy-core.workspace = true
+swarmy-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 swarmy-llm.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-swarmy-bus.workspace = true
-swarmy-store.workspace = true
-swarmy-volume.workspace = true
-object_store.workspace = true
 jiff.workspace = true
 ulid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-swarmy-api = { path = "../swarmy-api" }
+# Unit tests in the chat client construct typed API errors; the binary itself
+# talks HTTP only through swarmy-client.
 reqwest.workspace = true
-axum.workspace = true
-portable-pty.workspace = true
-vt100.workspace = true
-foundationdb.workspace = true

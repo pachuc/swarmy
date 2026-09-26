@@ -4,11 +4,12 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
+    sync::LazyLock,
     time::{Duration, Instant},
 };
-use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
-use swarmy_client::Client;
-use swarmy_core::{MessageId, SessionId, ToolResult, TurnEvent, TurnStage};
+use swarmy_api_types as api;
+use swarmy_client::{Client, EventStream};
+use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
 const SCRIPT: &str = include_str!("../../../scripts/benchmarks/turn-fake.json");
 
@@ -22,22 +23,46 @@ struct Sample {
     cross_host_wall_clock: bool,
 }
 
-async fn timeline_bus(settings: &swarmy_config::Settings) -> Result<Bus> {
-    let config = Config {
-        prefix: if settings.bus_prefix.is_empty() {
-            None
-        } else {
-            Some(SubjectToken::new(settings.bus_prefix.clone())?)
-        },
-        ack_wait: Duration::from_millis(settings.bus_ack_wait_ms),
-        max_deliver: settings.bus_max_deliver,
-    };
-    Ok(tokio::time::timeout(
-        Duration::from_secs(3),
-        Bus::connect(&settings.nats_url, config),
+async fn timeline_stream(client: &Client, session: &str) -> Result<EventStream> {
+    let mut stream = client.stream(api::Subscription {
+        cursors: vec![api::Cursor {
+            log_id: api::LogId::Timeline(session.into()),
+            sequence: 0,
+        }],
+        token_deltas: false,
+    });
+    // Establish the subscription before submitting work, so early server
+    // stages are not missed while the HTTP connection is being opened.
+    stream.open().await?;
+    Ok(stream)
+}
+
+static CLOCK_ID: LazyLock<String> = LazyLock::new(|| {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_or_else(
+        |_| format!("process-{}-{}", std::process::id(), jiff::Timestamp::now()),
+        |id| id.trim().to_owned(),
     )
-    .await
-    .context("cannot reach turn timeline bus")??)
+});
+
+/// Capture the boundary before any instrumentation publication awaits.
+fn turn_event(
+    session_id: SessionId,
+    turn_id: MessageId,
+    stage: TurnStage,
+    request_id: Option<RequestId>,
+) -> TurnEvent {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let monotonic_ns = u64::try_from(time.tv_sec).unwrap_or_default() * 1_000_000_000
+        + u64::try_from(time.tv_nsec).unwrap_or_default();
+    TurnEvent {
+        session_id,
+        turn_id,
+        stage,
+        request_id,
+        clock_id: CLOCK_ID.clone(),
+        monotonic_ns,
+        unix_ns: jiff::Timestamp::now().as_nanosecond(),
+    }
 }
 
 pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
@@ -60,7 +85,6 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
         configured == serde_json::from_str::<serde_json::Value>(SCRIPT)?,
         "bench turn requires scripts/benchmarks/turn-fake.json; configure it and restart the gateway"
     );
-    let bus = timeline_bus(&settings).await?;
     let mut samples = Vec::new();
     for shape in ["no_tool", "bash"] {
         let mut conversation = Conversation::open(
@@ -73,14 +97,11 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
             None,
         )
         .await?;
-        let id = SessionId::from_ulid(conversation.id.parse()?);
-        let mut timeline = bus
-            .subscribe_live::<TurnEvent>(LiveFeed::TurnTimeline(id))
-            .await?;
+        let mut timeline = timeline_stream(&client, &conversation.id).await?;
         for index in 0..=turns {
             let sample = tokio::time::timeout(
                 Duration::from_secs(timeout_secs),
-                measure(&mut conversation, &bus, &mut timeline, shape, index == 0),
+                measure(&mut conversation, &mut timeline, shape, index == 0),
             )
             .await
             .with_context(|| {
@@ -129,8 +150,7 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
 
 async fn measure(
     conversation: &mut Conversation,
-    bus: &Bus,
-    timeline: &mut swarmy_bus::LiveMessages<TurnEvent>,
+    timeline: &mut EventStream,
     shape: &str,
     warmup: bool,
 ) -> Result<Sample> {
@@ -151,11 +171,16 @@ async fn measure(
         loop {
             tokio::select! {
                 observation = timeline.next() => {
-                    let observation = observation.context("timeline feed closed")??;
+                    let event = observation.context("timeline feed closed")?;
+                    let api::EventPayload::StoreRecord { record } = event.payload else {
+                        continue;
+                    };
+                    let observation: TurnEvent =
+                        serde_json::from_value(record).context("timeline event decoding")?;
                     if observation.turn_id == turn_id { events.push(observation); }
                 }
                 stage = stages.recv() => {
-                    if let Some(stage) = stage { bus.record_turn(&Bus::turn_event(id, turn_id, stage, None)).await; }
+                    if let Some(stage) = stage { events.push(turn_event(id, turn_id, stage, None)); }
                 }
                 outcome = &mut done, if !idle => { outcome?; client_elapsed = start.elapsed(); idle = true; }
             }
@@ -325,7 +350,7 @@ mod tests {
             InputEnabled,
         ]
         .into_iter()
-        .map(|stage| swarmy_bus::Bus::turn_event(id, turn, stage, None))
+        .map(|stage| super::turn_event(id, turn, stage, None))
         .collect();
         assert!(complete(&events, true));
         for stage in [
@@ -375,7 +400,7 @@ mod clock_tests {
     fn cross_host_intervals_use_wall_time_and_reject_clock_reversal() {
         let id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let turn = MessageId::from_ulid(ulid::Ulid::generate());
-        let mut start = swarmy_bus::Bus::turn_event(id, turn, TurnStage::Submitted, None);
+        let mut start = super::turn_event(id, turn, TurnStage::Submitted, None);
         start.monotonic_ns = 100;
         start.unix_ns = 1_000;
         let mut end = start.clone();
