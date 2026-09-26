@@ -6,7 +6,7 @@
 #   make install-node  also install swarmyd (only useful on a machine with root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models        regenerate the provider and model catalog
-#   make check         the three CI commands: fmt, test, clippy
+#   make check         the CI commands: fmt, test, clippy, plus the remote-feature pass
 #   make uninstall     remove the installed swarmy binaries
 #
 # The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
@@ -74,10 +74,11 @@ check:
 	bash scripts/test-remote-upgrade.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) test --workspace --locked
-	# The workspace test leaves the opt-in `remote` feature off; build the
-	# provisioning client once and run its suites explicitly.
-	$(CARGO) test --locked -p swarmy-cli --features remote --test remote --test remote_feature
+	# The workspace test and clippy leave the opt-in `remote` feature off;
+	# build the provisioning client once and test and lint it with it on.
+	$(CARGO) test --locked -p swarmy-cli --features remote
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 
 uninstall:
 	@for bin in swarmy swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \

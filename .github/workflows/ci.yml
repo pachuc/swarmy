@@ -59,11 +59,14 @@ jobs:
       - name: Run the PTY suite serially
         run: cargo test --locked -p swarmy-api -- --test-threads=1
       # The default build leaves the opt-in `remote` feature off, so the
-      # workspace test above never compiles the provisioning client. Build it
-      # once here and run its suites explicitly.
+      # workspace test and clippy runs never compile the provisioning client.
+      # Build it once here and run its unit and integration tests and clippy
+      # with the feature on.
       - name: Test the provisioning client
-        run: cargo test --locked -p swarmy-cli --features remote --test remote --test remote_feature
+        run: cargo test --locked -p swarmy-cli --features remote
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Lint the provisioning client
+        run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
       - name: Run the reduced failure-injection test
         run: scripts/chaos-ci.sh
       - name: Stop development services

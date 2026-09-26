@@ -554,7 +554,7 @@ Install the user-owned tools and build the local binaries:
 ```bash
 scripts/install-dev-tools.sh
 rustup show
-SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked --features swarmy-cli/remote
 export PATH="$PWD/target/debug:$PATH"
 ```
 
@@ -923,7 +923,7 @@ To run the SSH acceptance test on the launcher, authorize a temporary SSH key fo
 `ubuntu@127.0.0.1`, then run:
 
 ```sh
-cargo build --workspace --locked
+cargo build --workspace --locked --features swarmy-cli/remote
 scripts/dev-stack.sh start
 SWARMY_REMOTE_TEST_KEY=/absolute/path/to/key scripts/test-remote.sh
 ```
