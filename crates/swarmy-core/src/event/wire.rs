@@ -135,9 +135,9 @@ enum BinaryEvent {
         effort_requested: Option<crate::ReasoningEffort>,
         #[serde(default)]
         effort_clamped: bool,
-        /// Auth entry that served the turn, appended as trailing fields so
-        /// readers from before routes still recognize the metered
-        /// discriminant and decode the prefix they understand.
+        /// Auth entry that served the turn, appended as trailing fields on
+        /// the completion row, which older readers reject: upgrade readers
+        /// before gateways (see `docs/providers.md`).
         #[serde(default, with = "crate::trailing")]
         entry: Option<String>,
         /// Named route that selected the entry, if any.
@@ -176,7 +176,8 @@ impl<'de> Deserialize<'de> for Event {
 }
 /// Encode a completion on the metered shape with its route attribution as
 /// trailing fields, so the discriminant never changes when attribution is
-/// added. Readers from before routes decode the prefix they understand;
+/// added. Older readers reject rows with trailing bytes, so upgrade readers
+/// (workers, API servers, CLI clients, chaos checkers) before gateways;
 /// current readers default missing trailing fields exactly like old rows.
 #[allow(clippy::too_many_arguments)]
 fn completion_to_binary(

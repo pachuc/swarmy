@@ -40,12 +40,14 @@ pub enum FailoverAction {
     AlreadyHandled,
 }
 
-/// The outcome of one atomic failover step with the resolved route name, so
-/// the worker can warn when an assigned route fell back to the implicit chain.
+/// The outcome of one atomic failover step with the resolved route name and
+/// the reasons for named steps skipped as missing or unready, so the worker
+/// can warn when an assigned route fell back to the implicit chain.
 #[derive(Clone, Debug)]
 pub struct FailoverOutcome {
     pub action: FailoverAction,
     pub route: Option<String>,
+    pub skipped: Vec<String>,
 }
 
 /// Reasons recorded when a failover moves past steps: the failure itself,
@@ -54,12 +56,7 @@ pub struct FailoverOutcome {
 /// step skips every open step after the failure; a forward move skips the
 /// open steps between the two.
 #[must_use]
-pub fn failover_reasons(
-    snapshot: &RouteSnapshot,
-    from: u32,
-    target: u32,
-    error: &str,
-) -> Vec<String> {
+fn failover_reasons(snapshot: &RouteSnapshot, from: u32, target: u32, error: &str) -> Vec<String> {
     let mut reasons = vec![error.to_owned()];
     reasons.extend(snapshot.skipped.iter().cloned());
     let end = if target > from {
@@ -648,40 +645,8 @@ impl Store {
         .await
     }
 
-    /// Move the session to another route step for the next attempt, recording
-    /// the failure as handled with the skipped steps' reasons in the session's
-    /// wait history. Marking the failure handled keeps a worker that restarts
-    /// or loses its lease after the advance from seeing the same failure
-    /// again and advancing a second step. The caller holds the step lease;
-    /// the lease check serializes concurrent moves, so the value may restart
-    /// at zero when the route shrank mid-turn.
-    /// # Errors
-    /// Rejects stale leases or storage failures.
-    pub async fn set_session_route_step(
-        &self,
-        id: SessionId,
-        lease: &Lease,
-        step: u32,
-        seq: u64,
-        reasons: &[String],
-        now: Timestamp,
-    ) -> Result<()> {
-        self.transaction(|trx| async move {
-            self.check_worker_lease(&trx, id, lease, now).await?;
-            let key = self.session_route_step_key(id);
-            let current: u32 = read(&trx, &key).await?.unwrap_or(0);
-            if step == current && reasons.is_empty() {
-                return Ok(());
-            }
-            self.write_route_step_in(&trx, id, step, seq, reasons, now)
-                .await
-        })
-        .await
-    }
-
     /// Persist one route step with the failure marked handled and the reasons
-    /// merged into the session's wait history. Shared by explicit step moves
-    /// and the atomic failover, so both record the same history.
+    /// merged into the session's wait history for the atomic failover.
     async fn write_route_step_in(
         &self,
         trx: &foundationdb::Transaction,
@@ -762,6 +727,7 @@ impl Store {
                 return Ok(FailoverOutcome {
                     action: FailoverAction::AlreadyHandled,
                     route: None,
+                    skipped: Vec::new(),
                 });
             }
             // Ephemeral sessions carry no agent record, so only named
@@ -806,6 +772,7 @@ impl Store {
                 return Ok(FailoverOutcome {
                     action: FailoverAction::Park,
                     route,
+                    skipped: snapshot.skipped.clone(),
                 });
             }
             if let Some(target) = snapshot.pick(route_step.saturating_add(1)) {
@@ -817,6 +784,7 @@ impl Store {
                     return Ok(FailoverOutcome {
                         action: FailoverAction::AdvanceTo(target),
                         route,
+                        skipped: snapshot.skipped.clone(),
                     });
                 }
                 // The failed step still reads as closed: the breaker write
@@ -842,45 +810,10 @@ impl Store {
             Ok(FailoverOutcome {
                 action: FailoverAction::Park,
                 route,
+                skipped: snapshot.skipped.clone(),
             })
         })
         .await
-    }
-
-    /// Park an exhausted route until the earliest retry among its steps and
-    /// restart the attempt chain, so the next wake probes from the first step.
-    /// # Errors
-    /// Rejects stale leases or returns storage failures.
-    pub async fn park_exhausted_route(
-        &self,
-        id: SessionId,
-        lease: &Lease,
-        failure: &InferenceFailureWait<'_>,
-        earliest: Timestamp,
-        now: Timestamp,
-        max_wait: std::time::Duration,
-    ) -> Result<bool> {
-        let parked = self
-            .park_inference(
-                id,
-                lease,
-                &InferenceFailureWait {
-                    seq: failure.seq,
-                    reason: failure.reason,
-                    wake_at: earliest,
-                },
-                now,
-                max_wait,
-            )
-            .await?;
-        if parked {
-            self.transaction(|trx| async move {
-                write(&trx, &self.session_route_step_key(id), &0_u32)?;
-                Ok(())
-            })
-            .await?;
-        }
-        Ok(parked)
     }
 
     /// Earliest retry across one snapshot's steps for an exhausted chain,

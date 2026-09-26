@@ -37,7 +37,6 @@ mod leases;
 mod routes;
 pub use routes::{
     ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
-    failover_reasons,
 };
 mod nodes;
 mod placed_tools;

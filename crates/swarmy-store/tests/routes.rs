@@ -482,6 +482,52 @@ async fn leased(f: &Fixture, id: SessionId) -> Lease {
         .unwrap()
 }
 
+/// Resolve one retryable failure against the pair route in a single
+/// transaction, so step tests read as one call per failure.
+#[allow(clippy::too_many_arguments)]
+async fn failover(
+    f: &Fixture,
+    lease: &Lease,
+    id: SessionId,
+    seq: u64,
+    error: &str,
+    retry_at: Timestamp,
+    step: u32,
+    now: Timestamp,
+) -> swarmy_store::FailoverOutcome {
+    f.store
+        .failover_route_step(
+            id,
+            lease,
+            seq,
+            error,
+            retry_at,
+            step,
+            Some("fallback"),
+            Some("openai"),
+            None,
+            "openai",
+            now,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap()
+}
+
+/// Trip both pair entries' breakers so the chain reads as exhausted.
+async fn trip_pair_breakers(f: &Fixture, open_until: Timestamp) {
+    for label in ["primary", "backup"] {
+        f.store
+            .entry_failure(
+                &CredentialKey::entry("openai", label),
+                open_until,
+                &format!("openai/{label}: quota reached"),
+            )
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn session_route_assignment_validates_and_round_trips() {
     let Some(f) = Fixture::new() else {
@@ -529,6 +575,7 @@ async fn session_route_assignment_validates_and_round_trips() {
 
 #[tokio::test]
 async fn session_step_moves_past_failures_and_parks_exhausted() {
+    use swarmy_store::FailoverAction;
     let Some(f) = Fixture::new() else {
         return;
     };
@@ -537,21 +584,23 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     }
     f.store.put_route("fallback", &route_pair()).await.unwrap();
     let id = routed_session(&f).await;
-    // Lease-checked step movement: advance past the failed step, then park
-    // the exhausted chain until the earliest retry with a reset position.
+    // The atomic failover advances past the failed step, then parks the
+    // exhausted chain until the earliest retry with a reset position.
     let lease = leased(&f, id).await;
     let now = Timestamp::now();
-    f.store
-        .set_session_route_step(
-            id,
-            &lease,
-            1,
-            7,
-            &["openai/primary: quota reached".into()],
-            now,
-        )
-        .await
-        .unwrap();
+    let retry_at = now.checked_add(Duration::from_secs(60)).unwrap();
+    let outcome = failover(
+        &f,
+        &lease,
+        id,
+        7,
+        "openai/primary: quota reached",
+        retry_at,
+        0,
+        now,
+    )
+    .await;
+    assert!(matches!(outcome.action, FailoverAction::AdvanceTo(1)));
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.route_step, 1);
     let wait = f.store.inference_wait(id).await.unwrap().unwrap();
@@ -565,24 +614,22 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
         "{:?}",
         wait.reasons
     );
-    let retry_at = now.checked_add(Duration::from_secs(60)).unwrap();
-    assert!(
-        f.store
-            .park_exhausted_route(
-                id,
-                &lease,
-                &swarmy_store::InferenceFailureWait {
-                    seq: 3,
-                    reason: "openai/backup: quota reached",
-                    wake_at: retry_at,
-                },
-                retry_at,
-                now,
-                Duration::from_secs(3600),
-            )
-            .await
-            .unwrap()
-    );
+    // With every step's breaker open the exhausted chain parks instead of
+    // wrapping back to the failed step.
+    let far = now.checked_add(Duration::from_secs(3600)).unwrap();
+    trip_pair_breakers(&f, far).await;
+    let outcome = failover(
+        &f,
+        &lease,
+        id,
+        8,
+        "openai/backup: quota reached",
+        retry_at,
+        1,
+        now,
+    )
+    .await;
+    assert!(matches!(outcome.action, FailoverAction::Park));
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.route_step, 0, "exhaustion restarts the chain");
     assert_eq!(record.state, swarmy_core::SessionState::Sleeping);
@@ -603,7 +650,20 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     };
     assert!(matches!(
         f.store
-            .set_session_route_step(id, &stale, 1, 7, &[], now)
+            .failover_route_step(
+                id,
+                &stale,
+                9,
+                "openai/primary: quota reached",
+                retry_at,
+                0,
+                Some("fallback"),
+                Some("openai"),
+                None,
+                "openai",
+                now,
+                Duration::from_secs(3600),
+            )
             .await,
         Err(StoreError::LeaseMismatch)
     ));

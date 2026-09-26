@@ -50,16 +50,27 @@ impl Worker {
     }
 }
 
-fn warn_on_route_fallback(session: &SessionRecord, resolved: Option<&str>) {
+fn warn_on_route_fallback(session: &SessionRecord, resolved: Option<&str>, skipped: &[String]) {
     // A deleted or renamed route falls back to the implicit chain; say so
-    // once per resolution so the operator can fix the assignment.
+    // once per resolution so the operator can fix the assignment. A route
+    // whose named steps are all unready falls back the same way, but the
+    // route itself exists, so name the skipped steps instead.
     let requested = session.route.as_deref();
     if requested.is_some() && resolved != requested {
-        tracing::warn!(
-            session_id = %session.session_id,
-            route = requested,
-            "assigned route is missing; using the implicit provider chain",
-        );
+        if skipped.is_empty() {
+            tracing::warn!(
+                session_id = %session.session_id,
+                route = requested,
+                "assigned route is missing; using the implicit provider chain",
+            );
+        } else {
+            tracing::warn!(
+                session_id = %session.session_id,
+                route = requested,
+                skipped = skipped.join("; "),
+                "assigned route has no usable step; using the implicit provider chain",
+            );
+        }
     }
 }
 
@@ -583,13 +594,13 @@ impl Worker {
         };
         match outcome.action {
             FailoverAction::AdvanceTo(step) => {
-                warn_on_route_fallback(session, outcome.route.as_deref());
+                warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = step;
                 self.kill("after_advance");
                 Ok(false)
             }
             FailoverAction::Park => {
-                warn_on_route_fallback(session, outcome.route.as_deref());
+                warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = 0;
                 *lease.lock().await = None;
                 Ok(true)
@@ -696,7 +707,7 @@ impl Worker {
                     request.system_prompt = prompt;
                 }
             }
-            warn_on_route_fallback(session, snapshot.name.as_deref());
+            warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
             let selection = session.inference.resolve(&defaults);
             return self
                 .finish_prepare(
@@ -717,7 +728,7 @@ impl Worker {
         // which step serves next.
         let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
             let snapshot = self.route_snapshot(session).await?;
-            warn_on_route_fallback(session, snapshot.name.as_deref());
+            warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
             snapshot
         } else {
             swarmy_store::RouteSnapshot {
