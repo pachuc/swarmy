@@ -39,6 +39,112 @@ use ulid::Ulid;
 
 const WAIT: Duration = Duration::from_secs(15);
 
+/// Short budget for steps that are purely client-side: screen redraws, key
+/// handling, process exit, and session creation without a model turn. These
+/// never wait on provider round trips or service restarts.
+const CLIENT_WAIT: Duration = WAIT;
+
+/// Numbers below mirror the chat fixture in `session/chat.rs`: the fake
+/// provider sleeps 600 ms per emitted delta, each provider call emits two
+/// deltas (part done plus completion), and a chat turn needs two calls (a
+/// tool call followed by the final answer). The worker lease is 600 ms and
+/// starting the scheduler, worker, and gateway processes takes up to ten
+/// seconds on a loaded runner. Budgets multiply the sum by a slack factor so
+/// a slow CI runner waits longer instead of failing.
+const CHAT_PROVIDER_LATENCY: Duration = Duration::from_millis(600);
+const CHAT_DELTAS_PER_CALL: u32 = 2;
+const CHAT_CALLS_PER_TURN: u32 = 2;
+const CHAT_WORKER_LEASE: Duration = Duration::from_millis(600);
+const CHAT_STARTUP_ALLOWANCE: Duration = Duration::from_secs(10);
+const CHAT_SLACK: u32 = 5;
+
+/// Budget for steps that wait on a model turn: reply screens, the idle state
+/// after a turn, and the test's own store polls for turn effects.
+fn turn_budget() -> Duration {
+    (CHAT_PROVIDER_LATENCY * CHAT_DELTAS_PER_CALL * CHAT_CALLS_PER_TURN
+        + CHAT_WORKER_LEASE
+        + CHAT_STARTUP_ALLOWANCE)
+        * CHAT_SLACK
+}
+
+/// Budget for steps that wait on a service start or restart plus the turn
+/// that follows it: fixture startup, scheduler readiness, and replies after
+/// killing and relaunching the worker or gateway.
+fn service_budget() -> Duration {
+    turn_budget() + CHAT_STARTUP_ALLOWANCE * CHAT_SLACK
+}
+
+/// Whether a store read failure is a transient database timeout that the
+/// test's polling loops should retry within the step's budget instead of
+/// panicking on. Error 1031 means the client took more than five seconds for
+/// one read; the `FoundationDB` retry predicates cover it and its siblings.
+fn is_retryable_store_error(error: &swarmy_store::StoreError) -> bool {
+    match error {
+        swarmy_store::StoreError::FoundationDb(error) => {
+            error.code() == 1031 || error.is_retryable()
+        }
+        swarmy_store::StoreError::Binding(error) => error
+            .get_fdb_error()
+            .is_some_and(|error| error.code() == 1031 || error.is_retryable()),
+        _ => false,
+    }
+}
+
+/// Poll `fetch_session` until it succeeds or `deadline` passes, retrying
+/// transient database timeouts. Panics at the deadline with the last error.
+async fn fetch_session_tolerant(
+    fixture: &Fixture,
+    id: SessionId,
+    deadline: Instant,
+) -> Option<swarmy_core::SessionRecord> {
+    loop {
+        match fixture.store.fetch_session(id).await {
+            Ok(session) => return session,
+            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("session fetch failed for {id}: {error}"),
+        }
+    }
+}
+
+/// Poll `read_events` until it succeeds or `deadline` passes, retrying
+/// transient database timeouts. Panics at the deadline with the last error.
+async fn read_events_tolerant(
+    fixture: &Fixture,
+    id: SessionId,
+    after: u64,
+    limit: usize,
+    deadline: Instant,
+) -> Vec<Event> {
+    loop {
+        match fixture.store.read_events(id, after, limit).await {
+            Ok(events) => return events,
+            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("event read failed for {id}: {error}"),
+        }
+    }
+}
+
+/// Poll `list_sessions` until it succeeds or `deadline` passes, retrying
+/// transient database timeouts. Panics at the deadline with the last error.
+async fn list_sessions_tolerant(
+    fixture: &Fixture,
+    deadline: Instant,
+) -> Vec<swarmy_core::SessionRecord> {
+    loop {
+        match fixture.store.list_sessions(None, 1).await {
+            Ok(sessions) => return sessions,
+            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("session list failed: {error}"),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Fixture {
     store: Store,
@@ -411,7 +517,7 @@ async fn nudges(fixture: &Fixture) -> async_nats::Subscriber {
 }
 
 async fn wait_for_scheduler(fixture: &Fixture) {
-    timeout(WAIT, async {
+    timeout(service_budget(), async {
         loop {
             if matches!(
                 fixture

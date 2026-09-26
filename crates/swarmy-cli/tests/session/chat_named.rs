@@ -214,24 +214,37 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
             parts: vec![Part::Text { text: "Goals: fix parser. State: tests pass. Open questions: release date. Facts: project path.".into() }],
         }).await.unwrap();
         fixture.bus.publish_live(LiveFeed::SessionEvents(old), &event).await.unwrap();
-        let screen = chat.screen(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send")).await;
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: Some(new),
+        };
+        let screen = chat.screen_diagnosed(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send"), turn_budget(), diagnostics).await;
         assert!(screen.contains("archived;"));
         // The client switches to the successor session after observing the
         // archived state. Typing before it has settled sends to the old
         // session, so wait for the successor to be idle and the screen ready.
-        idle(&fixture, new).await;
-        chat.ready().await;
+        idle(&fixture, None, new).await;
+        chat.ready_after_turn(Diagnostics { fixture: &fixture, services: None, session: Some(new) }).await;
         chat.type_text("Continue the work\r");
         // Input is queued while busy, so typing after ready lands even if a
-        // non-idle state record arrives first; the shared wait is enough.
-        timeout(WAIT, async {
+        // non-idle state record arrives first; the turn budget is enough.
+        // Reads retry database timeouts within the budget instead of panicking.
+        let budget = turn_budget();
+        let deadline = Instant::now() + budget;
+        let landed = timeout(budget, async {
             loop {
-                if fixture.store.read_events(new, 0, 64).await.unwrap().iter().any(|event| matches!(event,
+                if read_events_tolerant(&fixture, new, 0, 64, deadline).await.iter().any(|event| matches!(event,
                     Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
                 sleep(Duration::from_millis(25)).await;
             }
-        }).await.unwrap();
-        assert_eq!(fixture.store.fetch_session(old).await.unwrap().unwrap().state, SessionState::Completed);
+        }).await;
+        assert!(
+            landed.is_ok(),
+            "user message did not land within {budget:?}:\n{}",
+            Diagnostics { fixture: &fixture, services: None, session: Some(new) }.report().await
+        );
+        assert_eq!(fetch_session_tolerant(&fixture, old, Instant::now() + turn_budget()).await.unwrap().state, SessionState::Completed);
         let listing = fixture.output(&["session", "list", "--json"]).await;
         assert!(listing.status.success());
         let listing = String::from_utf8(listing.stdout).unwrap();

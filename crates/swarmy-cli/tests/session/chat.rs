@@ -1,6 +1,7 @@
 //! Exercise the actual terminal client with a PTY and a terminal emulator.
 use std::{
     collections::BTreeMap,
+    fmt::Write as FmtWrite,
     io::{Read, Write},
     path::PathBuf,
 };
@@ -130,7 +131,7 @@ impl Terminal {
     }
 
     async fn screen(&mut self, predicate: impl Fn(&str) -> bool) -> String {
-        timeout(WAIT, async {
+        timeout(CLIENT_WAIT, async {
             loop {
                 let screen = self.parser.screen().contents();
                 if predicate(&screen) {
@@ -149,12 +150,72 @@ impl Terminal {
         .unwrap_or_else(|_| panic!("terminal timed out:\n{}", self.parser.screen().contents()))
     }
 
+    /// Wait for a screen predicate with an explicit budget, printing the
+    /// screen, the last twenty lines of each service log, and the session's
+    /// event log when the budget expires. Use this for waits that depend on
+    /// a model turn or a service restart; purely client-side waits use
+    /// [`Terminal::screen`] with the short client budget.
+    async fn screen_diagnosed(
+        &mut self,
+        predicate: impl Fn(&str) -> bool,
+        budget: Duration,
+        diagnostics: Diagnostics<'_>,
+    ) -> String {
+        let result = timeout(budget, async {
+            loop {
+                let screen = self.parser.screen().contents();
+                if predicate(&screen) {
+                    return screen;
+                }
+                let bytes = self.receiver.recv().await.unwrap_or_else(|| {
+                    panic!(
+                        "terminal closed unexpectedly:\n{}",
+                        self.parser.screen().contents()
+                    )
+                });
+                self.process(&bytes);
+            }
+        })
+        .await;
+        if let Ok(screen) = result {
+            screen
+        } else {
+            let report = diagnostics.report().await;
+            panic!(
+                "terminal timed out after {budget:?}:\n{}\n{report}",
+                self.parser.screen().contents()
+            );
+        }
+    }
+
     async fn ready(&mut self) -> String {
         self.screen(|screen| screen.contains("Enter: send")).await
     }
 
+    /// Wait for the client to report idle input with a model-turn budget and
+    /// timeout diagnostics, for use after sending a message.
+    async fn ready_after_turn(&mut self, diagnostics: Diagnostics<'_>) -> String {
+        self.screen_diagnosed(
+            |screen| screen.contains("Enter: send"),
+            turn_budget(),
+            diagnostics,
+        )
+        .await
+    }
+
+    /// Wait for the client to report idle input with a service-restart budget
+    /// and timeout diagnostics, for use after relaunching a service.
+    async fn ready_after_restart(&mut self, diagnostics: Diagnostics<'_>) -> String {
+        self.screen_diagnosed(
+            |screen| screen.contains("Enter: send"),
+            service_budget(),
+            diagnostics,
+        )
+        .await
+    }
+
     async fn exit(&mut self, success: bool) {
-        timeout(WAIT, async {
+        timeout(CLIENT_WAIT, async {
             loop {
                 if let Some(status) = self.child.try_wait().unwrap() {
                     // Drain the remaining PTY output first: the client prints
@@ -200,6 +261,66 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Context for diagnosing a timed-out wait: the last twenty lines of each
+/// service log plus the session's event log, so a slow-runner timeout can be
+/// diagnosed without a rerun. Services are absent for tests that drive an
+/// in-process fake worker; the session is absent before the first session
+/// exists.
+#[derive(Clone, Copy)]
+struct Diagnostics<'a> {
+    fixture: &'a Fixture,
+    services: Option<&'a Services>,
+    session: Option<SessionId>,
+}
+
+impl Diagnostics<'_> {
+    async fn report(&self) -> String {
+        let mut report = String::new();
+        if let Some(services) = self.services {
+            report.push_str(&services.log_tails());
+        }
+        report.push_str(&session_events(self.fixture, self.session).await);
+        report
+    }
+}
+
+/// Best-effort summary of the session's event log for timeout diagnostics.
+/// Never panics: a slow database yields an error line instead of events.
+async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String {
+    let Some(id) = session else {
+        return "session events: (no session yet)\n".into();
+    };
+    let events = timeout(
+        Duration::from_secs(10),
+        fixture.store.read_events(id, 0, 128),
+    )
+    .await;
+    match events {
+        Ok(Ok(events)) => {
+            let mut summary = format!("session events for {id} ({} events):\n", events.len());
+            for event in events {
+                let _ = writeln!(summary, "  seq {} {}", event.seq(), event_name(&event));
+            }
+            summary
+        }
+        Ok(Err(error)) => format!("session events for {id}: read failed: {error}\n"),
+        Err(_) => format!("session events for {id}: read timed out\n"),
+    }
+}
+
+/// Short variant name for an event, enough to tell where a turn stalled.
+fn event_name(event: &Event) -> &'static str {
+    match event {
+        Event::MessageAppended { .. } => "message_appended",
+        Event::ToolCallRequested { .. } => "tool_call_requested",
+        Event::ToolCallCompleted { .. } => "tool_call_completed",
+        Event::InferenceRequested { .. } => "inference_requested",
+        Event::InferenceCompleted { .. } => "inference_completed",
+        Event::StateChanged { .. } => "state_changed",
+        _ => "other",
     }
 }
 
@@ -273,31 +394,75 @@ impl Services {
             .kill_on_drop(true);
         self.children.push(command.spawn().unwrap());
     }
+
+    /// Last twenty lines of each service log for timeout diagnostics.
+    fn log_tails(&self) -> String {
+        let mut tails = String::new();
+        for name in ["scheduler", "worker", "gateway"] {
+            let _ = writeln!(tails, "--- {name}.log (last 20 lines) ---");
+            match std::fs::read_to_string(self.files.path().join(format!("{name}.log"))) {
+                Ok(contents) => {
+                    let lines: Vec<&str> = contents.lines().collect();
+                    let start = lines.len().saturating_sub(20);
+                    if lines.is_empty() {
+                        tails.push_str("(empty)\n");
+                    }
+                    for line in &lines[start..] {
+                        tails.push_str(line);
+                        tails.push('\n');
+                    }
+                }
+                Err(error) => {
+                    let _ = writeln!(tails, "(unreadable: {error})");
+                }
+            }
+        }
+        tails
+    }
 }
 
 async fn session_id(fixture: &Fixture) -> SessionId {
-    fixture.store.list_sessions(None, 1).await.unwrap()[0].session_id
+    let deadline = Instant::now() + turn_budget();
+    loop {
+        let sessions = list_sessions_tolerant(fixture, deadline).await;
+        if let Some(session) = sessions.first() {
+            return session.session_id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no session appeared within {budget:?}",
+            budget = turn_budget()
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
 }
 
-async fn idle(fixture: &Fixture, id: SessionId) {
-    timeout(WAIT, async {
+async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId) {
+    let budget = turn_budget();
+    let result = timeout(budget, async {
+        let deadline = Instant::now() + budget;
         loop {
-            if fixture
-                .store
-                .fetch_session(id)
+            let state = fetch_session_tolerant(fixture, id, deadline)
                 .await
-                .unwrap()
-                .unwrap()
-                .state
-                == SessionState::Idle
-            {
+                .map(|session| session.state);
+            if state == Some(SessionState::Idle) {
                 break;
             }
             sleep(Duration::from_millis(30)).await;
         }
     })
-    .await
-    .expect("session did not finish while client was closed");
+    .await;
+    if result.is_err() {
+        let diagnostics = Diagnostics {
+            fixture,
+            services,
+            session: Some(id),
+        };
+        panic!(
+            "session {id} did not finish within {budget:?} while client was closed:\n{}",
+            diagnostics.report().await
+        );
+    }
 }
 
 async fn assert_user_order(fixture: &Fixture, id: SessionId) {
@@ -336,6 +501,84 @@ async fn assert_user_order(fixture: &Fixture, id: SessionId) {
     );
 }
 
+/// Shorthand for timeout diagnostics on a live-services turn.
+fn diag<'a>(
+    fixture: &'a Fixture,
+    services: &'a Services,
+    session: Option<SessionId>,
+) -> Diagnostics<'a> {
+    Diagnostics {
+        fixture,
+        services: Some(services),
+        session,
+    }
+}
+
+/// Wait for the reply count to reach `count` and for input to unlock, with a
+/// model-turn budget and timeout diagnostics.
+async fn await_reply_count(
+    terminal: &mut Terminal,
+    fixture: &Fixture,
+    services: &Services,
+    id: SessionId,
+    count: usize,
+) {
+    terminal
+        .screen_diagnosed(
+            |screen| {
+                screen
+                    .matches("Agent: Scripted conversation reply.")
+                    .count()
+                    == count
+            },
+            turn_budget(),
+            diag(fixture, services, Some(id)),
+        )
+        .await;
+    terminal
+        .ready_after_turn(diag(fixture, services, Some(id)))
+        .await;
+}
+
+/// Drive one recovery round: get a reply, kill `name`, relaunch it, and wait
+/// for input to unlock with a restart budget.
+async fn recover_service(
+    terminal: &mut Terminal,
+    fixture: &Fixture,
+    services: &mut Services,
+    id: SessionId,
+    index: usize,
+    name: &str,
+    count: usize,
+) {
+    terminal.type_text(&format!("Recover after {name} exits.\r"));
+    terminal
+        .screen_diagnosed(
+            |screen| {
+                screen
+                    .matches("Agent: Scripted conversation reply.")
+                    .count()
+                    == count
+            },
+            turn_budget(),
+            diag(fixture, services, Some(id)),
+        )
+        .await;
+    services.children[index].kill().await.unwrap();
+    assert!(terminal.child.try_wait().unwrap().is_none());
+    services.launch(fixture, name);
+    let screen = terminal
+        .ready_after_restart(diag(fixture, services, Some(id)))
+        .await;
+    assert_eq!(
+        screen
+            .matches("Agent: Scripted conversation reply.")
+            .count(),
+        count
+    );
+    assert!(screen.contains("Idle | fake"));
+}
+
 #[tokio::test]
 async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
     run(|fixture| async move {
@@ -344,43 +587,38 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         let id = session_id(&fixture).await;
         terminal.type_text("What time is it?\r");
         terminal
-            .screen(|screen| screen.contains("Tool: get_time") && screen.contains("Result:"))
+            .screen_diagnosed(
+                |screen| screen.contains("Tool: get_time") && screen.contains("Result:"),
+                turn_budget(),
+                diag(&fixture, &services, Some(id)),
+            )
             .await;
         // Wait for the reply only. The "input locked" status is transient and
         // the client may render the reply and the idle state in one frame, so
         // requiring both together raced on slow runners (as with the wait
         // below, which was relaxed for the same reason).
         let screen = terminal
-            .screen(|screen| screen.contains("Agent: Scripted conversation reply."))
+            .screen_diagnosed(
+                |screen| screen.contains("Agent: Scripted conversation reply."),
+                turn_budget(),
+                diag(&fixture, &services, Some(id)),
+            )
             .await;
         assert!(screen.find("Result:").unwrap() < screen.find("Agent:").unwrap());
-        terminal.ready().await;
-        terminal.type_text("Remember the first turn?\r");
         terminal
-            .screen(|screen| {
-                screen
-                    .matches("Agent: Scripted conversation reply.")
-                    .count()
-                    == 2
-            })
+            .ready_after_turn(diag(&fixture, &services, Some(id)))
             .await;
-        terminal.ready().await;
+        terminal.type_text("Remember the first turn?\r");
+        await_reply_count(&mut terminal, &fixture, &services, id, 2).await;
         assert_user_order(&fixture, id).await;
         // Wait for the reply only. The "input locked" status is transient and
         // the client may render the reply and the idle state in one frame, so
         // requiring both together raced on slow runners.
         terminal.type_text("Finish while I am gone.\r");
-        terminal
-            .screen(|screen| {
-                screen
-                    .matches("Agent: Scripted conversation reply.")
-                    .count()
-                    == 3
-            })
-            .await;
+        await_reply_count(&mut terminal, &fixture, &services, id, 3).await;
         terminal.type_text("\x1b");
         terminal.exit(true).await;
-        idle(&fixture, id).await;
+        idle(&fixture, Some(&services), id).await;
         let mut terminal = Terminal::open(&fixture, Some(id));
         let screen = terminal.ready().await;
         assert_eq!(
@@ -391,26 +629,16 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         );
         assert!(screen.contains("Tool: get_time") && screen.contains("Result:"));
         for (index, name, count) in [(1, "worker", 4), (2, "gateway", 5)] {
-            terminal.type_text(&format!("Recover after {name} exits.\r"));
-            terminal
-                .screen(|screen| {
-                    screen
-                        .matches("Agent: Scripted conversation reply.")
-                        .count()
-                        == count
-                })
-                .await;
-            services.children[index].kill().await.unwrap();
-            assert!(terminal.child.try_wait().unwrap().is_none());
-            services.launch(&fixture, name);
-            let screen = terminal.ready().await;
-            assert_eq!(
-                screen
-                    .matches("Agent: Scripted conversation reply.")
-                    .count(),
-                count
-            );
-            assert!(screen.contains("Idle | fake"));
+            recover_service(
+                &mut terminal,
+                &fixture,
+                &mut services,
+                id,
+                index,
+                name,
+                count,
+            )
+            .await;
         }
         terminal.type_text("\x03");
         terminal.exit(true).await;
@@ -464,13 +692,105 @@ async fn chat_enables_input_from_idle_events_and_recovers_missed_events() {
     }
 }
 
+/// Publish one incremental text delta and wait for the preview line.
+async fn stream_preview_text(
+    terminal: &mut Terminal,
+    fixture: &Fixture,
+    id: SessionId,
+    text: &str,
+    expected: &str,
+) {
+    fixture
+        .bus
+        .publish_live(
+            LiveFeed::ModelDeltas(id),
+            &Delta::Text {
+                output_index: 0,
+                text: text.into(),
+            },
+        )
+        .await
+        .unwrap();
+    fixture
+        .publish_token(id, text, if text == "scripted " { 0 } else { 9 })
+        .await;
+    let screen = terminal.screen(|screen| screen.contains(expected)).await;
+    assert!(screen.contains("input locked"));
+}
+
+/// Append a pending tool call and wait for the running indicator.
+async fn request_tool_preview(
+    terminal: &mut Terminal,
+    fixture: &Fixture,
+    id: SessionId,
+    request_id: RequestId,
+    call_id: &ToolCallId,
+) {
+    fixture
+        .store
+        .append_events(
+            id,
+            1,
+            &[Event::ToolCallRequested {
+                seq: 0,
+                request_id,
+                call: ToolCallRecord {
+                    call_id: call_id.clone(),
+                    tool: "get_time".into(),
+                    arguments: serde_json::json!({}),
+                    result: None,
+                },
+            }],
+        )
+        .await
+        .unwrap();
+    terminal
+        .screen(|screen| screen.contains("Tool: get_time [clock] {} (running)"))
+        .await;
+}
+
+/// Complete the preview tool call and wait for the result line.
+async fn complete_tool_preview(
+    terminal: &mut Terminal,
+    fixture: &Fixture,
+    id: SessionId,
+    request_id: RequestId,
+    call_id: ToolCallId,
+) {
+    fixture
+        .store
+        .append_events(
+            id,
+            2,
+            &[Event::ToolCallCompleted {
+                seq: 0,
+                request_id,
+                call_id,
+                result: ToolResult::Completed {
+                    output: "noon".into(),
+                    title: "time".into(),
+                    metadata: BTreeMap::default(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+    let screen = terminal
+        .screen(|screen| screen.contains("Result: noon"))
+        .await;
+    assert!(!screen.contains("Agent:"));
+}
+
 #[tokio::test]
 async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
     run(|fixture| async move {
         let (service, mut receiver) = serve_until_claim(&fixture).await;
         let mut terminal = Terminal::new_session(&fixture).await;
         terminal.type_text("hello\r");
-        let id = timeout(WAIT, receiver.recv()).await.unwrap().unwrap();
+        let id = timeout(CLIENT_WAIT, receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
         let lease = fixture
             .store
             .claim_lease(
@@ -484,69 +804,13 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
             .unwrap();
         let request_id = RequestId::for_step(id, lease.seq);
         let call_id = ToolCallId("clock".into());
-        fixture
-            .store
-            .append_events(
-                id,
-                1,
-                &[Event::ToolCallRequested {
-                    seq: 0,
-                    request_id,
-                    call: ToolCallRecord {
-                        call_id: call_id.clone(),
-                        tool: "get_time".into(),
-                        arguments: serde_json::json!({}),
-                        result: None,
-                    },
-                }],
-            )
-            .await
-            .unwrap();
-        terminal
-            .screen(|screen| screen.contains("Tool: get_time [clock] {} (running)"))
-            .await;
-        fixture
-            .store
-            .append_events(
-                id,
-                2,
-                &[Event::ToolCallCompleted {
-                    seq: 0,
-                    request_id,
-                    call_id,
-                    result: ToolResult::Completed {
-                        output: "noon".into(),
-                        title: "time".into(),
-                        metadata: BTreeMap::default(),
-                    },
-                }],
-            )
-            .await
-            .unwrap();
-        let screen = terminal
-            .screen(|screen| screen.contains("Result: noon"))
-            .await;
-        assert!(!screen.contains("Agent:"));
+        request_tool_preview(&mut terminal, &fixture, id, request_id, &call_id).await;
+        complete_tool_preview(&mut terminal, &fixture, id, request_id, call_id).await;
         for (text, expected) in [
             ("scripted ", "Agent: scripted"),
             ("answer", "Agent: scripted answer"),
         ] {
-            fixture
-                .bus
-                .publish_live(
-                    LiveFeed::ModelDeltas(id),
-                    &Delta::Text {
-                        output_index: 0,
-                        text: text.into(),
-                    },
-                )
-                .await
-                .unwrap();
-            fixture
-                .publish_token(id, text, if text == "scripted " { 0 } else { 9 })
-                .await;
-            let screen = terminal.screen(|screen| screen.contains(expected)).await;
-            assert!(screen.contains("input locked"));
+            stream_preview_text(&mut terminal, &fixture, id, text, expected).await;
         }
         fixture
             .store
