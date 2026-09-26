@@ -1,4 +1,5 @@
-use swarmy_gateway::{config, cost::cost_micros, providers::Providers};
+use swarmy_gateway::{config, providers::Providers};
+use swarmy_llm::cost::cost_micros;
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -194,6 +195,10 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
+    store
+        .require_no_legacy_credentials()
+        .await
+        .context("retired single-record credential rows remain; migrate entries before starting")?;
     let providers = Providers::discover(store.clone(), &config.settings).await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let mut messages = futures::stream::SelectAll::new();

@@ -30,7 +30,7 @@ use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
 };
-use swarmy_store::{MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition};
+use swarmy_store::{MAX_SCAN_LIMIT, PutImageOptions, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
@@ -134,7 +134,7 @@ impl Fixture {
             )
             .await?;
         self.store
-            .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest)
+            .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest, &PutImageOptions::default())
             .await?;
         self.image = Some(manifest);
         Ok(())
@@ -158,7 +158,7 @@ impl Fixture {
                 )
                 .await?;
             self.store
-                .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest)
+                .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest, &PutImageOptions::default())
                 .await?;
         }
         std::fs::create_dir_all(self.files.path().join(".swarmy"))?;
@@ -447,7 +447,7 @@ impl Fixture {
         let context = async_nats::jetstream::new(
             async_nats::connect(swarmy_config::Settings::load()?.settings.nats_url).await?,
         );
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{stream}", self.prefix))
                 .await?;

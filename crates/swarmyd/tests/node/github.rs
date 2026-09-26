@@ -111,7 +111,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         .await
         .unwrap();
     store
-        .put_image("credentials", &ImageTag("test".into()), base)
+        .put_image("credentials", &ImageTag("test".into()), base, &PutImageOptions::default())
         .await
         .unwrap();
     let first = format!("test_first_{}", ulid::Ulid::generate());

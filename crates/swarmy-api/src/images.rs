@@ -175,13 +175,15 @@ pub async fn upload(
         .await
         .map_err(storage)?;
     store
-        .put_image_with_requirements(
+        .put_image(
             &validated.name,
             &ImageTag(validated.tag.clone()),
             manifest_id,
-            &validated.scratch,
-            validated.memory_mib,
-            validated.display,
+            &swarmy_store::PutImageOptions {
+                scratch: validated.scratch.clone(),
+                memory_mib: validated.memory_mib,
+                display: validated.display,
+            },
         )
         .await
         .map_err(storage)?;

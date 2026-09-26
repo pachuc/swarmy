@@ -5,6 +5,7 @@ mod scheduler;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, SubjectToken};
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::ObjectBlobStore};
@@ -43,6 +44,10 @@ async fn main() -> anyhow::Result<()> {
     let objects = blobs.object_store();
     let _network = swarmy_store::boot();
     let store = Store::open(Some(&cluster), Some(&directory), blobs).await?;
+    store
+        .require_no_legacy_credentials()
+        .await
+        .context("retired single-record credential rows remain; migrate entries before starting")?;
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;

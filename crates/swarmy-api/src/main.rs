@@ -28,6 +28,10 @@ async fn run() -> Result<()> {
     let blobs = Arc::new(ObjectBlobStore::from_env()?);
     let objects = blobs.object_store();
     let store = Store::open(Some(&settings.fdb_cluster_file), Some(&directory), blobs).await?;
+    store
+        .require_no_legacy_credentials()
+        .await
+        .context("retired single-record credential rows remain; migrate entries before starting")?;
     let bus = Bus::connect(
         &settings.nats_url,
         Config {

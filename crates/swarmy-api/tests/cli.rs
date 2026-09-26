@@ -6,7 +6,7 @@ use std::{
 use swarmy_api::{AppState, router};
 use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{PutImageOptions, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -38,7 +38,7 @@ async fn fixture() -> Option<(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();

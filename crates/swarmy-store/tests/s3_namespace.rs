@@ -7,7 +7,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, path::Path};
 use swarmy_config::{GarbageCollection, Settings};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestId};
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{PutImageOptions, Store, blob::ObjectBlobStore};
 use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, gc::collect};
 
 const OBJECTS: usize = 1005;
@@ -34,7 +34,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     let id = ManifestId::from_ulid(ulid::Ulid::generate());
     store.put_manifest(id, manifest.header()).await.unwrap();
     store
-        .put_image("s3-test", &ImageTag("live".into()), id)
+        .put_image("s3-test", &ImageTag("live".into()), id, &PutImageOptions::default())
         .await
         .unwrap();
 

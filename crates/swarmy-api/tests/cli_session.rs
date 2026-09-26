@@ -36,7 +36,7 @@ use swarmy_core::{
     SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -209,7 +209,7 @@ impl Fixture {
         .unwrap();
         let admin = async_nats::connect(&self.url).await.unwrap();
         let context = async_nats::jetstream::new(admin);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             if let Err(error) = context
                 .delete_stream(format!("{}_{stream}", self.prefix))
                 .await

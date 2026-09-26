@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use swarmy_core::{ImageTag, LeaseOwnerId, ManifestId, VolumeId};
-use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
+use swarmy_store::{PutImageOptions, Store, StoreError, blob::MemoryBlobStore};
 
 #[test]
 fn vol_help_lists_subcommands_and_attach_requires_root() {
@@ -101,7 +101,7 @@ impl Fixture {
         let id = ManifestId::from_ulid(ulid::Ulid::generate());
         self.store.put_manifest(id, &image.header).await.unwrap();
         self.store
-            .put_image("test", &ImageTag("base".into()), id)
+            .put_image("test", &ImageTag("base".into()), id, &PutImageOptions::default())
             .await
             .unwrap();
     }

@@ -1646,10 +1646,6 @@ impl Store {
         }
         let mut turns = Vec::new();
         for summary in summaries {
-            // A legacy turn served above shares the summary keyspace; prefer
-            // the already-assembled record when both exist (the migration has
-            // not been written yet, so the summary key still holds V1 bytes
-            // only for turns in `legacy_turns`).
             turns.push(
                 self.assemble_from_summary(summary, inference_limit, tools_limit)
                     .await?,

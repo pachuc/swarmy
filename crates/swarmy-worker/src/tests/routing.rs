@@ -120,7 +120,7 @@ impl Fixture {
             .await
             .unwrap();
         store
-            .put_image("routing", &ImageTag("test".into()), manifest)
+            .put_image("routing", &ImageTag("test".into()), manifest, &PutImageOptions::default())
             .await
             .unwrap();
         let worker = Worker::new(store.clone(), bus.clone(), blobs, config);

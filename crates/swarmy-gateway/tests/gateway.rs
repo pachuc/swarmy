@@ -414,7 +414,7 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{name}", self.prefix))
                 .await

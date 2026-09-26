@@ -15,6 +15,10 @@ struct StoredPlacedClaim {
     job_digest: [u8; 32],
 }
 
+fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&swarmy_core::encode(job)?).as_bytes())
+}
+
 impl Store {
     fn volume_placement_key(&self, id: VolumeId) -> Vec<u8> {
         self.root
@@ -139,7 +143,7 @@ impl Store {
                     owner: claim.owner,
                     placement: claim.placement.clone(),
                     expires_at: claim.expires_at,
-                    job_digest: crate::tools::job_digest(&claim.job)?,
+                    job_digest: job_digest(&claim.job)?,
                 },
             )?;
             Ok(true)
@@ -160,7 +164,7 @@ impl Store {
         )?;
         let current = current.ok_or(StoreError::LeaseMismatch)?;
         if current.owner != claim.owner
-            || current.job_digest != crate::tools::job_digest(&claim.job)?
+            || current.job_digest != job_digest(&claim.job)?
             || current.placement != claim.placement
             || current.expires_at <= Timestamp::now()
         {

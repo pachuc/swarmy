@@ -100,7 +100,7 @@ async fn assert_named_session_pin(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), replacement)
+        .put_image("fixture", &ImageTag("test".into()), replacement, &PutImageOptions::default())
         .await
         .unwrap();
     let session = store

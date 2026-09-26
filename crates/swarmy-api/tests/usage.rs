@@ -8,7 +8,7 @@ use swarmy_core::{
     AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
     SessionId,
 };
-use swarmy_store::{MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore};
+use swarmy_store::{MeteringDimension, PutImageOptions, Store, UsageGroupBy, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -179,7 +179,7 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
         .await
         .unwrap();
     let first = SessionId::from_ulid(Ulid::generate());

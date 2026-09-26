@@ -9,7 +9,7 @@ use swarmy_core::{
     AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
     SandboxSpec, VolumeId,
 };
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{PutImageOptions, Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -359,11 +359,14 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
         .await
         .unwrap();
     store
-        .put_image_with_scratch(
+        .put_image(
             "scratch",
             &ImageTag("test".into()),
             base,
-            &["/home/agent/.cargo-target".into(), "/tmp".into()],
+            &swarmy_store::PutImageOptions {
+                scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

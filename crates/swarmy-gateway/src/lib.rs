@@ -1,6 +1,5 @@
 //! Provider discovery shared by the gateway and local diagnostics.
 pub mod config;
-pub mod cost;
 pub mod credentials;
 pub mod providers;
 

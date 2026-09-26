@@ -288,17 +288,6 @@ pub struct ToolJob {
     pub arguments: SandboxArguments,
 }
 
-/// A fresh owner and private volume per attempt prevent stale disk writes from
-/// becoming visible after a tool lease expires.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolClaim {
-    pub job: ToolJob,
-    pub owner: LeaseOwnerId,
-    pub node_id: NodeId,
-    pub expires_at: jiff::Timestamp,
-    pub attempt_volume: VolumeId,
-}
-
 /// A call on an agent's persistent computer, fenced by its placement epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacedToolClaim {
@@ -315,16 +304,6 @@ pub struct SandboxRecord {
     pub volume_id: VolumeId,
     pub manifest_id: ManifestId,
     pub active_call: Option<RequestId>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct PlaceRequest {
-    pub session_id: SessionId,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum PlaceReply {
-    Placed(SandboxRecord),
-    Failed(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

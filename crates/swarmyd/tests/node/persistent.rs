@@ -100,8 +100,18 @@ async fn dispatch_arguments(
         )
         .await
         .unwrap();
+    let placement = store
+        .place(
+            agent,
+            node,
+            jiff::Timestamp::now()
+                .checked_add(Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     store
-        .dispatch_tool_jobs(id, &lease, std::slice::from_ref(&job))
+        .dispatch_placed_tool_jobs(id, &lease, std::slice::from_ref(&job), &placement)
         .await
         .unwrap();
     bus.publish_work(&WorkQueue::NodeTools(node), &job)
@@ -206,7 +216,7 @@ pub(super) async fn start(
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();
     store
-        .put_image("persistent", &ImageTag("test".into()), base)
+        .put_image("persistent", &ImageTag("test".into()), base, &PutImageOptions::default())
         .await
         .unwrap();
     (node, bus)

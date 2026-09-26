@@ -565,7 +565,7 @@ impl Fixture {
         .unwrap();
         let client = async_nats::connect(&self.nats_url).await.unwrap();
         let context = async_nats::jetstream::new(client);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{stream}", self.prefix))
                 .await

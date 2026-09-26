@@ -33,12 +33,11 @@ pub fn same_major(left: &str, right: &str) -> bool {
     }
 }
 
-/// A log namespace. The tagged representation reserves channels without changing session cursors.
+/// A log namespace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum LogId {
     Session(String),
-    Channel(String),
     /// Ephemeral turn timeline observations. Live-only: cursors are ignored
     /// and events are numbered per connection, so reconnects replay nothing.
     Timeline(String),
@@ -1234,7 +1233,6 @@ mod tests {
     #[test]
     fn resource_json_contract() {
         check!(LogId, {"kind":"session","id":"s"});
-        check!(LogId, {"kind":"channel","id":"c"});
         check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
         check!(Subscription, {"cursors":[],"token_deltas":false});

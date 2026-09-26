@@ -4,8 +4,8 @@
 //! runtime using `FoundationDB` has stopped. The default directory is `swarmy`.
 //! Event, snapshot, and request payloads above 80 KiB are uploaded before transactions start;
 //! failed transactions can leave unreferenced, content-addressed blobs for later GC.
-//! Session headers retain only the snapshot sequence so lease transactions never
-//! fetch blobs. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
+//! Session headers retain only small scalar fields; larger session metadata
+//! lives in side rows. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 mod agents;
 pub use agents::AgentCreationReplay;
@@ -51,6 +51,7 @@ mod tools;
 mod turns;
 pub use turns::SubmitRouteStep;
 mod volumes;
+pub use volumes::PutImageOptions;
 
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};

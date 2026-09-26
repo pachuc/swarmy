@@ -51,7 +51,6 @@ pub struct StreamQuery {
 fn key(log: &LogId) -> String {
     match log {
         LogId::Session(id) => format!("session:{id}"),
-        LogId::Channel(id) => format!("channel:{id}"),
         LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }

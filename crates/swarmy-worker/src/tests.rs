@@ -24,7 +24,7 @@ use swarmy_core::{
 };
 use swarmy_harness::{Harness, Tool, ToolRegistry, execution_result};
 use swarmy_llm::GenerationSettings;
-use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmy_store::{PutImageOptions, Store, blob::MemoryBlobStore};
 use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 
@@ -261,7 +261,7 @@ async fn cleanup(cluster: &str, url: &str, prefix: &str) {
     .await
     .unwrap();
     let context = async_nats::jetstream::new(async_nats::connect(url).await.unwrap());
-    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
         context
             .delete_stream(format!("{prefix}_{stream}"))
             .await

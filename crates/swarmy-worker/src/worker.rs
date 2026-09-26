@@ -1888,7 +1888,6 @@ impl Worker {
             self.publish_events(session.session_id, &[archived_event])
                 .await?;
             // The successor shares the old session's runnable partition; wake
-            // The successor shares the old session's runnable partition; wake
             // it so a mid-task rollover continues without waiting for input.
             // A chat-shaped successor replays to end-of-turn and idles again.
             self.wake_successor(session.session_id, successor).await;

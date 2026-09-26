@@ -12,7 +12,7 @@ use swarmy_core::{
     AgentId, AgentSettings, CredentialKind, CredentialRecord, CredentialScope, InferenceSelection,
     Lease, LeaseOwnerId, RouteStep, SessionId,
 };
-use swarmy_store::{CredentialKey, Store, StoreError, blob::MemoryBlobStore};
+use swarmy_store::{CredentialKey, PutImageOptions, Store, StoreError, blob::MemoryBlobStore};
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
@@ -449,7 +449,7 @@ async fn routed_session(f: &Fixture) -> SessionId {
         .await
         .unwrap();
     f.store
-        .put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest)
+        .put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest, &PutImageOptions::default())
         .await
         .unwrap();
     let id = SessionId::from_ulid(ulid::Ulid::generate());

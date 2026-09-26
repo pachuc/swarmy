@@ -199,7 +199,7 @@ impl Fixture {
         let context = async_nats::jetstream::new(self.admin.clone());
         let prefixes: HashSet<_> = self.prefixes.lock().unwrap().drain(..).collect();
         for prefix in prefixes {
-            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
                 if let Err(error) = context.delete_stream(format!("{prefix}_{stream}")).await {
                     assert!(
                         matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref e) if e.code() == 404),

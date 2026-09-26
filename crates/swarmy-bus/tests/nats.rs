@@ -21,8 +21,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn names(&self) -> [String; 4] {
-        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"]
+    fn names(&self) -> [String; 3] {
+        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"]
             .map(|name| format!("{}_{name}", self.prefix))
     }
 }
@@ -50,7 +50,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         prefix,
     };
     let result = AssertUnwindSafe(async {
-        fixture.bus.setup(&[WorkQueue::RemoteTools]).await.unwrap();
+        fixture.bus.setup(&[WorkQueue::Runnable(3)]).await.unwrap();
         test(fixture.clone()).await;
     })
     .catch_unwind()
@@ -80,9 +80,9 @@ async fn next(messages: &mut WorkMessages<u64>) -> WorkMessage<u64> {
 #[tokio::test]
 async fn unacknowledged_work_is_redelivered() {
     run(|f| async move {
-        let mut messages = f.bus.consume(&WorkQueue::RemoteTools).await.unwrap();
+        let mut messages = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &42_u64)
+            .publish_work(&WorkQueue::Runnable(3), &42_u64)
             .await
             .unwrap();
         let first = next(&mut messages).await;
@@ -99,9 +99,9 @@ async fn unacknowledged_work_is_redelivered() {
 #[tokio::test]
 async fn acknowledged_work_stays_acknowledged() {
     run(|f| async move {
-        let mut messages = f.bus.consume(&WorkQueue::RemoteTools).await.unwrap();
+        let mut messages = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &42_u64)
+            .publish_work(&WorkQueue::Runnable(3), &42_u64)
             .await
             .unwrap();
         next(&mut messages).await.acknowledge().await.unwrap();
@@ -119,7 +119,7 @@ async fn oversized_work_reports_advertised_limit() {
         let encoded_size = swarmy_core::encode(&value).unwrap().len();
         let error = timeout(
             Duration::from_secs(2),
-            f.bus.publish_work(&WorkQueue::RemoteTools, &value),
+            f.bus.publish_work(&WorkQueue::Runnable(3), &value),
         )
         .await
         .unwrap()
@@ -138,11 +138,11 @@ async fn oversized_work_reports_advertised_limit() {
 #[tokio::test]
 async fn two_workers_share_one_durable_consumer() {
     run(|f| async move {
-        let mut first = f.bus.consume::<u64>(&WorkQueue::RemoteTools).await.unwrap();
-        let mut second = f.bus.consume::<u64>(&WorkQueue::RemoteTools).await.unwrap();
+        let mut first = f.bus.consume::<u64>(&WorkQueue::Runnable(3)).await.unwrap();
+        let mut second = f.bus.consume::<u64>(&WorkQueue::Runnable(3)).await.unwrap();
         for value in 0..50_u64 {
             f.bus
-                .publish_work(&WorkQueue::RemoteTools, &value)
+                .publish_work(&WorkQueue::Runnable(3), &value)
                 .await
                 .unwrap();
         }
@@ -227,7 +227,7 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
         let queues = [
             WorkQueue::Inference(SubjectToken::new("mock").unwrap()),
             WorkQueue::Runnable(7),
-            WorkQueue::RemoteTools,
+            WorkQueue::Runnable(3),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
         ];
         f.bus.setup(&queues).await.unwrap();
@@ -239,7 +239,7 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
             before.push((stream.cached_info().clone(), consumer));
         }
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &7_u64)
+            .publish_work(&WorkQueue::Runnable(3), &7_u64)
             .await
             .unwrap();
         f.bus.setup(&queues).await.unwrap();
@@ -253,7 +253,7 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
             assert_eq!(consumer.config, previous_consumer.config);
             assert_eq!(consumer.created, previous_consumer.created);
         }
-        let mut work = f.bus.consume(&WorkQueue::RemoteTools).await.unwrap();
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
         assert_eq!(next(&mut work).await.value, 7);
         let mut changed = f.config.clone();
         changed.ack_wait *= 2;
@@ -283,9 +283,9 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
 #[tokio::test]
 async fn negative_acknowledgements_support_immediate_and_delayed_retry() {
     run(|f| async move {
-        let mut work = f.bus.consume(&WorkQueue::RemoteTools).await.unwrap();
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &1_u64)
+            .publish_work(&WorkQueue::Runnable(3), &1_u64)
             .await
             .unwrap();
         let first = next(&mut work).await;
@@ -307,9 +307,9 @@ async fn negative_acknowledgements_support_immediate_and_delayed_retry() {
 #[tokio::test]
 async fn progress_extends_the_deadline() {
     run(|f| async move {
-        let mut work = f.bus.consume(&WorkQueue::RemoteTools).await.unwrap();
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &1_u64)
+            .publish_work(&WorkQueue::Runnable(3), &1_u64)
             .await
             .unwrap();
         let first = next(&mut work).await;
@@ -331,9 +331,9 @@ async fn progress_extends_the_deadline() {
 async fn malformed_work_surfaces_errors_and_stops_at_delivery_limit() {
     run(|f| async move {
         let context = jetstream::new(f.admin.clone());
-        let mut work = f.bus.consume::<u64>(&WorkQueue::RemoteTools).await.unwrap();
+        let mut work = f.bus.consume::<u64>(&WorkQueue::Runnable(3)).await.unwrap();
         context
-            .publish(format!("{}.tool.remote", f.prefix), vec![255].into())
+            .publish(format!("{}.sched.runnable.3", f.prefix), vec![255].into())
             .await
             .unwrap()
             .await
@@ -346,7 +346,7 @@ async fn malformed_work_surfaces_errors_and_stops_at_delivery_limit() {
         }
         assert!(timeout(ACK_WAIT * 3, work.next()).await.is_err());
         f.bus
-            .publish_work(&WorkQueue::RemoteTools, &9_u64)
+            .publish_work(&WorkQueue::Runnable(3), &9_u64)
             .await
             .unwrap();
         let valid = next(&mut work).await;
@@ -364,7 +364,7 @@ async fn routes_and_prefixes_isolate_work() {
             WorkQueue::Inference(SubjectToken::new("other").unwrap()),
             WorkQueue::Runnable(0),
             WorkQueue::Runnable(1),
-            WorkQueue::RemoteTools,
+            WorkQueue::Runnable(3),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
         ];
@@ -381,12 +381,12 @@ async fn routes_and_prefixes_isolate_work() {
         // A second deployment with the same routes must not see the first one's work.
         run(|other| async move {
             f.bus
-                .publish_work(&WorkQueue::RemoteTools, &99_u64)
+                .publish_work(&WorkQueue::Runnable(3), &99_u64)
                 .await
                 .unwrap();
             let mut isolated = other
                 .bus
-                .consume::<u64>(&WorkQueue::RemoteTools)
+                .consume::<u64>(&WorkQueue::Runnable(3))
                 .await
                 .unwrap();
             assert!(timeout(ACK_WAIT, isolated.next()).await.is_err());
