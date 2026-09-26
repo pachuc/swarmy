@@ -448,9 +448,8 @@ impl View {
                     self.entries.push(format!(
                             "System: Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
                         ));
-                    return;
                 }
-                api::EventPayload::TimelineEvent { .. } => return,
+                api::EventPayload::TimelineEvent { .. } => (),
                 api::EventPayload::StoreRecord { record } => {
                     let Ok(record) = serde_json::to_value(&record) else {
                         return;
@@ -586,7 +585,6 @@ mod tests {
         let to_state = match to {
             "idle" => swarmy_core::SessionState::Idle,
             "leased" => swarmy_core::SessionState::Leased,
-            "runnable" => swarmy_core::SessionState::Runnable,
             "completed" => swarmy_core::SessionState::Completed,
             _ => swarmy_core::SessionState::Runnable,
         };
