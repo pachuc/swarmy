@@ -342,9 +342,7 @@ fn merge_hour(
     totals: &UsageTotals,
     completions: u64,
 ) {
-    let slot = hours
-        .entry(hour)
-        .or_insert((UsageTotals::default(), 0));
+    let slot = hours.entry(hour).or_insert((UsageTotals::default(), 0));
     add_totals(&mut slot.0, totals);
     slot.1 = slot.1.saturating_add(completions);
 }
@@ -503,9 +501,8 @@ impl Store {
         prefix: &str,
     ) -> Result<Vec<DimensionTotal>> {
         let mut totals: BTreeMap<String, (UsageTotals, u64)> = BTreeMap::new();
-        for (key, _, bucket, completions) in self
-            .scan_dimension_keys(dimension, Some(prefix))
-            .await?
+        for (key, _, bucket, completions) in
+            self.scan_dimension_keys(dimension, Some(prefix)).await?
         {
             let slot = totals.entry(key).or_insert((UsageTotals::default(), 0));
             add_totals(&mut slot.0, &bucket);
@@ -530,9 +527,7 @@ impl Store {
         hours: Option<(i64, i64)>,
     ) -> Result<Vec<(String, i64, UsageTotals, u64)>> {
         let mut kept = Vec::new();
-        for (key, hour, totals, completions) in
-            self.scan_dimension_keys(dimension, None).await?
-        {
+        for (key, hour, totals, completions) in self.scan_dimension_keys(dimension, None).await? {
             if hours.is_some_and(|(from, to)| hour < from || hour > to) {
                 continue;
             }
@@ -549,9 +544,7 @@ impl Store {
         dimension: MeteringDimension,
         prefix: Option<&str>,
     ) -> Result<Vec<(String, i64, UsageTotals, u64)>> {
-        let subspace = self
-            .root
-            .subspace(&("metering_hour", dimension.as_str()));
+        let subspace = self.root.subspace(&("metering_hour", dimension.as_str()));
         let (begin, end) = subspace.range();
         let mut cursor = begin.clone();
         let mut rows = Vec::new();
@@ -583,10 +576,7 @@ impl Store {
         // Fold the eight field counters of each key and hour into totals.
         let mut folded: BTreeMap<(String, i64), BTreeMap<String, u64>> = BTreeMap::new();
         for (key, hour, field, value) in rows {
-            folded
-                .entry((key, hour))
-                .or_default()
-                .insert(field, value);
+            folded.entry((key, hour)).or_default().insert(field, value);
         }
         Ok(folded
             .into_iter()
@@ -595,15 +585,9 @@ impl Store {
                     usage: TokenUsage {
                         input_tokens: fields.get("input").copied().unwrap_or(0),
                         cached_input_tokens: fields.get("cached").copied().unwrap_or(0),
-                        cache_write_input_tokens: fields
-                            .get("cache_write")
-                            .copied()
-                            .unwrap_or(0),
+                        cache_write_input_tokens: fields.get("cache_write").copied().unwrap_or(0),
                         output_tokens: fields.get("output").copied().unwrap_or(0),
-                        reasoning_output_tokens: fields
-                            .get("reasoning")
-                            .copied()
-                            .unwrap_or(0),
+                        reasoning_output_tokens: fields.get("reasoning").copied().unwrap_or(0),
                         total_tokens: fields.get("total").copied().unwrap_or(0),
                     },
                     cost_micros: fields.get("cost").copied().unwrap_or(0),

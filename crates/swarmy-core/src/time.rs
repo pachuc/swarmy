@@ -98,7 +98,10 @@ mod tests {
             parse_bound("2026-09-01", now),
             Some("2026-09-01T00:00:00Z".parse().unwrap())
         );
-        assert_eq!(parse_bound(" 2026-09-01 ", now), parse_bound("2026-09-01", now));
+        assert_eq!(
+            parse_bound(" 2026-09-01 ", now),
+            parse_bound("2026-09-01", now)
+        );
     }
 
     #[test]
@@ -140,7 +143,17 @@ mod tests {
     #[test]
     fn invalid_bounds_are_rejected() {
         let now = now();
-        for value in ["", "yesterday", "5x", "mo", "1M", "-7d", "5é", "é", "2026-13-01"] {
+        for value in [
+            "",
+            "yesterday",
+            "5x",
+            "mo",
+            "1M",
+            "-7d",
+            "5é",
+            "é",
+            "2026-13-01",
+        ] {
             assert_eq!(parse_bound(value, now), None, "{value}");
         }
     }

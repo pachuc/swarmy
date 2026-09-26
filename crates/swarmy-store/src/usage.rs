@@ -240,7 +240,10 @@ impl Store {
                 crate::metering::MeteringDimension::Provider.as_str(),
                 input.provider.into(),
             ),
-            (crate::metering::MeteringDimension::Entry.as_str(), entry_id.clone()),
+            (
+                crate::metering::MeteringDimension::Entry.as_str(),
+                entry_id.clone(),
+            ),
             (
                 crate::metering::MeteringDimension::EntryKind.as_str(),
                 input.kind.unwrap_or("unknown").into(),

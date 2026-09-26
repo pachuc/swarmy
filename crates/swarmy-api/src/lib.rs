@@ -1129,20 +1129,16 @@ async fn usage(
     }
     let groups = match query.key.as_deref() {
         Some(key) if key.is_empty() => return Err(error(StatusCode::BAD_REQUEST, "invalid_key")),
-        Some(key) => {
-            state
-                .store
-                .usage(dimension, key, from, to, group_by)
-                .await
-                .map_err(storage)?
-        }
-        None => {
-            state
-                .store
-                .usage_aggregate(dimension, from, to, group_by)
-                .await
-                .map_err(storage)?
-        }
+        Some(key) => state
+            .store
+            .usage(dimension, key, from, to, group_by)
+            .await
+            .map_err(storage)?,
+        None => state
+            .store
+            .usage_aggregate(dimension, from, to, group_by)
+            .await
+            .map_err(storage)?,
     };
     let mut total = swarmy_core::UsageTotals::default();
     let mut completions: u64 = 0;

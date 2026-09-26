@@ -6,7 +6,7 @@ use swarmy_client::Client;
 
 use ulid::Ulid;
 
-use crate::{Command, agent_command, auth_command, image_command, session_command};
+use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
 
 use crate::api_client::call as request;
 async fn projection<T: serde::Serialize>(
@@ -89,12 +89,166 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Session { command } => session(&client, &endpoint, command, json).await?,
         Command::Agent { command } => agent(&client, &endpoint, command, json).await?,
+        Command::Cost { args } => cost(&client, &endpoint, args, json).await?,
         Command::Image { command } => image(&client, &endpoint, command, json).await?,
         Command::Auth { command, .. } => auth(&client, &endpoint, command, json).await?,
         _ => unreachable!("only API commands reach this dispatcher"),
     }
     Ok(())
 }
+/// Parse a `--since` or `--until` bound, defaulting to `default` when the
+/// flag is absent. The client resolves relative spans locally so the API
+/// only ever sees absolute bounds.
+fn cost_bound(
+    value: Option<&str>,
+    default: &str,
+    flag: &str,
+    now: jiff::Timestamp,
+) -> Result<jiff::Timestamp> {
+    let text = value.unwrap_or(default);
+    swarmy_core::time::parse_bound(text, now).with_context(|| {
+        format!(
+            "--{flag} must be a date like 2026-09-01, an RFC 3339 timestamp, now, \
+             or a span like 7d, 3mo, or 1y"
+        )
+    })
+}
+
+/// Resolve one key filter to the rollup key the API reads. Agent names
+/// resolve to ids; sessions must already be ids.
+async fn cost_key(client: &Client, endpoint: &str, dimension: &str, value: &str) -> Result<String> {
+    match dimension {
+        "agent" => Ok(request(endpoint, client.agent(value)).await?.id),
+        "session" => {
+            value.parse::<Ulid>().context("invalid session id")?;
+            Ok(value.to_owned())
+        }
+        _ => Ok(value.to_owned()),
+    }
+}
+
+/// Pick the `(dimension, key)` series for `swarmy cost`. An explicit `--by`
+/// reads its key from the matching filter and aggregates when the filter
+/// is absent; without `--by` a lone filter implies its dimension and no
+/// filter reads the fleet-wide agent series.
+async fn cost_series(
+    client: &Client,
+    endpoint: &str,
+    args: &cost_command::Args,
+) -> Result<(String, Option<String>)> {
+    let filters = [
+        ("session", args.session.as_deref()),
+        ("agent", args.agent.as_deref()),
+        ("provider", args.provider.as_deref()),
+        ("entry", args.entry.as_deref()),
+        ("kind", args.kind.as_deref()),
+        ("model", args.model.as_deref()),
+    ];
+    let present: Vec<(&str, &str)> = filters
+        .iter()
+        .filter_map(|(dimension, value)| value.map(|value| (*dimension, value)))
+        .collect();
+    match (args.by.as_deref(), present.as_slice()) {
+        (Some(by), []) => Ok((by.into(), None)),
+        (Some(by), [(dimension, value)]) if *dimension == by => Ok((
+            by.into(),
+            Some(cost_key(client, endpoint, dimension, value).await?),
+        )),
+        (Some(_), _) => anyhow::bail!(
+            "--by DIMENSION reads its key from the matching filter only; pass one of \
+             --agent, --session, --provider, --entry, --kind, or --model for that dimension"
+        ),
+        (None, []) => Ok(("agent".into(), None)),
+        (None, [(dimension, value)]) => Ok((
+            (*dimension).into(),
+            Some(cost_key(client, endpoint, dimension, value).await?),
+        )),
+        (None, _) => anyhow::bail!(
+            "pass only one of --agent, --session, --provider, --entry, --kind, or --model"
+        ),
+    }
+}
+
+fn usage_row(
+    start: &str,
+    end: &str,
+    input: u64,
+    cached: u64,
+    cache_write: u64,
+    output: u64,
+    reasoning: u64,
+    total: u64,
+    cost_dollars: &str,
+    completions: u64,
+) -> String {
+    format!(
+        "{start} {end} input={input} cached={cached} cache_write={cache_write} \
+         output={output} reasoning={reasoning} total={total} cost=${cost_dollars} \
+         completions={completions}"
+    )
+}
+
+fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(response)?);
+        return Ok(());
+    }
+    for group in &response.groups {
+        println!(
+            "{}",
+            usage_row(
+                &group.start,
+                &group.end,
+                group.input_tokens,
+                group.cached_input_tokens,
+                group.cache_write_input_tokens,
+                group.output_tokens,
+                group.reasoning_output_tokens,
+                group.total_tokens,
+                &group.cost_dollars,
+                group.completions,
+            )
+        );
+    }
+    let total = &response.total;
+    println!(
+        "{}",
+        usage_row(
+            "total",
+            "",
+            total.input_tokens,
+            total.cached_input_tokens,
+            total.cache_write_input_tokens,
+            total.output_tokens,
+            total.reasoning_output_tokens,
+            total.total_tokens,
+            &total.cost_dollars,
+            total.completions,
+        )
+    );
+    Ok(())
+}
+
+async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: bool) -> Result<()> {
+    let (by, key) = cost_series(client, endpoint, &args).await?;
+    let now = jiff::Timestamp::now();
+    let until = cost_bound(args.until.as_deref(), "now", "until", now)?;
+    let since = cost_bound(args.since.as_deref(), "30d", "since", now)?;
+    ensure!(until > since, "--until must be after --since");
+    let response = request(
+        endpoint,
+        client.usage(
+            &by,
+            key.as_deref(),
+            &since.to_string(),
+            &until.to_string(),
+            &args.group,
+        ),
+    )
+    .await?;
+    print_usage(&response, json)
+}
+
 async fn session(
     client: &Client,
     endpoint: &str,
@@ -295,7 +449,7 @@ async fn show_session(
     );
     let usage = &details["usage"]["usage"];
     print(
-        &json!({"session_usage":details["usage"],"cost_dollars":details["cost_dollars"]}),
+        &json!({"session_usage":details["usage"],"cost_dollars":details["cost_dollars"],"entries":details["entries"],"providers":details["providers"]}),
         &format!(
             "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
             usage["input_tokens"],
@@ -308,6 +462,9 @@ async fn show_session(
         ),
         json,
     );
+    if !json && let Some(entries) = entries_text(&details) {
+        println!("{entries}");
+    }
     if record["state"] == "sleeping" && !details["wait"].is_null() {
         let wait = &details["wait"];
         let reasons = wait["reasons"]
@@ -484,6 +641,31 @@ fn text_value_or_dash(value: &Value) -> String {
         text_value(value)
     }
 }
+/// Render one owner's per-entry cost shares with the providers involved.
+/// The server reads these from the entry rollups, so they survive the raw
+/// completion record retention window.
+fn entries_text(value: &Value) -> Option<String> {
+    let entries = value["entries"].as_array()?;
+    let mut text = String::new();
+    for entry in entries {
+        let _ = write!(
+            text,
+            "\nentry {} cost=${} input={} output={} total={} completions={}",
+            str_field(entry, "entry"),
+            optional_text(&entry["cost_dollars"]),
+            entry["input_tokens"],
+            entry["output_tokens"],
+            entry["total_tokens"],
+            entry["completions"],
+        );
+    }
+    if let Some(providers) = value["providers"].as_array() {
+        let names: Vec<&str> = providers.iter().filter_map(Value::as_str).collect();
+        let _ = write!(text, "\nproviders={}", names.join(","));
+    }
+    Some(text)
+}
+
 fn agent_text(agent: &Value, detail: bool) -> String {
     let name = str_field(agent, "name");
     let id = str_field(agent, "agent_id");
@@ -513,6 +695,9 @@ fn agent_text(agent: &Value, detail: bool) -> String {
             usage["total_tokens"],
             text_value(&agent["cost_dollars"])
         );
+        if let Some(entries) = entries_text(agent) {
+            text.push_str(&entries);
+        }
         let last = if agent["last_snapshot_at"].is_null() {
             "-".into()
         } else {
@@ -1007,7 +1192,138 @@ async fn auth(
         auth_command::Command::Routes { command } => {
             routes(client, endpoint, command, json).await?;
         }
+        auth_command::Command::Quota {
+            entry,
+            group,
+            since,
+            until,
+        } => {
+            quota(
+                client,
+                endpoint,
+                entry.as_deref(),
+                &group,
+                since.as_deref(),
+                until.as_deref(),
+                json,
+            )
+            .await?;
+        }
         _ => unreachable!("login and import remain local"),
+    }
+    Ok(())
+}
+
+fn optional_text(value: &Value) -> String {
+    if value.is_null() {
+        "-".into()
+    } else {
+        text_value(value)
+    }
+}
+
+fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
+    let quota = &entry.quota;
+    let mut line = format!(
+        "{}/{} {} {} used={} free={} window={} observed={}",
+        entry.provider,
+        entry.label,
+        entry.kind,
+        quota.source,
+        quota.used,
+        quota
+            .free
+            .map_or_else(|| "-".into(), |free| free.to_string()),
+        quota
+            .window_seconds
+            .map_or_else(|| "-".into(), |window| window.to_string()),
+        quota.observed_at.as_deref().unwrap_or("-"),
+    );
+    if let Some(requests) = quota.requests_remaining {
+        line.push_str(&format!(" requests={requests}"));
+    }
+    if let Some(tokens) = quota.tokens_remaining {
+        line.push_str(&format!(" tokens={tokens}"));
+    }
+    if let Some(limit) = quota.limit {
+        line.push_str(&format!(" limit={limit}"));
+    }
+    line
+}
+
+/// List every entry's quota, or show one entry's quota with its usage
+/// series. Observed entries report the provider's latest published
+/// remaining values; configured entries count completions from the
+/// entry rollups over their window.
+async fn quota(
+    client: &Client,
+    endpoint: &str,
+    entry: Option<&str>,
+    group: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let credentials = request(endpoint, client.cli_credentials()).await?;
+    if let Some(entry) = entry {
+        let (provider, label) = entry.split_once('/').context("expected PROVIDER/LABEL")?;
+        let kind = credentials
+            .iter()
+            .find(|credential| credential.provider == provider && credential.label == label)
+            .map_or_else(|| "-".into(), |credential| credential.kind.clone());
+        let quota = request(endpoint, client.entry_quota(provider, label)).await?;
+        let view = swarmy_api_types::QuotaEntry {
+            provider: provider.into(),
+            label: label.into(),
+            kind,
+            quota,
+        };
+        let now = jiff::Timestamp::now();
+        let end = cost_bound(until, "now", "until", now)?;
+        let start = cost_bound(since, "30d", "since", now)?;
+        ensure!(end > start, "--until must be after --since");
+        let response = request(
+            endpoint,
+            client.usage(
+                "entry",
+                Some(entry),
+                &start.to_string(),
+                &end.to_string(),
+                group,
+            ),
+        )
+        .await?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({"quota": view, "usage": response}))?
+            );
+        } else {
+            println!("{}", quota_line(&view));
+            print_usage(&response, false)?;
+        }
+        return Ok(());
+    }
+    let mut views = Vec::with_capacity(credentials.len());
+    for credential in &credentials {
+        let quota = request(
+            endpoint,
+            client.entry_quota(&credential.provider, &credential.label),
+        )
+        .await?;
+        views.push(swarmy_api_types::QuotaEntry {
+            provider: credential.provider.clone(),
+            label: credential.label.clone(),
+            kind: credential.kind.clone(),
+            quota,
+        });
+    }
+    if json {
+        println!("{}", serde_json::to_string(&views)?);
+    } else {
+        for view in &views {
+            println!("{}", quota_line(view));
+        }
     }
     Ok(())
 }

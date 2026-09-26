@@ -8,6 +8,7 @@ mod client_bench;
 mod client_chat;
 mod client_commands;
 mod client_conversation;
+mod cost_command;
 mod dev;
 mod doctor;
 mod gc;
@@ -132,6 +133,11 @@ enum Command {
         #[command(subcommand)]
         command: session_command::Command,
     },
+    /// Show billed token and cost totals from the metering rollups
+    Cost {
+        #[command(flatten)]
+        args: cost_command::Args,
+    },
     /// Manage encrypted provider credentials
     Auth {
         /// Swarmy's credential file (never defaults to Codex's auth.json)
@@ -182,6 +188,7 @@ fn main() -> anyhow::Result<()> {
         &cli.command,
         Command::Session { .. }
             | Command::Agent { .. }
+            | Command::Cost { .. }
             | Command::Image {
                 command: image_command::Command::Ls | image_command::Command::Show { .. }
             }
@@ -238,7 +245,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         #[cfg(not(feature = "remote"))]
         Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Agent { .. } | Command::Session { .. } => unreachable!(),
+        Command::Agent { .. } | Command::Session { .. } | Command::Cost { .. } => {
+            unreachable!()
+        }
         Command::Image { command } => image::run(command, cli.json).await?,
         Command::Gc {
             dry_run,
