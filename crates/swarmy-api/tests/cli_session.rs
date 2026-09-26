@@ -344,8 +344,8 @@ async fn interrupt_idle_session_exits_with_clear_error() {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
-                    inference: swarmy_core::InferenceSelection::default(),
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
                 },
             )
@@ -371,8 +371,8 @@ async fn session_show_json_includes_pending_interrupt() {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
-                    inference: swarmy_core::InferenceSelection::default(),
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
                 },
             )

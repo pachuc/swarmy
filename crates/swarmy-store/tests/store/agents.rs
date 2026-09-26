@@ -107,7 +107,7 @@ async fn assert_named_session_pin(
                 Some(agent.agent_id),
                 timestamp(0),
                 AgentSessionOptions {
-                    image: Some(image.to_owned()),
+                    image: Some(image),
                     ..Default::default()
                 }
             )
@@ -204,7 +204,7 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
             None,
             timestamp(0),
             AgentSessionOptions {
-                image: Some(image.to_owned()),
+                image: Some(image),
                 ..Default::default()
             },
         )
@@ -264,7 +264,7 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
                     None,
                     timestamp(0),
                     AgentSessionOptions {
-                        image: Some(image.to_owned()),
+                        image: Some(image),
                         ..Default::default()
                     },
                 )
@@ -797,7 +797,7 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
                 owner,
                 timestamp(0),
                 AgentSessionOptions {
-                    image: owner.is_none().then_some(image).map(str::to_owned),
+                    image: owner.is_none().then_some(image),
                     ..Default::default()
                 },
             )

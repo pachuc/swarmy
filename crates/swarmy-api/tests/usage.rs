@@ -200,8 +200,8 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
-                    inference: swarmy_core::InferenceSelection::default(),
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
                 },
             )

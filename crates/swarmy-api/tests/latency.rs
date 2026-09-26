@@ -129,13 +129,12 @@ async fn setup(image: &str) -> BenchFixture {
             None,
             jiff::Timestamp::now(),
             AgentSessionOptions {
-                image: Some(image.to_owned()),
-                inference: (InferenceSelection {
+                image: Some(image),
+                inference: Some(&InferenceSelection {
                     provider: Some("fake".into()),
                     model: Some(settings.model.clone()),
                     effort: None,
-                })
-                .clone(),
+                }),
                 ..Default::default()
             },
         )

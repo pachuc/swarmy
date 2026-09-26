@@ -180,9 +180,9 @@ pub async fn create(
                     agent,
                     Timestamp::now(),
                     swarmy_store::AgentSessionOptions {
-                        image: image.as_deref().map(str::to_owned),
-                        inference: (choice).clone(),
-                        route: body.route.as_deref().map(str::to_owned),
+                        image: image.as_deref(),
+                        inference: Some(&choice),
+                        route: body.route.as_deref(),
                     },
                 )
                 .await

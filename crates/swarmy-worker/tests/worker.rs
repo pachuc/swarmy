@@ -355,9 +355,9 @@ impl Fixture {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some(image.to_owned()),
-                    inference: swarmy_core::InferenceSelection::default(),
-                    route: Some(route.to_owned()),
+                    image: Some(image),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    route: Some(route),
                 },
             )
             .await
@@ -407,8 +407,8 @@ impl Fixture {
                 Some(agent),
                 Timestamp::now(),
                 AgentSessionOptions {
-                    inference: swarmy_core::InferenceSelection::default(),
-                    route: route.map(str::to_owned),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    route,
                     ..Default::default()
                 },
             )

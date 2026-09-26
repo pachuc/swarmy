@@ -118,7 +118,7 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
             agent,
             Timestamp::now(),
             AgentSessionOptions {
-                image: image.map(str::to_owned),
+                image,
                 ..Default::default()
             },
         )

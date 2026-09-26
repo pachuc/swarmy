@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, w
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, RouteRecord, SessionId,
-    SessionKind, SessionRecord, SessionState, decode,
+    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, InferenceSelection, RouteRecord,
+    SessionId, SessionKind, SessionRecord, SessionState, decode,
 };
 
 /// Options for creating a named agent. The replay key and private token are
@@ -305,13 +305,13 @@ impl Store {
 
 /// Options for creating a session attached to a named agent or an anonymous one.
 #[derive(Clone, Debug, Default)]
-pub struct AgentSessionOptions {
+pub struct AgentSessionOptions<'a> {
     /// Image for ephemeral sessions; forbidden for named sessions.
-    pub image: Option<String>,
+    pub image: Option<&'a str>,
     /// Immutable inference overrides for the session's first turn.
-    pub inference: swarmy_core::InferenceSelection,
+    pub inference: Option<&'a InferenceSelection>,
     /// Named route override; the route must exist.
-    pub route: Option<String>,
+    pub route: Option<&'a str>,
 }
 
 impl Store {
@@ -325,7 +325,7 @@ impl Store {
         id: SessionId,
         agent: Option<AgentId>,
         now: Timestamp,
-        options: AgentSessionOptions,
+        options: AgentSessionOptions<'_>,
     ) -> Result<SessionRecord> {
         let session = SessionRecord {
             interrupt_requested: false,
@@ -339,11 +339,11 @@ impl Store {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
-            inference: options.inference,
-            route: options.route,
+            inference: options.inference.cloned().unwrap_or_default(),
+            route: options.route.map(str::to_owned),
             route_step: 0,
         };
-        self.create_session_record(&session, now, options.image.as_deref())
+        self.create_session_record(&session, now, options.image)
             .await?;
         Ok(session)
     }

@@ -340,7 +340,7 @@ impl Fixture {
                     agent,
                     Timestamp::now(),
                     AgentSessionOptions {
-                        image: if shared { None } else { Some("chaos:test") }.map(str::to_owned),
+                        image: if shared { None } else { Some("chaos:test") },
                         ..Default::default()
                     },
                 )

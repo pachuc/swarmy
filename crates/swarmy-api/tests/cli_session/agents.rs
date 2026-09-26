@@ -41,7 +41,7 @@ async fn agent_commands_and_session_lifetimes() {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
+                    image: Some("fixture:test"),
                     ..Default::default()
                 },
             )
@@ -692,7 +692,7 @@ async fn new_commands_use_the_selected_remote_profile() {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
+                    image: Some("fixture:test"),
                     ..Default::default()
                 },
             )

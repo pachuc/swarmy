@@ -466,9 +466,9 @@ async fn routed_session(f: &Fixture) -> SessionId {
             None,
             Timestamp::now(),
             AgentSessionOptions {
-                image: Some("fixture:test".to_owned()),
-                inference: InferenceSelection::default(),
-                route: Some("fallback".to_owned()),
+                image: Some("fixture:test"),
+                inference: Some(&InferenceSelection::default()),
+                route: Some("fallback"),
             },
         )
         .await
@@ -559,9 +559,9 @@ async fn session_route_assignment_validates_and_round_trips() {
                 None,
                 Timestamp::now(),
                 AgentSessionOptions {
-                    image: Some("fixture:test".to_owned()),
-                    inference: InferenceSelection::default(),
-                    route: Some("missing".to_owned())
+                    image: Some("fixture:test"),
+                    inference: Some(&InferenceSelection::default()),
+                    route: Some("missing")
                 }
             )
             .await,
