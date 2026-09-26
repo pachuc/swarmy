@@ -527,6 +527,30 @@ impl Client {
         )
         .await
     }
+    /// Read a cost series from the metering rollups: one row per calendar
+    /// group plus the total. Times are absolute RFC 3339 bounds; without
+    /// `key` the series aggregates every key in the dimension.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn usage(
+        &self,
+        by: &str,
+        key: Option<&str>,
+        from: &str,
+        to: &str,
+        group: &str,
+    ) -> Result<api::UsageResponse, Error> {
+        let mut query = vec![
+            ("by", by.to_owned()),
+            ("from", from.to_owned()),
+            ("to", to.to_owned()),
+            ("group", group.to_owned()),
+        ];
+        if let Some(key) = key {
+            query.push(("key", key.to_owned()));
+        }
+        self.get("usage", &query).await
+    }
     /// Read a CLI compatibility projection without linking the store.
     /// # Errors
     /// Returns transport, API, or decoding failures.

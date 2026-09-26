@@ -436,6 +436,17 @@ pub async fn session_show(
         .inference_wait(session_id)
         .await
         .map_err(storage)?;
+    let (entries, providers) = super::entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                swarmy_store::MeteringDimension::SessionEntry,
+                &format!("{session_id}/"),
+            )
+            .await
+            .map_err(storage)?,
+        &session_id.to_string(),
+    );
     let mut after = 0;
     let mut events = Vec::new();
     while after < record.head_seq {
@@ -451,7 +462,7 @@ pub async fn session_show(
         events.extend(page);
     }
     Ok(Json(typed(
-        json!({"session":record,"resolved":selection,"usage":usage,"cost_dollars":usage.dollars(),"scratch":scratch,
+        json!({"session":record,"resolved":selection,"usage":usage,"cost_dollars":usage.dollars(),"entries":entries,"providers":providers,"scratch":scratch,
         "requirements":requirements,"placement":placement,"address":address,"wait":wait,"events":events}),
     )?))
 }
@@ -572,6 +583,19 @@ async fn agent_detail(
     };
     value["usage"] = json!(totals);
     value["cost_dollars"] = json!(totals.dollars());
+    let (entries, providers) = super::entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                swarmy_store::MeteringDimension::AgentEntry,
+                &format!("{}/", record.agent_id),
+            )
+            .await
+            .map_err(storage)?,
+        &record.agent_id.to_string(),
+    );
+    value["entries"] = json!(entries);
+    value["providers"] = json!(providers);
     value["placement"] = json!(placement);
     value["sandbox_address"] = json!(address);
     let snapshot = volume
