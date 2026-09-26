@@ -137,36 +137,41 @@ completion at or above it to the worker, so ordinary turns cost one
 transaction.
 
 How other harnesses compact, and what swarmy takes from them. OpenCode
-(`anomalyco/opencode`, `packages/opencode/src/session/`, core compaction in
-`packages/core/src/session/compaction.ts`) compacts automatically when the
-estimated request exceeds the model window minus the larger of the request
-output limit and a 20k buffer, keeping 8k recent tokens by whole turns with a
-split-turn fallback inside an oversized turn. It serializes each assistant
-tool call together with its result (tool output truncated to 2,000 chars),
-carries a prior summary forward iteratively with a fixed markdown template
-(Objective, Important Details, Work State, Next Move, Relevant Files), caps
-summary output at 4,096 tokens, refuses the summary when its prompt would not
-fit the remaining window, and after an automatic compaction appends a
-synthetic prompt so the agent continues past the summary message. Pi
+(`anomalyco/opencode`, read under `packages/opencode/src/session/` in a
+sandbox clone) triggers on overflow in `overflow.ts`, where
+`COMPACTION_BUFFER` is 20,000, `usable` is the context minus the reserved
+output room, and `isOverflow` is true when the counted tokens reach `usable`.
+Tail selection in `compaction.ts` keeps recent turns within
+`preserveRecentBudget` (the configured value, otherwise bounded between
+`MIN_PRESERVE_RECENT_TOKENS` 2,000 and `MAX_PRESERVE_RECENT_TOKENS` 15,000),
+estimating turn by turn from the end with a `splitTurn` fallback that starts
+inside an oversized turn. Serialization in the same file pairs each assistant
+tool call with its result (`[Assistant tool call]` with `[Tool result]` or
+`[Tool error]`), truncating completed tool output at `TOOL_OUTPUT_MAX_CHARS`
+2,000 with a `[truncated]` marker. Pruning in the same file protects
+`PRUNE_PROTECT` 40,000 tokens of recent tool calls and erases older output
+only when the pruned total passes `PRUNE_MINIMUM` 20,000. Prior summaries are
+carried iteratively (`completedCompactions`, `previousSummary` into
+`buildPrompt`), and after an automatic compaction OpenCode appends a synthetic
+user prompt reading "Continue if you have next steps, or stop and ask for
+clarification if you are unsure how to proceed." Pi
 (`badlogic/pi-mono`, `packages/coding-agent/src/core/compaction/`,
 `packages/coding-agent/docs/compaction.md`) checks after tools finish and
 their results are appended, before the next assistant response, and triggers
-when usage passes the window minus a 16k reserve (per-model overrides
-supported), keeping 20k recent tokens. It cuts only at user, assistant, bash,
+when usage passes the window minus a 16,384-token reserve (per-model overrides
+supported), keeping 20,000 recent tokens. It cuts only at user, assistant, bash,
 or custom boundaries and never at tool results, handles a split turn with a
 separate prefix summary, tracks read and modified files cumulatively, disables
 cache writes for the one-off summary request, and retries once after a
-provider overflow error or a length stop with no output. Codex CLI compacts
-automatically against a per-model token limit with a full-window percent and a
-post-turn percent, re-enters the remote summary as assistant summary-channel
-content, and reinjects initial context above the last user message for
-mid-turn compaction. Claude Code auto-compacts near the window with a
-structured summary that keeps recent turns verbatim. OpenHands offers a
+provider overflow error or a length stop. Codex CLI compacts
+automatically against a per-model token limit, re-enters the remote summary as
+assistant summary-channel content, and reinjects initial context above the last
+user message for mid-turn compaction. Claude Code auto-compacts near the window
+with a structured summary that keeps recent turns verbatim. OpenHands offers a
 condenser family: an LLM summarizing condenser, observation masking that drops
 old tool outputs but keeps the actions, and a recent-events window that keeps
 the last turns verbatim. Aider recursively summarizes old chat history into a
-first-person summary (`I asked you...`, file and symbol names required, no
-fenced code blocks) while keeping a tail that fits its max tokens.
+first-person summary while keeping a tail that fits its max tokens.
 
 Swarmy follows the token-budget plus turn-boundary shape from Pi and OpenCode
 (20k recent tokens, whole tool rounds, never split tool pairs, the summary

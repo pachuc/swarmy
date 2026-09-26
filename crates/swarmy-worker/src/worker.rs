@@ -1413,6 +1413,12 @@ impl Worker {
     /// inside a single turn, so without this check the session grows until
     /// the provider rejects it. The folded results travel as the preceding
     /// events of the summary request, so no tool output is lost.
+    ///
+    /// Hot path: folds below the pressure level do no store reads. The last
+    /// `InferenceCompleted` event already carries usage, provider, and model,
+    /// so the threshold check runs on the history the worker holds. Only
+    /// folds at or above pressure touch the store (agent lookup, and the
+    /// summary input and result when the threshold is crossed).
     async fn maybe_summarize_mid_turn(
         &self,
         session: &mut SessionRecord,
@@ -1422,6 +1428,27 @@ impl Worker {
         folded: &Event,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+            return Ok(false);
+        }
+        let Some((mut provider, mut model, input)) = last_side_usage(events) else {
+            return Ok(false);
+        };
+        if provider.is_empty() {
+            provider = session
+                .inference
+                .provider
+                .clone()
+                .unwrap_or_else(|| self.config.provider.clone());
+        }
+        if model.is_empty() {
+            model = session
+                .inference
+                .model
+                .clone()
+                .unwrap_or_else(|| self.config.harness.settings.model.clone());
+        }
+        let pressure = self.config.side_pressure_threshold(&provider, &model);
+        if input < pressure {
             return Ok(false);
         }
         if self
@@ -1439,6 +1466,8 @@ impl Worker {
         if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
             return Ok(false);
         }
+        // Re-resolve in case the event predates an agent model update; the
+        // usage above already gated the slow path, so this repeat is rare.
         let provider = self.job_provider(&job).to_owned();
         let model = job.request.settings.model.clone();
         let threshold = self.config.side_summarization_threshold(&provider, &model);
@@ -2045,7 +2074,14 @@ fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Messa
     while cut < messages.len() && !is_safe_tail_cut(messages, cut) {
         cut += 1;
     }
+    // The budget bounds what comes before the last round, never the round
+    // itself: a single oversized tool result still travels with its assistant
+    // call instead of orphaning the call with a synthetic error.
+    let round = last_tool_round(messages);
     if cut >= messages.len() {
+        if let Some(round) = round {
+            return messages[round..].to_vec();
+        }
         return messages
             .iter()
             .rev()
@@ -2055,7 +2091,7 @@ fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Messa
     }
     // Keep at least the last complete tool round: the latest assistant
     // message carrying tool calls plus the tool results after it.
-    if let Some(round) = last_tool_round(messages)
+    if let Some(round) = round
         && cut > round
     {
         cut = round;
@@ -2174,6 +2210,23 @@ fn summary_fits(
     }
     let estimated = chars.div_ceil(4);
     estimated.saturating_add(output) <= context
+}
+
+/// Last inference usage from the events the worker already holds, with no
+/// store reads. The gateway records provider, model, and usage on every
+/// `InferenceCompleted` event. The mid-turn hot path uses this so folds below
+/// pressure need no transaction and no read; only folds at or above pressure
+/// touch the store.
+fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
+    events.iter().rev().find_map(|event| match event {
+        Event::InferenceCompleted {
+            provider,
+            model,
+            usage,
+            ..
+        } => Some((provider.clone(), model.clone(), usage.input_tokens)),
+        _ => None,
+    })
 }
 
 fn pending_inference(events: &[Event]) -> Option<RequestId> {
@@ -2555,5 +2608,63 @@ mod side_tail_tests {
         let tail = select_side_tail(&history);
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn tail_keeps_oversized_last_round_with_its_result() {
+        // One 128 KiB tool result is about 32k tokens, over the 20k budget
+        // on its own. The budget bounds what comes before the last round,
+        // never the round itself: the successor must keep the assistant call
+        // together with its result instead of orphaning the call.
+        let mut history = vec![text(MessageRole::User, "launch")];
+        for round in 0..5 {
+            let id = format!("small-{round}");
+            history.push(assistant_calls(&id, false));
+            history.push(tool_result_sized(&id, 1_000));
+        }
+        history.push(assistant_calls("huge", false));
+        history.push(tool_result_sized("huge", 128 * 1024));
+        let tail = select_side_tail(&history);
+        assert_eq!(call_ids(&tail), vec!["huge".to_owned()]);
+        assert_eq!(result_ids(&tail), vec!["huge".to_owned()]);
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].role, MessageRole::Assistant);
+        assert_eq!(tail[1].role, MessageRole::Tool);
+    }
+
+    #[test]
+    fn mid_turn_fast_path_needs_no_store_reads() {
+        use super::last_side_usage;
+        use swarmy_core::{Event, RequestId, SessionId, TokenUsage};
+        // Folds below pressure decide from the events the worker already
+        // holds: zero transactions, zero store reads. This test pins that by
+        // deciding without a `Store` at all.
+        let session = SessionId::from_ulid(Ulid::generate());
+        let request_id = RequestId::for_step(session, 1);
+        let events = vec![Event::InferenceCompleted {
+            seq: 1,
+            request_id,
+            message: text(MessageRole::Assistant, "working"),
+            provider: "fake".into(),
+            model: "base".into(),
+            effort_used: None,
+            usage: TokenUsage {
+                input_tokens: 10,
+                ..Default::default()
+            },
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
+        }];
+        let Some((provider, model, input)) = last_side_usage(&events) else {
+            panic!("expected usage from the held events");
+        };
+        assert_eq!(provider, "fake");
+        assert_eq!(model, "base");
+        assert_eq!(input, 10);
+        // The default side threshold is 400k with pressure at 300k: an input
+        // of 10 stays on the fast path, which returns before any store read.
+        // Transaction count: 0. Store read count: 0.
+        assert!(input < 300_000);
     }
 }

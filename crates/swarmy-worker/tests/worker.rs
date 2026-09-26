@@ -1601,17 +1601,21 @@ async fn check_side_successor(
         SessionState::Completed
     );
     assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
-    let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-    // Archival wakes the successor; a chat-shaped one replays to end-of-turn
-    // and idles again, so it may be runnable or briefly leased when observed.
-    assert!(
-        matches!(
-            fresh.state,
-            SessionState::Idle | SessionState::Runnable | SessionState::Leased
-        ),
-        "unexpected successor state {:?}",
-        fresh.state
-    );
+    // A chat-shaped rollover replays to end-of-turn and idles again. The
+    // archival wakes the successor runnable first, so poll until it idles
+    // instead of asserting on the transient runnable state.
+    let fresh = timeout(WAIT, async {
+        loop {
+            let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+            if fresh.state == SessionState::Idle {
+                break fresh;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("chat-shaped successor did not idle");
+    assert_eq!(fresh.state, SessionState::Idle);
     assert_eq!(fresh.agent_id, *agent);
     let opening = f.store.read_events(new, 0, 64).await.unwrap();
     let Event::MessageAppended { message, .. } = &opening[0] else {
@@ -1792,6 +1796,17 @@ async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId)
     );
     assert_eq!(fixture.store.next_session(id).await.unwrap(), Some(new));
     assert_eq!(fixture.store.previous_session(new).await.unwrap(), Some(id));
+    // A mid-task rollover wakes the successor runnable so the turn continues
+    // without waiting for input; it may idle or lease briefly when observed.
+    let fresh = fixture.store.fetch_session(new).await.unwrap().unwrap();
+    assert!(
+        matches!(
+            fresh.state,
+            SessionState::Idle | SessionState::Runnable | SessionState::Leased
+        ),
+        "unexpected mid-turn successor state {:?}",
+        fresh.state
+    );
 }
 
 fn assert_successor_opening(new_events: &[Event], summary: &str) {
