@@ -34,7 +34,12 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     let id = ManifestId::from_ulid(ulid::Ulid::generate());
     store.put_manifest(id, manifest.header()).await.unwrap();
     store
-        .put_image("s3-test", &ImageTag("live".into()), id, &PutImageOptions::default())
+        .put_image(
+            "s3-test",
+            &ImageTag("live".into()),
+            id,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
 

@@ -36,7 +36,10 @@ use swarmy_core::{
     SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store,
+    blob::MemoryBlobStore,
+};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -336,12 +339,15 @@ async fn interrupt_idle_session_exits_with_clear_error() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                AgentSessionOptions {
+                    image: Some("fixture:test".to_owned()),
+                    inference: swarmy_core::InferenceSelection::default(),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -360,12 +366,15 @@ async fn session_show_json_includes_pending_interrupt() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                AgentSessionOptions {
+                    image: Some("fixture:test".to_owned()),
+                    inference: swarmy_core::InferenceSelection::default(),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();

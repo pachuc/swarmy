@@ -83,7 +83,12 @@ impl Fixture {
             .await
             .unwrap();
         self.store
-            .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
+            .put_image(
+                "fixture",
+                &ImageTag("test".into()),
+                manifest,
+                &PutImageOptions::default(),
+            )
             .await
             .unwrap();
         let agent = self

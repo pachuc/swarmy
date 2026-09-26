@@ -6,7 +6,9 @@ use swarmy_api_types::{
 };
 use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
-use swarmy_store::{PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
+};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -41,7 +43,12 @@ async fn authenticated_routes_and_create_replay() {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            manifest,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     register_services(&store).await;
@@ -471,7 +478,12 @@ async fn route_server() -> Option<(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            manifest,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     register_services(&store).await;

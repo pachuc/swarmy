@@ -122,7 +122,6 @@ impl Store {
         }
         self.transaction(|trx| {
             let key = &key;
-            let options = options;
             async move {
                 self.require_manifest(&trx, manifest).await?;
                 write(&trx, key, &manifest)?;

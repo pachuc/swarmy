@@ -9,7 +9,7 @@ use swarmy_core::{
     AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
     SandboxSpec, VolumeId,
 };
-use swarmy_store::{PutImageOptions, Store, blob::ObjectBlobStore};
+use swarmy_store::{AgentSessionOptions, PutImageOptions, Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},

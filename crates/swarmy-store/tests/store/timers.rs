@@ -400,7 +400,12 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
         .agent_id;
     let side = SessionId::from_ulid(Ulid::generate());
     store
-        .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+        .create_agent_session(
+            side,
+            Some(agent),
+            Timestamp::now(),
+            AgentSessionOptions::default(),
+        )
         .await
         .unwrap();
     store.wake_session(side, Timestamp::now()).await.unwrap();
@@ -446,7 +451,12 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
 async fn open_side(store: &Store, agent: AgentId) -> (SessionId, Lease) {
     let side = SessionId::from_ulid(Ulid::generate());
     store
-        .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+        .create_agent_session(
+            side,
+            Some(agent),
+            Timestamp::now(),
+            AgentSessionOptions::default(),
+        )
         .await
         .unwrap();
     store.wake_session(side, Timestamp::now()).await.unwrap();

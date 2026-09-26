@@ -22,8 +22,7 @@ struct Fixture {
 
 impl Fixture {
     fn names(&self) -> [String; 3] {
-        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"]
-            .map(|name| format!("{}_{name}", self.prefix))
+        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"].map(|name| format!("{}_{name}", self.prefix))
     }
 }
 

@@ -38,9 +38,7 @@ use async_nats::jetstream::{
 };
 use futures_util::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
-use swarmy_core::{
-    EncodingError, NodeId, SessionId, WakeReply, WakeRequest, decode, encode,
-};
+use swarmy_core::{EncodingError, NodeId, SessionId, WakeReply, WakeRequest, decode, encode};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

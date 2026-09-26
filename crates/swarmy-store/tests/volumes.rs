@@ -330,13 +330,23 @@ async fn live_roots_are_retained_snapshots_attached_heads_and_images_only() {
         let image = manifest_id();
         test.store.put_manifest(image, &header).await.unwrap();
         test.store
-            .put_image(&format!("image-{index}"), &ImageTag("v1".into()), image, &PutImageOptions::default())
+            .put_image(
+                &format!("image-{index}"),
+                &ImageTag("v1".into()),
+                image,
+                &PutImageOptions::default(),
+            )
             .await
             .unwrap();
         expected.insert(image);
     }
     test.store
-        .put_image("shared", &ImageTag("v1".into()), retained, &PutImageOptions::default())
+        .put_image(
+            "shared",
+            &ImageTag("v1".into()),
+            retained,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     let live = test.store.live_manifests().await.unwrap();

@@ -304,7 +304,7 @@ impl Store {
                 break;
             }
             if let Some((last, _)) = rows.last() {
-                begin = last.clone();
+                begin.clone_from(last);
                 begin.push(0);
             } else {
                 break;

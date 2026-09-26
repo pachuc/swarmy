@@ -1,9 +1,7 @@
 //! Durable tool handoffs on persistent agent computers.
 use crate::{Result, Store, StoreError, read, scan, write};
 use jiff::Timestamp;
-use swarmy_core::{
-    Event, Lease, RequestId, SessionId, SessionState, ToolJob,
-};
+use swarmy_core::{Event, Lease, RequestId, SessionId, SessionState, ToolJob};
 
 type PreparedToolRequests = [(Event, Vec<u8>)];
 

@@ -49,11 +49,14 @@ impl Fixture {
     async fn session(&self, agent: Option<AgentId>) -> SessionId {
         let id = SessionId::from_ulid(Ulid::generate());
         self.store
-            .create_session_for_agent(
+            .create_agent_session(
                 id,
                 agent,
-                agent.is_none().then_some("fixture:test"),
                 Timestamp::now(),
+                AgentSessionOptions {
+                    image: agent.is_none().then_some("fixture:test").map(str::to_owned),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -258,9 +261,9 @@ async fn session_selection_routes_and_missing_gateway_waits() {
                 }).await.unwrap();
             }
             let id = SessionId::from_ulid(Ulid::generate());
-            f.store.create_session_with_inference(id, None, Some("fixture:test"), Timestamp::now(), &swarmy_core::InferenceSelection {
+            f.store.create_agent_session(id, None, Timestamp::now(), AgentSessionOptions { image: Some("fixture:test".to_owned()), inference: swarmy_core::InferenceSelection {
                 provider: Some("openai".into()), model: Some("gpt-5.5".into()), effort: Some(ReasoningEffort::Max),
-            }).await.unwrap();
+            }, ..Default::default() }).await.unwrap();
             let job = f.infer(id).await;
             assert_eq!(job.provider, "openai");
             assert_eq!(job.request.settings.model, "gpt-5.5");
@@ -288,9 +291,9 @@ async fn session_selection_routes_and_missing_gateway_waits() {
         assert_eq!(named_job.provider, "openai");
         assert_eq!(named_job.request.settings.model, "gpt-5.5");
         let side = SessionId::from_ulid(Ulid::generate());
-        f.store.create_session_with_inference(side, Some(named.agent_id), None, Timestamp::now(), &swarmy_core::InferenceSelection {
+        f.store.create_agent_session(side, Some(named.agent_id), Timestamp::now(), AgentSessionOptions { inference: swarmy_core::InferenceSelection {
             provider: Some("fake".into()), model: Some("session-model".into()), effort: Some(ReasoningEffort::Low)
-        }).await.unwrap();
+        }, ..Default::default() }).await.unwrap();
         let side_job = f.infer(side).await;
         assert_eq!(side_job.provider, "fake");
         assert_eq!(side_job.request.settings.model, "session-model");

@@ -82,7 +82,15 @@ async fn assert_named_session_pin(
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
-            .create_session_for_agent(id, Some(agent.agent_id), Some(image), timestamp(0))
+            .create_agent_session(
+                id,
+                Some(agent.agent_id),
+                timestamp(0),
+                AgentSessionOptions {
+                    image: Some(image.to_owned()),
+                    ..Default::default()
+                }
+            )
             .await,
         Err(StoreError::NamedAgentImage)
     ));
@@ -100,11 +108,21 @@ async fn assert_named_session_pin(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), replacement, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            replacement,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     let session = store
-        .create_session_for_agent(id, Some(agent.agent_id), None, timestamp(0))
+        .create_agent_session(
+            id,
+            Some(agent.agent_id),
+            timestamp(0),
+            AgentSessionOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -156,12 +174,20 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
-            .create_session_for_agent(id, None, None, timestamp(0))
+            .create_agent_session(id, None, timestamp(0), AgentSessionOptions::default())
             .await,
         Err(StoreError::SessionImageRequired)
     ));
     let session = store
-        .create_session_for_agent(id, None, Some(image), timestamp(0))
+        .create_agent_session(
+            id,
+            None,
+            timestamp(0),
+            AgentSessionOptions {
+                image: Some(image.to_owned()),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(session.kind, SessionKind::Ephemeral);
@@ -213,11 +239,14 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
     for _ in 0..3 {
         sessions.push(
             store
-                .create_session_for_agent(
+                .create_agent_session(
                     SessionId::from_ulid(Ulid::generate()),
                     None,
-                    Some(image),
                     timestamp(0),
+                    AgentSessionOptions {
+                        image: Some(image.to_owned()),
+                        ..Default::default()
+                    },
                 )
                 .await
                 .unwrap(),
@@ -249,11 +278,11 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
         .await
         .unwrap();
     let named = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            AgentSessionOptions::default(),
         )
         .await
         .unwrap();
@@ -470,11 +499,11 @@ async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
             .contains(&expected.image.manifest_id)
     );
     store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(expected.agent_id),
-            None,
             timestamp(1),
+            AgentSessionOptions::default(),
         )
         .await
         .unwrap();
@@ -520,11 +549,11 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
         .unwrap();
     assert_eq!(agent.main_session, None);
     let side = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            AgentSessionOptions::default(),
         )
         .await
         .unwrap();
@@ -689,11 +718,14 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         .unwrap();
     for owner in [None, Some(other.agent_id)] {
         let foreign = store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 owner,
-                owner.is_none().then_some(image),
                 timestamp(0),
+                AgentSessionOptions {
+                    image: owner.is_none().then_some(image).map(str::to_owned),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -705,11 +737,11 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         ));
     }
     let side = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            AgentSessionOptions::default(),
         )
         .await
         .unwrap();

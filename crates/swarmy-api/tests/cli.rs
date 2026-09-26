@@ -38,7 +38,12 @@ async fn fixture() -> Option<(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            manifest,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();

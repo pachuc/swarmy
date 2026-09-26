@@ -245,7 +245,12 @@ async fn retained_revisions(test: &Fixture, chunks: &ChunkStore) -> Vec<(Manifes
         }
         if value == 2 {
             test.store
-                .put_image("base", &ImageTag("stable".into()), next, &PutImageOptions::default())
+                .put_image(
+                    "base",
+                    &ImageTag("stable".into()),
+                    next,
+                    &PutImageOptions::default(),
+                )
                 .await
                 .unwrap();
         }
@@ -257,7 +262,12 @@ async fn retained_revisions(test: &Fixture, chunks: &ChunkStore) -> Vec<(Manifes
             .await
             .unwrap();
         test.store
-            .put_image(&format!("image-{index}"), &ImageTag("stable".into()), head, &PutImageOptions::default())
+            .put_image(
+                &format!("image-{index}"),
+                &ImageTag("stable".into()),
+                head,
+                &PutImageOptions::default(),
+            )
             .await
             .unwrap();
     }
@@ -800,7 +810,12 @@ async fn computer_session(
         SessionId,
     };
     store
-        .put_image("base", &ImageTag("test".into()), head, &PutImageOptions::default())
+        .put_image(
+            "base",
+            &ImageTag("test".into()),
+            head,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     let session = swarmy_core::SessionRecord {

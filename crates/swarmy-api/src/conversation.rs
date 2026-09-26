@@ -175,13 +175,15 @@ pub async fn create(
                 .await
                 .map_err(storage)?;
             match store
-                .create_session_with_route(
+                .create_agent_session(
                     id,
                     agent,
-                    image.as_deref(),
                     Timestamp::now(),
-                    &choice,
-                    body.route.as_deref(),
+                    swarmy_store::AgentSessionOptions {
+                        image: image.as_deref().map(str::to_owned),
+                        inference: (choice).clone(),
+                        route: body.route.as_deref().map(str::to_owned),
+                    },
                 )
                 .await
             {

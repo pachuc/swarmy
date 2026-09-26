@@ -21,7 +21,7 @@ use swarmy_core::{
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::{InferenceJob, Response, StopReason, TokenUsage};
-use swarmy_store::{Store, blob::ObjectBlobStore, runnable_partition};
+use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
@@ -348,13 +348,15 @@ impl Fixture {
         };
         let image = image_fixture::image(&self.store).await;
         self.store
-            .create_session_with_route(
+            .create_agent_session(
                 id,
                 None,
-                Some(image),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
-                Some(route),
+                AgentSessionOptions {
+                    image: Some(image.to_owned()),
+                    inference: swarmy_core::InferenceSelection::default(),
+                    route: Some(route.to_owned()),
+                },
             )
             .await
             .unwrap();
@@ -397,13 +399,15 @@ impl Fixture {
         };
         // Named sessions pin the agent's image instead of taking one.
         self.store
-            .create_session_with_route(
+            .create_agent_session(
                 id,
                 Some(agent),
-                None,
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
-                route,
+                AgentSessionOptions {
+                    inference: swarmy_core::InferenceSelection::default(),
+                    route: route.map(str::to_owned),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -1803,7 +1807,7 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
             let id = SessionId::from_ulid(Ulid::generate());
             if runnable_partition(id) == 7 { break id; }
         };
-        f.store.create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now()).await.unwrap();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), AgentSessionOptions::default()).await.unwrap();
         f.store.set_main_session(agent.agent_id, id).await.unwrap();
         f.user_message(id).await;
         f.start("swarmy-scheduler", None);
@@ -1937,7 +1941,12 @@ async fn side_pressure_warns_at_75_percent_without_archiving() {
                 .unwrap();
             let id = side_id();
             f.store
-                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .create_agent_session(
+                    id,
+                    Some(agent.agent_id),
+                    Timestamp::now(),
+                    AgentSessionOptions::default(),
+                )
                 .await
                 .unwrap();
             f.user_message(id).await;
@@ -1971,7 +1980,12 @@ async fn side_summary_archives_with_tail_and_continues_small() {
                 .unwrap();
             let id = side_id();
             f.store
-                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .create_agent_session(
+                    id,
+                    Some(agent.agent_id),
+                    Timestamp::now(),
+                    AgentSessionOptions::default(),
+                )
                 .await
                 .unwrap();
             f.user_message(id).await;
@@ -2189,7 +2203,12 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
                 .unwrap();
             let id = side_id();
             f.store
-                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .create_agent_session(
+                    id,
+                    Some(agent.agent_id),
+                    Timestamp::now(),
+                    AgentSessionOptions::default(),
+                )
                 .await
                 .unwrap();
             f.user_message(id).await;

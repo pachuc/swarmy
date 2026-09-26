@@ -16,31 +16,34 @@ async fn agent_commands_and_session_lifetimes() {
         let agent = create_agents(&fixture).await;
         let first = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 Some(agent.agent_id),
-                None,
                 Timestamp::now(),
+                AgentSessionOptions::default(),
             )
             .await
             .unwrap();
         let second = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 Some(agent.agent_id),
-                None,
                 Timestamp::now(),
+                AgentSessionOptions::default(),
             )
             .await
             .unwrap();
         let ephemeral = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
+                AgentSessionOptions {
+                    image: Some("fixture:test".to_owned()),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -543,11 +546,11 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
         for _ in 0..66 {
             fixture
                 .store
-                .create_session_for_agent(
+                .create_agent_session(
                     SessionId::from_ulid(Ulid::generate()),
                     Some(agents[0].agent_id),
-                    None,
                     Timestamp::now(),
+                    AgentSessionOptions::default(),
                 )
                 .await
                 .unwrap();
@@ -665,11 +668,14 @@ async fn new_commands_use_the_selected_remote_profile() {
         .unwrap();
         let ephemeral = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
+                AgentSessionOptions {
+                    image: Some("fixture:test".to_owned()),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();

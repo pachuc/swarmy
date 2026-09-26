@@ -113,7 +113,15 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
     };
     fixture
         .store
-        .create_session_for_agent(id, agent, image, Timestamp::now())
+        .create_agent_session(
+            id,
+            agent,
+            Timestamp::now(),
+            AgentSessionOptions {
+                image: image.map(str::to_owned),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     fixture

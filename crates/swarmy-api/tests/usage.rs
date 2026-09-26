@@ -8,7 +8,10 @@ use swarmy_core::{
     AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
     SessionId,
 };
-use swarmy_store::{MeteringDimension, PutImageOptions, Store, UsageGroupBy, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, MeteringDimension, PutImageOptions, Store, UsageGroupBy,
+    blob::MemoryBlobStore,
+};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -180,19 +183,27 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            manifest,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     let first = SessionId::from_ulid(Ulid::generate());
     let second = SessionId::from_ulid(Ulid::generate());
     for id in [first, second] {
         store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                AgentSessionOptions {
+                    image: Some("fixture:test".to_owned()),
+                    inference: swarmy_core::InferenceSelection::default(),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();

@@ -12,7 +12,8 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    CredentialKey, InterruptResult, PutImageOptions, Store, StoreError, SubmitInferenceOptions,
+    AgentSessionOptions, CredentialKey, InterruptResult, PutImageOptions, Store, StoreError,
+    SubmitInferenceOptions,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };
@@ -1550,7 +1551,9 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
         Err(StoreError::ManifestMissing)
     ));
     assert!(matches!(
-        test.store.put_image("base", &tag, manifest, &PutImageOptions::default()).await,
+        test.store
+            .put_image("base", &tag, manifest, &PutImageOptions::default())
+            .await,
         Err(StoreError::ManifestMissing)
     ));
     test.store.put_manifest(manifest, &header).await.unwrap();
@@ -1573,7 +1576,10 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
             .await,
         Err(StoreError::InvalidManifest)
     ));
-    test.store.put_image("base", &tag, manifest, &PutImageOptions::default()).await.unwrap();
+    test.store
+        .put_image("base", &tag, manifest, &PutImageOptions::default())
+        .await
+        .unwrap();
     assert_eq!(
         test.store.get_image("base", &tag).await.unwrap(),
         Some(manifest)
@@ -1791,7 +1797,12 @@ async fn image_listing_pages_by_name_and_tag() {
         .unwrap();
     for (name, tag) in [("ubuntu", "v2"), ("base", "v1"), ("ubuntu", "v1")] {
         test.store
-            .put_image(name, &ImageTag(tag.into()), manifest, &PutImageOptions::default())
+            .put_image(
+                name,
+                &ImageTag(tag.into()),
+                manifest,
+                &PutImageOptions::default(),
+            )
             .await
             .unwrap();
     }
@@ -2025,7 +2036,12 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
     // Cross a page boundary to verify the error lists every registration.
     for index in 0..65 {
         test.store
-            .put_image("other", &ImageTag(format!("{index:02}")), manifest.unwrap(), &PutImageOptions::default())
+            .put_image(
+                "other",
+                &ImageTag(format!("{index:02}")),
+                manifest.unwrap(),
+                &PutImageOptions::default(),
+            )
             .await
             .unwrap();
     }
@@ -2083,7 +2099,12 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
         .await
         .unwrap();
     test.store
-        .put_image("fixture", &ImageTag("test".into()), replacement, &PutImageOptions::default())
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            replacement,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(

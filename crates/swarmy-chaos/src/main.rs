@@ -30,7 +30,10 @@ use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
 };
-use swarmy_store::{MAX_SCAN_LIMIT, PutImageOptions, Store, blob::ObjectBlobStore, runnable_partition};
+use swarmy_store::{
+    AgentSessionOptions, MAX_SCAN_LIMIT, PutImageOptions, Store, blob::ObjectBlobStore,
+    runnable_partition,
+};
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
@@ -134,7 +137,12 @@ impl Fixture {
             )
             .await?;
         self.store
-            .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest, &PutImageOptions::default())
+            .put_image(
+                "chaos",
+                &swarmy_core::ImageTag("test".into()),
+                manifest,
+                &PutImageOptions::default(),
+            )
             .await?;
         self.image = Some(manifest);
         Ok(())
@@ -158,7 +166,12 @@ impl Fixture {
                 )
                 .await?;
             self.store
-                .put_image("chaos", &swarmy_core::ImageTag("test".into()), manifest, &PutImageOptions::default())
+                .put_image(
+                    "chaos",
+                    &swarmy_core::ImageTag("test".into()),
+                    manifest,
+                    &PutImageOptions::default(),
+                )
                 .await?;
         }
         std::fs::create_dir_all(self.files.path().join(".swarmy"))?;
@@ -321,11 +334,14 @@ impl Fixture {
             };
             self.sessions.push(id);
             self.store
-                .create_session_for_agent(
+                .create_agent_session(
                     id,
                     agent,
-                    if shared { None } else { Some("chaos:test") },
                     Timestamp::now(),
+                    AgentSessionOptions {
+                        image: if shared { None } else { Some("chaos:test") }.map(str::to_owned),
+                        ..Default::default()
+                    },
                 )
                 .await?;
             self.store

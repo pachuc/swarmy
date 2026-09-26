@@ -407,55 +407,31 @@ impl Store {
         })
         .await
     }
+}
 
+/// Options for creating a session attached to a named agent or an anonymous one.
+#[derive(Clone, Debug, Default)]
+pub struct AgentSessionOptions {
+    /// Image for ephemeral sessions; forbidden for named sessions.
+    pub image: Option<String>,
+    /// Immutable inference overrides for the session's first turn.
+    pub inference: swarmy_core::InferenceSelection,
+    /// Named route override; the route must exist.
+    pub route: Option<String>,
+}
+
+impl Store {
     /// Create an idle session, minting an anonymous agent or attaching to a named one.
     /// `image` is required for ephemeral sessions and forbidden for named sessions.
     /// # Errors
-    /// Rejects unknown agents/images, deleted computers, image overrides, and duplicate sessions.
-    pub async fn create_session_for_agent(
+    /// Rejects unknown agents/images, deleted computers, image overrides,
+    /// missing routes, and duplicate sessions.
+    pub async fn create_agent_session(
         &self,
         id: SessionId,
         agent: Option<AgentId>,
-        image: Option<&str>,
         now: Timestamp,
-    ) -> Result<SessionRecord> {
-        self.create_session_with_inference(
-            id,
-            agent,
-            image,
-            now,
-            &swarmy_core::InferenceSelection::default(),
-        )
-        .await
-    }
-
-    /// Create a session with immutable inference overrides before its first turn.
-    /// # Errors
-    /// Rejects invalid agents/images and duplicate sessions.
-    pub async fn create_session_with_inference(
-        &self,
-        id: SessionId,
-        agent: Option<AgentId>,
-        image: Option<&str>,
-        now: Timestamp,
-        inference: &swarmy_core::InferenceSelection,
-    ) -> Result<SessionRecord> {
-        self.create_session_with_route(id, agent, image, now, inference, None)
-            .await
-    }
-
-    /// Create a session with inference overrides and a route override before
-    /// its first turn. A named route must exist.
-    /// # Errors
-    /// Rejects missing routes, invalid agents/images, and duplicate sessions.
-    pub async fn create_session_with_route(
-        &self,
-        id: SessionId,
-        agent: Option<AgentId>,
-        image: Option<&str>,
-        now: Timestamp,
-        inference: &swarmy_core::InferenceSelection,
-        route: Option<&str>,
+        options: AgentSessionOptions,
     ) -> Result<SessionRecord> {
         let session = SessionRecord {
             interrupt_requested: false,
@@ -469,11 +445,12 @@ impl Store {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
-            inference: inference.clone(),
-            route: route.map(str::to_owned),
+            inference: options.inference,
+            route: options.route,
             route_step: 0,
         };
-        self.create_session_record(&session, now, image).await?;
+        self.create_session_record(&session, now, options.image.as_deref())
+            .await?;
         Ok(session)
     }
 

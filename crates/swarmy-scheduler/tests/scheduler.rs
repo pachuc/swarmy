@@ -21,7 +21,7 @@ use swarmy_core::{
     AgentId, Event, LeaseOwnerId, MessageRole, Nudge, RequestId, RunnableEntry, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
 };
-use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
+use swarmy_store::{AgentSessionOptions, Store, blob::MemoryBlobStore, runnable_partition};
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
 
@@ -574,7 +574,12 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
             .unwrap();
         let named = f
             .store
-            .create_session_for_agent(id(), Some(agent.agent_id), None, old)
+            .create_agent_session(
+                id(),
+                Some(agent.agent_id),
+                old,
+                AgentSessionOptions::default(),
+            )
             .await
             .unwrap();
         f.start_with_retention("7", &f.prefix, 1).await;
@@ -643,7 +648,7 @@ async fn due_side_timer_nudges_its_idle_session() {
             .find(|&session| runnable_partition(session) == 7)
             .unwrap();
         f.store
-            .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+            .create_agent_session(side, Some(agent), Timestamp::now(), AgentSessionOptions::default())
             .await
             .unwrap();
         f.store.wake_session(side, Timestamp::now()).await.unwrap();

@@ -51,7 +51,12 @@ async fn dispatch_arguments(
     let id = session.session_id;
     if store.get_agent(agent).await.unwrap().is_some() {
         store
-            .create_session_for_agent(id, Some(agent), None, jiff::Timestamp::now())
+            .create_agent_session(
+                id,
+                Some(agent),
+                jiff::Timestamp::now(),
+                AgentSessionOptions::default(),
+            )
             .await
             .unwrap();
     } else {
@@ -216,7 +221,12 @@ pub(super) async fn start(
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();
     store
-        .put_image("persistent", &ImageTag("test".into()), base, &PutImageOptions::default())
+        .put_image(
+            "persistent",
+            &ImageTag("test".into()),
+            base,
+            &PutImageOptions::default(),
+        )
         .await
         .unwrap();
     (node, bus)
