@@ -47,12 +47,16 @@ def one(output):
     return values[0]
 
 
-def load():
+def load_file():
     if not CONFIG.exists():
         raise RuntimeError(f"create {CONFIG} from fleet.example.toml")
     if CONFIG.stat().st_mode & 0o077:
         raise RuntimeError(f"{CONFIG} must have owner-only permissions (chmod 600)")
-    data = tomllib.loads(CONFIG.read_text())
+    return tomllib.loads(CONFIG.read_text())
+
+
+def load():
+    data = load_file()
     for key in ("github_token", "repo"):
         if not data.get(key):
             raise RuntimeError(f"{CONFIG}: missing {key}")
@@ -60,6 +64,21 @@ def load():
     # how the driver runs on a swarm's own control node without a tunnel.
     data.setdefault("remote", "")
     data.setdefault("workers", 4)
+    return data
+
+
+def load_reporting(remote):
+    """Settings for the read-only report and benchmark actions.
+
+    Reporting reads only session metrics and never touches GitHub, so it
+    needs no token: a missing config file means the local API with default
+    state, and --remote overrides the file when both are present.
+    """
+    data = load_file() if CONFIG.exists() else {}
+    data.setdefault("remote", "")
+    data.setdefault("workers", 4)
+    if remote is not None:
+        data["remote"] = "" if remote == "local" else remote
     return data
 
 
@@ -579,6 +598,8 @@ def parse_report_argv(tokens):
     Everything after `--label NAME` belongs to that label until the next
     --label. argparse cannot preserve that grouping, so the report entry
     point re-scans the raw tokens instead of using the parsed namespace.
+    --remote and --wall come from the parsed namespace instead; the scan
+    only skips over them and their values.
     """
     as_json = False
     since = None
@@ -603,6 +624,14 @@ def parse_report_argv(tokens):
                 raise RuntimeError("report --since requires a time value")
             since = tokens[index + 1]
             index += 2
+        elif token == "--remote":
+            if index + 1 >= len(tokens):
+                raise RuntimeError("report --remote requires a remote name")
+            index += 2
+        elif token == "--wall":
+            if index + 1 >= len(tokens):
+                raise RuntimeError("report --wall requires SESSION=SECONDS")
+            index += 2
         elif token == "--label":
             if index + 1 >= len(tokens):
                 raise RuntimeError("report --label requires a name")
@@ -620,6 +649,21 @@ def parse_report_argv(tokens):
             group()["tasks"].append(token)
             index += 1
     return as_json, since, groups
+
+
+def parse_wall_args(values):
+    """Wall-clock seconds per session from repeated --wall SESSION=SECONDS."""
+    walls = {}
+    for item in values or []:
+        session, sep, seconds = item.partition("=")
+        try:
+            wall = float(seconds)
+        except ValueError:
+            raise RuntimeError(f"report --wall must look like SESSION=SECONDS, got {item!r}") from None
+        if not session or not sep or not math.isfinite(wall) or wall < 0:
+            raise RuntimeError(f"report --wall needs a session id and non-negative seconds, got {item!r}")
+        walls[session] = wall
+    return walls
 
 
 def tasks_since(config, since):
@@ -708,12 +752,14 @@ def turn_duration_s(turn):
     return 0.0
 
 
-def summarize_turns(name, session_id, turns):
+def summarize_turns(name, session_id, turns, wall_s=None):
     """Aggregate raw per-turn records into one comparable row.
 
     Latency percentiles pool every observed turn; counts and token totals
     sum; waits pool rate-limit, gateway, and provider-failure waits while
-    retries and errors keep their own totals.
+    retries and errors keep their own totals. wall_s is the runner-measured
+    wall time of the whole run, which stays comparable even when the durable
+    per-turn metrics are incomplete.
     """
     first_token, inference, rates, tools, placements = [], [], [], [], []
     duration = 0.0
@@ -784,6 +830,7 @@ def summarize_turns(name, session_id, turns):
         "session_id": session_id,
         "turns": len(turns),
         "duration_s": duration,
+        "wall_s": wall_s,
         "a2f_p50_ms": percentile(first_token, 50),
         "a2f_p95_ms": percentile(first_token, 95),
         "infer_p50_ms": percentile(inference, 50),
@@ -809,12 +856,12 @@ def summarize_turns(name, session_id, turns):
     }
 
 
-MEDIAN_KEYS = ("turns", "duration_s", "a2f_p50_ms", "a2f_p95_ms", "infer_p50_ms",
-               "infer_p95_ms", "tps_mean", "tps_p95", "tool_calls", "tool_p50_ms",
-               "tool_p95_ms", "place_cold", "place_warm", "place_p50_ms",
-               "chunks_fetched", "bytes_fetched", "waits", "retries", "errors",
-               "input_tokens", "cached_input_tokens", "output_tokens",
-               "reasoning_tokens", "cost_dollars")
+MEDIAN_KEYS = ("turns", "duration_s", "wall_s", "a2f_p50_ms", "a2f_p95_ms", "infer_p50_ms",
+                "infer_p95_ms", "tps_mean", "tps_p95", "tool_calls", "tool_p50_ms",
+                "tool_p95_ms", "place_cold", "place_warm", "place_p50_ms",
+                "chunks_fetched", "bytes_fetched", "waits", "retries", "errors",
+                "input_tokens", "cached_input_tokens", "output_tokens",
+                "reasoning_tokens", "cost_dollars")
 
 
 def median_row(label, rows):
@@ -827,7 +874,7 @@ def median_row(label, rows):
     return medians
 
 
-REPORT_COLUMNS = ("task", "turns", "duration_s", "a2f_p50_ms", "a2f_p95_ms",
+REPORT_COLUMNS = ("task", "turns", "duration_s", "wall_s", "a2f_p50_ms", "a2f_p95_ms",
                   "infer_p50_ms", "infer_p95_ms", "tps_mean", "tps_p95",
                   "tool_calls", "tool_p50_ms", "tool_p95_ms", "place_cold",
                   "place_warm", "place_p50_ms", "chunks_fetched", "bytes_fetched",
@@ -862,7 +909,7 @@ def markdown_table(rows, total):
     return "\n".join(lines)
 
 
-def report_command(tokens, config):
+def report_command(tokens, config, walls=None):
     """Aggregate per-turn metrics for tasks or sessions into a table.
 
     Each entry resolves to a session id (task ids through their fleet
@@ -870,9 +917,13 @@ def report_command(tokens, config):
     directly, --since through assignment start times and launch log
     times), its records load through `swarmy session metrics --json`, and
     the per-task rows pool into a totals row. Repeated --label prints one
-    table per label plus a final table of the per-label medians.
+    table per label plus a final table of the per-label medians. walls maps
+    session ids to runner-measured wall seconds (--wall SESSION=SECONDS);
+    each row prints its wall as wall_s next to duration_s, and the totals
+    row sums the known walls.
     """
     as_json, since, groups = parse_report_argv(tokens)
+    walls = walls or {}
     if since is not None and not groups:
         groups.append({"label": None, "tasks": [], "sessions": []})
     if not groups:
@@ -889,16 +940,20 @@ def report_command(tokens, config):
         if not entries:
             raise RuntimeError("report requires task ids, --session ids, or --since TIME")
         rows, pooled, session_ids = [], [], None
+        resolved = []
         for display, direct in entries:
             if direct is None:
                 session_id = resolve_report_session(config, display)
             else:
                 session_id = direct
+            resolved.append(session_id)
             turns = fetch_turn_metrics(config, session_id)
-            rows.append(summarize_turns(display, session_id, turns))
+            rows.append(summarize_turns(display, session_id, turns, walls.get(session_id)))
             pooled.extend(turns)
             session_ids = session_id if len(entries) == 1 else None
         total = summarize_turns("total", session_ids or "", pooled)
+        present = [walls[session_id] for session_id in resolved if session_id in walls]
+        total["wall_s"] = sum(present) if present else None
         tables.append({"label": group["label"], "rows": rows, "total": total})
     if as_json:
         if labeled:
@@ -966,7 +1021,7 @@ def main():
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
     bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote (use --remote local on a control node)")
-    bench.add_argument("--remote", required=True)
+    bench.add_argument("--remote", default="local")
     bench.add_argument("--provider", required=True)
     bench.add_argument("--model", required=True)
     bench.add_argument("--effort", required=True)
@@ -974,6 +1029,8 @@ def main():
     bench.add_argument("--image", help="registered image as NAME:TAG for the isolated session; default is the remote's default image")
     report_parser = sub.add_parser("report", help="aggregate per-turn session metrics into a comparison table")
     report_parser.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
+    report_parser.add_argument("--remote", default=None, help="tunnel profile, or local for the node's own API configuration (default: the fleet.toml remote, else local)")
+    report_parser.add_argument("--wall", action="append", default=[], dest="walls", help="runner-measured wall seconds for a session as SESSION=SECONDS; may repeat")
     report_parser.add_argument("--since", default=None, help="include every task launched at or after this ISO 8601 time")
     report_parser.add_argument("--label", action="append", default=[], help="start a labeled group; repeat for side-by-side tables")
     report_parser.add_argument("--session", action="append", default=[], dest="sessions", help="report a session id directly; may repeat")
@@ -986,7 +1043,7 @@ def main():
             # argparse cannot keep the order of repeated --label groups, so the
             # report re-scans the raw tokens to know which ids belong together.
             raw = sys.argv[sys.argv.index("report") + 1:]
-            return report_command(raw, load())
+            return report_command(raw, load_reporting(args.remote), parse_wall_args(args.walls))
         config = load()
         if args.action == "launch":
             launch(args, config)

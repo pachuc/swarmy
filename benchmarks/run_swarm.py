@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 from tasks import PIN, TASKS, load
 
@@ -33,6 +34,13 @@ def cold_from_events(events):
             if match:
                 return match.group(1) == "true"
     raise ValueError("session did not print BENCH_COLD at the start")
+
+
+def record(label, environment, task, repeat, wall, session_id, cold):
+    """One run's receipt, with the runner-measured wall time of the invocation."""
+    return {"label": label, "environment": environment, "task": task,
+            "run": repeat, "session_id": session_id, "wall_seconds": wall,
+            "cold": cold}
 
 
 def commands(remote, provider, model, effort, directory, image=None):
@@ -70,7 +78,9 @@ def main(argv=None):
             if args.dry_run:
                 print(f"{name}-{repeat}: {shlex.join(command[:-1] + [f'<prompt:{name}-{repeat}>'])}")
                 continue
+            start = time.monotonic()
             output = subprocess.run(command, text=True, capture_output=True, check=False)
+            wall = time.monotonic() - start
             if output.returncode:
                 raise RuntimeError(f"{name}-{repeat}: fleet benchmark exited {output.returncode}: {output.stderr}")
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,16 +94,17 @@ def main(argv=None):
                 raise RuntimeError(f"{name}-{repeat}: no session id in fleet output")
             cold = cold_from_events(events)
             sessions.append(ids[0])
-            records.append({"label": args.label, "environment": args.remote,
-                            "task": name, "run": repeat, "session_id": ids[0],
-                            "cold": cold})
+            records.append(record(args.label, args.remote, name, repeat, wall, ids[0], cold))
             (output_dir / f"{args.label}-swarm-runs.json").write_text(
                 json.dumps({"label": args.label, "runs": records}, indent=2) + "\n")
             (output_dir / f"{args.label}-swarm-sessions.json").write_text(json.dumps(sessions, indent=2) + "\n")
             print(f"{name}-{repeat}: {ids[0]}", flush=True)
-        report = [str(DRIVER), "report", "--label", args.label]
+        walls = {run["session_id"]: run["wall_seconds"] for run in records}
+        report = [str(DRIVER), "report", "--remote", args.remote, "--label", args.label]
         for session in sessions if not args.dry_run else [f"<{name}-{repeat}-session>" for name, repeat, _ in runs]:
             report += ["--session", session]
+            if session in walls:
+                report += ["--wall", f"{session}={walls[session]:.3f}"]
         if args.dry_run:
             print(shlex.join(report))
         else:

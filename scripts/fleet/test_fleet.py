@@ -373,12 +373,13 @@ class FleetTests(unittest.TestCase):
         table = self.call("report", "--session", "SESA", "--session", "SESB", env=env)
         self.assertEqual(table.returncode, 0, table.stderr)
         # Percentiles use the store rollup's nearest rank: three append-to-idle
-        # samples [100, 200, 300] give p50 200 and p95 300.
-        self.assertIn("| SESA | 3 | 6.0 | 200.0 | 300.0 | 300.0 | 400.0 | 20.0 | 30.0 | 3 | 200.0 | 300.0 |", table.stdout)
-        self.assertIn("| SESB | 1 | 5.0 | 1000.0 | 1000.0 | 2000.0 | 2000.0 | 50.0 | 50.0 | 1 | 1000.0 | 1000.0 |", table.stdout)
+        # samples [100, 200, 300] give p50 200 and p95 300. No --wall flags
+        # were passed, so wall_s prints as missing next to duration_s.
+        self.assertIn("| SESA | 3 | 6.0 | - | 200.0 | 300.0 | 300.0 | 400.0 | 20.0 | 30.0 | 3 | 200.0 | 300.0 |", table.stdout)
+        self.assertIn("| SESB | 1 | 5.0 | - | 1000.0 | 1000.0 | 2000.0 | 2000.0 | 50.0 | 50.0 | 1 | 1000.0 | 1000.0 |", table.stdout)
         # The totals row pools every turn: four append-to-first-token samples
         # [100, 200, 300, 1000] give p50 300 and p95 1000.
-        self.assertIn("| total | 4 | 11.0 | 300.0 | 1000.0 | 400.0 | 2000.0 | 27.5 | 50.0 | 4 | 300.0 | 1000.0 |", table.stdout)
+        self.assertIn("| total | 4 | 11.0 | - | 300.0 | 1000.0 | 400.0 | 2000.0 | 27.5 | 50.0 | 4 | 300.0 | 1000.0 |", table.stdout)
         as_json = self.call("report", "--session", "SESA", "--session", "SESB", "--json", env=env)
         self.assertEqual(as_json.returncode, 0, as_json.stderr)
         payload = json.loads(as_json.stdout)
@@ -395,6 +396,63 @@ class FleetTests(unittest.TestCase):
         self.assertAlmostEqual(total["cost_dollars"], 0.112)
         self.assertAlmostEqual(total["tps_mean"], 27.5)
         self.assertEqual(second["session_id"], "SESB")
+        self.assertIsNone(first["wall_s"])
+        self.assertIsNone(total["wall_s"])
+
+    def test_report_wall_seconds_next_to_duration(self):
+        env = self.report_env()
+        table = self.call("report", "--session", "SESA", "--wall", "SESA=12.5",
+                          "--session", "SESB", "--wall", "SESB=7.5", env=env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        self.assertIn("| task | turns | duration_s | wall_s | a2f_p50_ms |", table.stdout)
+        self.assertIn("| SESA | 3 | 6.0 | 12.5 | 200.0 |", table.stdout)
+        self.assertIn("| SESB | 1 | 5.0 | 7.5 | 1000.0 |", table.stdout)
+        # The totals row sums the known runner-measured walls.
+        self.assertIn("| total | 4 | 11.0 | 20.0 | 300.0 |", table.stdout)
+        as_json = self.call("report", "--session", "SESA", "--wall", "SESA=12.5",
+                            "--session", "SESB", "--wall", "SESB=7.5", "--json", env=env)
+        self.assertEqual(as_json.returncode, 0, as_json.stderr)
+        payload = json.loads(as_json.stdout)
+        self.assertEqual(payload["rows"][0]["wall_s"], 12.5)
+        self.assertEqual(payload["rows"][1]["wall_s"], 7.5)
+        self.assertEqual(payload["total"]["wall_s"], 20.0)
+        labeled = self.call("report", "--label", "dev", "--session", "SESA", "--wall", "SESA=12.5",
+                            "--label", "dev2", "--session", "SESB", "--wall", "SESB=7.5",
+                            "--json", env=env)
+        self.assertEqual(labeled.returncode, 0, labeled.stderr)
+        medians = {row["label"]: row for row in json.loads(labeled.stdout)["medians"]}
+        self.assertEqual(medians["dev"]["wall_s"], 12.5)
+        self.assertEqual(medians["dev2"]["wall_s"], 7.5)
+        bad = self.call("report", "--session", "SESA", "--wall", "SESA=soon", env=env)
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn("SESSION=SECONDS", bad.stderr)
+
+    def test_report_and_benchmark_run_without_a_config_file(self):
+        # Reporting reads only session metrics, so neither action needs the
+        # GitHub token or repo that worker actions require.
+        env = dict(self.env, FLEET_CONFIG=str(self.root / "absent-fleet.toml"),
+                   REPORT_METRICS=json.dumps({"SESA": []}))
+        table = self.call("report", "--remote", "local", "--session", "SESA", env=env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        self.assertIn("wall_s", table.stdout)
+        self.assertIn("| SESA | 0 | 0.0 | - |", table.stdout)
+        walled = self.call("report", "--remote", "local", "--session", "SESA",
+                           "--wall", "SESA=12.5", env=env)
+        self.assertEqual(walled.returncode, 0, walled.stderr)
+        self.assertIn("| SESA | 0 | 0.0 | 12.5 |", walled.stdout)
+        prompt = self.root / "prompt.txt"
+        prompt.write_text("Print BENCH_COLD=true")
+        bench = self.call("benchmark", "--remote", "local", "--provider", "fake",
+                          "--model", "fake", "--effort", "low",
+                          "--prompt-file", str(prompt), env=env)
+        self.assertEqual(bench.returncode, 0, bench.stderr)
+
+    def test_auth_actions_still_require_a_token(self):
+        self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\nstate_dir = "{self.root / 'state'}"\n''')
+        self.config.chmod(0o600)
+        result = self.call("status")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing github_token", result.stderr)
 
     def test_report_task_ids_and_since_select_assignments(self):
         env = self.report_env()

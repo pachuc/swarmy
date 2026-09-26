@@ -78,7 +78,8 @@ each environment during the perf baseline.
 ## Perf baseline runners
 
 `benchmarks/run-swarm.sh REMOTE LABEL` runs the three fixed tasks twice each
-through `fleet benchmark` and writes `.dev/benchmarks/LABEL-*`; run it on each
+through `fleet benchmark`, records each invocation's wall time, and writes
+`.dev/benchmarks/LABEL-*`; run it on each
 swarm's control node with an empty `remote` (previous section).
 `benchmarks/run-daytona.py LABEL` runs the same prompts through codex-daytona
 in disposable remote sandboxes with `--no-publish`; Codex never runs on the
@@ -88,8 +89,11 @@ infrastructure, not models: `BENCH_PROVIDER=openrouter
 BENCH_MODEL=meta/muse-spark-1.3-contributor BENCH_EFFORT=medium`. The
 codex-daytona leg needs `OPENROUTER_API_KEY` in the launcher's `.env` (it is
 placed in the sandbox as a private file) and `CODEX_DAYTONA_DIR` when the
-launcher is not at `~/code/codex-daytona`. Compare the results with
-`scripts/fleet/fleet report --label LABEL --session ID ...`.
+launcher is not at `~/code/codex-daytona`. The runner closes by invoking
+`scripts/fleet/fleet report --remote REMOTE --label LABEL --session ID
+--wall ID=SECONDS ...`, which prints each run's wall time as `wall_s` next to
+`duration_s`; `benchmark` and `report` need no `fleet.toml` and can also run
+ad hoc against the local API with `--remote local`.
 
 ## The split layout in practice
 
