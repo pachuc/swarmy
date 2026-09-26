@@ -61,13 +61,17 @@ impl Fixture {
                 let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
                     .await
                     .unwrap();
-                let state = swarmy_api::AppState::new(
+                let mut state = swarmy_api::AppState::new(
                     store,
                     bus,
                     "fixture-token".into(),
                     catalog,
                     std::sync::Arc::new(object_store::memory::InMemory::new()),
                 );
+                // Credential lookups go through the API now, so give the
+                // service a fixed keyring instead of the host secret service,
+                // which headless CI runners do not provide.
+                state.credential_keyring = Some(swarmy_config::Keyring::from_bytes([7; 32]));
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 ready.send(()).unwrap();
                 axum::serve(listener, swarmy_api::router(state))
