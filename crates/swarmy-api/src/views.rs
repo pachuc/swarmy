@@ -31,7 +31,6 @@ pub fn from_api_stage(value: api::StageTiming) -> store::StageTiming {
 }
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric {
     api::InferenceMetric {
         request_id: value.request_id,
@@ -56,7 +55,6 @@ pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric
 }
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn from_api_inference(value: api::InferenceMetric) -> store::InferenceMetric {
     store::InferenceMetric {
         request_id: value.request_id,
@@ -245,5 +243,72 @@ pub fn from_api_agent(value: api::AgentMetrics) -> store::AgentMetrics {
         retries: value.retries,
         errors: value.errors,
         cost_micros: value.cost_micros,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metric_views_round_trip() {
+        let stage = store::StageTiming {
+            stage: "appended".into(),
+            request_id: None,
+            clock_id: "boot".into(),
+            monotonic_ns: 1_000_000,
+            unix_ns: 1_000_000,
+        };
+        assert_eq!(from_api_stage(into_api_stage(stage.clone())), stage);
+        let inference = store::InferenceMetric {
+            request_id: "r".into(),
+            provider: "fake".into(),
+            model: "scripted".into(),
+            output_tokens: 4,
+            streamed: Some(false),
+            ..store::InferenceMetric::default()
+        };
+        assert_eq!(
+            from_api_inference(into_api_inference(inference.clone())),
+            inference
+        );
+        let tool = store::ToolMetric {
+            request_id: "c".into(),
+            name: "bash".into(),
+            ..store::ToolMetric::default()
+        };
+        assert_eq!(from_api_tool(into_api_tool(tool.clone())), tool);
+        let computer = store::ComputerMetric {
+            chunks_fetched: 7,
+            ..store::ComputerMetric::default()
+        };
+        assert_eq!(
+            from_api_computer(into_api_computer(computer.clone())),
+            computer
+        );
+        let turn = store::TurnMetrics {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            stages: vec![stage],
+            inference: vec![inference],
+            tools: vec![tool],
+            computer: Some(computer),
+            dropped_stages: 1,
+            dropped_inference: 2,
+            dropped_tools: 3,
+            ..store::TurnMetrics::default()
+        };
+        assert_eq!(from_api_turn(into_api_turn(turn.clone())), turn);
+        let latency = store::LatencyPercentiles {
+            p50_ms: 1.0,
+            p95_ms: 2.0,
+        };
+        assert_eq!(from_api_latency(into_api_latency(latency.clone())), latency);
+        let agent = store::AgentMetrics {
+            agent_id: "a".into(),
+            latencies: std::collections::BTreeMap::from([("append_to_idle".into(), latency)]),
+            ..store::AgentMetrics::default()
+        };
+        assert_eq!(from_api_agent(into_api_agent(agent.clone())), agent);
     }
 }
