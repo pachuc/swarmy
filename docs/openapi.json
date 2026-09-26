@@ -1832,6 +1832,26 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "inference_limit",
+            "in": "query",
+            "description": "Maximum inference requests per turn; the remainder counts in dropped_inference",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "tools_limit",
+            "in": "query",
+            "description": "Maximum tool calls per turn; the remainder counts in dropped_tools",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -3427,6 +3447,14 @@
             "format": "int64",
             "minimum": 0
           },
+          "request_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Whole-request duration from the first byte of the request to\ncompletion. Throughput divides by this interval, not by the\nstreaming interval, so single-chunk responses do not report\nabsurd rates."
+          },
           "request_id": {
             "type": "string"
           },
@@ -3434,6 +3462,10 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "streamed": {
+            "type": "boolean",
+            "description": "Whether the response arrived as more than one content chunk.\nA single-chunk response (one content delta before completion)\nsets this to false so reports can label it."
           },
           "streaming_duration_ms": {
             "type": [
@@ -4042,19 +4074,19 @@
           "dropped_inference": {
             "type": "integer",
             "format": "int64",
-            "description": "Model requests dropped when the 16-entry cap is hit.",
+            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
             "minimum": 0
           },
           "dropped_stages": {
             "type": "integer",
             "format": "int64",
-            "description": "Stages dropped when the 64-entry cap is hit.",
+            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
             "minimum": 0
           },
           "dropped_tools": {
             "type": "integer",
             "format": "int64",
-            "description": "Tool calls dropped when the 64-entry cap is hit.",
+            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
             "minimum": 0
           },
           "error": {
@@ -4083,7 +4115,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/StageTiming"
-            }
+            },
+            "description": "Anchor stages reconstructed from the summary timestamps\n(submitted, appended, first token, first tool, idle). The\ndurable store no longer keeps a bounded stage list; this array\ncarries at most those anchors for backward compatibility."
           },
           "tools": {
             "type": "array",

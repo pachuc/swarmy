@@ -25,12 +25,29 @@ pub struct InferenceMetric {
     pub cost_micros: u64,
     pub time_to_first_token_ms: Option<f64>,
     pub streaming_duration_ms: Option<f64>,
+    /// Whole-request duration from the first byte of the request to
+    /// completion. Throughput divides by this interval, not by the
+    /// streaming interval, so single-chunk responses do not report
+    /// absurd rates.
+    #[serde(default)]
+    pub request_duration_ms: Option<f64>,
+    /// Whether the response arrived as more than one content chunk.
+    /// A single-chunk response (one content delta before completion)
+    /// sets this to false so reports can label it.
+    #[serde(default = "default_streamed")]
+    pub streamed: bool,
     pub output_tokens_per_second: Option<f64>,
     pub retries: u32,
     pub rate_limit_waits: u32,
     pub gateway_waits: u32,
     pub provider_failures: u32,
     pub error: Option<String>,
+}
+
+fn default_streamed() -> bool {
+    // Rows written before the flag existed carry no chunk information.
+    // Assume they streamed so old turns are not mislabeled single-chunk.
+    true
 }
 
 impl InferenceMetric {
@@ -85,6 +102,10 @@ pub struct ComputerMetric {
 pub struct TurnMetrics {
     pub session_id: String,
     pub turn_id: String,
+    /// Anchor stages reconstructed from the summary timestamps
+    /// (submitted, appended, first token, first tool, idle). The
+    /// durable store no longer keeps a bounded stage list; this array
+    /// carries at most those anchors for backward compatibility.
     pub stages: Vec<StageTiming>,
     pub inference: Vec<InferenceMetric>,
     pub tools: Vec<ToolMetric>,
@@ -93,13 +114,13 @@ pub struct TurnMetrics {
     pub inference_duration_ms: Option<f64>,
     pub append_to_idle_ms: Option<f64>,
     pub error: Option<String>,
-    /// Stages dropped when the 64-entry cap is hit.
+    /// Kept for wire compatibility; the unbounded layout never drops rows.
     #[serde(default)]
     pub dropped_stages: u64,
-    /// Model requests dropped when the 16-entry cap is hit.
+    /// Kept for wire compatibility; the unbounded layout never drops rows.
     #[serde(default)]
     pub dropped_inference: u64,
-    /// Tool calls dropped when the 64-entry cap is hit.
+    /// Kept for wire compatibility; the unbounded layout never drops rows.
     #[serde(default)]
     pub dropped_tools: u64,
 }
@@ -155,8 +176,16 @@ impl TurnMetrics {
             request.streaming_duration_ms = stage("first_token")
                 .zip(stage("inference_finished"))
                 .and_then(|(a, b)| Self::duration_ms(a, b));
+            // Throughput covers the whole request, not just the streaming
+            // interval, so a provider that delivers the response in one
+            // chunk reports a realistic rate instead of tens of thousands
+            // of tokens per second.
+            request.request_duration_ms = stage("inference_started")
+                .zip(stage("inference_finished"))
+                .and_then(|(a, b)| Self::duration_ms(a, b));
             request.output_tokens_per_second = request
-                .streaming_duration_ms
+                .request_duration_ms
+                .or(request.streaming_duration_ms)
                 .and_then(|ms| InferenceMetric::tokens_per_second(request.output_tokens, ms));
         }
     }

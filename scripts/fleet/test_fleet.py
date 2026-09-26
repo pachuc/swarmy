@@ -332,14 +332,14 @@ class FleetTests(unittest.TestCase):
     def report_env(self):
         """Two fake sessions with hand-computed aggregates for report tests."""
         def request(input_tokens, cached, output, reasoning, micros, tps,
-                    retries=0, waits=(0, 0, 0), error=None):
+                    retries=0, waits=(0, 0, 0), error=None, streamed=True):
             return {"request_id": "r", "provider": "fake", "model": "fake",
                     "input_tokens": input_tokens, "cached_input_tokens": cached,
                     "output_tokens": output, "reasoning_tokens": reasoning,
                     "cost_micros": micros, "output_tokens_per_second": tps,
                     "retries": retries, "rate_limit_waits": waits[0],
                     "gateway_waits": waits[1], "provider_failures": waits[2],
-                    "error": error}
+                    "error": error, "streamed": streamed}
 
         def tool(dispatched_ns, completed_ns):
             return {"request_id": "t", "name": "bash",
@@ -358,7 +358,7 @@ class FleetTests(unittest.TestCase):
             turn(200.0, 300.0, 2000.0, [request(200, 20, 150, 15, 4000, 20.0)],
                  [tool(0, 200_000_000), tool(0, 300_000_000)],
                  {"placement_ms": 150.0, "cold": False, "chunks_fetched": 2, "bytes_fetched": 500}),
-            turn(300.0, 400.0, 3000.0, [request(300, 30, 100, 10, 6000, 30.0, retries=2, waits=(0, 2, 1), error="boom")],
+            turn(300.0, 400.0, 3000.0, [request(300, 30, 100, 10, 6000, 30.0, retries=2, waits=(0, 2, 1), error="boom", streamed=False)],
                  [], None, error="boom"),
         ]
         sesb = [
@@ -374,11 +374,11 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(table.returncode, 0, table.stderr)
         # Percentiles use the store rollup's nearest rank: three append-to-idle
         # samples [100, 200, 300] give p50 200 and p95 300.
-        self.assertIn("| SESA | 3 | 6.0 | 200.0 | 300.0 | 300.0 | 400.0 | 20.0 | 30.0 | 3 | 200.0 | 300.0 |", table.stdout)
-        self.assertIn("| SESB | 1 | 5.0 | 1000.0 | 1000.0 | 2000.0 | 2000.0 | 50.0 | 50.0 | 1 | 1000.0 | 1000.0 |", table.stdout)
+        self.assertIn("| SESA | 3 | 6.0 | 200.0 | 300.0 | 300.0 | 400.0 | 20.0 | 30.0 | 1 | 3 | 200.0 | 300.0 |", table.stdout)
+        self.assertIn("| SESB | 1 | 5.0 | 1000.0 | 1000.0 | 2000.0 | 2000.0 | 50.0 | 50.0 | 0 | 1 | 1000.0 | 1000.0 |", table.stdout)
         # The totals row pools every turn: four append-to-first-token samples
         # [100, 200, 300, 1000] give p50 300 and p95 1000.
-        self.assertIn("| total | 4 | 11.0 | 300.0 | 1000.0 | 400.0 | 2000.0 | 27.5 | 50.0 | 4 | 300.0 | 1000.0 |", table.stdout)
+        self.assertIn("| total | 4 | 11.0 | 300.0 | 1000.0 | 400.0 | 2000.0 | 27.5 | 50.0 | 1 | 4 | 300.0 | 1000.0 |", table.stdout)
         as_json = self.call("report", "--session", "SESA", "--session", "SESB", "--json", env=env)
         self.assertEqual(as_json.returncode, 0, as_json.stderr)
         payload = json.loads(as_json.stdout)
@@ -390,6 +390,8 @@ class FleetTests(unittest.TestCase):
         self.assertEqual((first["place_cold"], first["place_warm"]), (1, 1))
         self.assertEqual(first["place_p50_ms"], 150.0)
         self.assertEqual((first["chunks_fetched"], first["bytes_fetched"]), (6, 1500))
+        self.assertEqual(first["single_chunk"], 1)
+        self.assertEqual(total["single_chunk"], 1)
         self.assertEqual((total["turns"], total["waits"], total["retries"], total["errors"]), (4, 4, 3, 2))
         self.assertEqual((total["input_tokens"], total["output_tokens"]), (1600, 800))
         self.assertAlmostEqual(total["cost_dollars"], 0.112)
