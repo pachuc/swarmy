@@ -5,7 +5,15 @@ use swarmy_core::{
     ToolCallRecord, ToolJob,
 };
 
-async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob>) {
+async fn setup(
+    store: &Store,
+) -> (
+    SessionId,
+    ManifestId,
+    NodeRecord,
+    Vec<ToolJob>,
+    swarmy_core::PlacementRecord,
+) {
     let mut session = session();
     session.state = SessionState::Idle;
     let id = session.session_id;
@@ -77,7 +85,7 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
         SessionState::WaitingTools
     );
     assert_eq!(store.scan_tool_jobs(None, 64).await.unwrap().len(), 2);
-    (id, image, node, jobs)
+    (id, image, node, jobs, placement)
 }
 
 fn tool_jobs(id: SessionId) -> (Vec<ToolJob>, Vec<Event>) {
@@ -132,19 +140,13 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         return;
     };
     let store = &test.store;
-    let (session, image, node, jobs) = setup(store).await;
-    let agent = store
-        .fetch_session(session)
-        .await
-        .unwrap()
-        .unwrap()
-        .agent_id;
+    let (session, image, node, jobs, placement) = setup(store).await;
+    let agent = placement.agent_id;
     let expiry = || {
         Timestamp::now()
             .checked_add(Duration::from_secs(30))
             .unwrap()
     };
-    let placement = store.place(agent, node.node_id, expiry()).await.unwrap();
     let volume = store.agent_volume(session, &placement).await.unwrap();
     assert_eq!(volume.as_ulid(), agent.as_ulid());
     let writer = store
