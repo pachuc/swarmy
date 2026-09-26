@@ -5,8 +5,8 @@ use jiff::Timestamp;
 use swarmy_api::{AppState, router};
 use swarmy_client::Client;
 use swarmy_core::{
-    AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part,
-    RequestId, SessionId,
+    AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
+    SessionId,
 };
 use swarmy_store::{MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore};
 use ulid::Ulid;
@@ -73,16 +73,16 @@ fn usage(input: u64, output: u64, cost: u64) -> (swarmy_core::TokenUsage, u64) {
     )
 }
 
-async fn complete(
-    store: &Store,
-    id: SessionId,
-    provider: &str,
-    model: &str,
-    entry: &str,
-    kind: &str,
+struct CompletionSeed<'a> {
+    provider: &'a str,
+    model: &'a str,
+    entry: &'a str,
+    kind: &'a str,
     at: Timestamp,
     cost: u64,
-) {
+}
+
+async fn complete(store: &Store, id: SessionId, seed: &CompletionSeed<'_>) {
     let lease = store
         .claim_lease(
             id,
@@ -102,7 +102,7 @@ async fn complete(
             &InflightRecord {
                 session_id: id,
                 seq: step,
-                provider: provider.into(),
+                provider: seed.provider.into(),
                 key_id: String::new(),
             },
             &"input",
@@ -118,21 +118,26 @@ async fn complete(
             .checked_add(std::time::Duration::from_secs(60))
             .unwrap(),
     };
-    store.start_inference(&claim, Timestamp::now()).await.unwrap();
-    let (tokens, _) = usage(10, 20, cost);
+    store
+        .start_inference(&claim, Timestamp::now())
+        .await
+        .unwrap();
+    let (tokens, _) = usage(10, 20, seed.cost);
     let event = Event::InferenceCompleted {
         seq: 0,
         request_id: request,
         message: Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: MessageRole::Assistant,
-            parts: vec![Part::Text { text: "done".into() }],
+            parts: vec![Part::Text {
+                text: "done".into(),
+            }],
         },
-        provider: provider.into(),
-        model: model.into(),
+        provider: seed.provider.into(),
+        model: seed.model.into(),
         effort_used: None,
         usage: tokens,
-        cost_micros: cost,
+        cost_micros: seed.cost,
         effort_requested: None,
         effort_clamped: false,
         entry: None,
@@ -146,9 +151,9 @@ async fn complete(
                     claim,
                     expected_head: step,
                     event,
-                    now: at,
-                    entry: Some(entry.into()),
-                    entry_kind: Some(kind.into()),
+                    now: seed.at,
+                    entry: Some(seed.entry.into()),
+                    entry_kind: Some(seed.kind.into()),
                     quota_remaining: std::collections::BTreeMap::new(),
                     quota_resets: std::collections::BTreeMap::new(),
                 },
@@ -194,12 +199,7 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         // runnable, so one wake covers the whole seed sequence.
         store.wake_session(id, Timestamp::now()).await.unwrap();
     }
-    let agent = store
-        .fetch_session(first)
-        .await
-        .unwrap()
-        .unwrap()
-        .agent_id;
+    let agent = store.fetch_session(first).await.unwrap().unwrap().agent_id;
     // Spread completions across days, weeks, and months on both sessions.
     let days = [0, 1, 8, 32, 65];
     for (index, day) in days.iter().enumerate() {
@@ -207,16 +207,22 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         let at = at.checked_add(jiff::Span::new().hours(day * 24)).unwrap();
         let id = if index % 2 == 0 { first } else { second };
         let provider = if index % 2 == 0 { "openai" } else { "xai" };
-        let entry = if index % 2 == 0 { "primary" } else { "secondary" };
+        let entry = if index % 2 == 0 {
+            "primary"
+        } else {
+            "secondary"
+        };
         complete(
             store,
             id,
-            provider,
-            "gpt-5",
-            entry,
-            "api-key",
-            at,
-            100 * u64::try_from(index + 1).unwrap(),
+            &CompletionSeed {
+                provider,
+                model: "gpt-5",
+                entry,
+                kind: "api-key",
+                at,
+                cost: 100 * u64::try_from(index + 1).unwrap(),
+            },
         )
         .await;
     }
@@ -293,7 +299,11 @@ async fn usage_series_matches_store_views_for_every_dimension_and_group() {
                 .usage_aggregate(dimension, from_ts, to_ts, group_by)
                 .await
                 .unwrap();
-            let response = fixture.client.usage(by, None, &from, &to, group).await.unwrap();
+            let response = fixture
+                .client
+                .usage(by, None, &from, &to, group)
+                .await
+                .unwrap();
             assert_eq!(response.groups.len(), expected.len(), "{by}/{group}");
             assert_eq!(
                 response.total.completions,
@@ -375,9 +385,11 @@ async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
     assert_eq!(view.requests_remaining, Some(97));
     assert_eq!(view.free, stored.free);
     assert_eq!(view.window_seconds, stored.window_seconds);
-    let missing = fixture.client.entry_quota("openai", "missing").await.unwrap_err();
-    assert!(
-        matches!(missing, swarmy_client::Error::Api { status, .. }
-            if status == reqwest::StatusCode::NOT_FOUND)
-    );
+    let missing = fixture
+        .client
+        .entry_quota("openai", "missing")
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, swarmy_client::Error::Api { status, .. }
+            if status == reqwest::StatusCode::NOT_FOUND));
 }

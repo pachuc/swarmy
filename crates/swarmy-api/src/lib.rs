@@ -1121,14 +1121,14 @@ async fn usage(
         })
         .transpose()?
         .unwrap_or_else(|| {
-            to.checked_add(jiff::Span::new().days(-30))
+            to.checked_add(jiff::Span::new().hours(-30 * 24))
                 .unwrap_or(Timestamp::UNIX_EPOCH)
         });
     if to <= from {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_range"));
     }
     let groups = match query.key.as_deref() {
-        Some(key) if key.is_empty() => return Err(error(StatusCode::BAD_REQUEST, "invalid_key")),
+        Some("") => return Err(error(StatusCode::BAD_REQUEST, "invalid_key")),
         Some(key) => state
             .store
             .usage(dimension, key, from, to, group_by)

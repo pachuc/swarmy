@@ -390,11 +390,16 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
     test.cleanup().await;
 }
 
-#[tokio::test]
-async fn entry_breakdown_and_aggregate_match_single_key_views() {
-    let Some(test) = TestStore::memory() else {
-        return;
-    };
+struct BreakdownSeed {
+    second: SessionId,
+    agents: [swarmy_core::AgentId; 2],
+    from: Timestamp,
+    to: Timestamp,
+    cost: u64,
+}
+
+/// Two sessions sharing one entry, with the first billing a second entry.
+async fn seed_two_entries(test: &TestStore) -> BreakdownSeed {
     let store = &test.store;
     let first = test.create().await;
     let second = test.create().await;
@@ -404,90 +409,101 @@ async fn entry_breakdown_and_aggregate_match_single_key_views() {
     ];
     let base = Timestamp::from_second(1_700_000_000).unwrap();
     let (tokens, cost) = usage(10, 20, 500);
-    // The first session bills two entries; the second shares one of them.
-    complete_with(
-        store,
-        first,
-        &input(
-            "openai",
-            "gpt-5",
-            "primary",
-            "api-key",
-            tokens.clone(),
-            cost,
-            base,
-        ),
-    )
-    .await;
-    complete_with(
-        store,
-        first,
-        &input("xai", "grok", "secondary", "api-key", tokens.clone(), cost, base),
-    )
-    .await;
-    complete_with(
-        store,
-        second,
-        &input(
-            "openai",
-            "gpt-5",
-            "primary",
-            "api-key",
-            tokens.clone(),
-            cost,
-            base,
-        ),
-    )
-    .await;
-    let from = Timestamp::from_second(swarmy_store::metering::hour_floor(base.as_second())).unwrap();
+    for (id, provider, entry) in [
+        (first, "openai", "primary"),
+        (first, "xai", "secondary"),
+        (second, "openai", "primary"),
+    ] {
+        complete_with(
+            store,
+            id,
+            &input(
+                provider,
+                "gpt-5",
+                entry,
+                "api-key",
+                tokens.clone(),
+                cost,
+                base,
+            ),
+        )
+        .await;
+    }
+    let from =
+        Timestamp::from_second(swarmy_store::metering::hour_floor(base.as_second())).unwrap();
     let to = Timestamp::from_second(from.as_second() + 3_600).unwrap();
+    BreakdownSeed {
+        second,
+        agents,
+        from,
+        to,
+        cost,
+    }
+}
+
+#[tokio::test]
+async fn entry_breakdown_splits_combined_keys_with_costs() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let seed = seed_two_entries(&test).await;
+    let store = &test.store;
     // One owner's combined keys split back into entries with their costs.
     let breakdown = store
         .dimension_totals(
             swarmy_store::MeteringDimension::AgentEntry,
-            &format!("{}/", agents[0]),
+            &format!("{}/", seed.agents[0]),
         )
         .await
         .unwrap();
     assert_eq!(breakdown.len(), 2);
     for total in &breakdown {
         let (owner, entry) = swarmy_store::metering::split_owner_key(&total.key).unwrap();
-        assert_eq!(owner, agents[0].to_string());
+        assert_eq!(owner, seed.agents[0].to_string());
         assert!(["openai/primary", "xai/secondary"].contains(&entry));
-        assert_eq!(total.totals.cost_micros, cost);
+        assert_eq!(total.totals.cost_micros, seed.cost);
         assert_eq!(total.completions, 1);
     }
     // The other owner sees only its own entry.
     let breakdown = store
         .dimension_totals(
             swarmy_store::MeteringDimension::SessionEntry,
-            &format!("{second}/"),
+            &format!("{}/", seed.second),
         )
         .await
         .unwrap();
     assert_eq!(breakdown.len(), 1);
-    assert_eq!(breakdown[0].totals.cost_micros, cost);
-    // The aggregate series equals the sum of the single-key series.
+    assert_eq!(breakdown[0].totals.cost_micros, seed.cost);
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn aggregate_series_sums_single_key_views() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let seed = seed_two_entries(&test).await;
+    let store = &test.store;
     let aggregate = store
         .usage_aggregate(
             swarmy_store::MeteringDimension::Agent,
-            from,
-            to,
+            seed.from,
+            seed.to,
             swarmy_store::UsageGroupBy::Day,
         )
         .await
         .unwrap();
     assert_eq!(aggregate.len(), 1);
     assert_eq!(aggregate[0].completions, 3);
-    assert_eq!(aggregate[0].totals.cost_micros, cost * 3);
+    assert_eq!(aggregate[0].totals.cost_micros, seed.cost * 3);
     let mut summed = swarmy_core::UsageTotals::default();
-    for agent in &agents {
+    for agent in &seed.agents {
         let groups = store
             .usage(
                 swarmy_store::MeteringDimension::Agent,
                 &agent.to_string(),
-                from,
-                to,
+                seed.from,
+                seed.to,
                 swarmy_store::UsageGroupBy::Day,
             )
             .await

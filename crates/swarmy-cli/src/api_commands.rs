@@ -169,23 +169,36 @@ async fn cost_series(
     }
 }
 
-fn usage_row(
-    start: &str,
-    end: &str,
+/// One printed cost row: the group bounds with its token, cost, and count totals.
+struct UsageRow<'a> {
+    start: &'a str,
+    end: &'a str,
     input: u64,
     cached: u64,
     cache_write: u64,
     output: u64,
     reasoning: u64,
     total: u64,
-    cost_dollars: &str,
+    cost_dollars: &'a str,
     completions: u64,
-) -> String {
-    format!(
-        "{start} {end} input={input} cached={cached} cache_write={cache_write} \
-         output={output} reasoning={reasoning} total={total} cost=${cost_dollars} \
-         completions={completions}"
-    )
+}
+
+impl UsageRow<'_> {
+    fn render(&self) -> String {
+        format!(
+            "{} {} input={} cached={} cache_write={} output={} reasoning={} total={} cost=${} completions={}",
+            self.start,
+            self.end,
+            self.input,
+            self.cached,
+            self.cache_write,
+            self.output,
+            self.reasoning,
+            self.total,
+            self.cost_dollars,
+            self.completions,
+        )
+    }
 }
 
 fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result<()> {
@@ -196,35 +209,37 @@ fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result
     for group in &response.groups {
         println!(
             "{}",
-            usage_row(
-                &group.start,
-                &group.end,
-                group.input_tokens,
-                group.cached_input_tokens,
-                group.cache_write_input_tokens,
-                group.output_tokens,
-                group.reasoning_output_tokens,
-                group.total_tokens,
-                &group.cost_dollars,
-                group.completions,
-            )
+            UsageRow {
+                start: &group.start,
+                end: &group.end,
+                input: group.input_tokens,
+                cached: group.cached_input_tokens,
+                cache_write: group.cache_write_input_tokens,
+                output: group.output_tokens,
+                reasoning: group.reasoning_output_tokens,
+                total: group.total_tokens,
+                cost_dollars: &group.cost_dollars,
+                completions: group.completions,
+            }
+            .render()
         );
     }
     let total = &response.total;
     println!(
         "{}",
-        usage_row(
-            "total",
-            "",
-            total.input_tokens,
-            total.cached_input_tokens,
-            total.cache_write_input_tokens,
-            total.output_tokens,
-            total.reasoning_output_tokens,
-            total.total_tokens,
-            &total.cost_dollars,
-            total.completions,
-        )
+        UsageRow {
+            start: "total",
+            end: "",
+            input: total.input_tokens,
+            cached: total.cached_input_tokens,
+            cache_write: total.cache_write_input_tokens,
+            output: total.output_tokens,
+            reasoning: total.reasoning_output_tokens,
+            total: total.total_tokens,
+            cost_dollars: &total.cost_dollars,
+            completions: total.completions,
+        }
+        .render()
     );
     Ok(())
 }
@@ -447,24 +462,8 @@ async fn show_session(
         ),
         json,
     );
-    let usage = &details["usage"]["usage"];
-    print(
-        &json!({"session_usage":details["usage"],"cost_dollars":details["cost_dollars"],"entries":details["entries"],"providers":details["providers"]}),
-        &format!(
-            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-            usage["input_tokens"],
-            usage["cached_input_tokens"],
-            usage["cache_write_input_tokens"],
-            usage["output_tokens"],
-            usage["reasoning_output_tokens"],
-            usage["total_tokens"],
-            details["cost_dollars"]
-        ),
-        json,
-    );
-    if !json && let Some(entries) = entries_text(&details) {
-        println!("{entries}");
-    }
+    let usage = &details["usage"];
+    print_session_usage(usage, &details["cost_dollars"], &details, json);
     if record["state"] == "sleeping" && !details["wait"].is_null() {
         let wait = &details["wait"];
         let reasons = wait["reasons"]
@@ -641,6 +640,33 @@ fn text_value_or_dash(value: &Value) -> String {
         text_value(value)
     }
 }
+fn print_entry_breakdown(details: &Value, json: bool) {
+    if !json && let Some(entries) = entries_text(details) {
+        println!("{entries}");
+    }
+}
+
+/// Print one session's billed totals with the entries behind them. The
+/// JSON line carries the same entries so scripts see what the text shows.
+fn print_session_usage(usage: &Value, cost_dollars: &Value, details: &Value, json: bool) {
+    let tokens = &usage["usage"];
+    print(
+        &json!({"session_usage":usage,"cost_dollars":cost_dollars,"entries":details["entries"],"providers":details["providers"]}),
+        &format!(
+            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+            tokens["input_tokens"],
+            tokens["cached_input_tokens"],
+            tokens["cache_write_input_tokens"],
+            tokens["output_tokens"],
+            tokens["reasoning_output_tokens"],
+            tokens["total_tokens"],
+            optional_text(cost_dollars),
+        ),
+        json,
+    );
+    print_entry_breakdown(details, json);
+}
+
 /// Render one owner's per-entry cost shares with the providers involved.
 /// The server reads these from the entry rollups, so they survive the raw
 /// completion record retention window.
@@ -1240,13 +1266,13 @@ fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
         quota.observed_at.as_deref().unwrap_or("-"),
     );
     if let Some(requests) = quota.requests_remaining {
-        line.push_str(&format!(" requests={requests}"));
+        let _ = write!(line, " requests={requests}");
     }
     if let Some(tokens) = quota.tokens_remaining {
-        line.push_str(&format!(" tokens={tokens}"));
+        let _ = write!(line, " tokens={tokens}");
     }
     if let Some(limit) = quota.limit {
-        line.push_str(&format!(" limit={limit}"));
+        let _ = write!(line, " limit={limit}");
     }
     line
 }

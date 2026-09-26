@@ -57,14 +57,19 @@ async fn complete(
             .checked_add(std::time::Duration::from_secs(60))
             .unwrap(),
     };
-    store.start_inference(&claim, Timestamp::now()).await.unwrap();
+    store
+        .start_inference(&claim, Timestamp::now())
+        .await
+        .unwrap();
     let event = Event::InferenceCompleted {
         seq: 0,
         request_id: request,
         message: Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: MessageRole::Assistant,
-            parts: vec![Part::Text { text: "done".into() }],
+            parts: vec![Part::Text {
+                text: "done".into(),
+            }],
         },
         provider: provider.into(),
         model: model.into(),
@@ -100,7 +105,11 @@ async fn complete(
 async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> SessionId {
     let id = SessionId::from_ulid(Ulid::generate());
     // Named agents pin their own image; only ephemeral sessions take one.
-    let image = if agent.is_none() { Some("fixture:test") } else { None };
+    let image = if agent.is_none() {
+        Some("fixture:test")
+    } else {
+        None
+    };
     fixture
         .store
         .create_session_for_agent(id, agent, image, Timestamp::now())
@@ -124,8 +133,7 @@ fn month_start_ago(months: i64) -> Timestamp {
         .checked_sub(jiff::Span::new().months(months))
         .expect("test month in range");
     Timestamp::from_second(
-        past
-            .to_zoned(jiff::tz::TimeZone::UTC)
+        past.to_zoned(jiff::tz::TimeZone::UTC)
             .expect("test date valid")
             .timestamp()
             .as_second()
@@ -135,8 +143,7 @@ fn month_start_ago(months: i64) -> Timestamp {
 }
 
 fn cost_of(line: &str) -> f64 {
-    line
-        .split_whitespace()
+    line.split_whitespace()
         .find_map(|field| field.strip_prefix("cost=$"))
         .expect("cost field")
         .parse()
@@ -144,8 +151,7 @@ fn cost_of(line: &str) -> f64 {
 }
 
 fn completions_of(line: &str) -> u64 {
-    line
-        .split_whitespace()
+    line.split_whitespace()
         .find_map(|field| field.strip_prefix("completions="))
         .expect("completions field")
         .parse()
@@ -185,10 +191,7 @@ async fn cost_by_agent_month_prints_twelve_rows_and_matching_total() {
                 let total = line;
                 let rows_cost: f64 = rows.iter().map(|row| cost_of(row)).sum();
                 assert_eq!(rows.len(), 12, "{text}");
-                assert!(
-                    (cost_of(total) - rows_cost).abs() < 0.000_05,
-                    "{text}"
-                );
+                assert!((cost_of(total) - rows_cost).abs() < 0.000_05, "{text}");
                 assert_eq!(
                     rows.iter().map(|row| completions_of(row)).sum::<u64>(),
                     completions_of(total)
@@ -202,14 +205,7 @@ async fn cost_by_agent_month_prints_twelve_rows_and_matching_total() {
         // store aggregate the route reads.
         let output = fixture
             .output(&[
-                "cost",
-                "--by",
-                "agent",
-                "--group",
-                "month",
-                "--since",
-                "1y",
-                "--json",
+                "cost", "--by", "agent", "--group", "month", "--since", "1y", "--json",
             ])
             .await;
         assert!(output.status.success());
@@ -316,7 +312,14 @@ async fn auth_quota_lists_observed_and_configured_entries() {
         // One entry's quota with its monthly usage for the year.
         let output = fixture
             .output(&[
-                "auth", "quota", "--entry", "openai/main", "--group", "month", "--since", "1y",
+                "auth",
+                "quota",
+                "--entry",
+                "openai/main",
+                "--group",
+                "month",
+                "--since",
+                "1y",
                 "--json",
             ])
             .await;
@@ -404,19 +407,13 @@ async fn agent_and_session_show_name_entries_and_cost_per_entry() {
         // The agent filter answers the weekly cost question for one agent.
         let output = fixture
             .output(&[
-                "cost",
-                "--agent",
-                "coster",
-                "--group",
-                "week",
-                "--since",
-                "3mo",
+                "cost", "--agent", "coster", "--group", "week", "--since", "3mo",
             ])
             .await;
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
         let total = text.lines().last().unwrap();
-        assert_eq!(cost_of(total), 0.002);
+        assert!(total.contains("cost=$0.0020"), "{text}");
         assert_eq!(completions_of(total), 2);
     })
     .await;
