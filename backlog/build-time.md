@@ -49,9 +49,13 @@ are the ones that change the picture and deserve a decision.
 
 The September 2026 cleanup baseline is recorded in
 [docs/proofs/cleanup-baseline-2026-09.md](../docs/proofs/cleanup-baseline-2026-09.md):
-lines of source and tests per crate, dependency edges, cold and cached
-build/test/clippy times on a 16-vCPU sandbox, and recent CI wall times.
-The final task of the cleanup goal repeats those measurements there.
+lines of source and tests per crate, dependency edges, cold/cached/
+core-touch workspace build times and per-package build times on a
+16-vCPU sandbox capped at 8 GiB (single job; 2-, 4-, and 16-job builds
+are OOM-killed on the AWS SDK crates), and recent CI wall times. The
+test and clippy rows were not measured in that pass; the repeat
+procedure in the proof covers them for the final task of the cleanup
+goal.
 
 ## Trigger
 

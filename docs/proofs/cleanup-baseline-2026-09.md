@@ -2,7 +2,7 @@
 
 How big and how slow the repository is before the cleanup goal, so the
 final task of the goal can show what changed. The metrics table below is
-the output of `python3 scripts/repo-metrics.py` at commit `ff6d3c9`
+the output of `python3 scripts/repo-metrics.py` at commit `b2d944f`
 (times were measured on the same checkout). The same numbers are
 available as JSON with `python3 scripts/repo-metrics.py --json`.
 
@@ -12,37 +12,67 @@ All timings ran on one machine, back to back, with nothing else using
 the shared target directory:
 
 - 16 vCPUs, 61 GiB RAM, no swap (`nproc` = 16, `free -g` = 61 total).
+- But this session is capped at 8 GiB by its cgroup (`memory.max` =
+  8589934592), so the cap, not the host, binds the build.
 - Linux 7.0.0-1013-aws (Ubuntu 24.04), x86_64.
 - rustc and cargo 1.98.1 (pinned toolchain in `rust-toolchain.toml`).
-- `CARGO_TARGET_DIR=/home/agent/.cargo-target`, shared across clones but
-  used only by this checkout during the measurements.
-- No dev stack running: `cargo test` runs below are the plain command, so
-  tests that need FoundationDB, NATS, or SeaweedFS skip cleanly.
+- `CARGO_TARGET_DIR=/home/agent/.cargo-target`, a scratch mount shared
+  across clones but used only by this checkout during the measurements.
+  `cargo clean` cannot remove that mount point (`Device or resource
+  busy`), so every "after `cargo clean`" step below instead deletes the
+  directory's contents, which leaves the same empty target directory
+  (verified with `du` after each clean).
+- Every timed command ran with `CARGO_BUILD_JOBS=1`: the default 16
+  parallel rustc are OOM-killed on the AWS SDK crates under the 8 GiB
+  cap, and so are 4- and 2-job builds (see the failed attempts). A
+  single `rustc` on `aws-sdk-ec2` survives.
+- No dev stack running: the `cargo test` runs below would be the plain
+  command, so tests that need FoundationDB, NATS, or SeaweedFS would
+  skip cleanly.
 
 ## Timings
 
-PENDING: battery still running; this section is filled in before the
-pull request.
-
 Each command ran twice with `date +%s` around it; the table keeps the
-lower number. Uncached means after `cargo clean`. Cached means the same
-command run again immediately with nothing changed. Core-touch means
-after `touch crates/swarmy-core/src/lib.rs` (incremental compilation is
-off in the dev profile, so this is close to a full rebuild).
+lower number (1 s resolution). Uncached means with an empty target
+directory. Cached means the same command run again immediately with
+nothing changed. Core-touch means after `touch
+crates/swarmy-core/src/lib.rs` (incremental compilation is off in the
+dev profile, so this rebuilds the core crate and all its dependents).
 
 | Step | Uncached (s) | Cached (s) | After core touch (s) |
 | --- | ---: | ---: | ---: |
-| `cargo build --workspace --locked` | PENDING | PENDING | PENDING |
-| `cargo build --locked -p swarmy-cli` | PENDING | n/a (sequential, see note) | n/a |
-| `cargo build --locked -p swarmy-gateway` | PENDING | n/a | n/a |
-| `cargo build --locked -p swarmyd` | PENDING | n/a | n/a |
-| `cargo test --workspace --locked` (all-in) | PENDING | PENDING | PENDING |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PENDING | PENDING | PENDING |
-| `cargo test --workspace --locked` execution only (after `--no-run`) | n/a | PENDING | n/a |
+| `cargo build --workspace --locked` | 1603 (runs: 1619, 1603) | 0 (runs: 1, 0) | 71 (runs: 73, 71) |
+| `cargo build --locked -p swarmy-cli` | 1290 (runs: 1291, 1290) | n/a (sequential, see note) | n/a |
+| `cargo build --locked -p swarmy-gateway` | 498 (runs: 498, 510) | n/a | n/a |
+| `cargo build --locked -p swarmyd` | 26 (runs: 26, 26) | n/a | n/a |
+| `cargo test --workspace --locked` (all-in) | not measured | not measured | not measured |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | not measured | not measured | not measured |
+| `cargo test --workspace --locked` execution only (after `--no-run`) | n/a | not measured | n/a |
 
 Per-package note: the three `-p` builds ran from one clean target, one
 after another in the order cli, gateway, swarmyd, and the whole sequence
-ran twice; each cell keeps the lower of its two runs.
+ran twice; each cell keeps the lower of its two runs. Gateway rebuilds
+much of the tree after cli because the two feature sets differ; swarmyd
+then needs almost nothing new.
+
+Failed attempts (all OOM-killed by the 8 GiB cap, `signal: 9, SIGKILL`
+on `rustc`, kernel `oom_kill` counter at 6 afterwards):
+
+| Command | Jobs | Wall time to failure |
+| --- | ---: | ---: |
+| `cargo build --workspace --locked` after clean | 16 (default) | 234 s (`aws-sdk-ssm`, `aws-sdk-ec2`) |
+| `cargo build --workspace --locked` after clean | 16 (default) | 488 s (`aws-sdk-ssm`, `aws-sdk-ec2`) |
+| `cargo build --workspace --locked` after clean | 4 | killed on `aws-sdk-ec2` |
+| `cargo build --workspace --locked` after clean | 2 | killed on `aws-sdk-ec2` |
+
+No multi-job configuration completed a workspace build on this computer,
+so there are no successful four-job timings to keep; every number in the
+table above used one job.
+
+The single-job battery was abandoned during `test-uncached-1` on
+operator direction, so the test, clippy, and execution-split rows were
+not measured in this pass. The repeat procedure below covers them for
+the final task of the goal.
 
 ## CI history
 
@@ -215,7 +245,10 @@ time cargo build --workspace --locked                       # rebuild after a co
 ```
 
 Run each command twice and keep the lower number, timing with
-`date +%s` around it. Then, from a clean target, `time cargo build
+`date +%s` around it. On a memory-capped sandbox, export
+`CARGO_BUILD_JOBS=1` first (multi-job workspace builds are OOM-killed
+there); if `cargo clean` fails on the mount-pointed target directory,
+delete the directory's contents instead. Then, from a clean target, `time cargo build
 --locked -p swarmy-cli`, `-p swarmy-gateway`, and `-p swarmyd` one after
 another, recording each; then the same uncached/cached/core-touch triple
 for `cargo test --workspace --locked` and for `cargo clippy --workspace
