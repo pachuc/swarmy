@@ -1399,24 +1399,90 @@ mod retry_tests {
         )));
     }
 
-    /// Drive a scripted provider stream the way `Gateway::stream` does: count
-    /// incremental deltas and classify the response. One text delta plus the
-    /// terminal `PartDone` is a single-chunk response.
-    #[test]
-    fn one_text_delta_plus_part_done_is_single_chunk() {
-        use futures::StreamExt as _;
-        use swarmy_core::Part;
-        struct Scripted(Vec<swarmy_llm::Delta>);
-        impl swarmy_llm::Provider for Scripted {
-            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
-                let deltas = self.0.clone();
-                Box::pin(async_stream::try_stream! {
-                    for delta in deltas {
-                        yield delta;
-                    }
-                })
-            }
+    /// Build a real `Gateway` against the dev stack so the stream tests below
+    /// exercise `Gateway::stream` itself instead of copying its counting loop.
+    /// Returns `None` (and the caller skips) when the stack is absent. The
+    /// tests pass `turn: None`, so no turn rows are written; only ephemeral
+    /// live publishes reach NATS.
+    async fn stream_test_gateway() -> Option<Gateway> {
+        use foundationdb::{Database, tuple::Subspace};
+        use std::sync::OnceLock;
+        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
+        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+            eprintln!("skipping gateway stream test: SWARMY_FDB_CLUSTER_FILE unset");
+            return None;
+        };
+        let Ok(nats_url) = std::env::var("SWARMY_NATS_URL") else {
+            eprintln!("skipping gateway stream test: SWARMY_NATS_URL unset");
+            return None;
+        };
+        NETWORK.get_or_init(swarmy_store::boot);
+        let store = Store::with_subspace(
+            Arc::new(Database::new(Some(&cluster)).unwrap()),
+            Subspace::all().subspace(&("gateway-stream-tests", ulid::Ulid::generate().to_string())),
+            Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+        );
+        let bus = Bus::connect(&nats_url, swarmy_bus::Config::default())
+            .await
+            .ok()?;
+        let settings = swarmy_config::Settings::default();
+        let providers = Providers::discover(store.clone(), &settings).await.ok()?;
+        Some(Gateway {
+            store,
+            blobs: Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+            bus,
+            providers,
+            default_provider: "fake".into(),
+            ack_wait: Duration::from_secs(30),
+            max_deliver: 5,
+            resend_interval: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(30),
+            health_id: "stream-test".into(),
+            started_at: Timestamp::now(),
+        })
+    }
+
+    struct ScriptedStream(Vec<swarmy_llm::Delta>);
+
+    impl swarmy_llm::Provider for ScriptedStream {
+        fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+            let deltas = self.0.clone();
+            Box::pin(async_stream::try_stream! {
+                for delta in deltas {
+                    yield delta;
+                }
+            })
         }
+    }
+
+    fn stream_test_job() -> swarmy_llm::InferenceJob {
+        let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let step = 1;
+        swarmy_llm::InferenceJob {
+            session_id,
+            step,
+            request_id: swarmy_core::RequestId::for_step(session_id, step),
+            request: swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+        }
+    }
+
+    /// Drive `Gateway::stream` with one text delta plus the terminal
+    /// `PartDone`: a single-chunk response reports `streamed == Some(false)`.
+    #[tokio::test]
+    async fn one_text_delta_plus_part_done_is_single_chunk() {
+        use swarmy_core::Part;
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
         let completed = swarmy_llm::Response {
             parts: vec![Part::Text { text: "hi".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
@@ -1424,7 +1490,7 @@ mod retry_tests {
             quota_remaining: std::collections::BTreeMap::new(),
             quota_resets: std::collections::BTreeMap::new(),
         };
-        let provider = Scripted(vec![
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
             swarmy_llm::Delta::Text {
                 output_index: 0,
                 text: "hi".into(),
@@ -1434,53 +1500,21 @@ mod retry_tests {
                 part: Part::Text { text: "hi".into() },
             },
             swarmy_llm::Delta::Completed(completed),
-        ]);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            use swarmy_llm::Provider as _;
-            let request = swarmy_llm::Request {
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: swarmy_llm::GenerationSettings::default(),
-            };
-            let mut stream = provider.request(request);
-            let mut chunks = 0_u32;
-            let mut response = None;
-            while let Some(delta) = stream.next().await {
-                let delta = delta.unwrap();
-                if is_stream_chunk(&delta) {
-                    chunks += 1;
-                }
-                if let swarmy_llm::Delta::Completed(done) = delta {
-                    response = Some(done);
-                }
-            }
-            assert!(response.is_some());
-            assert_eq!(chunks, 1);
-            assert!(!is_streamed_response(chunks));
-        });
+        ]));
+        let job = stream_test_job();
+        let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
+        assert_eq!(streamed, Some(false));
+        assert_eq!(response.parts.len(), 1);
     }
 
-    /// Two incremental text deltas plus `PartDone` count as streamed.
-    #[test]
-    fn two_text_deltas_are_streamed() {
-        use futures::StreamExt as _;
+    /// Drive `Gateway::stream` with two incremental text deltas plus
+    /// `PartDone`: more than one chunk reports `streamed == Some(true)`.
+    #[tokio::test]
+    async fn two_text_deltas_are_streamed() {
         use swarmy_core::Part;
-        struct Scripted(Vec<swarmy_llm::Delta>);
-        impl swarmy_llm::Provider for Scripted {
-            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
-                let deltas = self.0.clone();
-                Box::pin(async_stream::try_stream! {
-                    for delta in deltas {
-                        yield delta;
-                    }
-                })
-            }
-        }
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
         let completed = swarmy_llm::Response {
             parts: vec![Part::Text { text: "ab".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
@@ -1488,7 +1522,7 @@ mod retry_tests {
             quota_remaining: std::collections::BTreeMap::new(),
             quota_resets: std::collections::BTreeMap::new(),
         };
-        let provider = Scripted(vec![
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
             swarmy_llm::Delta::Text {
                 output_index: 0,
                 text: "a".into(),
@@ -1502,29 +1536,32 @@ mod retry_tests {
                 part: Part::Text { text: "ab".into() },
             },
             swarmy_llm::Delta::Completed(completed),
-        ]);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            use swarmy_llm::Provider as _;
-            let request = swarmy_llm::Request {
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: swarmy_llm::GenerationSettings::default(),
-            };
-            let mut stream = provider.request(request);
-            let mut chunks = 0_u32;
-            while let Some(delta) = stream.next().await {
-                let delta = delta.unwrap();
-                if is_stream_chunk(&delta) {
-                    chunks += 1;
-                }
+        ]));
+        let job = stream_test_job();
+        let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
+        assert_eq!(streamed, Some(true));
+        assert_eq!(response.parts.len(), 1);
+    }
+
+    /// Drive `Gateway::stream` with a failing provider stream. The stream
+    /// itself errors, and the caller (`attempt_provider`) records
+    /// `streamed: None` for such attempts so failed requests stay out of the
+    /// single-chunk count.
+    #[tokio::test]
+    async fn failing_stream_errors_without_a_streamed_flag() {
+        struct Failing;
+        impl swarmy_llm::Provider for Failing {
+            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+                Box::pin(futures::stream::iter(vec![Err(
+                    swarmy_llm::Error::Protocol("boom".into()),
+                )]))
             }
-            assert_eq!(chunks, 2);
-            assert!(is_streamed_response(chunks));
-        });
+        }
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(Failing);
+        let job = stream_test_job();
+        assert!(gateway.stream(&client, &job, None, None).await.is_err());
     }
 }

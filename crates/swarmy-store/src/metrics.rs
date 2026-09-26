@@ -413,36 +413,6 @@ impl StoredTurnMetrics {
     }
 }
 
-/// Decode one stored row in tests. The versioned envelope is tried first;
-/// rows written before the envelope existed fall back to the bare `V1` struct
-/// and then to the API type with the same field prefix.
-#[cfg(test)]
-fn decode_record(bytes: &[u8]) -> Result<TurnMetrics> {
-    if let Ok(record) = decode::<StoredTurnMetrics>(bytes) {
-        match record {
-            StoredTurnMetrics::V1(inner) => {
-                return Ok(StoredTurnMetrics::V1(inner).into_api());
-            }
-            // Summary and detail rows are never decoded as whole turns;
-            // reaching here means the caller read the wrong keyspace.
-            StoredTurnMetrics::V2Summary(_)
-            | StoredTurnMetrics::V2Inference(_)
-            | StoredTurnMetrics::V2Tool(_) => {
-                return Err(StoreError::Corrupt);
-            }
-        }
-    }
-    if let Ok(legacy) = decode::<StoredTurnMetricsV1>(bytes) {
-        return Ok(StoredTurnMetrics::V1(legacy).into_api());
-    }
-    // Rows written before the storage type was split from the API type share
-    // the same field prefix as `V1`.
-    match decode::<TurnMetrics>(bytes) {
-        Ok(record) => Ok(StoredTurnMetrics::from_api(record).into_api()),
-        Err(first) => Err(StoreError::from(first)),
-    }
-}
-
 /// Decode a summary key. Returns the summary when the row is `V2`, the
 /// migrated legacy record when the row is still `V1`, or an error the caller
 /// skips with a warning.
@@ -786,11 +756,7 @@ fn apply_inference_update(
     adjust_throughput(summary, old_throughput, new_throughput);
 }
 
-fn apply_tool_update(
-    _summary: &mut StoredTurnSummaryV2,
-    tools: &mut BTreeMap<String, StoredToolMetricV2>,
-    update: &ToolMetric,
-) {
+fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricV2>, update: &ToolMetric) {
     let row = tool_entry(tools, &update.request_id);
     if !update.name.is_empty() {
         row.name = clipped(&update.name, 80);
@@ -960,7 +926,7 @@ fn apply_one(state: &mut TurnWrite, patch: &MetricPatch) {
     match patch {
         MetricPatch::Stage(event) => apply_stage(summary, inference, tools, event),
         MetricPatch::Inference(update) => apply_inference_update(summary, inference, update),
-        MetricPatch::Tool(update) => apply_tool_update(summary, tools, update),
+        MetricPatch::Tool(update) => apply_tool_update(tools, update),
         MetricPatch::Computer(value) => apply_computer(summary, value),
         MetricPatch::Error(value) => {
             summary.error = Some(clipped(value, 512));
@@ -1021,7 +987,7 @@ fn migrate_legacy(
     summary.dropped_inference = record.dropped_inference;
     summary.dropped_tools = record.dropped_tools;
     let mut inference_rows = Vec::new();
-    for mut metric in record.inference {
+    for metric in record.inference {
         let id = metric.request_id.clone();
         let mut row = StoredTurnInferenceV2 {
             metric: StoredInferenceMetricV2::from_api(&metric),
@@ -1030,10 +996,6 @@ fn migrate_legacy(
             finished_ns: stage_time("inference_finished", Some(&id)),
         };
         derive_inference(&mut row);
-        metric.time_to_first_token_ms = row.metric.time_to_first_token_ms;
-        metric.streaming_duration_ms = row.metric.streaming_duration_ms;
-        metric.request_duration_ms = row.metric.request_duration_ms;
-        metric.output_tokens_per_second = row.metric.output_tokens_per_second;
         summary.input_tokens += row.metric.input_tokens;
         summary.cached_input_tokens += row.metric.cached_input_tokens;
         summary.output_tokens += row.metric.output_tokens;
@@ -1639,9 +1601,6 @@ impl Store {
     /// complete arrays.
     /// # Errors
     /// Returns database failures.
-    // One page assembles V2 summaries plus in-memory legacy turns; splitting
-    // would separate the shared sort the paging contract relies on.
-    #[allow(clippy::too_many_lines)]
     pub async fn list_turn_metrics_paged(
         &self,
         session: SessionId,
@@ -1949,7 +1908,11 @@ mod tests {
             return;
         }
         for hex in [V1_ENVELOPE_HEX, V1_BARE_HEX] {
-            let record = decode_record(&hex_to_bytes(hex)).unwrap();
+            // The fixture pins the production summary-key path: envelope and
+            // bare bytes both decode through `decode_summary` as legacy turns.
+            let DecodedSummary::Legacy(record) = decode_summary(&hex_to_bytes(hex)).unwrap() else {
+                panic!("expected legacy V1 turn");
+            };
             assert_eq!(record.session_id, "s");
             assert_eq!(record.turn_id, "t");
             assert_eq!(record.dropped_stages, 1);
@@ -2086,12 +2049,14 @@ mod tests {
             let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
             assert_eq!(decoded, value);
         }
-        // `V1` bytes still decode through the legacy path.
-        let legacy = decode_record(&hex_to_bytes(V1_ENVELOPE_HEX));
+        // `V1` bytes still decode through the production legacy path.
         if V1_ENVELOPE_HEX.starts_with("PLACEHOLDER") {
             return;
         }
-        assert!(legacy.is_ok());
+        assert!(matches!(
+            decode_summary(&hex_to_bytes(V1_ENVELOPE_HEX)),
+            Ok(DecodedSummary::Legacy(_))
+        ));
     }
 
     #[test]
@@ -2658,5 +2623,99 @@ mod integration_tests {
         assert_eq!(paged[0].tools.len(), 20);
         assert_eq!(paged[0].dropped_inference, 90);
         assert_eq!(paged[0].dropped_tools, 180);
+    }
+
+    #[tokio::test]
+    async fn legacy_v1_rows_keep_dropped_counters_through_rewrite() {
+        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+            return;
+        };
+        NETWORK.get_or_init(crate::boot);
+        let path = vec![
+            "turn-metrics-legacy-migration-test".into(),
+            ulid::Ulid::generate().to_string(),
+        ];
+        let store = Store::open(
+            Some(&cluster),
+            Some(&path),
+            Arc::new(MemoryBlobStore::default()),
+        )
+        .await
+        .unwrap();
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        let turn = MessageId::from_ulid(ulid::Ulid::generate());
+        // A baseline session written by the capped layout: V1 envelope bytes
+        // with non-zero dropped counters at the summary key.
+        let legacy = StoredTurnMetricsV1 {
+            session_id: session.to_string(),
+            turn_id: turn.to_string(),
+            stages: vec![StageTiming {
+                stage: "appended".into(),
+                request_id: None,
+                clock_id: "boot".into(),
+                monotonic_ns: 1_000_000,
+                unix_ns: 1_000_000,
+            }],
+            inference: vec![StoredInferenceMetricV1 {
+                request_id: "legacy-r".into(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                output_tokens: 4,
+                ..StoredInferenceMetricV1::default()
+            }],
+            dropped_stages: 7,
+            dropped_inference: 27,
+            dropped_tools: 42,
+            ..StoredTurnMetricsV1::default()
+        };
+        let summary_key = store.turn_summary_key(session, turn);
+        store
+            .transaction(|trx| {
+                let summary_key = &summary_key;
+                let legacy = &legacy;
+                async move {
+                    write(&trx, summary_key, &StoredTurnMetrics::V1(legacy.clone()))?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        // The first read migrates in memory without rewriting the summary key.
+        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].dropped_stages, 7);
+        assert_eq!(records[0].dropped_inference, 27);
+        assert_eq!(records[0].dropped_tools, 42);
+        assert_eq!(records[0].inference.len(), 1);
+        assert_eq!(records[0].inference[0].request_id, "legacy-r");
+        // One more inference for the same turn takes the legacy branch of
+        // `record_turn_metrics`, which rewrites the summary as V2 plus detail
+        // rows. The migrated counters must survive the rewrite.
+        store
+            .record_turn_metric(
+                session,
+                turn,
+                MetricPatch::Inference(InferenceMetric {
+                    request_id: "new-r".into(),
+                    provider: "fake".into(),
+                    model: "scripted".into(),
+                    output_tokens: 1,
+                    ..InferenceMetric::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].dropped_stages, 7);
+        assert_eq!(records[0].dropped_inference, 27);
+        assert_eq!(records[0].dropped_tools, 42);
+        assert_eq!(records[0].inference.len(), 2);
+        assert!(
+            records[0]
+                .inference
+                .iter()
+                .any(|row| row.request_id == "legacy-r")
+        );
     }
 }
