@@ -343,11 +343,10 @@ async fn upload_with_length_stops_before_streaming_the_body() {
         .body(reqwest::Body::wrap_stream(body_stream))
         .send()
         .await;
-    match response {
-        Ok(response) => assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE),
-        // The server closes the connection without draining the body, so a
-        // client still streaming may see the close instead of the status.
-        Err(_) => {}
+    // The server closes the connection without draining the body, so a
+    // client still streaming may see the close instead of the status.
+    if let Ok(response) = response {
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
     }
     let pulled = sent.load(Ordering::SeqCst);
     assert!(
