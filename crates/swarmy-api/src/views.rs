@@ -109,7 +109,7 @@ pub fn from_api_tool(value: api::ToolMetric) -> store::ToolMetric {
 }
 
 #[must_use]
-pub fn into_api_computer(value: store::ComputerMetric) -> api::ComputerMetric {
+pub fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
     api::ComputerMetric {
         placement_ms: value.placement_ms,
         cold: value.cold,
@@ -125,7 +125,7 @@ pub fn into_api_computer(value: store::ComputerMetric) -> api::ComputerMetric {
 }
 
 #[must_use]
-pub fn from_api_computer(value: api::ComputerMetric) -> store::ComputerMetric {
+pub fn from_api_computer(value: &api::ComputerMetric) -> store::ComputerMetric {
     store::ComputerMetric {
         placement_ms: value.placement_ms,
         cold: value.cold,
@@ -152,7 +152,7 @@ pub fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
             .map(into_api_inference)
             .collect(),
         tools: value.tools.into_iter().map(into_api_tool).collect(),
-        computer: value.computer.map(into_api_computer),
+        computer: value.computer.as_ref().map(into_api_computer),
         append_to_first_token_ms: value.append_to_first_token_ms,
         inference_duration_ms: value.inference_duration_ms,
         append_to_idle_ms: value.append_to_idle_ms,
@@ -175,7 +175,7 @@ pub fn from_api_turn(value: api::TurnMetrics) -> store::TurnMetrics {
             .map(from_api_inference)
             .collect(),
         tools: value.tools.into_iter().map(from_api_tool).collect(),
-        computer: value.computer.map(from_api_computer),
+        computer: value.computer.as_ref().map(from_api_computer),
         append_to_first_token_ms: value.append_to_first_token_ms,
         inference_duration_ms: value.inference_duration_ms,
         append_to_idle_ms: value.append_to_idle_ms,
@@ -187,7 +187,7 @@ pub fn from_api_turn(value: api::TurnMetrics) -> store::TurnMetrics {
 }
 
 #[must_use]
-pub fn into_api_latency(value: store::LatencyPercentiles) -> api::LatencyPercentiles {
+pub fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercentiles {
     api::LatencyPercentiles {
         p50_ms: value.p50_ms,
         p95_ms: value.p95_ms,
@@ -195,7 +195,7 @@ pub fn into_api_latency(value: store::LatencyPercentiles) -> api::LatencyPercent
 }
 
 #[must_use]
-pub fn from_api_latency(value: api::LatencyPercentiles) -> store::LatencyPercentiles {
+pub fn from_api_latency(value: &api::LatencyPercentiles) -> store::LatencyPercentiles {
     store::LatencyPercentiles {
         p50_ms: value.p50_ms,
         p95_ms: value.p95_ms,
@@ -211,7 +211,7 @@ pub fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
         latencies: value
             .latencies
             .into_iter()
-            .map(|(name, sample)| (name, into_api_latency(sample)))
+            .map(|(name, sample)| (name, into_api_latency(&sample)))
             .collect(),
         input_tokens: value.input_tokens,
         cached_input_tokens: value.cached_input_tokens,
@@ -233,7 +233,7 @@ pub fn from_api_agent(value: api::AgentMetrics) -> store::AgentMetrics {
         latencies: value
             .latencies
             .into_iter()
-            .map(|(name, sample)| (name, from_api_latency(sample)))
+            .map(|(name, sample)| (name, from_api_latency(&sample)))
             .collect(),
         input_tokens: value.input_tokens,
         cached_input_tokens: value.cached_input_tokens,
@@ -282,10 +282,7 @@ mod tests {
             chunks_fetched: 7,
             ..store::ComputerMetric::default()
         };
-        assert_eq!(
-            from_api_computer(into_api_computer(computer.clone())),
-            computer
-        );
+        assert_eq!(from_api_computer(&into_api_computer(&computer)), computer);
         let turn = store::TurnMetrics {
             session_id: "s".into(),
             turn_id: "t".into(),
@@ -303,7 +300,7 @@ mod tests {
             p50_ms: 1.0,
             p95_ms: 2.0,
         };
-        assert_eq!(from_api_latency(into_api_latency(latency.clone())), latency);
+        assert_eq!(from_api_latency(&into_api_latency(&latency)), latency);
         let agent = store::AgentMetrics {
             agent_id: "a".into(),
             latencies: std::collections::BTreeMap::from([("append_to_idle".into(), latency)]),
