@@ -3,7 +3,7 @@
 //! The store owns its metric structs and returns them; this module maps them
 //! field for field onto the versioned JSON contract. The shapes stay
 //! identical so stored rows keep decoding, and the conversion stays here so
-//! the store never compiles the OpenAPI tooling.
+//! the store never compiles the `OpenAPI` tooling.
 
 use swarmy_api_types as api;
 use swarmy_store as store;

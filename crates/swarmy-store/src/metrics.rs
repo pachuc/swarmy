@@ -21,7 +21,7 @@ use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, decode, scan, write};
 
 // Persistence-layer metric shapes. These mirror `swarmy-api-types::metrics`
 // field for field so stored rows decode the same way, but they live here so
-// the store never builds API response shapes (and never compiles the OpenAPI
+// the store never builds API response shapes (and never compiles the `OpenAPI`
 // tooling). `crates/swarmy-api/src/views.rs` converts between these and the
 // API types.
 
