@@ -80,11 +80,14 @@ toml = "0.8"
 shell-words = "1"
 rustix = { version = "1", features = ["time"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = { version = "3", features = ["serde"] }
+swarmy-api = { path = "crates/swarmy-api" }
 swarmy-config = { path = "crates/swarmy-config" }
 swarmy-core = { path = "crates/swarmy-core" }
+swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-llm = { path = "crates/swarmy-llm" }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }

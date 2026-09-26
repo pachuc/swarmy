@@ -62,4 +62,27 @@ impl Store {
         })
         .await
     }
+
+    /// Remove a replay reservation when the guarded operation never started.
+    /// The removal only applies while the key still holds the expected value,
+    /// so a concurrent retry that already recorded its own result keeps it.
+    /// # Errors
+    /// Returns database and encoding failures.
+    pub async fn remove_api_replay(&self, key: &str, expected: &serde_json::Value) -> Result<()> {
+        let expected = serde_json::to_string(expected).map_err(|_| StoreError::Corrupt)?;
+        self.transaction(|trx| {
+            let expected = &expected;
+            async move {
+                let storage_key = self.root.pack(&("api_idempotency", key));
+                let current: Option<ApiReplay> = read(&trx, &storage_key).await?;
+                if current.is_some_and(|entry| {
+                    entry.result == *expected && entry.expires_at > Timestamp::now()
+                }) {
+                    trx.clear(&storage_key);
+                }
+                Ok(())
+            }
+        })
+        .await
+    }
 }

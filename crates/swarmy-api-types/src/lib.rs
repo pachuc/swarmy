@@ -39,6 +39,9 @@ pub fn same_major(left: &str, right: &str) -> bool {
 pub enum LogId {
     Session(String),
     Channel(String),
+    /// Ephemeral turn timeline observations. Live-only: cursors are ignored
+    /// and events are numbered per connection, so reconnects replay nothing.
+    Timeline(String),
 }
 
 /// A sequence is local to one log, starts at one, and increases without gaps.
@@ -291,6 +294,20 @@ pub struct DoctorSnapshot {
     pub images: Vec<String>,
     pub default_image: Option<String>,
     pub credentials: Option<Vec<Credential>>,
+    /// Registered nodes with committed sandbox memory. Older servers omit
+    /// this; clients must treat a missing list as unknown, not empty.
+    #[serde(default)]
+    pub nodes: Vec<DoctorNode>,
+}
+
+/// One registered node and its committed sandbox memory in bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DoctorNode {
+    pub node_id: String,
+    pub roles: Vec<NodeRole>,
+    pub capacity: NodeCapacity,
+    pub last_heartbeat: String,
+    pub committed_memory_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -301,6 +318,50 @@ pub struct DoctorService {
     pub alive: bool,
     pub providers: Vec<String>,
     pub capacity: Option<NodeCapacity>,
+}
+
+/// Start a chunk collection run on the control plane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StartGcRun {
+    pub idempotency_key: String,
+    pub dry_run: bool,
+    /// Override the service's grace window for this run only, in seconds.
+    /// Benchmarks on isolated namespaces use a short grace; production runs
+    /// omit it and keep the configured window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_seconds: Option<u64>,
+}
+
+/// Durable accounting for one collector attempt. An unfinished record means
+/// the run is still sweeping or its process stopped before persisting final
+/// counters.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcRun {
+    pub run_id: String,
+    pub started_at: String,
+    pub dry_run: bool,
+    pub finished: bool,
+    pub error: Option<String>,
+    pub manifests: u64,
+    pub scanned: u64,
+    pub candidates: u64,
+    pub candidate_bytes: u64,
+    pub deleted: u64,
+    pub bytes_freed: u64,
+    pub duration_ms: u64,
+}
+
+/// A published image with its chunk statistics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ImageUpload {
+    pub name: String,
+    pub tag: String,
+    pub manifest_id: String,
+    pub header: serde_json::Value,
+    pub size: u64,
+    pub chunks_total: u64,
+    pub chunks_stored: u64,
+    pub chunks_uploaded: u64,
 }
 
 /// Every client mutation has a key that survives retries of the same intent.
@@ -428,6 +489,30 @@ pub struct DeleteRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CredentialDeleted {
     pub deleted: bool,
+}
+
+/// Probe a model with a live request through the control plane's stored
+/// credentials. The optional label selects one labelled credential entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProbeModel {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ReasoningEffort>,
+}
+
+/// The control plane's probe answer mirrors the CLI probe summary: catalog
+/// usage and cost for one short completion plus the effort actually used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProbeResult {
+    pub provider: String,
+    pub model: String,
+    pub usage: serde_json::Value,
+    pub cost_micros: u64,
+    pub effort: ReasoningEffort,
+    pub elapsed_seconds: f64,
 }
 
 /// One route step: the provider, the entry label (`*` for every entry of
@@ -727,9 +812,10 @@ pub mod api_paths {
     use super::{
         Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
         CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        EntryQuotaView, Event, HealthResponse, Image, InterruptOutcome, InterruptSession, Model,
-        Provider, Route, RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute,
-        SetSessionRoute, Subscription, TurnMetrics, UpdateAgent,
+        EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
+        InterruptSession, Model, ProbeModel, ProbeResult, Provider, Route, RouteDeleted, Session,
+        SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
+        TurnMetrics, UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -852,6 +938,26 @@ pub mod api_paths {
         ),
         responses((status = 200, body = Vec<Image>), (status = 401, body = ApiError)))]
     pub fn list_images() {}
+    #[utoipa::path(post, path = "/v1/images/uploads",
+        params(
+            ("name" = String, Query, description = "Image name"),
+            ("tag" = String, Query, description = "Image tag"),
+            ("idempotency_key" = String, Query, description = "Retry key for this upload"),
+            ("scratch" = Option<String>, Query, description = "Comma-separated sandbox scratch paths"),
+            ("memory_mib" = Option<u64>, Query, description = "Sandbox memory requirement"),
+            ("display" = Option<bool>, Query, description = "Image needs a display server"),
+        ),
+        request_body(content = inline(Vec<u8>), description = "Raw ext4 image bytes"),
+        responses((status = 200, body = ImageUpload), (status = 400, body = ApiError)))]
+    pub fn upload_image() {}
+    #[utoipa::path(post, path = "/v1/gc/runs",
+        request_body = StartGcRun,
+        responses((status = 200, body = GcRun), (status = 400, body = ApiError)))]
+    pub fn start_gc_run() {}
+    #[utoipa::path(get, path = "/v1/gc/runs/{id}",
+        params(("id" = String, Path, description = "Collection run id")),
+        responses((status = 200, body = GcRun), (status = 404, body = ApiError)))]
+    pub fn gc_run() {}
     #[utoipa::path(get, path = "/v1/images/{name}/{tag}",
         params(
             ("name" = String, Path, description = "Image name"),
@@ -881,6 +987,10 @@ pub mod api_paths {
     #[utoipa::path(get, path = "/v1/providers",
         responses((status = 200, body = Vec<Provider>), (status = 401, body = ApiError)))]
     pub fn list_providers() {}
+    #[utoipa::path(post, path = "/v1/models/probe",
+        request_body = ProbeModel,
+        responses((status = 200, body = ProbeResult), (status = 400, body = ApiError)))]
+    pub fn probe_model() {}
     #[utoipa::path(get, path = "/v1/credentials",
         responses((status = 200, body = Vec<Credential>), (status = 401, body = ApiError)))]
     pub fn list_credentials() {}
@@ -960,9 +1070,10 @@ pub mod api_paths {
         api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
         api_paths::agent_metrics,
         api_paths::subscribe, api_paths::update_subscription,
-        api_paths::list_images, api_paths::show_image,
+        api_paths::list_images, api_paths::upload_image, api_paths::show_image,
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
-        api_paths::list_providers,
+        api_paths::list_providers, api_paths::probe_model,
+        api_paths::start_gc_run, api_paths::gc_run,
         api_paths::list_credentials, api_paths::set_credential,
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
@@ -978,11 +1089,12 @@ pub mod api_paths {
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
-    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, Model,
-    Provider, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, StageTiming, InferenceMetric,
-    ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles, AgentMetrics, CreateAgent,
-    UpdateAgent, DeleteRequest,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
+    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
+    StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
+    AgentMetrics, StartGcRun, GcRun,
+    CreateAgent, UpdateAgent, DeleteRequest,
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
@@ -1015,6 +1127,7 @@ mod tests {
     fn resource_json_contract() {
         check!(LogId, {"kind":"session","id":"s"});
         check!(LogId, {"kind":"channel","id":"c"});
+        check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
         check!(Subscription, {"cursors":[],"token_deltas":false});
         for status in ["running", "finished", "failed"] {
@@ -1092,8 +1205,14 @@ mod tests {
         check!(CreateTurn, {"idempotency_key":"k","session_id":"s"});
         check!(CreateMessage, {"idempotency_key":"k","session_id":"s","role":"user","text":"hi"});
         check!(CreateImage, {"idempotency_key":"k","name":"base","tag":"dev"});
+        check!(StartGcRun, {"idempotency_key":"k","dry_run":true});
+        check!(StartGcRun, {"idempotency_key":"k","dry_run":true,"grace_seconds":1});
+        check!(GcRun, {"run_id":"r","started_at":"2026-09-23T12:00:00Z","dry_run":true,"finished":true,"error":null,"manifests":1,"scanned":2,"candidates":3,"candidate_bytes":4,"deleted":5,"bytes_freed":6,"duration_ms":7});
+        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
+        check!(ProbeModel, {"provider":"openai","model":"gpt-5","effort":"high"});
+        check!(ProbeResult, {"provider":"openai","model":"gpt-5","usage":{},"cost_micros":12,"effort":"high","elapsed_seconds":1.5});
         check!(SetEntryQuota, {"idempotency_key":"k","limit":1000,"window_seconds":18000});
         check!(EntryQuotaView, {"source":"configured","used":3,"free":997,"limit":1000,"window_seconds":18000,"observed_at":null,"remaining":{},"requests_remaining":null,"tokens_remaining":null});
     }

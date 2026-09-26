@@ -4,10 +4,7 @@ use crate::remote::ssh as remote_ssh;
 use crate::remote_ssh;
 use std::{path::Path, process::Stdio, time::Duration};
 
-use futures_util::TryStreamExt;
-use object_store::{ObjectStore, path::Path as ObjectPath};
 use serde::Serialize;
-use std::sync::Arc;
 use swarmy_config::{Loaded, Settings};
 use tokio::{process::Command, time::timeout};
 
@@ -78,13 +75,6 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
     let remote = loaded
         .as_ref()
         .is_ok_and(|loaded| loaded.settings.remote.profile.is_some());
-    let library = client_library();
-    checks.push(match (remote, library) {
-        (true, Err(detail)) => Check::warn("libfdb_c", format!("{detail}; not needed by the API client"),
-            "Install the FoundationDB client library only for local database commands."),
-        (_, result) => Check::new("libfdb_c", result,
-            "Run scripts/install-dev-tools.sh and the printed cargo install command; keep libfdb_c.so (libfdb_c.dylib on macOS) in the directory selected by SWARMY_FDB_LIB_DIR at build time."),
-    });
     if !remote {
         for (name, argument) in [
             ("fdbserver", "--version"),
@@ -97,17 +87,13 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         }
     }
     for name in [
-        "swarmy-session",
+        "swarmy-api",
         "swarmy-scheduler",
         "swarmy-worker",
         "swarmy-gateway",
     ] {
-        // The companion is exec'd beside the CLI; services honor the caller's PATH.
-        let executable = if name == "swarmy-session" {
-            Ok(std::env::current_exe()?.with_file_name(name))
-        } else {
-            crate::dev::service_binary(name)
-        };
+        // Companions are exec'd beside the CLI; services honor the caller's PATH.
+        let executable = crate::dev::service_binary(name);
         let result = match executable {
             Ok(path) => crate::dev::version_check(&path, name).await,
             Err(error) => Err(error),
@@ -115,7 +101,7 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
         let result = result.map_err(|error| format!("{error:#}"));
         let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
         checks.push(match (remote, result) {
-            (true, Err(detail)) if name != "swarmy-session" => Check::warn(
+            (true, Err(detail)) => Check::warn(
                 name,
                 format!("{detail}; service binary runs on the remote node"),
                 &fix,
@@ -246,31 +232,6 @@ fn invalid_config() -> String {
     )
 }
 
-// Loading the native client and calling its documented no-argument version API
-// requires FFI. Keep the library alive until the borrowed function returns.
-#[allow(unsafe_code)]
-fn client_library() -> Result<String, String> {
-    let name = if cfg!(target_os = "macos") {
-        "libfdb_c.dylib"
-    } else {
-        "libfdb_c.so"
-    };
-    unsafe {
-        let library = libloading::Library::new(name)
-            .map_err(|error| format!("{name} is not loadable: {error}"))?;
-        let version: libloading::Symbol<unsafe extern "C" fn() -> i32> = library
-            .get(b"fdb_get_max_api_version\0")
-            .map_err(|_| format!("{name} is missing fdb_get_max_api_version"))?;
-        let version = version();
-        if version < 730 {
-            return Err(format!(
-                "{name} supports API {version}; API 730 is required"
-            ));
-        }
-        Ok(format!("{name} loadable; maximum API version {version}"))
-    }
-}
-
 async fn binary_version(name: &str, argument: &str) -> Result<String, String> {
     let path = crate::tools::find(name).ok_or_else(|| {
         format!("{name} is missing from the executable search path (including ~/.local/bin)")
@@ -322,7 +283,23 @@ async fn s3_line(settings: &Settings) -> Check {
     let profile = settings.remote.profile.as_ref().and_then(|name| {
         swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
     });
-    let (result, fix) = s3_check(settings, profile.as_ref(), None).await;
+    if let Some(bucket) = profile
+        .as_ref()
+        .filter(|profile| profile.s3_endpoint.is_empty())
+        .and_then(|profile| profile.s3_bucket.as_deref())
+    {
+        // The client holds no object store credentials; the control plane
+        // owns its bucket. Listing it from the laptop would need the same
+        // AWS identity the API host already uses.
+        return Check::warn(
+            "remote S3",
+            format!(
+                "bucket {bucket}: object storage is verified on the API host, not from the client"
+            ),
+            "Check the API host's AWS credentials and region if image or volume operations fail.",
+        );
+    }
+    let (result, fix) = s3_check(settings).await;
     let label = if settings.remote.profile.is_some() {
         "remote S3"
     } else {
@@ -331,28 +308,7 @@ async fn s3_line(settings: &Settings) -> Check {
     Check::new(label, result, fix)
 }
 
-async fn s3_check(
-    settings: &Settings,
-    profile: Option<&swarmy_config::RemoteProfile>,
-    probe_store: Option<Arc<dyn ObjectStore>>,
-) -> (Result<String, String>, &'static str) {
-    if let Some(bucket) = profile
-        .filter(|profile| profile.s3_endpoint.is_empty())
-        .and_then(|profile| profile.s3_bucket.as_deref())
-    {
-        let objects = probe_store.map_or_else(
-            || settings.object_store().map_err(|error| error.to_string()),
-            Ok,
-        );
-        let result = match objects {
-            Ok(objects) => bucket_list(bucket, objects).await,
-            Err(error) => Err(format!("cannot configure bucket {bucket}: {error}")),
-        };
-        return (
-            result,
-            "Grant the laptop AWS identity s3:ListBucket on the bucket and check its AWS credentials and region.",
-        );
-    }
+async fn s3_check(settings: &Settings) -> (Result<String, String>, &'static str) {
     let address = url::Url::parse(&settings.s3_endpoint).ok().and_then(|url| {
         url.host_str()
             .map(|host| format!("{host}:{}", url.port_or_known_default().unwrap_or(8333)))
@@ -375,27 +331,6 @@ async fn connect(address: &str) -> bool {
     )
     .await
     .is_ok_and(|result| result.is_ok())
-}
-
-async fn bucket_list(bucket: &str, objects: Arc<dyn ObjectStore>) -> Result<String, String> {
-    let listing = timeout(
-        Duration::from_secs(8),
-        objects.list(Some(&ObjectPath::from("chunks/"))).try_next(),
-    )
-    .await
-    .map_err(|_| format!("bucket {bucket} list timed out"))?;
-    match listing {
-        Ok(_) => Ok(format!(
-            "bucket {bucket} reachable with the laptop's AWS credentials"
-        )),
-        Err(object_store::Error::PermissionDenied { .. }) => {
-            Err(format!("bucket {bucket}: missing s3:ListBucket permission"))
-        }
-        Err(object_store::Error::Unauthenticated { .. }) => Err(format!(
-            "bucket {bucket}: laptop AWS credentials are unavailable"
-        )),
-        Err(error) => Err(format!("bucket {bucket} list failed: {error}")),
-    }
 }
 
 type Snapshot = swarmy_api_types::DoctorSnapshot;
@@ -649,104 +584,5 @@ mod tests {
                 .iter()
                 .any(|check| check.name == "gateway" && check.status == "fail")
         );
-    }
-}
-
-#[cfg(test)]
-mod bucket_tests {
-    use super::{ObjectPath, ObjectStore, Settings, s3_check};
-    use futures_util::stream::BoxStream;
-    use object_store::{
-        GetOptions, GetResult, ListResult, ObjectMeta, PutMultipartOptions, PutOptions, PutPayload,
-        PutResult, memory::InMemory,
-    };
-    use std::sync::Arc;
-
-    #[derive(Debug)]
-    struct DeniedList;
-
-    impl std::fmt::Display for DeniedList {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("denied list fixture")
-        }
-    }
-
-    // Only `list` is exercised by the doctor probe; unexpected operations fail the test.
-    #[async_trait::async_trait]
-    impl ObjectStore for DeniedList {
-        async fn put_opts(
-            &self,
-            _: &ObjectPath,
-            _: PutPayload,
-            _: PutOptions,
-        ) -> object_store::Result<PutResult> {
-            panic!("doctor must not write objects")
-        }
-        async fn put_multipart_opts(
-            &self,
-            _: &ObjectPath,
-            _: PutMultipartOptions,
-        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-            panic!("doctor must not write objects")
-        }
-        async fn get_opts(&self, _: &ObjectPath, _: GetOptions) -> object_store::Result<GetResult> {
-            panic!("doctor must not fetch objects")
-        }
-        async fn delete(&self, _: &ObjectPath) -> object_store::Result<()> {
-            panic!("doctor must not delete objects")
-        }
-        fn list(
-            &self,
-            prefix: Option<&ObjectPath>,
-        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-            assert_eq!(prefix, Some(&ObjectPath::from("chunks/")));
-            Box::pin(futures_util::stream::once(async {
-                Err(object_store::Error::PermissionDenied {
-                    path: "chunks/".into(),
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "access denied",
-                    )),
-                })
-            }))
-        }
-        async fn list_with_delimiter(
-            &self,
-            _: Option<&ObjectPath>,
-        ) -> object_store::Result<ListResult> {
-            panic!("doctor must use one bounded list request")
-        }
-        async fn copy(&self, _: &ObjectPath, _: &ObjectPath) -> object_store::Result<()> {
-            panic!("doctor must not copy objects")
-        }
-        async fn copy_if_not_exists(
-            &self,
-            _: &ObjectPath,
-            _: &ObjectPath,
-        ) -> object_store::Result<()> {
-            panic!("doctor must not copy objects")
-        }
-    }
-
-    #[tokio::test]
-    async fn bucket_profile_lists_with_laptop_store_and_names_denied_permission() {
-        let profile: swarmy_config::RemoteProfile = serde_json::from_value(serde_json::json!({
-            "name":"test", "socket_path":"socket", "pid":1, "ports":{},
-            "fdb_cluster_file":"cluster", "nats_url":"nats://localhost:4222",
-            "s3_endpoint":"", "s3_bucket":"fixture", "s3_region":"us-west-2"
-        }))
-        .unwrap();
-        let mut settings = Settings::default();
-        profile.apply(&mut settings);
-        let empty: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let (result, _) = s3_check(&settings, Some(&profile), Some(empty)).await;
-        assert_eq!(
-            result.unwrap(),
-            "bucket fixture reachable with the laptop's AWS credentials"
-        );
-        let denied: Arc<dyn ObjectStore> = Arc::new(DeniedList);
-        let (result, fix) = s3_check(&settings, Some(&profile), Some(denied)).await;
-        assert!(result.unwrap_err().contains("s3:ListBucket"));
-        assert!(fix.contains("s3:ListBucket"));
     }
 }

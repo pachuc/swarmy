@@ -32,8 +32,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("invalid S3 namespace: {0}")]
     S3Namespace(&'static str),
-    #[error(transparent)]
-    ObjectStore(#[from] object_store::Error),
     #[error("configuration I/O: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid configuration: {0}")]
@@ -211,6 +209,8 @@ pub struct Settings {
     pub memory_max_bytes: std::num::NonZeroUsize,
     pub worker_kill_point: Option<String>,
     pub fake: Fake,
+    /// Largest streamed image upload the API accepts, in bytes.
+    pub image_upload_max_bytes: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -306,6 +306,7 @@ impl Default for Settings {
             memory_max_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
             worker_kill_point: None,
             fake: Fake::default(),
+            image_upload_max_bytes: 16 * 1024 * 1024 * 1024,
         }
     }
 }
@@ -697,6 +698,19 @@ impl Settings {
         if let Some(value) = environment.get("SWARMY_FAKE_CALL_LOG") {
             self.fake.call_log.clone_from(value);
         }
+        self.apply_image_environment(environment)?;
+        Ok(())
+    }
+
+    fn apply_image_environment(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        if let Some(value) = environment.get("SWARMY_IMAGE_UPLOAD_MAX_BYTES") {
+            self.image_upload_max_bytes = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_IMAGE_UPLOAD_MAX_BYTES".into()))?;
+        }
         Ok(())
     }
 
@@ -894,6 +908,10 @@ impl Settings {
             ("SWARMY_SYSTEM_PROMPT".into(), self.system_prompt.clone()),
             ("SWARMY_FAKE_SCRIPT".into(), self.fake.script.clone()),
             ("SWARMY_FAKE_CALL_LOG".into(), self.fake.call_log.clone()),
+            (
+                "SWARMY_IMAGE_UPLOAD_MAX_BYTES".into(),
+                self.image_upload_max_bytes.to_string(),
+            ),
         ]
         .into();
         environment.insert("SWARMY_STATE_DIR".into(), self.state_dir.clone());
@@ -904,6 +922,16 @@ impl Settings {
         self.session_environment(&mut environment);
         self.node_environment(&mut environment);
         self.gc.add_to_environment(&mut environment);
+        self.retention_environment(&mut environment);
+        if let Some(value) = &self.worker_kill_point {
+            environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
+        }
+        environment
+    }
+
+    /// Retention windows for ephemeral sessions, sandboxes, snapshots, and
+    /// metering raw records. Split from `environment` for line-count limits.
+    fn retention_environment(&self, environment: &mut BTreeMap<String, String>) {
         environment.insert(
             "SWARMY_EPHEMERAL_RETENTION_SECONDS".into(),
             self.ephemeral_retention_seconds.to_string(),
@@ -916,7 +944,7 @@ impl Settings {
             "SWARMY_PLACEMENT_LEASE_SECONDS".into(),
             self.placement_lease_seconds.to_string(),
         );
-        self.inference_environment(&mut environment);
+        self.inference_environment(environment);
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
             self.volume_snapshots.period_seconds.to_string(),
@@ -929,10 +957,6 @@ impl Settings {
             "SWARMY_METERING_RAW_RETENTION_DAYS".into(),
             self.metering.raw_retention_days.to_string(),
         );
-        if let Some(value) = &self.worker_kill_point {
-            environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
-        }
-        environment
     }
 
     fn inference_environment(&self, environment: &mut BTreeMap<String, String>) {

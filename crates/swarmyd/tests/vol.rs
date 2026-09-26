@@ -11,38 +11,34 @@ use swarmy_core::{ImageTag, LeaseOwnerId, ManifestId, VolumeId};
 use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 
 #[test]
-fn commands_are_forwarded_and_root_is_required() {
-    for binary in [
-        env!("CARGO_BIN_EXE_swarmy"),
-        env!("CARGO_BIN_EXE_swarmy-session"),
+fn vol_help_lists_subcommands_and_attach_requires_root() {
+    let binary = env!("CARGO_BIN_EXE_swarmyd");
+    let output = Command::new(binary)
+        .args(["vol", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    for name in [
+        "create",
+        "attach",
+        "flush",
+        "checkpoint",
+        "snapshot",
+        "clone",
+        "detach",
+        "ls",
+        "show",
     ] {
+        assert!(help.contains(name));
+    }
+    if !rustix::process::geteuid().is_root() {
         let output = Command::new(binary)
-            .args(["vol", "--help"])
+            .args(["vol", "attach", &ulid::Ulid::generate().to_string()])
             .output()
             .unwrap();
-        assert!(output.status.success());
-        let help = String::from_utf8(output.stdout).unwrap();
-        for name in [
-            "create",
-            "attach",
-            "flush",
-            "checkpoint",
-            "snapshot",
-            "clone",
-            "detach",
-            "ls",
-            "show",
-        ] {
-            assert!(help.contains(name));
-        }
-        if !rustix::process::geteuid().is_root() {
-            let output = Command::new(binary)
-                .args(["vol", "attach", &ulid::Ulid::generate().to_string()])
-                .output()
-                .unwrap();
-            assert!(!output.status.success());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("requires root"));
-        }
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("requires root"));
     }
 }
 
@@ -98,7 +94,7 @@ impl Fixture {
             .set_len(64 * 1024 * 1024)
             .unwrap();
         system("mkfs.ext4", &["-F", "-q", raw.to_str().unwrap()]);
-        let objects = settings.object_store().unwrap();
+        let objects = swarmy_store::objects::from_settings(settings).unwrap();
         let image = swarmy_volume::image::upload_image(&raw, objects)
             .await
             .unwrap();
@@ -111,7 +107,7 @@ impl Fixture {
     }
 
     fn command(&self, node: &str, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_swarmyd"));
         command
             .current_dir(self.root.path())
             .env("SWARMY_STORE_DIRECTORY", &self.namespace)
@@ -124,7 +120,7 @@ impl Fixture {
                 "SWARMY_VOLUME_SNAPSHOT_RETENTION",
                 self.snapshot_retention.to_string(),
             )
-            .args(["--json", "vol"])
+            .args(["vol", "--json"])
             .args(arguments);
         command
     }
@@ -357,7 +353,7 @@ fn check_history(fixture: &Fixture, volume: &str, clone: &str, created: &Value) 
     for id in [volume, clone] {
         assert!(listed.iter().any(|record| record["volume_id"] == id));
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmyd"))
         .current_dir(fixture.root.path())
         .env("SWARMY_STORE_DIRECTORY", &fixture.namespace)
         .args(["vol", "show", volume])

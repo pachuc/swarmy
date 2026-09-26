@@ -172,7 +172,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
             .await
             .unwrap();
         for (answer, deleted) in [("n\r", false), ("yes\r", true)] {
-            let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_swarmy"));
+            let mut command = CommandBuilder::new(super::super::cli_bin::swarmy());
             command.args(["agent", "delete", "tommy", "--json"]);
             let mut terminal = Terminal::command(&fixture, command, "fixture:test");
             terminal

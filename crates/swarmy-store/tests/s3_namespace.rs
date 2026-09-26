@@ -18,7 +18,7 @@ fn chunk_path(hash: ContentHash) -> Path {
 }
 
 async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore) {
-    let objects = settings.object_store().unwrap();
+    let objects = swarmy_store::objects::from_settings(settings).unwrap();
     let chunks = ChunkStore::new(objects.clone());
     let live = chunks
         .put_chunk(&vec![17; CHUNK_SIZE as usize])
@@ -148,7 +148,7 @@ async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStor
         let mut legacy = settings.clone();
         legacy.s3_bucket = format!("{}/{}", settings.s3_bucket, settings.s3_prefix.as_str());
         legacy.s3_prefix = swarmy_config::ObjectPrefix::default();
-        let legacy = legacy.object_store().unwrap();
+        let legacy = swarmy_store::objects::from_settings(&legacy).unwrap();
         assert_eq!(legacy.head(&paths[0]).await.unwrap().location, paths[0]);
         legacy
             .put(&Path::from("legacy"), b"old".to_vec().into())
@@ -187,7 +187,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         !settings.s3_bucket.contains('/'),
         "test bucket must be a physical bucket"
     );
-    let raw = settings.object_store().unwrap();
+    let raw = swarmy_store::objects::from_settings(&settings).unwrap();
     assert!(
         raw.list(None).try_next().await.unwrap().is_none(),
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
@@ -198,12 +198,14 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         settings.s3_prefix = prefix.parse().unwrap();
         let mut sibling_settings = settings.clone();
         sibling_settings.s3_prefix = "runs/nested-sibling".parse().unwrap();
-        let sibling = sibling_settings.object_store().unwrap();
+        let sibling = swarmy_store::objects::from_settings(&sibling_settings).unwrap();
         let root = Subspace::all().subspace(&(format!("s3-test-{}", ulid::Ulid::generate()),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
-            Arc::new(ObjectBlobStore::new(settings.object_store().unwrap())),
+            Arc::new(ObjectBlobStore::new(
+                swarmy_store::objects::from_settings(&settings).unwrap(),
+            )),
         );
         let result = AssertUnwindSafe(exercise(&settings, &store, &*sibling))
             .catch_unwind()

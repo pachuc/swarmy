@@ -51,13 +51,29 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
             state = 'sleeping'
         state = os.environ.get('SESSION_STATE', state)
         since = (datetime.now(timezone.utc) - timedelta(minutes=float(os.environ.get('STATE_AGE_MINUTES', 1)))).isoformat()
-        print(json.dumps({'session_id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
-    elif rest[:3] == ['session', 'show', '01AAAA']:
-        if not (root / 'interrupted').exists():
-            print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '[\"429 rate limited\"]'))}))
-        print(json.dumps({'inference_completed': {'message': {'role':'assistant',
-            'parts':[{'text':{'text':os.environ.get('LAST_MESSAGE',
-            'Done https://github.com/pachuc/swarmy/pull/42')}}]}}}))
+        successor = os.environ.get('SUCCESSOR', '')
+        if successor and ':' in successor:
+            old, new = successor.split(':', 1)
+            print(json.dumps({'session_id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new}))
+            print(json.dumps({'session_id':new,'state':state,'state_since':since,'agent_name':'worker-1'}))
+        else:
+            print(json.dumps({'session_id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
+    elif rest[:2] == ['session', 'show']:
+        sid = rest[2] if len(rest) > 2 else ''
+        if sid not in ('01AAAA', '01BBBB'):
+            print(json.dumps({'state':'waiting_for_inference','reasons':[]}))
+        else:
+            if not (root / 'interrupted').exists() and not os.environ.get('SUCCESSOR'):
+                print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}))
+            if os.environ.get('PRESSURE', '') == '1':
+                print(json.dumps({'message_appended': {'message': {'role':'system',
+                    'parts':[{'text':{'text':'context_pressure: input 80 tokens at 75 percent'}}]}}}))
+            if os.environ.get('SUCCESSOR') and sid == '01AAAA':
+                text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
+            else:
+                text = os.environ.get('LAST_MESSAGE', 'Done https://github.com/pachuc/swarmy/pull/42')
+            print(json.dumps({'inference_completed': {'message': {'role':'assistant',
+                'parts':[{'text':{'text':text}}]}}}))
     elif rest[:2] == ['session', 'metrics']:
         # Fake durable per-turn records for fleet report tests. REPORT_METRICS
         # maps a session id to its JSON array of turn records.
@@ -477,6 +493,46 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(stale.returncode, 1)
         self.assertIn("no tasks launched since", stale.stderr)
 
+
+    def test_status_and_collect_follow_side_successor(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        env = dict(self.env, SUCCESSOR="01AAAA:01BBBB",
+                   SESSION_STATE="idle",
+                   OLD_MESSAGE="Working, no link yet",
+                   LAST_MESSAGE="Done https://github.com/pachuc/swarmy/pull/42",
+                   PR_LIST="[]")
+        status = self.call("status", env=env)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        # The old session is completed; status reports the successor state.
+        self.assertNotIn("completed", status.stdout)
+        self.assertIn("idle", status.stdout)
+        collect = self.call("collect", "EWR2HD", env=env)
+        self.assertEqual(collect.returncode, 0, collect.stderr)
+        self.assertIn("https://github.com/pachuc/swarmy/pull/42", collect.stdout)
+
+    def test_status_shows_context_pressure_warning(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        env = dict(self.env, PRESSURE="1", SESSION_STATE="sleeping")
+        status = self.call("status", env=env)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("context_pressure", status.stdout)
+
+    def test_resolve_helpers_follow_chain_and_pressure(self):
+        import importlib.util
+        spec = importlib.util.spec_from_loader("fleetmod", loader=None)
+        import types
+        source = Path("scripts/fleet/fleet").read_text()
+        mod = types.ModuleType("fleetmod")
+        mod.__dict__["__file__"] = str(Path("scripts/fleet/fleet").resolve())
+        exec(compile(source, "fleet", "exec"), mod.__dict__)
+        sessions = {
+            "01AAAA": {"session_id": "01AAAA", "state": "completed", "next_session": "01BBBB"},
+            "01BBBB": {"session_id": "01BBBB", "state": "idle"},
+        }
+        self.assertEqual(mod.current_session({}, "01AAAA", sessions), "01BBBB")
+        self.assertEqual(mod.current_session({}, "01BBBB", sessions), "01BBBB")
+        self.assertTrue(mod.has_pressure([{"message_appended": {"text": "context_pressure"}}]))
+        self.assertFalse(mod.has_pressure([{"message_appended": {"text": "hello"}}]))
 
 if __name__ == "__main__":
     unittest.main()

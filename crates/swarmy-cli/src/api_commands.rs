@@ -144,10 +144,53 @@ async fn session(
         session_command::Command::Show { session_id } => {
             show_session(client, endpoint, session_id, json).await?;
         }
+        session_command::Command::Close { session_id } => {
+            let id = session_id.to_string();
+            request(
+                endpoint,
+                client.close_session(
+                    &id,
+                    &swarmy_api_types::CloseSession {
+                        idempotency_key: Ulid::generate().to_string(),
+                    },
+                ),
+            )
+            .await?;
+            print(
+                &json!({"event":"session_closed","session_id":id}),
+                &format!("Closed session {id}"),
+                json,
+            );
+        }
+        session_command::Command::Interrupt { session_id } => {
+            let id = session_id.to_string();
+            let outcome = request(
+                endpoint,
+                client.interrupt(
+                    &id,
+                    &swarmy_api_types::InterruptSession {
+                        idempotency_key: Ulid::generate().to_string(),
+                    },
+                ),
+            )
+            .await?;
+            let (status, message) = match outcome.result {
+                swarmy_api_types::InterruptStatus::Finished => {
+                    ("finished", format!("Interrupted session {id}"))
+                }
+                swarmy_api_types::InterruptStatus::Requested => {
+                    ("requested", format!("Interrupt requested for session {id}"))
+                }
+            };
+            print(
+                &json!({"event":"session_interrupt","session_id":id,"result":status}),
+                &message,
+                json,
+            );
+        }
         session_command::Command::Metrics { session_id } => {
             session_metrics(client, endpoint, session_id, json).await?;
         }
-        _ => unreachable!("session close and interrupt run in swarmy-session"),
     }
     Ok(())
 }
@@ -784,7 +827,7 @@ async fn set_entry_quota(
     limit: u64,
     window: &str,
 ) -> Result<()> {
-    let window_seconds = swarmy_store::quota::parse_window(window)
+    let window_seconds = swarmy_core::quota::parse_window(window)
         .with_context(|| "--window must look like 30m, 5h, or 7d")?;
     let label = label.unwrap_or("default");
     request(
@@ -890,7 +933,7 @@ fn validate_auth_set_sources(args: &auth_command::Set) -> Result<()> {
     if let (Some(limit), Some(window)) = (args.limit, args.window.clone()) {
         ensure!(limit > 0, "--limit must be positive");
         ensure!(
-            swarmy_store::quota::parse_window(&window).is_some(),
+            swarmy_core::quota::parse_window(&window).is_some(),
             "--window must look like 30m, 5h, or 7d"
         );
     } else {

@@ -1,6 +1,3 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
-
 use std::{
     collections::BTreeMap,
     fs,
@@ -302,17 +299,34 @@ fn assert_gone(identities: &BTreeMap<String, (u32, String)>) {
 }
 
 async fn register_image(fixture: &Fixture) {
-    static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-        std::sync::OnceLock::new();
-    NETWORK.get_or_init(swarmy_store::boot);
     let settings =
         swarmy_config::Settings::read(&fixture.files.path().join(".swarmy/config.toml")).unwrap();
-    let store = swarmy_store::Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(&[settings.store_directory]),
-        std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+    let endpoint = settings
+        .api
+        .url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
+    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone()).unwrap();
+    // A zeroed file stands in for a built filesystem: zero chunks never
+    // reach object storage, so registration needs no root or image tools.
+    let raw = fixture.files.path().join("fixture.ext4");
+    std::fs::File::create(&raw)
+        .unwrap()
+        .set_len(256 * 1024)
+        .unwrap();
+    timeout(
+        Duration::from_secs(120),
+        client.upload_image(&swarmy_client::UploadImage {
+            name: "fixture",
+            tag: "test",
+            idempotency_key: &Ulid::generate().to_string(),
+            scratch: &[],
+            memory_mib: None,
+            display: false,
+            file: &raw,
+        }),
     )
     .await
+    .unwrap()
     .unwrap();
-    image_fixture::image(&store).await;
 }

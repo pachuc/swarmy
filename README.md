@@ -39,11 +39,13 @@ make install
 ```
 
 It finds the FoundationDB client library in `~/.local/lib` or a system
-directory, builds the CLI, its `swarmy-session` companion, and the three
-services, and installs them into `~/.cargo/bin`. `make install-node` adds
-`swarmyd` for a machine with root. `make check` runs the CI commands and
-`make uninstall` removes the binaries. For a library in another location, run
-`make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
+directory, builds the client and the services, and installs them into
+`~/.cargo/bin`. The client links no database library and needs no `libfdb_c`;
+only the service binaries link it. `make install-client` installs just the
+client without the library, `make install-core` the services, and
+`make install-node` adds `swarmyd` for a machine with root. `make check` runs
+the CI commands and `make uninstall` removes the binaries. For a library in
+another location, run `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
 embedded in every binary's runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`
 to the search path of its backing-stack subprocesses, so no library or executable
 path exports are needed. Keep the library at that location, or reinstall swarmy
@@ -55,7 +57,7 @@ If the pinned backing tools and FoundationDB client library are already installe
 system-wide (as in CI), the same `make install` finds the library in
 `/usr/local/lib` or `/usr/lib` and needs no variable.
 
-Cargo installs `swarmy`, its `swarmy-session` companion, and the three services
+Cargo installs `swarmy` and the services
 into `~/.cargo/bin` by default. Keep them together: `swarmy dev up` refuses to
 start a service whose version differs from the CLI, and `make install` is the
 way to bring them back in step. With rustup's normal shell

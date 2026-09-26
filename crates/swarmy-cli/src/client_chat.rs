@@ -319,6 +319,21 @@ async fn flush_queued(view: &mut View, conversation: &mut Conversation) -> Resul
     send_or_queue(view, conversation, text).await
 }
 
+/// The summary notice shown when opening a conversation that continued from an
+/// archived predecessor. It lives here so `run` stays under the line budget.
+fn predecessor_notice(conversation: &Conversation) -> Vec<String> {
+    conversation
+        .predecessor
+        .as_ref()
+        .map(|previous| {
+            vec![format!(
+                "System: Conversation summarized. Session {previous} archived; continuing in {}.",
+                conversation.id
+            )]
+        })
+        .unwrap_or_default()
+}
+
 struct View {
     entries: Vec<String>,
     partial: String,
@@ -354,7 +369,7 @@ impl View {
             |v| format!("{v:?}").to_lowercase(),
         );
         Self {
-            entries: Vec::new(),
+            entries: predecessor_notice(conversation),
             partial: String::new(),
             users: HashSet::new(),
             assistants: HashSet::new(),
