@@ -600,7 +600,7 @@ impl Gateway {
             Event::InferenceCompleted {
                 usage, cost_micros, ..
             } => Some(swarmy_store::MetricPatch::Inference(
-                swarmy_api_types::InferenceMetric {
+                swarmy_store::InferenceMetric {
                     request_id: job.request_id.to_string(),
                     provider: provider.to_owned(),
                     model: job.request.settings.model.clone(),
@@ -618,7 +618,7 @@ impl Gateway {
                 retryable: false,
                 ..
             } => Some(swarmy_store::MetricPatch::Inference(
-                swarmy_api_types::InferenceMetric {
+                swarmy_store::InferenceMetric {
                     request_id: job.request_id.to_string(),
                     provider: provider.to_owned(),
                     model: job.request.settings.model.clone(),

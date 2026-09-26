@@ -265,7 +265,7 @@ impl Hosting {
                 store.observe_turn_metric(
                     session,
                     turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
                         placement_ms: Some(elapsed),
                         cold: Some(stats.fetched_chunks > 0),
                         chunks_fetched: stats.fetched_chunks,

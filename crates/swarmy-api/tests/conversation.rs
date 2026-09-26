@@ -590,7 +590,7 @@ async fn emit_observed_turn(
         .record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
                 request_id: request.to_string(),
                 provider: "fake".into(),
                 model: "scripted".into(),
@@ -607,7 +607,7 @@ async fn emit_observed_turn(
         .record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+            swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
                 request_id: request.to_string(),
                 name: "bash".into(),
                 exit_status: Some(0),

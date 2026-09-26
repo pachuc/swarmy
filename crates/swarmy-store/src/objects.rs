@@ -5,52 +5,10 @@
 //! never links an object storage implementation.
 use std::sync::Arc;
 
-use aws_credential_types::provider::ProvideCredentials;
-use object_store::{
-    CredentialProvider, ObjectStore,
-    aws::{AmazonS3Builder, AwsCredential},
-    prefix::PrefixStore,
-};
+use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
 use swarmy_config::Settings;
 
 use crate::blob::BlobError;
-
-#[derive(Debug)]
-struct DefaultAwsCredentials {
-    region: String,
-    chain:
-        tokio::sync::OnceCell<aws_config::default_provider::credentials::DefaultCredentialsChain>,
-}
-
-#[async_trait::async_trait]
-impl CredentialProvider for DefaultAwsCredentials {
-    type Credential = AwsCredential;
-
-    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let chain = self
-            .chain
-            .get_or_init(|| async {
-                aws_config::default_provider::credentials::DefaultCredentialsChain::builder()
-                    .region(aws_config::Region::new(self.region.clone()))
-                    .build()
-                    .await
-            })
-            .await;
-        let credentials =
-            chain
-                .provide_credentials()
-                .await
-                .map_err(|error| object_store::Error::Generic {
-                    store: "S3 credentials",
-                    source: Box::new(error),
-                })?;
-        Ok(Arc::new(AwsCredential {
-            key_id: credentials.access_key_id().to_owned(),
-            secret_key: credentials.secret_access_key().to_owned(),
-            token: credentials.session_token().map(str::to_owned),
-        }))
-    }
-}
 
 fn regional_mode(settings: &Settings) -> (bool, bool) {
     (
@@ -60,7 +18,13 @@ fn regional_mode(settings: &Settings) -> (bool, bool) {
 }
 
 fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
-    let mut builder = AmazonS3Builder::new()
+    // Start from the process environment so `AWS_` variables (static keys,
+    // session token, web identity, container credentials) are honoured the
+    // same way the AWS default chain honours them. Explicit settings below
+    // override the environment; when the settings carry no static keys the
+    // builder falls back to its instance-metadata credential provider, which
+    // is what the nodes use with their instance role.
+    let mut builder = AmazonS3Builder::from_env()
         .with_bucket_name(bucket)
         .with_region(&settings.s3_region);
     let (regional, default_credentials) = regional_mode(settings);
@@ -72,12 +36,7 @@ fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
             .with_allow_http(true)
             .with_virtual_hosted_style_request(false);
     }
-    if default_credentials {
-        builder = builder.with_credentials(Arc::new(DefaultAwsCredentials {
-            region: settings.s3_region.clone(),
-            chain: tokio::sync::OnceCell::new(),
-        }));
-    } else {
+    if !default_credentials {
         builder = builder
             .with_access_key_id(&settings.s3_access_key)
             .with_secret_access_key(&settings.s3_secret_key);
@@ -132,7 +91,9 @@ mod tests {
         let regional = builder(&settings, "bucket").build().unwrap();
         let debug = format!("{regional:?}");
         assert!(debug.contains("https://bucket.s3.us-east-1.amazonaws.com"));
-        assert!(debug.contains("DefaultAwsCredentials"));
+        // No static keys: the builder falls back to its instance-metadata
+        // credential provider (the nodes' instance role), never a static one.
+        assert!(!debug.contains("StaticCredentialProvider"));
     }
 
     #[test]
@@ -147,7 +108,7 @@ mod tests {
         };
         let regional = format!("{:?}", from_settings(&settings).unwrap());
         assert!(regional.contains("https://bucket.s3.eu-west-1.amazonaws.com"));
-        assert!(regional.contains("DefaultAwsCredentials"));
+        assert!(!regional.contains("StaticCredentialProvider"));
     }
 
     #[test]

@@ -1109,7 +1109,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         fixture.store.record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
                 request_id: request.to_string(),
                 provider: "fake".into(),
                 model: "scripted".into(),

@@ -10,8 +10,6 @@ workspace = true
 
 # The FoundationDB network boot function is the only local unsafe-code exception.
 [dependencies]
-aws-config.workspace = true
-aws-credential-types.workspace = true
 chacha20poly1305.workspace = true
 rand.workspace = true
 swarmy-config.workspace = true
@@ -25,7 +23,6 @@ object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 swarmy-core.workspace = true
-swarmy-api-types.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
