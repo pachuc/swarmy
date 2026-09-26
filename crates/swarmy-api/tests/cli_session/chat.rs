@@ -439,8 +439,7 @@ async fn session_id(fixture: &Fixture) -> SessionId {
         }
         assert!(
             Instant::now() < deadline,
-            "no session appeared within {budget:?}",
-            budget = WAIT
+            "no session appeared within {WAIT:?}"
         );
         sleep(Duration::from_millis(50)).await;
     }
