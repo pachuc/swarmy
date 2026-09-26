@@ -15,7 +15,10 @@ use swarmy_core::{TokenUsage, UsageTotals};
 
 use crate::{Result, Store, StoreError, read, scan};
 
-/// Queryable rollup dimensions. `Entry` is `provider/label`.
+/// Queryable rollup dimensions. `Entry` is `provider/label`. The
+/// `AgentEntry` and `SessionEntry` combinations are written for the
+/// `agent show` and `session show` breakdowns; they are internal because the
+/// public `by=` filter stays limited to the six single dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeteringDimension {
     Session,
@@ -24,6 +27,8 @@ pub enum MeteringDimension {
     Entry,
     EntryKind,
     Model,
+    AgentEntry,
+    SessionEntry,
 }
 
 impl MeteringDimension {
@@ -37,10 +42,15 @@ impl MeteringDimension {
             Self::Entry => "entry",
             Self::EntryKind => "entry_kind",
             Self::Model => "model",
+            Self::AgentEntry => "agent_entry",
+            Self::SessionEntry => "session_entry",
         }
     }
 
-    /// Parse a dimension name from CLI or API input.
+    /// Parse a dimension name from CLI or API input. The combined dimensions
+    /// stay internal: `agent show` and `session show` read them, but `by=`
+    /// accepts only the six single dimensions (with `kind` as the CLI-facing
+    /// alias for `entry_kind`).
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -48,7 +58,7 @@ impl MeteringDimension {
             "agent" => Some(Self::Agent),
             "provider" => Some(Self::Provider),
             "entry" => Some(Self::Entry),
-            "entry_kind" => Some(Self::EntryKind),
+            "entry_kind" | "kind" => Some(Self::EntryKind),
             "model" => Some(Self::Model),
             _ => None,
         }
@@ -75,6 +85,15 @@ pub struct UsageGroup {
     pub completions: u64,
 }
 
+/// One key's summed buckets across all hours, used for per-entry
+/// breakdowns in the show commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionTotal {
+    pub key: String,
+    pub totals: UsageTotals,
+    pub completions: u64,
+}
+
 /// Bucket fields stored as separate atomic counters.
 const FIELDS: [&str; 8] = [
     "input",
@@ -97,6 +116,26 @@ pub fn hour_floor(second: i64) -> i64 {
 #[must_use]
 pub fn entry_key(provider: &str, label: &str) -> String {
     format!("{provider}/{label}")
+}
+
+/// Join an owner id with its entry for the combined breakdown dimensions.
+/// Owner ids are ULIDs without slashes, so the entry is everything after
+/// the first slash.
+#[must_use]
+pub fn agent_entry_key(agent: &str, entry: &str) -> String {
+    format!("{agent}/{entry}")
+}
+
+/// Join a session id with its entry for the combined breakdown dimensions.
+#[must_use]
+pub fn session_entry_key(session: &str, entry: &str) -> String {
+    format!("{session}/{entry}")
+}
+
+/// Split a combined key back into its owner prefix and entry suffix.
+#[must_use]
+pub fn split_owner_key(key: &str) -> Option<(&str, &str)> {
+    key.split_once('/')
 }
 
 fn add(trx: &Transaction, key: &[u8], delta: u64) {
@@ -261,38 +300,73 @@ fn accumulate(
     let slot = groups
         .entry(start.as_second())
         .or_insert((start, end, UsageTotals::default(), 0));
-    slot.2.usage.input_tokens = slot
-        .2
+    add_totals(&mut slot.2, totals);
+    slot.3 = slot.3.saturating_add(completions);
+}
+
+/// Add one bucket's totals into a running sum without losing whole
+/// diagnostics to overflow.
+fn add_totals(into: &mut UsageTotals, totals: &UsageTotals) {
+    into.usage.input_tokens = into
         .usage
         .input_tokens
         .saturating_add(totals.usage.input_tokens);
-    slot.2.usage.cached_input_tokens = slot
-        .2
+    into.usage.cached_input_tokens = into
         .usage
         .cached_input_tokens
         .saturating_add(totals.usage.cached_input_tokens);
-    slot.2.usage.cache_write_input_tokens = slot
-        .2
+    into.usage.cache_write_input_tokens = into
         .usage
         .cache_write_input_tokens
         .saturating_add(totals.usage.cache_write_input_tokens);
-    slot.2.usage.output_tokens = slot
-        .2
+    into.usage.output_tokens = into
         .usage
         .output_tokens
         .saturating_add(totals.usage.output_tokens);
-    slot.2.usage.reasoning_output_tokens = slot
-        .2
+    into.usage.reasoning_output_tokens = into
         .usage
         .reasoning_output_tokens
         .saturating_add(totals.usage.reasoning_output_tokens);
-    slot.2.usage.total_tokens = slot
-        .2
+    into.usage.total_tokens = into
         .usage
         .total_tokens
         .saturating_add(totals.usage.total_tokens);
-    slot.2.cost_micros = slot.2.cost_micros.saturating_add(totals.cost_micros);
-    slot.3 = slot.3.saturating_add(completions);
+    into.cost_micros = into.cost_micros.saturating_add(totals.cost_micros);
+}
+
+/// Merge one hour's buckets into an hourly map shared by the single-key
+/// and aggregate query paths.
+fn merge_hour(
+    hours: &mut BTreeMap<i64, (UsageTotals, u64)>,
+    hour: i64,
+    totals: &UsageTotals,
+    completions: u64,
+) {
+    let slot = hours
+        .entry(hour)
+        .or_insert((UsageTotals::default(), 0));
+    add_totals(&mut slot.0, totals);
+    slot.1 = slot.1.saturating_add(completions);
+}
+
+/// Fold an hourly map into calendar groups in time order.
+fn group_hours(
+    hours: &BTreeMap<i64, (UsageTotals, u64)>,
+    group_by: UsageGroupBy,
+) -> Vec<UsageGroup> {
+    let mut grouped: BTreeMap<i64, (Timestamp, Timestamp, UsageTotals, u64)> = BTreeMap::new();
+    for (hour, (totals, completions)) in hours {
+        accumulate(&mut grouped, *hour, group_by, totals, *completions);
+    }
+    grouped
+        .into_values()
+        .map(|(start, end, totals, completions)| UsageGroup {
+            start,
+            end,
+            totals,
+            completions,
+        })
+        .collect()
 }
 
 impl Store {
@@ -385,17 +459,161 @@ impl Store {
         let hours = self
             .bucket_hours(dimension, key, from_hour, to_hour)
             .await?;
-        let mut grouped: BTreeMap<i64, (Timestamp, Timestamp, UsageTotals, u64)> = BTreeMap::new();
-        for (hour, (totals, completions)) in &hours {
-            accumulate(&mut grouped, *hour, group_by, totals, *completions);
+        Ok(group_hours(&hours, group_by))
+    }
+
+    /// Sum hourly buckets over `[from, to)` across every key in `dimension`
+    /// into calendar groups. `swarmy cost` without a key filter reads the
+    /// fleet-wide series through this instead of enumerating keys.
+    /// # Errors
+    /// Returns decoding or storage errors.
+    pub async fn usage_aggregate(
+        &self,
+        dimension: MeteringDimension,
+        from: Timestamp,
+        to: Timestamp,
+        group_by: UsageGroupBy,
+    ) -> Result<Vec<UsageGroup>> {
+        if to <= from {
+            return Ok(Vec::new());
         }
-        Ok(grouped
-            .into_values()
-            .map(|(start, end, totals, completions)| UsageGroup {
-                start,
-                end,
+        let from_hour = hour_floor(from.as_second());
+        let to_hour = hour_floor(to.as_second().saturating_sub(1));
+        if to_hour < from_hour {
+            return Ok(Vec::new());
+        }
+        let mut hours: BTreeMap<i64, (UsageTotals, u64)> = BTreeMap::new();
+        for (_, hour, totals, completions) in self
+            .scan_dimension(dimension, Some((from_hour, to_hour)))
+            .await?
+        {
+            merge_hour(&mut hours, hour, &totals, completions);
+        }
+        Ok(group_hours(&hours, group_by))
+    }
+
+    /// Sum every key starting with `prefix` in `dimension` into per-key
+    /// totals, ignoring time. The show commands list one owner's entries
+    /// through the combined dimensions with an `{owner}/` prefix.
+    /// # Errors
+    /// Returns decoding or storage errors.
+    pub async fn dimension_totals(
+        &self,
+        dimension: MeteringDimension,
+        prefix: &str,
+    ) -> Result<Vec<DimensionTotal>> {
+        let mut totals: BTreeMap<String, (UsageTotals, u64)> = BTreeMap::new();
+        for (key, _, bucket, completions) in self
+            .scan_dimension_keys(dimension, Some(prefix))
+            .await?
+        {
+            let slot = totals.entry(key).or_insert((UsageTotals::default(), 0));
+            add_totals(&mut slot.0, &bucket);
+            slot.1 = slot.1.saturating_add(completions);
+        }
+        Ok(totals
+            .into_iter()
+            .map(|(key, (totals, completions))| DimensionTotal {
+                key,
                 totals,
                 completions,
+            })
+            .collect())
+    }
+
+    /// Scan every bucket row in `dimension`, optionally restricted to an
+    /// inclusive hour range. Rows arrive as `(key, hour, totals,
+    /// completions)` in key and hour order.
+    async fn scan_dimension(
+        &self,
+        dimension: MeteringDimension,
+        hours: Option<(i64, i64)>,
+    ) -> Result<Vec<(String, i64, UsageTotals, u64)>> {
+        let mut kept = Vec::new();
+        for (key, hour, totals, completions) in
+            self.scan_dimension_keys(dimension, None).await?
+        {
+            if hours.is_some_and(|(from, to)| hour < from || hour > to) {
+                continue;
+            }
+            kept.push((key, hour, totals, completions));
+        }
+        Ok(kept)
+    }
+
+    /// Scan every bucket row in `dimension`, optionally keeping only keys
+    /// with the given prefix. Each row decodes to its key, hour, totals,
+    /// and completion count.
+    async fn scan_dimension_keys(
+        &self,
+        dimension: MeteringDimension,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, i64, UsageTotals, u64)>> {
+        let subspace = self
+            .root
+            .subspace(&("metering_hour", dimension.as_str()));
+        let (begin, end) = subspace.range();
+        let mut cursor = begin.clone();
+        let mut rows = Vec::new();
+        loop {
+            let batch = self
+                .transaction(|trx| {
+                    let range = (cursor.clone(), end.clone());
+                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                })
+                .await?;
+            if batch.is_empty() {
+                break;
+            }
+            for (raw_key, value) in &batch {
+                let (key, hour, field): (String, i64, String) =
+                    subspace.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+                if FIELDS.contains(&field.as_str())
+                    && prefix.is_none_or(|want| key.starts_with(want))
+                {
+                    rows.push((key, hour, field, counter(value)));
+                }
+                cursor.clone_from(raw_key);
+                cursor.push(0);
+            }
+            if batch.len() < crate::MAX_SCAN_LIMIT {
+                break;
+            }
+        }
+        // Fold the eight field counters of each key and hour into totals.
+        let mut folded: BTreeMap<(String, i64), BTreeMap<String, u64>> = BTreeMap::new();
+        for (key, hour, field, value) in rows {
+            folded
+                .entry((key, hour))
+                .or_default()
+                .insert(field, value);
+        }
+        Ok(folded
+            .into_iter()
+            .map(|((key, hour), fields)| {
+                let totals = UsageTotals {
+                    usage: TokenUsage {
+                        input_tokens: fields.get("input").copied().unwrap_or(0),
+                        cached_input_tokens: fields.get("cached").copied().unwrap_or(0),
+                        cache_write_input_tokens: fields
+                            .get("cache_write")
+                            .copied()
+                            .unwrap_or(0),
+                        output_tokens: fields.get("output").copied().unwrap_or(0),
+                        reasoning_output_tokens: fields
+                            .get("reasoning")
+                            .copied()
+                            .unwrap_or(0),
+                        total_tokens: fields.get("total").copied().unwrap_or(0),
+                    },
+                    cost_micros: fields.get("cost").copied().unwrap_or(0),
+                };
+                (
+                    key,
+                    hour,
+                    totals,
+                    fields.get("completions").copied().unwrap_or(0),
+                )
             })
             .collect())
     }

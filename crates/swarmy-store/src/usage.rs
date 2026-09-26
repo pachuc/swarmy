@@ -240,7 +240,7 @@ impl Store {
                 crate::metering::MeteringDimension::Provider.as_str(),
                 input.provider.into(),
             ),
-            (crate::metering::MeteringDimension::Entry.as_str(), entry_id),
+            (crate::metering::MeteringDimension::Entry.as_str(), entry_id.clone()),
             (
                 crate::metering::MeteringDimension::EntryKind.as_str(),
                 input.kind.unwrap_or("unknown").into(),
@@ -248,6 +248,17 @@ impl Store {
             (
                 crate::metering::MeteringDimension::Model.as_str(),
                 input.model.into(),
+            ),
+            // Combined dimensions keep per-owner entry attribution without
+            // scanning completion records, which prune after their retention
+            // window. Providers derive from the entry names on read.
+            (
+                crate::metering::MeteringDimension::AgentEntry.as_str(),
+                crate::metering::agent_entry_key(&input.agent.to_string(), &entry_id),
+            ),
+            (
+                crate::metering::MeteringDimension::SessionEntry.as_str(),
+                crate::metering::session_entry_key(&input.session.to_string(), &entry_id),
             ),
         ];
         for (dimension, key) in &dimensions {
