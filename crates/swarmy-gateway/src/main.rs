@@ -1424,9 +1424,11 @@ mod retry_tests {
         );
         let bus = Bus::connect(&nats_url, swarmy_bus::Config::default())
             .await
-            .ok()?;
+            .expect("dev NATS must be reachable for gateway stream tests");
         let settings = swarmy_config::Settings::default();
-        let providers = Providers::discover(store.clone(), &settings).await.ok()?;
+        let providers = Providers::discover(store.clone(), &settings)
+            .await
+            .expect("provider discovery must succeed for gateway stream tests");
         Some(Gateway {
             store,
             blobs: Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
