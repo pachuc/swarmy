@@ -244,8 +244,9 @@ async fn server_probe(
         })
         .transpose()?;
     // A live inference round trip can take minutes on a loaded provider.
-    let answer = crate::api_client::call_with_timeout(
-        endpoint,
+    // The client error is matched before the endpoint wrapper so a missing
+    // credential still names its recovery command.
+    let answer = tokio::time::timeout(
         std::time::Duration::from_secs(300),
         client.probe_model(&swarmy_api_types::ProbeModel {
             provider: provider_id.into(),
@@ -254,7 +255,22 @@ async fn server_probe(
             effort,
         }),
     )
-    .await?;
+    .await
+    .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
+    .map_err(|error| {
+        // The server's fixed `credential_unavailable` code carries the
+        // resolver detail in its message; name the recovery command here so
+        // the hint survives without baking it into the API code.
+        if let swarmy_client::Error::Api { body, .. } = &error
+            && body.code == "credential_unavailable"
+        {
+            return anyhow::anyhow!(
+                "resolve {provider_id}: {}; use swarmy auth set {provider_id} --from-env or swarmy auth login {provider_id}",
+                body.message
+            );
+        }
+        crate::api_client::api_error(&error, endpoint)
+    })?;
     let dollars = {
         let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);
         format!("{}.{:04}", units / 10_000, units % 10_000)
