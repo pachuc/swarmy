@@ -103,13 +103,13 @@ impl Terminal {
         }
     }
 
-    async fn new_session(fixture: &Fixture) -> Self {
+    async fn new_session(fixture: &Fixture, diagnostics: Diagnostics<'_>) -> Self {
         let mut terminal = Self::open(fixture, None);
         terminal
-            .screen(|screen| screen.contains("New session"))
+            .screen_diagnosed(|screen| screen.contains("New session"), WAIT, diagnostics)
             .await;
         terminal.type_text("\r");
-        assert!(terminal.ready().await.contains("ephemeral |"));
+        assert!(terminal.ready(diagnostics).await.contains("ephemeral |"));
         terminal
     }
 
@@ -130,31 +130,11 @@ impl Terminal {
         self.queries.drain(..keep);
     }
 
-    async fn screen(&mut self, predicate: impl Fn(&str) -> bool) -> String {
-        timeout(CLIENT_WAIT, async {
-            loop {
-                let screen = self.parser.screen().contents();
-                if predicate(&screen) {
-                    return screen;
-                }
-                let bytes = self.receiver.recv().await.unwrap_or_else(|| {
-                    panic!(
-                        "terminal closed unexpectedly:\n{}",
-                        self.parser.screen().contents()
-                    )
-                });
-                self.process(&bytes);
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("terminal timed out:\n{}", self.parser.screen().contents()))
-    }
-
     /// Wait for a screen predicate with an explicit budget, printing the
     /// screen, the last twenty lines of each service log, and the session's
-    /// event log when the budget expires. Use this for waits that depend on
-    /// a model turn or a service restart; purely client-side waits use
-    /// [`Terminal::screen`] with the short client budget.
+    /// event log when the budget expires. Steps that never wait on a model
+    /// turn or a service restart pass the short [`WAIT`] budget; turn and
+    /// restart waits pass [`turn_budget`] or [`service_budget`].
     async fn screen_diagnosed(
         &mut self,
         predicate: impl Fn(&str) -> bool,
@@ -188,8 +168,11 @@ impl Terminal {
         }
     }
 
-    async fn ready(&mut self) -> String {
-        self.screen(|screen| screen.contains("Enter: send")).await
+    /// Wait for the client to report idle input with the short client budget,
+    /// for steps where no model turn runs.
+    async fn ready(&mut self, diagnostics: Diagnostics<'_>) -> String {
+        self.screen_diagnosed(|screen| screen.contains("Enter: send"), WAIT, diagnostics)
+            .await
     }
 
     /// Wait for the client to report idle input with a model-turn budget and
@@ -215,7 +198,7 @@ impl Terminal {
     }
 
     async fn exit(&mut self, success: bool) {
-        timeout(CLIENT_WAIT, async {
+        timeout(WAIT, async {
             loop {
                 if let Some(status) = self.child.try_wait().unwrap() {
                     // Drain the remaining PTY output first: the client prints
@@ -289,18 +272,15 @@ impl Diagnostics<'_> {
 
 /// Best-effort summary of the session's event log for timeout diagnostics.
 /// Never panics: a slow database yields an error line instead of events.
+/// Prints the last 64 events so the tail of a long test is what gets shown.
 async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String {
     let Some(id) = session else {
         return "session events: (no session yet)\n".into();
     };
-    let events = timeout(
-        Duration::from_secs(10),
-        fixture.store.read_events(id, 0, 64),
-    )
-    .await;
+    let events = timeout(Duration::from_secs(10), read_last_events(fixture, id)).await;
     match events {
         Ok(Ok(events)) => {
-            let mut summary = format!("session events for {id} ({} events):\n", events.len());
+            let mut summary = format!("session events for {id} (last {} events):\n", events.len());
             for event in events {
                 let _ = writeln!(summary, "  seq {} {}", event.seq(), event_name(&event));
             }
@@ -311,6 +291,22 @@ async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String
     }
 }
 
+/// Read up to the last 64 events of a session, starting from the head
+/// sequence minus 64 so long tests stay within the store scan limit.
+async fn read_last_events(fixture: &Fixture, id: SessionId) -> Result<Vec<Event>, String> {
+    let session = fixture
+        .store
+        .fetch_session(id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "session row missing".to_string())?;
+    fixture
+        .store
+        .read_events(id, session.head_seq.saturating_sub(64), 64)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Short variant name for an event, enough to tell where a turn stalled.
 fn event_name(event: &Event) -> &'static str {
     match event {
@@ -319,8 +315,9 @@ fn event_name(event: &Event) -> &'static str {
         Event::ToolCallCompleted { .. } => "tool_call_completed",
         Event::InferenceRequested { .. } => "inference_requested",
         Event::InferenceCompleted { .. } => "inference_completed",
+        Event::InferenceFailed { .. } => "inference_failed",
         Event::StateChanged { .. } => "state_changed",
-        _ => "other",
+        Event::SnapshotWritten { .. } => "snapshot_written",
     }
 }
 
@@ -369,7 +366,13 @@ impl Services {
     }
 
     fn launch(&mut self, fixture: &Fixture, name: &str) {
-        let log = std::fs::File::create(self.files.path().join(format!("{name}.log"))).unwrap();
+        // Append so relaunching a service after a kill keeps the pre-kill
+        // history that a restart timeout needs for diagnosis.
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.files.path().join(format!("{name}.log")))
+            .unwrap();
         let mut command = Command::new(self.bin.join(format!("swarmy-{name}")));
         command
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
@@ -425,8 +428,10 @@ impl Services {
     }
 }
 
+/// Look up the session the client just created. Creation runs no model turn,
+/// so the short client budget applies.
 async fn session_id(fixture: &Fixture) -> SessionId {
-    let deadline = Instant::now() + turn_budget();
+    let deadline = Instant::now() + WAIT;
     loop {
         let sessions = list_sessions_tolerant(fixture, deadline).await;
         if let Some(session) = sessions.first() {
@@ -435,22 +440,29 @@ async fn session_id(fixture: &Fixture) -> SessionId {
         assert!(
             Instant::now() < deadline,
             "no session appeared within {budget:?}",
-            budget = turn_budget()
+            budget = WAIT
         );
         sleep(Duration::from_millis(50)).await;
     }
 }
 
-async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId) {
-    let budget = turn_budget();
+/// Wait for a session to reach idle with an explicit budget, printing timeout
+/// diagnostics on expiry. Retryable database timeouts keep polling so the
+/// outer timeout below wins with diagnostics instead of panicking first.
+async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId, budget: Duration) {
     let result = timeout(budget, async {
-        let deadline = Instant::now() + budget;
         loop {
-            let state = fetch_session_tolerant(fixture, id, deadline)
-                .await
-                .map(|session| session.state);
-            if state == Some(SessionState::Idle) {
-                break;
+            match fixture.store.fetch_session(id).await {
+                Ok(session)
+                    if session
+                        .as_ref()
+                        .is_some_and(|session| session.state == SessionState::Idle) =>
+                {
+                    break;
+                }
+                Err(error) if is_retryable_store_error(&error) => {}
+                Err(error) => panic!("session fetch failed for {id}: {error}"),
+                Ok(_) => {}
             }
             sleep(Duration::from_millis(30)).await;
         }
@@ -518,15 +530,11 @@ fn diag<'a>(
     }
 }
 
-/// Wait for the reply count to reach `count` and for input to unlock, with a
-/// model-turn budget and timeout diagnostics.
-async fn await_reply_count(
-    terminal: &mut Terminal,
-    fixture: &Fixture,
-    services: &Services,
-    id: SessionId,
-    count: usize,
-) {
+/// Wait for the reply count to reach `count` with a model-turn budget and
+/// timeout diagnostics, without waiting for the ready prompt. Use this when
+/// the client is closed right after the reply: the following `idle()` proves
+/// the session finishes.
+async fn await_reply(terminal: &mut Terminal, diagnostics: Diagnostics<'_>, count: usize) {
     terminal
         .screen_diagnosed(
             |screen| {
@@ -536,12 +544,16 @@ async fn await_reply_count(
                     == count
             },
             turn_budget(),
-            diag(fixture, services, Some(id)),
+            diagnostics,
         )
         .await;
-    terminal
-        .ready_after_turn(diag(fixture, services, Some(id)))
-        .await;
+}
+
+/// Wait for the reply count to reach `count` and for input to unlock, with a
+/// model-turn budget and timeout diagnostics.
+async fn await_reply_count(terminal: &mut Terminal, diagnostics: Diagnostics<'_>, count: usize) {
+    await_reply(terminal, diagnostics, count).await;
+    terminal.ready_after_turn(diagnostics).await;
 }
 
 /// Drive one recovery round: get a reply, kill `name`, relaunch it, and wait
@@ -587,14 +599,27 @@ async fn recover_service(
 async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
     run(|fixture| async move {
         let mut services = Services::start(&fixture).await;
-        let mut terminal = Terminal::new_session(&fixture).await;
+        let mut terminal = Terminal::new_session(
+            &fixture,
+            Diagnostics {
+                fixture: &fixture,
+                services: Some(&services),
+                session: None,
+            },
+        )
+        .await;
         let id = session_id(&fixture).await;
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: Some(&services),
+            session: Some(id),
+        };
         terminal.type_text("What time is it?\r");
         terminal
             .screen_diagnosed(
                 |screen| screen.contains("Tool: get_time") && screen.contains("Result:"),
                 turn_budget(),
-                diag(&fixture, &services, Some(id)),
+                diagnostics,
             )
             .await;
         // Wait for the reply only. The "input locked" status is transient and
@@ -605,26 +630,24 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
             .screen_diagnosed(
                 |screen| screen.contains("Agent: Scripted conversation reply."),
                 turn_budget(),
-                diag(&fixture, &services, Some(id)),
+                diagnostics,
             )
             .await;
         assert!(screen.find("Result:").unwrap() < screen.find("Agent:").unwrap());
-        terminal
-            .ready_after_turn(diag(&fixture, &services, Some(id)))
-            .await;
+        terminal.ready_after_turn(diagnostics).await;
         terminal.type_text("Remember the first turn?\r");
-        await_reply_count(&mut terminal, &fixture, &services, id, 2).await;
+        await_reply_count(&mut terminal, diagnostics, 2).await;
         assert_user_order(&fixture, id).await;
-        // Wait for the reply only. The "input locked" status is transient and
-        // the client may render the reply and the idle state in one frame, so
-        // requiring both together raced on slow runners.
+        // Wait for the reply only, then exit without waiting for the ready
+        // prompt: the idle() below proves the session finishes with the
+        // client closed.
         terminal.type_text("Finish while I am gone.\r");
-        await_reply_count(&mut terminal, &fixture, &services, id, 3).await;
+        await_reply(&mut terminal, diagnostics, 3).await;
         terminal.type_text("\x1b");
         terminal.exit(true).await;
-        idle(&fixture, Some(&services), id).await;
+        idle(&fixture, Some(&services), id, turn_budget()).await;
         let mut terminal = Terminal::open(&fixture, Some(id));
-        let screen = terminal.ready().await;
+        let screen = terminal.ready(diagnostics).await;
         assert_eq!(
             screen
                 .matches("Agent: Scripted conversation reply.")
@@ -648,11 +671,16 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         terminal.exit(true).await;
         // The picker reads first messages and resumes the selected history.
         let mut terminal = Terminal::open(&fixture, None);
+        let picker = Diagnostics {
+            fixture: &fixture,
+            services: Some(&services),
+            session: None,
+        };
         terminal
-            .screen(|screen| screen.contains("What time is it?"))
+            .screen_diagnosed(|screen| screen.contains("What time is it?"), WAIT, picker)
             .await;
         terminal.type_text("\x1b[B\r");
-        let screen = terminal.ready().await;
+        let screen = terminal.ready(picker).await;
         assert!(screen.contains(&id.to_string()));
         terminal.type_text("\x1b");
         terminal.exit(true).await;
@@ -668,13 +696,22 @@ async fn chat_enables_input_from_idle_events_and_recovers_missed_events() {
     for live in [true, false] {
         run(|fixture| async move {
             let server = serve(&fixture, live).await;
-            let mut terminal = Terminal::new_session(&fixture).await;
+            let diagnostics = Diagnostics {
+                fixture: &fixture,
+                services: None,
+                session: None,
+            };
+            let mut terminal = Terminal::new_session(&fixture, diagnostics).await;
             let start = Instant::now();
             terminal.type_text("hello\r");
             let screen = terminal
-                .screen(|screen| {
-                    screen.contains("Agent: scripted answer") && screen.contains("Enter: send")
-                })
+                .screen_diagnosed(
+                    |screen| {
+                        screen.contains("Agent: scripted answer") && screen.contains("Enter: send")
+                    },
+                    WAIT,
+                    diagnostics,
+                )
                 .await;
             if live {
                 assert!(
@@ -718,7 +755,17 @@ async fn stream_preview_text(
     fixture
         .publish_token(id, text, if text == "scripted " { 0 } else { 9 })
         .await;
-    let screen = terminal.screen(|screen| screen.contains(expected)).await;
+    let screen = terminal
+        .screen_diagnosed(
+            |screen| screen.contains(expected),
+            WAIT,
+            Diagnostics {
+                fixture,
+                services: None,
+                session: Some(id),
+            },
+        )
+        .await;
     assert!(screen.contains("input locked"));
 }
 
@@ -749,7 +796,15 @@ async fn request_tool_preview(
         .await
         .unwrap();
     terminal
-        .screen(|screen| screen.contains("Tool: get_time [clock] {} (running)"))
+        .screen_diagnosed(
+            |screen| screen.contains("Tool: get_time [clock] {} (running)"),
+            WAIT,
+            Diagnostics {
+                fixture,
+                services: None,
+                session: Some(id),
+            },
+        )
         .await;
 }
 
@@ -780,7 +835,15 @@ async fn complete_tool_preview(
         .await
         .unwrap();
     let screen = terminal
-        .screen(|screen| screen.contains("Result: noon"))
+        .screen_diagnosed(
+            |screen| screen.contains("Result: noon"),
+            WAIT,
+            Diagnostics {
+                fixture,
+                services: None,
+                session: Some(id),
+            },
+        )
         .await;
     assert!(!screen.contains("Agent:"));
 }
@@ -789,12 +852,17 @@ async fn complete_tool_preview(
 async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
     run(|fixture| async move {
         let (service, mut receiver) = serve_until_claim(&fixture).await;
-        let mut terminal = Terminal::new_session(&fixture).await;
+        let mut terminal = Terminal::new_session(
+            &fixture,
+            Diagnostics {
+                fixture: &fixture,
+                services: None,
+                session: None,
+            },
+        )
+        .await;
         terminal.type_text("hello\r");
-        let id = timeout(CLIENT_WAIT, receiver.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let id = timeout(WAIT, receiver.recv()).await.unwrap().unwrap();
         let lease = fixture
             .store
             .claim_lease(
@@ -826,7 +894,13 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
             .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
             .await
             .unwrap();
-        let screen = terminal.ready().await;
+        let screen = terminal
+            .ready(Diagnostics {
+                fixture: &fixture,
+                services: None,
+                session: Some(id),
+            })
+            .await;
         assert_eq!(screen.matches("Agent: scripted answer").count(), 1);
         terminal.type_text("\x1b");
         terminal.exit(true).await;
@@ -838,12 +912,17 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
 #[tokio::test]
 async fn chat_uses_server_default_image_and_explicit_image_overrides_it() {
     run(|fixture| async move {
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: None,
+        };
         let mut terminal = Terminal::with_image(&fixture, None, None, "");
         terminal
-            .screen(|screen| screen.contains("New session"))
+            .screen_diagnosed(|screen| screen.contains("New session"), WAIT, diagnostics)
             .await;
         terminal.type_text("\r");
-        terminal.ready().await;
+        terminal.ready(diagnostics).await;
         let default = session_id(&fixture).await;
         assert_eq!(
             fixture.store.session_image(default).await.unwrap(),
@@ -858,10 +937,10 @@ async fn chat_uses_server_default_image_and_explicit_image_overrides_it() {
         let mut terminal =
             Terminal::with_image(&fixture, None, Some("fixture:test"), "unregistered:default");
         terminal
-            .screen(|screen| screen.contains("New session"))
+            .screen_diagnosed(|screen| screen.contains("New session"), WAIT, diagnostics)
             .await;
         terminal.type_text("\r");
-        terminal.ready().await;
+        terminal.ready(diagnostics).await;
         let id = fixture
             .store
             .list_sessions(Some(default), 64)
@@ -885,7 +964,12 @@ async fn chat_uses_server_default_image_and_explicit_image_overrides_it() {
 #[tokio::test]
 async fn chat_uses_default_image_without_a_node() {
     run(|fixture| async move {
-        let mut terminal = Terminal::new_session(&fixture).await;
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: None,
+        };
+        let mut terminal = Terminal::new_session(&fixture, diagnostics).await;
         let id = session_id(&fixture).await;
         assert_eq!(
             fixture.store.session_image(id).await.unwrap(),
@@ -898,7 +982,7 @@ async fn chat_uses_default_image_without_a_node() {
         terminal.type_text("\x1b");
         terminal.exit(true).await;
         let mut resumed = Terminal::with_image(&fixture, Some(id), None, "");
-        resumed.ready().await;
+        resumed.ready(diagnostics).await;
         resumed.type_text("\x1b");
         resumed.exit(true).await;
     })
@@ -976,7 +1060,15 @@ async fn root_chat_default_image_executes_pwd() {
             "request_based": {"steps": 2, "tool_steps": [0], "bash_command": "pwd", "final_answer": "pwd completed"}
         }"#).await;
         let manifest = fixture.store.get_image("fixture", &swarmy_core::ImageTag("test".into())).await.unwrap().unwrap();
-        let mut terminal = Terminal::new_session(&fixture).await;
+        let mut terminal = Terminal::new_session(
+            &fixture,
+            Diagnostics {
+                fixture: &fixture,
+                services: Some(&services),
+                session: None,
+            },
+        )
+        .await;
         let id = session_id(&fixture).await;
         assert_eq!(fixture.store.session_image(id).await.unwrap(), Some(manifest));
         let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
@@ -1082,7 +1174,13 @@ async fn header_shows_persisted_provider_model_and_effort() {
         let mut command = CommandBuilder::new(super::cli_bin::swarmy());
         command.args(["chat", "--model", "openai/gpt-5.5", "--effort", "max"]);
         let mut terminal = Terminal::command(&fixture, command, "fixture:test");
-        let screen = terminal.ready().await;
+        let screen = terminal
+            .ready(Diagnostics {
+                fixture: &fixture,
+                services: None,
+                session: None,
+            })
+            .await;
         assert!(screen.contains("openai/gpt-5.5 max"), "{screen}");
         terminal.type_text("\u{1b}");
         terminal.exit(true).await;

@@ -51,12 +51,13 @@ jobs:
             printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
           done
       - run: cargo fmt --all --check
-      # The chat PTY suite spawns a scheduler, worker, and gateway per test
-      # and starves when it competes with the rest of the workspace on the
-      # two-core runner, so it runs after everything else with one thread.
-      - run: cargo test --workspace --locked --exclude swarmy-cli
-      - name: Run the CLI suite serially
-        run: cargo test --locked -p swarmy-cli -- --test-threads=1
+      # Cargo runs test binaries one at a time, so the effective change here
+      # is --test-threads=1 within the package that owns the chat PTY suite:
+      # each of its tests spawns a scheduler, worker, and gateway, and they
+      # starve each other on the two-core runner when run in parallel.
+      - run: cargo test --workspace --locked --exclude swarmy-api
+      - name: Run the PTY suite serially
+        run: cargo test --locked -p swarmy-api -- --test-threads=1
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run the reduced failure-injection test
         run: scripts/chaos-ci.sh

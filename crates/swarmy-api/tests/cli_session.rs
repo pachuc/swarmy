@@ -42,12 +42,7 @@ use ulid::Ulid;
 
 const WAIT: Duration = Duration::from_secs(15);
 
-/// Short budget for steps that are purely client-side: screen redraws, key
-/// handling, process exit, and session creation without a model turn. These
-/// never wait on provider round trips or service restarts.
-const CLIENT_WAIT: Duration = WAIT;
-
-/// Numbers below mirror the chat fixture in `session/chat.rs`: the fake
+/// Numbers below mirror the chat fixture in `cli_session/chat.rs`: the fake
 /// provider sleeps 600 ms per emitted delta, each provider call emits two
 /// deltas (part done plus completion), and a chat turn needs two calls (a
 /// tool call followed by the final answer). The worker lease is 600 ms and
