@@ -29,8 +29,7 @@ class BenchmarkTests(unittest.TestCase):
         output = subprocess.check_output([str(ROOT / "run-swarm.sh"), "dev", "trial", "--dry-run"], text=True)
         self.assertEqual(output.count("--prompt-file"), 6)
         report = output.splitlines()[-1]
-        self.assertIn("scripts/fleet/fleet report --label trial", report)
-        self.assertNotIn("--remote", report)
+        self.assertIn("scripts/fleet/fleet report --remote dev --label trial", report)
         self.assertIn("--remote dev", output.splitlines()[0])
         self.assertIn("--provider chatgpt --model gpt-6-sol", output)
 
@@ -48,6 +47,53 @@ class BenchmarkTests(unittest.TestCase):
                                               "--model", "model", "--effort", "medium",
                                               "--prompt-file", str(prompt)], env=env, text=True)
             self.assertIn("fixture", output)
+
+    def test_swarm_run_records_wall_seconds(self):
+        from unittest import mock
+        import run_swarm
+        label = "walltest"
+        output_dir = ROOT.parent / ".dev" / "benchmarks"
+        self.addCleanup(lambda: [path.unlink(missing_ok=True)
+                                 for path in output_dir.glob(f"{label}*")])
+        created = json.dumps({"event": "session_created", "session_id": "WALLSESSION"})
+        cold = json.dumps({"event": "session_event",
+                           "value": {"message_appended": {"text": "BENCH_COLD=true"}}})
+        reported = []
+
+        def fake_run(command, **kwargs):
+            parts = [str(part) for part in command]
+            if "report" in parts:
+                reported.append(parts)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(command, 0,
+                                               stdout=created + "\n" + cold + "\n", stderr="")
+
+        with mock.patch.object(run_swarm.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(run_swarm.main(["local", label]), 0)
+        runs = json.loads((output_dir / f"{label}-swarm-runs.json").read_text())
+        self.assertEqual(len(runs["runs"]), 6)
+        for run in runs["runs"]:
+            self.assertEqual(set(run), {"label", "environment", "task", "run",
+                                        "session_id", "wall_seconds", "cold"})
+            self.assertGreaterEqual(run["wall_seconds"], 0)
+        # The closing report reuses the runner remote and carries each wall.
+        self.assertEqual(len(reported), 1)
+        command = reported[0]
+        self.assertEqual(command[command.index("--remote") + 1], "local")
+        walls = [part for part in command if "=" in part and not part.startswith("--")]
+        self.assertEqual(len(walls), 6)
+        for wall in walls:
+            session, _, seconds = wall.partition("=")
+            self.assertEqual(session, "WALLSESSION")
+            self.assertGreaterEqual(float(seconds), 0)
+
+    def test_swarm_record_carries_a_positive_wall(self):
+        from run_swarm import record
+        run = record("trial", "local", "small", 1, 12.5, "SESSION", True)
+        self.assertEqual(run["wall_seconds"], 12.5)
+        self.assertGreater(run["wall_seconds"], 0)
+        self.assertEqual(run["session_id"], "SESSION")
+        self.assertIs(run["cold"], True)
 
     def test_swarm_cold_marker(self):
         from run_swarm import cold_from_events, prompt
