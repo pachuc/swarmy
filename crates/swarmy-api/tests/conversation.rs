@@ -697,6 +697,9 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
             .await
             .unwrap(),
         direct
+            .into_iter()
+            .map(swarmy_api::views::into_api_turn)
+            .collect::<Vec<_>>()
     );
     let rollup = client
         .agent_metrics("metric-agent", 200, None)
