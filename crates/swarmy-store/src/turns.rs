@@ -85,6 +85,9 @@ impl Store {
     /// so a retryable failure advances from the attempt that actually ran.
     /// # Errors
     /// Rejects stale heads, expired or replaced leases, and invalid work.
+    // The handoff commits input, request, outbox, events, and route step
+    // atomically; splitting the parameters would separate that one write.
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_inference_after_with_request_and_route<T: Serialize, R: Serialize>(
         &self,
         expected_head: u64,
@@ -107,6 +110,9 @@ impl Store {
         .await
     }
 
+    // The handoff commits input, request, outbox, events, and route step
+    // atomically; splitting the parameters would separate that one write.
+    #[allow(clippy::too_many_arguments)]
     async fn submit_inference_after_inner<T: Serialize, R: Serialize>(
         &self,
         expected_head: u64,
@@ -170,34 +176,7 @@ impl Store {
                     });
                 }
                 if let Some(route) = route {
-                    // Persist the picked step with the request so a retryable
-                    // failure advances from the attempt that actually ran, not
-                    // from a stale position. No failure is handled here, so
-                    // the handled-failure sequence is left untouched.
-                    let key = self.session_route_step_key(id);
-                    let current: u32 = read(&trx, &key).await?.unwrap_or(0);
-                    if route.step != current || !route.reasons.is_empty() {
-                        write(&trx, &key, &route.step)?;
-                        if !route.reasons.is_empty() {
-                            let wait_key = self.wait_key(id);
-                            let mut wait = read::<InferenceWait>(&trx, &wait_key).await?.unwrap_or(
-                                InferenceWait {
-                                    since: now,
-                                    wake_at: now,
-                                    last_failure_seq: 0,
-                                    reasons: Vec::new(),
-                                    attempts: 0,
-                                },
-                            );
-                            for reason in &route.reasons {
-                                let summary: String = reason.chars().take(256).collect();
-                                if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
-                                    wait.reasons.push(summary);
-                                }
-                            }
-                            write(&trx, &wait_key, &wait)?;
-                        }
-                    }
+                    self.write_submit_route_step(&trx, id, route, now).await?;
                 }
                 trx.set(
                     &self
@@ -228,6 +207,48 @@ impl Store {
         })
         .await?;
         Ok(event)
+    }
+
+    /// Persist the picked step with the request so a retryable failure
+    /// advances from the attempt that actually ran, not from a stale
+    /// position. No failure is handled here, so the handled-failure sequence
+    /// is left untouched.
+    /// # Errors
+    /// Returns storage failures.
+    async fn write_submit_route_step(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        route: &SubmitRouteStep,
+        now: Timestamp,
+    ) -> Result<()> {
+        let key = self.session_route_step_key(id);
+        let current: u32 = read(trx, &key).await?.unwrap_or(0);
+        if route.step == current && route.reasons.is_empty() {
+            return Ok(());
+        }
+        write(trx, &key, &route.step)?;
+        if route.reasons.is_empty() {
+            return Ok(());
+        }
+        let wait_key = self.wait_key(id);
+        let mut wait = read::<InferenceWait>(trx, &wait_key)
+            .await?
+            .unwrap_or(InferenceWait {
+                since: now,
+                wake_at: now,
+                last_failure_seq: 0,
+                reasons: Vec::new(),
+                attempts: 0,
+            });
+        for reason in &route.reasons {
+            let summary: String = reason.chars().take(256).collect();
+            if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
+                wait.reasons.push(summary);
+            }
+        }
+        write(trx, &wait_key, &wait)?;
+        Ok(())
     }
 
     /// Commit the final log event, snapshot pointer, and idle state together.

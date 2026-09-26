@@ -8,6 +8,10 @@ use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
 
+/// One cached breaker state: the open retry time, if the breaker is open,
+/// with its stored reason.
+type BreakerState = (Option<Timestamp>, Option<String>);
+
 /// Per-tick caches for route resolution. A scan costs one transaction per
 /// distinct route, provider pool, and breaker step instead of one snapshot
 /// per session, so a swarm with hundreds of agents sharing routes runs a
@@ -17,7 +21,7 @@ use crate::config::Config;
 struct TickCache {
     routes: HashMap<String, Option<swarmy_core::RouteRecord>>,
     pools: HashMap<String, Vec<String>>,
-    breakers: HashMap<(String, Option<String>), (Option<Timestamp>, Option<String>)>,
+    breakers: HashMap<(String, Option<String>), BreakerState>,
 }
 
 pub struct Scheduler {

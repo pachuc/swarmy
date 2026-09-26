@@ -493,7 +493,7 @@ impl Store {
             .or(default_route)
             .map(str::to_owned);
         let record = match name.as_deref() {
-            Some(name) => read::<RouteRecord>(&trx, &self.route_key(name)).await?,
+            Some(name) => read::<RouteRecord>(trx, &self.route_key(name)).await?,
             None => None,
         };
         let provider = session_provider
@@ -518,14 +518,14 @@ impl Store {
         for provider in providers {
             pools.insert(
                 provider.to_owned(),
-                self.pool_labels_in(&trx, provider, now).await?,
+                self.pool_labels_in(trx, provider, now).await?,
             );
         }
         let chain = Self::expand_chain(record.as_ref(), &pools, provider);
         let mut steps = Vec::with_capacity(chain.steps.len());
         for step in chain.steps {
             let key = CredentialKey::for_label(&step.provider, step.label.clone());
-            let breaker: Option<Breaker> = read(&trx, &self.breaker_key(&key)).await?;
+            let breaker: Option<Breaker> = read(trx, &self.breaker_key(&key)).await?;
             let (open_until, reason) = crate::inference_wait::open_state(breaker.as_ref(), now);
             steps.push(RouteStepStatus {
                 provider: step.provider,
