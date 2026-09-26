@@ -363,11 +363,7 @@ impl Client {
         // The size is known, so send a fixed `Content-Length` instead of a
         // chunked body. The server rejects an oversized upload from the header
         // before spooling gigabytes it would only delete.
-        let len = file
-            .metadata()
-            .await
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let len = file.metadata().await.map_or(0, |metadata| metadata.len());
         let stream = tokio_util::io::ReaderStream::new(file);
         let response = self
             .http
