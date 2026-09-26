@@ -836,6 +836,13 @@ impl Store {
                 let plan: Vec<swarmy_core::PlanStep> = read(&trx, &self.session_plan_key(old))
                     .await?
                     .unwrap_or_default();
+                let route: Option<String> =
+                    read::<Option<String>>(&trx, &self.session_route_key(old))
+                        .await?
+                        .flatten();
+                let route_step: u32 = read(&trx, &self.session_route_step_key(old))
+                    .await?
+                    .unwrap_or(0);
                 let session = SessionRecord {
                     interrupt_requested: false,
                     session_id: id,
@@ -849,6 +856,8 @@ impl Store {
                     snapshot_ref: None,
                     inference,
                     plan,
+                    route,
+                    route_step,
                 };
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)

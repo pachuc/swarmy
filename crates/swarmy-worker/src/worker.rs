@@ -2864,6 +2864,9 @@ mod side_tail_tests {
             cost_micros: 0,
             effort_requested: None,
             effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
         }];
         let Some((provider, model, input)) = last_side_usage(&events) else {
             panic!("expected usage from the held events");
