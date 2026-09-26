@@ -20,10 +20,24 @@ pub enum Error {
     Decode(#[from] serde_json::Error),
     #[error("invalid stream UTF-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+    #[error("local file error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("invalid base URL: {0}")]
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+}
+
+/// A locally built image streamed to the control plane for publication.
+#[derive(Clone, Debug)]
+pub struct UploadImage<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub idempotency_key: &'a str,
+    pub scratch: &'a [String],
+    pub memory_mib: Option<u64>,
+    pub display: bool,
+    pub file: &'a std::path::Path,
 }
 
 #[derive(Clone)]
@@ -31,6 +45,22 @@ pub struct Client {
     http: reqwest::Client,
     base: url::Url,
     token: String,
+}
+
+/// Base budget for image uploads, covering server-side chunking and storage
+/// of even a tiny image before it answers.
+const UPLOAD_BASE_SECS: u64 = 120;
+/// Sustained throughput assumed when sizing the upload timeout. The server
+/// spools the whole body, chunks it, and uploads to object storage before
+/// answering, so a fixed request timeout would fail real images.
+const UPLOAD_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
+
+/// Timeout for an image upload of `size_bytes`, proportional to the body
+/// size. The 8 GiB base image needs minutes of server work, far beyond the
+/// default request timeout.
+#[must_use]
+pub fn upload_timeout(size_bytes: u64) -> Duration {
+    Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
 }
 
 impl Client {
@@ -333,6 +363,54 @@ impl Client {
         self.get(&format!("images/{}/{}", segment(name), segment(tag)), &[])
             .await
     }
+    /// Stream a locally built ext4 file for server-side publication.
+    ///
+    /// # Errors
+    /// Returns file, API, transport, or response decoding errors.
+    pub async fn upload_image(&self, upload: &UploadImage<'_>) -> Result<api::ImageUpload, Error> {
+        let mut query: Vec<(String, String)> = vec![
+            ("name".into(), upload.name.into()),
+            ("tag".into(), upload.tag.into()),
+            ("idempotency_key".into(), upload.idempotency_key.into()),
+            ("display".into(), upload.display.to_string()),
+        ];
+        if !upload.scratch.is_empty() {
+            query.push(("scratch".into(), upload.scratch.join(",")));
+        }
+        if let Some(memory) = upload.memory_mib {
+            query.push(("memory_mib".into(), memory.to_string()));
+        }
+        let file = tokio::fs::File::open(upload.file).await?;
+        // The size is known, so send a fixed `Content-Length` instead of a
+        // chunked body. The server rejects an oversized upload from the header
+        // before spooling gigabytes it would only delete.
+        let len = file.metadata().await.map_or(0, |metadata| metadata.len());
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let response = self
+            .http
+            .post(self.url("images/uploads"))
+            .bearer_auth(&self.token)
+            .query(&query)
+            .header(reqwest::header::CONTENT_LENGTH, len.to_string())
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+        decode(response).await
+    }
+    /// Start a chunk collection run on the control plane.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn start_gc_run(&self, body: &api::StartGcRun) -> Result<api::GcRun, Error> {
+        self.send(Method::POST, "gc/runs", body).await
+    }
+    /// Read a collection run, finished or still sweeping.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn gc_run(&self, id: &str) -> Result<api::GcRun, Error> {
+        self.get(&format!("gc/runs/{id}"), &[]).await
+    }
     /// Calls the corresponding API route.
     ///
     /// # Errors
@@ -353,6 +431,14 @@ impl Client {
     /// Returns an API, transport, or response decoding error.
     pub async fn model(&self, provider: &str, model: &str) -> Result<api::Model, Error> {
         self.get(&format!("models/{provider}/{model}"), &[]).await
+    }
+    /// Probe a model with a live request through the control plane's stored
+    /// credentials.
+    ///
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn probe_model(&self, body: &api::ProbeModel) -> Result<api::ProbeResult, Error> {
+        self.send(Method::POST, "models/probe", body).await
     }
     /// Calls the corresponding API route.
     ///
@@ -1486,6 +1572,21 @@ mod tests {
     #[test]
     fn path_segments_are_encoded() {
         assert_eq!(segment("a/b ?"), "a%2Fb%20%3F");
+    }
+    #[test]
+    fn upload_timeout_is_proportional_and_exceeds_the_default() {
+        // The CLI wraps other requests in a 10 second timeout. Uploads carry
+        // whole images that the server chunks before answering, so their
+        // budget must scale with the body and never equal the default.
+        let tiny = upload_timeout(256 * 1024);
+        let base_image = upload_timeout(8 * 1024 * 1024 * 1024);
+        assert!(tiny > Duration::from_secs(10));
+        assert!(base_image > Duration::from_secs(10));
+        assert!(base_image > tiny);
+        assert_eq!(
+            base_image,
+            Duration::from_secs(120 + 8 * 1024 * 1024 * 1024 / (8 * 1024 * 1024))
+        );
     }
     #[tokio::test]
     async fn non_json_four_xx_keeps_body() {

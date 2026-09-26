@@ -47,6 +47,7 @@ async fn fixture() -> Option<(
         bus,
         "cli-test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
+        std::sync::Arc::new(object_store::memory::InMemory::new()),
     );
     state.credential_keyring = Some(swarmy_config::Keyring::from_bytes([7; 32]));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

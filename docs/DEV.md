@@ -70,7 +70,8 @@ full debug info, run `CARGO_PROFILE_DEV_DEBUG=2 cargo build --workspace`.
 scheduler, worker, and gateway under a background CLI supervisor. It returns
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
-from startup; build again after changing Rust code. The CLI, its `swarmy-session` companion, and all three services must live
+from startup; build again after changing Rust code. The CLI and the services
+(scheduler, worker, gateway, API) must live
 in the same directory. You can add `target/debug` to your shell's executable
 search path to use `swarmy` directly. When using a system client library, omit `SWARMY_FDB_LIB_DIR`. With a custom
 install prefix, set it to that prefix's `lib` directory at build time.
@@ -239,12 +240,17 @@ scripts/install-dev-tools.sh
 
 The script verifies FoundationDB release SHA-256 files and installs the backing
 executables into `~/.local/bin` and `libfdb_c.so` into `~/.local/lib`
-(`make dev-tools` runs it). Then install the CLI, its companion, and the three
-services with one command:
+(`make dev-tools` runs it). Then install the CLI and the services with one
+command:
 
 ```sh
 make install
 ```
+
+`make install` is `make install-client` plus `make install-core`. The client
+links no database library and needs no `libfdb_c`; the service binaries
+(scheduler, worker, gateway, API) still link it. Install only the client with
+`make install-client` when the services live elsewhere.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
@@ -297,9 +303,11 @@ swarmy doctor
 swarmy doctor --json
 ```
 
-Doctor checks the effective configuration, the FoundationDB client library and
-API version, each backing executable and its version, the installed companion
-and services, and ChatGPT credential validity when that provider is selected.
+Doctor checks the effective configuration, each backing executable and its
+version, the installed service binaries, live service health from the
+control-plane API, and ChatGPT credential validity when that provider is
+selected. The client links no database library, so there is no client-library
+check; database access problems surface through the API checks.
 It reads credentials without refreshing them or printing their contents.
 Once `.dev` exists it probes the configured FoundationDB coordinator, NATS, and
 S3 ports with timeouts. Port connectivity does not verify database or S3
@@ -309,12 +317,15 @@ stack has not been initialized. Each failure includes a fix and causes exit 1.
 JSON output is one object containing `ok` and a `checks` array; each check has
 `name`, `ok`, `detail`, and an optional `fix`.
 
-The public CLI loads the client only for its doctor probe. Conversation
-commands (`run`, `chat`, `bench`) and the management reads talk to the
-control-plane API. The remaining database commands (`vol`, `gc`, `image
-build`, `session close`, `session interrupt`, `auth login`, `models probe`)
-run through the installed `swarmy-session` companion, so doctor can still name
-a missing `libfdb_c` even when the database commands cannot start.
+The public CLI never opens the database. Conversation commands (`run`,
+`chat`, `bench`), management reads, image builds, collection runs, and
+`session close` and `session interrupt` all talk to the control-plane API; the
+client machine needs no database, bus, or object store credentials. The
+developer volume tools live in the node daemon instead: run them as
+`swarmyd vol ...` on a machine with the store and devices (see
+[volume tools](#volume-tools)). Only `auth login`, `auth import`, and `models
+probe` act locally, and they resolve credentials from the login file and the
+environment, never from the cluster store.
 
 ## Manual reference
 
@@ -432,6 +443,27 @@ The Ubuntu CI job installs these pinned versions, starts the stack, and copies
 the exported settings into `GITHUB_ENV` so subsequent test steps inherit them.
 Its cleanup step runs even if an earlier step fails.
 
+### Volume tools
+
+Volume attach and snapshot need local block devices and the store, so they
+live in the node daemon rather than the client. Run them with `swarmyd vol`
+on a machine with root and the NBD module (a node, or a local machine with
+the dev stack sourced):
+
+```bash
+source .dev/env
+sudo -E swarmyd vol create base-ubuntu:dev
+sudo -E swarmyd vol ls
+sudo -E swarmyd vol attach VOLUME_ID --background
+sudo -E swarmyd vol flush VOLUME_ID
+sudo -E swarmyd vol snapshot VOLUME_ID
+sudo -E swarmyd vol detach VOLUME_ID
+```
+
+`swarmyd vol --help` lists every subcommand. Creation, cloning, listing, and
+history need only the store; attach, flush, checkpoint, snapshot of an
+attached writer, and detach additionally drive the local volume server.
+
 ## Session failure injection
 
 The slice 1 acceptance program builds and launches scheduler, worker, and gateway
@@ -521,8 +553,10 @@ SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
 export PATH="$PWD/target/debug:$PATH"
 ```
 
-Only the FoundationDB client library is used locally in remote mode; the
-installer also supplies backing executables for local development. It needs
+The client itself needs no FoundationDB client library in any mode; every
+database command runs through the control-plane API. Building the workspace
+from source still needs the library for the services, and the installer also
+supplies backing executables for local development. It needs
 no sudo. Preinstalled compilers and system prerequisites are assumed.
 
 Supply AWS credentials through the standard SDK credential chain, for example
@@ -706,10 +740,15 @@ Chunks are reclaimed separately. On an isolated disposable stack with no
 pending writes, wait beyond a short grace window, inspect candidates, collect,
 and confirm a subsequent pass has nothing more to delete:
 
+`swarmy gc` starts the run on the control plane and follows its progress,
+so the collection policy comes from the API host's configuration, not the
+client's environment. For this disposable-stack procedure, set the short grace
+in the API service's environment and restart it first:
+
 ```bash
-SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --dry-run --json
-SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --json
-SWARMY_GC_GRACE_SECONDS=2 swarmy gc --remote demo --dry-run --json
+swarmy gc --remote demo --dry-run --json
+swarmy gc --remote demo --json
+swarmy gc --remote demo --dry-run --json
 ```
 
 Use the normal six-hour grace for ongoing work. Images, other volumes, and

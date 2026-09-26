@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 mod cli;
 mod conversation;
+mod gc;
+pub mod images;
+mod models;
 mod stream;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
@@ -29,6 +32,7 @@ use utoipa_swagger_ui::SwaggerUi;
 pub struct AppState {
     pub store: Store,
     pub bus: Bus,
+    pub objects: std::sync::Arc<dyn object_store::ObjectStore>,
     pub token: String,
     pub credential_keyring: Option<Keyring>,
     pub catalog: Catalog,
@@ -36,6 +40,13 @@ pub struct AppState {
     mutations: Arc<Mutex<()>>,
     pub stream_poll_interval: std::time::Duration,
     pub resend_interval: std::time::Duration,
+    pub gc: swarmy_config::GarbageCollection,
+    /// Directory on local disk (not tmpfs) where streamed image uploads are
+    /// spooled before chunking. Set from the control node's data directory.
+    pub upload_dir: std::path::PathBuf,
+    /// Largest streamed image upload accepted, in bytes. Larger bodies get a
+    /// 413 response after the validated prefix is drained.
+    pub upload_max_bytes: u64,
     pub default_image: Option<String>,
     pub default_selection: swarmy_core::ResolvedSelection,
     stream_connections:
@@ -44,16 +55,26 @@ pub struct AppState {
 
 impl AppState {
     #[must_use]
-    pub fn new(store: Store, bus: Bus, token: String, catalog: Catalog) -> Self {
+    pub fn new(
+        store: Store,
+        bus: Bus,
+        token: String,
+        catalog: Catalog,
+        objects: std::sync::Arc<dyn object_store::ObjectStore>,
+    ) -> Self {
         Self {
             store,
             bus,
+            objects,
             token,
             credential_keyring: None,
             catalog,
             mutations: Arc::new(Mutex::new(())),
             stream_poll_interval: std::time::Duration::from_secs(20),
             resend_interval: std::time::Duration::from_secs(5),
+            gc: swarmy_config::GarbageCollection::default(),
+            upload_dir: std::env::temp_dir().join("swarmy-uploads"),
+            upload_max_bytes: 16 * 1024 * 1024 * 1024,
             default_image: None,
             default_selection: swarmy_core::ResolvedSelection {
                 provider: "fake".into(),
@@ -62,6 +83,19 @@ impl AppState {
             },
             stream_connections: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Serialize idempotency checks and response stores without holding the
+    /// lock across long work such as image uploads or collection sweeps.
+    pub(crate) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutations.lock().await
+    }
+}
+
+pub(crate) fn volume(value: swarmy_volume::VolumeError) -> (StatusCode, Json<api::ApiError>) {
+    match value {
+        swarmy_volume::VolumeError::Store(inner) => storage(inner),
+        _ => error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
     }
 }
 
@@ -243,9 +277,16 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(stream::update),
         )
         .route("/v1/images", get(images))
+        .route(
+            "/v1/images/uploads",
+            post(images::upload).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/v1/images/{name}/{tag}", get(show_image))
+        .route("/v1/gc/runs", post(gc::start))
+        .route("/v1/gc/runs/{id}", get(gc::show))
         .route("/v1/models", get(models))
         .route("/v1/models/search", get(search_models))
+        .route("/v1/models/probe", post(models::probe))
         .route("/v1/models/{provider}/{model}", get(show_model))
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))

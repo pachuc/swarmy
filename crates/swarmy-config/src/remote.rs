@@ -293,9 +293,6 @@ mod tests {
         assert!(settings.s3_endpoint.is_empty());
         assert!(settings.s3_access_key.is_empty());
         assert!(settings.s3_secret_key.is_empty());
-        let regional = format!("{:?}", settings.object_store().unwrap());
-        assert!(regional.contains("https://bucket.s3.eu-west-1.amazonaws.com"));
-        assert!(regional.contains("DefaultAwsCredentials"));
         profile.s3_bucket = None;
         profile.apply(&mut settings);
         assert_eq!(settings.s3_bucket, "bucket");

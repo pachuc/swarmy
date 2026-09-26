@@ -5,9 +5,10 @@ use swarmy_core::CHUNK_SIZE;
 use swarmy_volume::ChunkStore;
 
 fn store() -> Result<ChunkStore, Box<dyn Error>> {
-    Ok(ChunkStore::new(
-        swarmy_config::Settings::load()?.settings.object_store()?,
-    ))
+    let settings = swarmy_config::Settings::load()?.settings;
+    Ok(ChunkStore::new(swarmy_store::objects::from_settings(
+        &settings,
+    )?))
 }
 
 #[tokio::main]

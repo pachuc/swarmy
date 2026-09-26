@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 base64.workspace = true
 swarmy-version.workspace = true
+clap.workspace = true
+rustix = { workspace = true, features = ["process"] }
 swarmy-bus.workspace = true
 ulid.workspace = true
 anyhow.workspace = true

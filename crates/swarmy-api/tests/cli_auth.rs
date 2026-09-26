@@ -4,6 +4,9 @@ use std::{
     process::{Command, Output},
 };
 
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+
 static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
     std::sync::OnceLock::new();
 
@@ -81,6 +84,7 @@ impl Fixture {
                     bus,
                     "auth-test-token".into(),
                     swarmy_llm::catalog::Catalog::get().clone(),
+                    std::sync::Arc::new(object_store::memory::InMemory::new()),
                 );
                 state.credential_keyring = Some(keyring);
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
@@ -103,7 +107,7 @@ impl Fixture {
         })
     }
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
+        let mut command = Command::new(cli_bin::swarmy());
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(name);

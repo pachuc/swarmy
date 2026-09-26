@@ -7,6 +7,7 @@ Selected results are copied to SWARMY_BENCH_RESULTS outside the checkout.
 """
 import json
 import os
+import secrets
 from pathlib import Path
 import shlex
 import shutil
@@ -74,7 +75,7 @@ def main():
     primary, remote = (node["private_ip"] for node in nodes)
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
-        for binary in ("swarmy", "swarmy-session", "swarmy-chaos", "swarmy-scheduler", "swarmy-worker", "swarmy-gateway", "swarmyd"):
+        for binary in ("swarmy", "swarmy-chaos", "swarmy-scheduler", "swarmy-worker", "swarmy-gateway", "swarmyd", "swarmy-api"):
             run(["strip", "-o", str(staging / binary), str(ROOT / "target/debug" / binary)])
         for binary in ("fdbserver", "fdbcli", "nats-server"):
             shutil.copy2(shutil.which(binary) or "/usr/sbin/" + binary, staging / binary)
@@ -91,6 +92,11 @@ def main():
             "TMPDIR": "/mnt/swarmy/tmp",
             "SWARMY_FDB_CLUSTER_FILE": "/opt/swarmy/fdb.cluster",
             "SWARMY_NATS_URL": "nats://127.0.0.1:4222",
+            # `swarmy image build` streams through the API now, so the node
+            # needs the endpoint and a token in scope. Chaos starts the API
+            # with this same environment, so server and client agree.
+            "SWARMY_API_URL": os.environ.get("SWARMY_API_URL", "http://127.0.0.1:8742"),
+            "SWARMY_API_TOKEN": os.environ.get("SWARMY_API_TOKEN") or secrets.token_hex(32),
             "SWARMY_S3_ENDPOINT": "https://s3.us-east-1.amazonaws.com",
             "SWARMY_S3_REGION": "us-east-1",
             "SWARMY_S3_BUCKET": os.environ["SWARMY_S3_BUCKET"],

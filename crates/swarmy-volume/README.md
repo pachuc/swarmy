@@ -165,21 +165,22 @@ After a crash, abandoned local directories can be removed once their server is
 dead. They are never replayed by a new CLI attachment. Direct callers of
 `VolumeDevice::open` can still explicitly resume local data as before.
 
-The public `swarmy` binary forwards these commands to `swarmy-session`:
+The node daemon serves these developer commands directly from the store as
+`swarmyd vol` (the `swarmy` client no longer links the store):
 
 ```sh
-swarmy vol create base-ubuntu:stable
-sudo -E swarmy vol attach VOLUME --background
+swarmyd vol create base-ubuntu:stable
+sudo -E swarmyd vol attach VOLUME --background
 # The command prints /dev/nbdX and remains in the foreground.
 # In another terminal:
 sudo mount /dev/nbdX /mnt/agent
-sudo -E swarmy vol flush VOLUME --mount /mnt/agent
-sudo -E swarmy vol checkpoint VOLUME
-sudo -E swarmy vol snapshot VOLUME
-swarmy vol clone VOLUME
-sudo -E swarmy vol detach VOLUME
-swarmy vol ls
-swarmy vol show VOLUME
+sudo -E swarmyd vol flush VOLUME --mount /mnt/agent
+sudo -E swarmyd vol checkpoint VOLUME
+sudo -E swarmyd vol snapshot VOLUME
+swarmyd vol clone VOLUME
+sudo -E swarmyd vol detach VOLUME
+swarmyd vol ls
+swarmyd vol show VOLUME
 ```
 
 Every command accepts `--json`. Attach emits one ready record; list emits one
@@ -253,7 +254,7 @@ Each attempt discovers the current mount before freezing it. Periodic publicatio
 control requests, and detach serialize so publication cannot race unmounting.
 Failed publications retain dirty data and retry on the next period.
 
-`swarmy vol checkpoint VOLUME [--mount PATH]` immediately publishes through the
+`swarmyd vol checkpoint VOLUME [--mount PATH]` immediately publishes through the
 local control socket and prints the new manifest id. It creates a new snapshot
 even on an idle disk. `VolumeWriter::checkpoint` and `server::checkpoint` expose
 the same operation to library callers. The existing flush API remains available.

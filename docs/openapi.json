@@ -1292,6 +1292,87 @@
         }
       }
     },
+    "/v1/gc/runs": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "start_gc_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartGcRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/gc/runs/{id}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "gc_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Collection run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcRun"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/health": {
       "get": {
         "tags": [
@@ -1354,6 +1435,110 @@
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/images/uploads": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "upload_image",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Image name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Image tag",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency_key",
+            "in": "query",
+            "description": "Retry key for this upload",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scratch",
+            "in": "query",
+            "description": "Comma-separated sandbox scratch paths",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "memory_mib",
+            "in": "query",
+            "description": "Sandbox memory requirement",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "display",
+            "in": "query",
+            "description": "Image needs a display server",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Raw ext4 image bytes",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageUpload"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -1466,6 +1651,46 @@
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/probe": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "probe_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeModel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeResult"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -3279,6 +3504,39 @@
           }
         }
       },
+      "DoctorNode": {
+        "type": "object",
+        "description": "One registered node and its committed sandbox memory in bytes.",
+        "required": [
+          "node_id",
+          "roles",
+          "capacity",
+          "last_heartbeat",
+          "committed_memory_bytes"
+        ],
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/NodeCapacity"
+          },
+          "committed_memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_heartbeat": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeRole"
+            }
+          }
+        }
+      },
       "DoctorService": {
         "type": "object",
         "required": [
@@ -3347,6 +3605,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoctorNode"
+            },
+            "description": "Registered nodes with committed sandbox memory. Older servers omit\nthis; clients must treat a missing list as unknown, not empty."
           },
           "services": {
             "type": "array",
@@ -3774,6 +4039,78 @@
           }
         ]
       },
+      "GcRun": {
+        "type": "object",
+        "description": "Durable accounting for one collector attempt. An unfinished record means\nthe run is still sweeping or its process stopped before persisting final\ncounters.",
+        "required": [
+          "run_id",
+          "started_at",
+          "dry_run",
+          "finished",
+          "manifests",
+          "scanned",
+          "candidates",
+          "candidate_bytes",
+          "deleted",
+          "bytes_freed",
+          "duration_ms"
+        ],
+        "properties": {
+          "bytes_freed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "candidate_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "candidates": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished": {
+            "type": "boolean"
+          },
+          "manifests": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scanned": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "started_at": {
+            "type": "string"
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "description": "The unauthenticated health projection. `api_version` carries the document\nversion so clients can accept any server with the same major version.",
@@ -3840,6 +4177,52 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageUpload": {
+        "type": "object",
+        "description": "A published image with its chunk statistics.",
+        "required": [
+          "name",
+          "tag",
+          "manifest_id",
+          "header",
+          "size",
+          "chunks_total",
+          "chunks_stored",
+          "chunks_uploaded"
+        ],
+        "properties": {
+          "chunks_stored": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "chunks_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "chunks_uploaded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "header": {},
+          "manifest_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "tag": {
             "type": "string"
@@ -4044,6 +4427,26 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing.",
+            "required": [
+              "id",
+              "kind"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "timeline"
+                ]
+              }
+            }
           }
         ],
         "description": "A log namespace. The tagged representation reserves channels without changing session cursors."
@@ -4169,6 +4572,71 @@
           "sandbox",
           "volume"
         ]
+      },
+      "ProbeModel": {
+        "type": "object",
+        "description": "Probe a model with a live request through the control plane's stored\ncredentials. The optional label selects one labelled credential entry.",
+        "required": [
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "effort": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
+      "ProbeResult": {
+        "type": "object",
+        "description": "The control plane's probe answer mirrors the CLI probe summary: catalog\nusage and cost for one short completion plus the effort actually used.",
+        "required": [
+          "provider",
+          "model",
+          "usage",
+          "cost_micros",
+          "effort",
+          "elapsed_seconds"
+        ],
+        "properties": {
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "elapsed_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "usage": {}
+        }
       },
       "Provider": {
         "type": "object",
@@ -4499,6 +4967,31 @@
           "unix_ns": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "StartGcRun": {
+        "type": "object",
+        "description": "Start a chunk collection run on the control plane.",
+        "required": [
+          "idempotency_key",
+          "dry_run"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "grace_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Override the service's grace window for this run only, in seconds.\nBenchmarks on isolated namespaces use a short grace; production runs\nomit it and keep the configured window.",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
           }
         }
       },

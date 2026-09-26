@@ -57,44 +57,9 @@ pub struct EntryQuota {
     pub tokens_remaining: Option<u64>,
 }
 
-/// Parse windows like `30m`, `5h`, `7d` into seconds. Never panics on
-/// non-`ASCII` input; the unit is the final `ASCII` character.
-#[must_use]
-pub fn parse_window(value: &str) -> Option<u64> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let (number, unit) = split_window(value)?;
-    if number.is_empty() {
-        return None;
-    }
-    let number: u64 = number.parse().ok()?;
-    match unit {
-        "s" => Some(number),
-        "m" => number.checked_mul(60),
-        "h" => number.checked_mul(3_600),
-        "d" => number.checked_mul(86_400),
-        "w" => number.checked_mul(604_800),
-        _ => None,
-    }
-}
-
-fn split_window(value: &str) -> Option<(&str, &str)> {
-    if let Some(number) = value.strip_suffix('s') {
-        Some((number, "s"))
-    } else if let Some(number) = value.strip_suffix('m') {
-        Some((number, "m"))
-    } else if let Some(number) = value.strip_suffix('h') {
-        Some((number, "h"))
-    } else if let Some(number) = value.strip_suffix('d') {
-        Some((number, "d"))
-    } else if let Some(number) = value.strip_suffix('w') {
-        Some((number, "w"))
-    } else {
-        None
-    }
-}
+/// Parse windows like `30m`, `5h`, `7d` into seconds. The parser lives in
+/// the core crate so the client parses `--window` without linking the store.
+pub use swarmy_core::quota::parse_window;
 
 impl Store {
     fn observed_key(&self, provider: &str, label: &str) -> Vec<u8> {

@@ -3,6 +3,9 @@ mod memory;
 mod service;
 mod tools;
 mod upgrade;
+mod vol;
+mod vol_command;
+mod vol_server;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
@@ -15,7 +18,10 @@ use tokio::{net::UnixListener, task::JoinSet};
 fn main() -> Result<()> {
     let upgrade_processes =
         std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--upgrade-processes"));
-    if !upgrade_processes {
+    // Developer volume tools run from this binary: attach and snapshot need
+    // local devices and the store, neither of which the client links.
+    let vol_command = std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("vol"));
+    if !upgrade_processes && !vol_command {
         swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
     }
     tracing_subscriber::fmt()
@@ -26,6 +32,11 @@ fn main() -> Result<()> {
         )
         .init();
     let loaded = swarmy_config::Settings::load()?;
+    if vol_command {
+        let _network = swarmy_store::boot();
+        let runtime = tokio::runtime::Runtime::new()?;
+        return runtime.block_on(vol::run_cli());
+    }
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
@@ -162,7 +173,7 @@ async fn open_runtime(
 async fn storage(
     settings: &swarmy_config::Settings,
 ) -> Result<(Store, Arc<dyn object_store::ObjectStore>)> {
-    let objects = settings.object_store()?;
+    let objects = swarmy_store::objects::from_settings(settings)?;
     let directory: Vec<_> = settings
         .store_directory
         .split('/')

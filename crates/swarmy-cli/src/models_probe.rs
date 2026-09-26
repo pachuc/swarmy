@@ -28,13 +28,33 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let model = catalog
         .model(provider_id, model_id)
         .with_context(|| format!("unknown model: {}", args.model))?;
+    // The control plane holds cluster credentials from `swarmy auth set`, so
+    // prefer a server-side probe there. Scripted providers and tool-call
+    // probes need local files and streaming, and run locally; without a
+    // configured API the local file and environment path is the fallback.
+    if provider.api != swarmy_llm::catalog::Api::Fake
+        && !args.tools
+        && let Ok((client, endpoint)) = crate::api_client::connect()
+    {
+        return server_probe(
+            &client,
+            &endpoint,
+            provider_id,
+            &model.id,
+            args.effort,
+            args.label,
+            json,
+        )
+        .await;
+    }
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
-        ClientAuth::Scripted(Arc::new(swarmy_gateway::config::FileFake::from_settings(
-            &settings,
+        ClientAuth::Scripted(Arc::new(swarmy_llm::fake::FileFake::from_files(
+            std::path::Path::new(&settings.fake.script),
+            std::path::Path::new(&settings.fake.call_log),
         )?))
     } else {
         let resolver =
-            swarmy_llm::auth::Resolver::new(crate::provider_runtime::auth_store(&settings).await?)?;
+            swarmy_llm::auth::Resolver::new(crate::provider_runtime::auth_store(&settings))?;
         swarmy_llm::auth::resolve(provider_id, &resolver).await
             .with_context(|| format!("resolve {provider_id}; use swarmy auth set {provider_id} --from-env or swarmy auth login {provider_id}"))?.auth
     };
@@ -49,14 +69,14 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let first = stream(client.as_ref(), request.clone(), json).await?;
     totals.add(
         &first.usage,
-        swarmy_gateway::cost::cost_micros(&model.cost, &first.usage),
+        swarmy_llm::cost::cost_micros(&model.cost, &first.usage),
     );
     let answer = if args.tools {
         tool_result(&mut request, first)?;
         let answer = stream(client.as_ref(), request, json).await?;
         totals.add(
             &answer.usage,
-            swarmy_gateway::cost::cost_micros(&model.cost, &answer.usage),
+            swarmy_llm::cost::cost_micros(&model.cost, &answer.usage),
         );
         answer
     } else {
@@ -201,4 +221,78 @@ async fn stream(client: &dyn Provider, request: Request, json: bool) -> anyhow::
         }
     }
     anyhow::bail!("provider stream ended without a completion")
+}
+
+/// Probe through the control plane so `swarmy auth set` credentials work
+/// without local files. The summary matches the local probe output.
+async fn server_probe(
+    client: &swarmy_client::Client,
+    endpoint: &str,
+    provider_id: &str,
+    model_id: &str,
+    effort: Option<swarmy_core::ReasoningEffort>,
+    label: Option<String>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    let effort = effort
+        .map(|effort| {
+            serde_json::to_value(effort)
+                .ok()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .context("encoding probe effort")
+        })
+        .transpose()?;
+    // A live inference round trip can take minutes on a loaded provider.
+    // The client error is matched before the endpoint wrapper so a missing
+    // credential still names its recovery command.
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        client.probe_model(&swarmy_api_types::ProbeModel {
+            provider: provider_id.into(),
+            model: model_id.into(),
+            label,
+            effort,
+        }),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
+    .map_err(|error| {
+        // The server's fixed `credential_unavailable` code carries the
+        // resolver detail in its message; name the recovery command here so
+        // the hint survives without baking it into the API code.
+        if let swarmy_client::Error::Api { body, .. } = &error
+            && body.code == "credential_unavailable"
+        {
+            return anyhow::anyhow!(
+                "resolve {provider_id}: {}; use swarmy auth set {provider_id} --from-env or swarmy auth login {provider_id}",
+                body.message
+            );
+        }
+        crate::api_client::api_error(&error, endpoint)
+    })?;
+    let dollars = {
+        let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);
+        format!("{}.{:04}", units / 10_000, units % 10_000)
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"event":"probe_summary", "provider":answer.provider, "model":answer.model,
+            "usage":answer.usage, "cost_micros":answer.cost_micros, "effort":answer.effort, "elapsed_seconds":started.elapsed().as_secs_f64()})
+        );
+    } else {
+        println!("\nUsage: {}", serde_json::to_string(&answer.usage)?);
+        println!(
+            "Cost: ${} ({} micros; catalog estimate)\nEffort used: {}\nElapsed: {:.3}s",
+            dollars,
+            answer.cost_micros,
+            serde_json::to_value(&answer.effort)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".into()),
+            started.elapsed().as_secs_f64()
+        );
+    }
+    Ok(())
 }

@@ -29,12 +29,22 @@ fn session_error(failure: swarmy_store::StoreError) -> (StatusCode, Json<api::Ap
         swarmy_store::StoreError::SessionMissing => {
             error(StatusCode::NOT_FOUND, "session_not_found")
         }
-        swarmy_store::StoreError::NothingToInterrupt => {
-            error(StatusCode::CONFLICT, "nothing_to_interrupt")
-        }
-        swarmy_store::StoreError::MainSessionClose => {
-            error(StatusCode::CONFLICT, "main_session_close")
-        }
+        swarmy_store::StoreError::NothingToInterrupt => (
+            StatusCode::CONFLICT,
+            Json(api::ApiError {
+                code: "nothing_to_interrupt".into(),
+                message: "session is idle or completed; there is nothing to interrupt".into(),
+                provider_text: None,
+            }),
+        ),
+        swarmy_store::StoreError::MainSessionClose => (
+            StatusCode::CONFLICT,
+            Json(api::ApiError {
+                code: "main_session_close".into(),
+                message: "cannot close an agent main session; use swarmy agent delete to delete the agent".into(),
+                provider_text: None,
+            }),
+        ),
         swarmy_store::StoreError::InvalidState => error(StatusCode::CONFLICT, "session_not_idle"),
         swarmy_store::StoreError::StaleSequence { actual, .. } => (
             StatusCode::CONFLICT,

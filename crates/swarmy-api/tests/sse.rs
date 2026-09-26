@@ -64,6 +64,7 @@ impl Fixture {
             bus.clone(),
             "test-token".into(),
             swarmy_llm::catalog::Catalog::get().clone(),
+            std::sync::Arc::new(object_store::memory::InMemory::new()),
         );
         let server = tokio::spawn(axum::serve(listener, router(state)).into_future());
         Some(Self {

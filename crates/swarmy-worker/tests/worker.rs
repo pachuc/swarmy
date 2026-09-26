@@ -34,6 +34,8 @@ const WAIT: Duration = Duration::from_secs(45);
 struct Fixture {
     store: Store,
     bus: Bus,
+    api_url: String,
+    api_token: String,
     prefix: String,
     summarize_at_tokens: u64,
     max_wait_seconds: u64,
@@ -83,9 +85,25 @@ impl Fixture {
         .await
         .unwrap();
         bus.setup(&[]).await.unwrap();
+        let api_token = Ulid::generate().to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api_url = format!("http://{}", listener.local_addr().unwrap());
+        let objects = swarmy_store::blob::ObjectBlobStore::from_env()
+            .unwrap()
+            .object_store();
+        let api = swarmy_api::AppState::new(
+            store.clone(),
+            bus.clone(),
+            api_token.clone(),
+            swarmy_llm::catalog::Catalog::get().clone(),
+            objects,
+        );
+        tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
         Some(Self {
             store,
             bus,
+            api_url,
+            api_token,
             prefix,
             summarize_at_tokens: 300_000,
             max_wait_seconds: 3600,
@@ -222,8 +240,8 @@ impl Fixture {
             std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
-            .env("SWARMY_STORE_DIRECTORY", &self.prefix)
-            .env("SWARMY_BUS_PREFIX", &self.prefix)
+            .env("SWARMY_API_URL", &self.api_url)
+            .env("SWARMY_API_TOKEN", &self.api_token)
             .output()
             .await
             .unwrap();
