@@ -1012,6 +1012,8 @@ pub mod api_paths {
             ("id" = String, Path, description = "Session id"),
             ("after" = Option<String>, Query, description = "Return turns after this turn id"),
             ("limit" = Option<usize>, Query, description = "Maximum turns to return"),
+            ("inference_limit" = Option<usize>, Query, description = "Maximum inference requests per turn; the remainder counts in dropped_inference"),
+            ("tools_limit" = Option<usize>, Query, description = "Maximum tool calls per turn; the remainder counts in dropped_tools"),
         ),
         responses((status = 200, body = Vec<TurnMetrics>), (status = 404, body = ApiError)))]
     pub fn session_metrics() {}

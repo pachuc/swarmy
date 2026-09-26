@@ -349,6 +349,8 @@ async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse>
 struct Page {
     after: Option<String>,
     limit: Option<usize>,
+    inference_limit: Option<usize>,
+    tools_limit: Option<usize>,
 }
 fn limit(value: Option<usize>) -> usize {
     value.unwrap_or(32).clamp(1, MAX_SCAN_LIMIT)
@@ -562,7 +564,13 @@ async fn session_metrics(
     Ok(Json(
         state
             .store
-            .list_turn_metrics(session_id, after, limit(page.limit))
+            .list_turn_metrics_paged(
+                session_id,
+                after,
+                limit(page.limit),
+                page.inference_limit,
+                page.tools_limit,
+            )
             .await
             .map_err(storage)?,
     ))

@@ -110,6 +110,29 @@ fn is_first_content(delta: &swarmy_llm::Delta) -> bool {
     }
 }
 
+/// One streaming chunk toward the `streamed` flag. Only incremental text,
+/// reasoning, and tool-argument deltas count: every real client emits one
+/// `PartDone` per part after the incremental deltas, so counting `PartDone`
+/// would label every single-chunk response as streamed.
+fn is_stream_chunk(delta: &swarmy_llm::Delta) -> bool {
+    match delta {
+        swarmy_llm::Delta::Text { text, .. } | swarmy_llm::Delta::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
+        swarmy_llm::Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+        swarmy_llm::Delta::PartDone { .. } | swarmy_llm::Delta::Completed(_) => false,
+    }
+}
+
+/// Whether a response with this many streaming chunks counts as streamed.
+/// Zero or one chunk means the provider delivered the whole response at once
+/// (the fake provider yields no incremental deltas at all); the store divides
+/// throughput by the whole request in that case instead of by a millisecond
+/// streaming tail.
+fn is_streamed_response(content_chunks: u32) -> bool {
+    content_chunks > 1
+}
+
 /// A 5xx, 408, or 409 is a provider failure, not a rate limit. Only 429 or an
 /// explicit retry-after means the provider asked for a slower pace.
 fn rate_limited(error: &swarmy_llm::Error) -> bool {
@@ -452,7 +475,7 @@ impl Gateway {
         job: &InferenceJob,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<Response, swarmy_llm::Error> {
+    ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
@@ -460,10 +483,19 @@ impl Gateway {
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
         let mut token_position = 0_u64;
         let mut first_token = false;
+        // Count streaming chunks: more than one means the provider streamed
+        // the response, while zero or one means the whole response arrived in
+        // a single chunk (the fake provider yields no incremental deltas at
+        // all, and single-chunk OpenRouter responses yield one). `PartDone`
+        // is excluded from the count but still starts the first-token clock
+        // below so the fake provider reports a first token.
+        let mut content_chunks = 0_u32;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
-            let content = is_first_content(&delta);
-            if content && !first_token {
+            if is_stream_chunk(&delta) {
+                content_chunks = content_chunks.saturating_add(1);
+            }
+            if is_first_content(&delta) && !first_token {
                 first_token = true;
                 if let Some(turn) = turn {
                     let event = Bus::turn_event(
@@ -510,8 +542,9 @@ impl Gateway {
                 response = Some(completed);
             }
         }
-        response
-            .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))
+        let response = response
+            .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))?;
+        Ok((response, Some(is_streamed_response(content_chunks))))
     }
 
     fn turn_id(job: &InferenceJob) -> Option<MessageId> {
@@ -560,6 +593,7 @@ impl Gateway {
         turn: Option<MessageId>,
         provider: &str,
         event: &Event,
+        streamed: Option<bool>,
     ) {
         let Some(turn) = turn else { return };
         let patch = match event {
@@ -575,6 +609,7 @@ impl Gateway {
                     output_tokens: usage.output_tokens,
                     reasoning_tokens: usage.reasoning_output_tokens,
                     cost_micros: *cost_micros,
+                    streamed,
                     ..Default::default()
                 },
             )),
@@ -629,13 +664,13 @@ impl Gateway {
         let turn = Self::turn_id(job);
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
             .await;
-        let (result, blocked, entry, entry_kind) = self
+        let (result, streamed, blocked, entry, entry_kind) = self
             .attempt_provider(job, provider, effort_used, turn, job.entry.as_deref())
             .await?;
         self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
             .await;
-        let Some(result) = self
-            .retry_or_continue(message, claim, job, turn, result, blocked)
+        let Some((result, streamed)) = self
+            .retry_or_continue(message, claim, job, turn, result, streamed, blocked)
             .await?
         else {
             return Ok(());
@@ -651,6 +686,7 @@ impl Gateway {
             effort_requested,
             effort_clamped,
             result,
+            streamed,
             blocked,
             entry,
             entry_kind,
@@ -683,6 +719,10 @@ impl Gateway {
         (model, effort_used, effort_clamped, effort_requested)
     }
 
+    // Retry routing carries the claim, job, result, streaming flag, and block
+    // state together; splitting would separate the retry decision from the
+    // streamed flag it preserves.
+    #[allow(clippy::too_many_arguments)]
     async fn retry_or_continue(
         &self,
         message: &WorkMessage<InferenceJobRef>,
@@ -690,10 +730,16 @@ impl Gateway {
         job: &InferenceJob,
         turn: Option<MessageId>,
         result: std::result::Result<Response, swarmy_llm::Error>,
+        streamed: Option<bool>,
         blocked: bool,
-    ) -> Result<Option<std::result::Result<Response, swarmy_llm::Error>>> {
+    ) -> Result<
+        Option<(
+            std::result::Result<Response, swarmy_llm::Error>,
+            Option<bool>,
+        )>,
+    > {
         match result {
-            Ok(response) => Ok(Some(Ok(response))),
+            Ok(response) => Ok(Some((Ok(response), streamed))),
             Err(error)
                 if !blocked
                     && !permanent_error(&error)
@@ -710,7 +756,7 @@ impl Gateway {
                     .await?;
                 Ok(None)
             }
-            Err(error) => Ok(Some(Err(error))),
+            Err(error) => Ok(Some((Err(error), streamed))),
         }
     }
 
@@ -729,6 +775,7 @@ impl Gateway {
         effort_requested: Option<swarmy_core::ReasoningEffort>,
         effort_clamped: bool,
         result: std::result::Result<Response, swarmy_llm::Error>,
+        streamed: Option<bool>,
         blocked: bool,
         entry: Option<String>,
         entry_kind: Option<String>,
@@ -767,7 +814,7 @@ impl Gateway {
         let stored_result = result.map_err(|error| error.to_string());
         self.persist_response(job, claim, event.clone(), &stored_result, turn, attribution)
             .await?;
-        self.observe_terminal_metric(job, turn, provider, &event);
+        self.observe_terminal_metric(job, turn, provider, &event, streamed);
         if stored_result.is_ok() {
             self.store.clear_inference_wait(job.session_id).await?;
         }
@@ -859,6 +906,7 @@ impl Gateway {
         pinned: Option<&str>,
     ) -> Result<(
         std::result::Result<Response, swarmy_llm::Error>,
+        Option<bool>,
         bool,
         Option<String>,
         Option<String>,
@@ -877,6 +925,7 @@ impl Gateway {
                     provider: provider.into(),
                     model: job.request.settings.model.clone(),
                 }),
+                None,
                 false,
                 None,
                 None,
@@ -885,7 +934,9 @@ impl Gateway {
         let (client, entry, entry_kind) =
             match self.providers.client_pinned(provider, model, pinned).await {
                 Ok(resolved) => resolved,
-                Err(error) => return Ok((Err(error), false, pinned.map(str::to_owned), None)),
+                Err(error) => {
+                    return Ok((Err(error), None, false, pinned.map(str::to_owned), None));
+                }
             };
         let key = CredentialKey::for_label(provider, entry.clone());
         if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
@@ -902,13 +953,17 @@ impl Gateway {
                         std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
                     ),
                 }),
+                None,
                 true,
                 entry,
                 entry_kind,
             ));
         }
-        let outcome = self.stream(&client, job, effort, turn).await;
-        Ok((outcome, false, entry, entry_kind))
+        let (result, streamed) = match self.stream(&client, job, effort, turn).await {
+            Ok((response, streamed)) => (Ok(response), streamed),
+            Err(error) => (Err(error), None),
+        };
+        Ok((result, streamed, false, entry, entry_kind))
     }
 
     async fn record_breaker(
@@ -1128,14 +1183,12 @@ impl Gateway {
         }
         if let Some(snapshot) = snapshot {
             if let Some(turn) = turn {
-                self.bus
-                    .record_turn(&Bus::turn_event(
-                        id,
-                        turn,
-                        swarmy_core::TurnStage::Idle,
-                        None,
-                    ))
-                    .await;
+                let event = Bus::turn_event(id, turn, swarmy_core::TurnStage::Idle, None);
+                self.bus.record_turn(&event).await;
+                // The idle anchor is the turn's wall time. Record it in the
+                // store as well as on the bus so a turn of any length keeps
+                // its duration even when the worker never sees this turn end.
+                self.store.observe_turn_stage(event);
             }
             if let Err(error) = self
                 .bus
@@ -1289,5 +1342,283 @@ mod retry_tests {
             let first = deltas.iter().position(is_first_content);
             assert_eq!(first, Some(0));
         });
+    }
+
+    #[test]
+    fn single_chunk_fake_response_is_unstreamed_with_request_duration_throughput() {
+        use futures::StreamExt as _;
+        use swarmy_core::Part;
+        // The fake provider delivers the whole response in one chunk: a
+        // single `PartDone` delta with the completed part, then completion.
+        let mut scripted = swarmy_llm::fake::FakeProvider::default();
+        scripted.responses.insert(
+            0,
+            swarmy_llm::Response {
+                parts: vec![Part::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: swarmy_llm::StopReason::EndTurn,
+                usage: swarmy_llm::TokenUsage {
+                    input_tokens: 12,
+                    output_tokens: 363,
+                    ..Default::default()
+                },
+                quota_remaining: std::collections::BTreeMap::new(),
+                quota_resets: std::collections::BTreeMap::new(),
+            },
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use swarmy_llm::Provider as _;
+            let request = swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            };
+            let deltas: Vec<_> = scripted
+                .request(request)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(|result| result.unwrap())
+                .collect();
+            // The fake provider yields no incremental deltas, only `PartDone`:
+            // zero streaming chunks still counts as a single-chunk response.
+            let chunks = deltas.iter().filter(|delta| is_stream_chunk(delta)).count();
+            assert_eq!(chunks, 0);
+            assert!(!is_streamed_response(u32::try_from(chunks).unwrap()));
+        });
+        // Throughput divides by the whole request (first byte to completion):
+        // 363 tokens over a 1001 ms request reports about 363 tokens per
+        // second instead of dividing by the 1 ms streaming tail.
+        let mut turn = swarmy_api_types::TurnMetrics::default();
+        let row = |stage: &str, ns: u64, request: Option<&str>| swarmy_api_types::StageTiming {
+            stage: stage.into(),
+            request_id: request.map(str::to_owned),
+            clock_id: "boot".into(),
+            monotonic_ns: ns,
+            unix_ns: i64::try_from(ns).unwrap(),
+        };
+        turn.stages.push(row("appended", 1_000_000_000, None));
+        turn.stages
+            .push(row("inference_started", 2_000_000_000, Some("r")));
+        turn.stages
+            .push(row("first_token", 3_000_000_000, Some("r")));
+        turn.stages
+            .push(row("inference_finished", 3_001_000_000, Some("r")));
+        turn.inference.push(swarmy_api_types::InferenceMetric {
+            request_id: "r".into(),
+            output_tokens: 363,
+            streamed: Some(false),
+            ..Default::default()
+        });
+        turn.derive();
+        let request = &turn.inference[0];
+        assert_eq!(request.streamed, Some(false));
+        assert_eq!(request.request_duration_ms, Some(1001.0));
+        let expected = 363.0 * 1000.0 / 1001.0;
+        assert!((request.output_tokens_per_second.unwrap() - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn part_done_does_not_count_as_a_stream_chunk() {
+        use swarmy_core::Part;
+        let text = swarmy_llm::Delta::Text {
+            output_index: 0,
+            text: "hi".into(),
+        };
+        let done = swarmy_llm::Delta::PartDone {
+            output_index: 0,
+            part: Part::Text { text: "hi".into() },
+        };
+        // `PartDone` still starts the first-token clock (the fake provider
+        // relies on it) but never counts toward the streamed flag.
+        assert!(is_first_content(&text));
+        assert!(is_first_content(&done));
+        assert!(is_stream_chunk(&text));
+        assert!(!is_stream_chunk(&done));
+        assert!(!is_stream_chunk(&swarmy_llm::Delta::Completed(
+            swarmy_llm::Response {
+                parts: Vec::new(),
+                stop_reason: swarmy_llm::StopReason::EndTurn,
+                usage: swarmy_llm::TokenUsage::default(),
+                quota_remaining: std::collections::BTreeMap::new(),
+                quota_resets: std::collections::BTreeMap::new(),
+            }
+        )));
+    }
+
+    /// Build a real `Gateway` against the dev stack so the stream tests below
+    /// exercise `Gateway::stream` itself instead of copying its counting loop.
+    /// Returns `None` (and the caller skips) when the stack is absent. The
+    /// tests pass `turn: None`, so no turn rows are written; only ephemeral
+    /// live publishes reach NATS.
+    async fn stream_test_gateway() -> Option<Gateway> {
+        use foundationdb::{Database, tuple::Subspace};
+        use std::sync::OnceLock;
+        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
+        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+            eprintln!("skipping gateway stream test: SWARMY_FDB_CLUSTER_FILE unset");
+            return None;
+        };
+        let Ok(nats_url) = std::env::var("SWARMY_NATS_URL") else {
+            eprintln!("skipping gateway stream test: SWARMY_NATS_URL unset");
+            return None;
+        };
+        NETWORK.get_or_init(swarmy_store::boot);
+        let store = Store::with_subspace(
+            Arc::new(Database::new(Some(&cluster)).unwrap()),
+            Subspace::all().subspace(&("gateway-stream-tests", ulid::Ulid::generate().to_string())),
+            Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+        );
+        let bus = Bus::connect(&nats_url, swarmy_bus::Config::default())
+            .await
+            .expect("dev NATS must be reachable for gateway stream tests");
+        let settings = swarmy_config::Settings::default();
+        let providers = Providers::discover(store.clone(), &settings)
+            .await
+            .expect("provider discovery must succeed for gateway stream tests");
+        Some(Gateway {
+            store,
+            blobs: Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
+            bus,
+            providers,
+            default_provider: "fake".into(),
+            summarize_at_tokens: None,
+            model_context_window_tokens: None,
+            ack_wait: Duration::from_secs(30),
+            max_deliver: 5,
+            resend_interval: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(30),
+            health_id: "stream-test".into(),
+            started_at: Timestamp::now(),
+        })
+    }
+
+    struct ScriptedStream(Vec<swarmy_llm::Delta>);
+
+    impl swarmy_llm::Provider for ScriptedStream {
+        fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+            let deltas = self.0.clone();
+            Box::pin(async_stream::try_stream! {
+                for delta in deltas {
+                    yield delta;
+                }
+            })
+        }
+    }
+
+    fn stream_test_job() -> swarmy_llm::InferenceJob {
+        let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let step = 1;
+        swarmy_llm::InferenceJob {
+            session_id,
+            step,
+            request_id: swarmy_core::RequestId::for_step(session_id, step),
+            request: swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+        }
+    }
+
+    /// Drive `Gateway::stream` with one text delta plus the terminal
+    /// `PartDone`: a single-chunk response reports `streamed == Some(false)`.
+    #[tokio::test]
+    async fn one_text_delta_plus_part_done_is_single_chunk() {
+        use swarmy_core::Part;
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let completed = swarmy_llm::Response {
+            parts: vec![Part::Text { text: "hi".into() }],
+            stop_reason: swarmy_llm::StopReason::EndTurn,
+            usage: swarmy_llm::TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "hi".into(),
+            },
+            swarmy_llm::Delta::PartDone {
+                output_index: 0,
+                part: Part::Text { text: "hi".into() },
+            },
+            swarmy_llm::Delta::Completed(completed),
+        ]));
+        let job = stream_test_job();
+        let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
+        assert_eq!(streamed, Some(false));
+        assert_eq!(response.parts.len(), 1);
+    }
+
+    /// Drive `Gateway::stream` with two incremental text deltas plus
+    /// `PartDone`: more than one chunk reports `streamed == Some(true)`.
+    #[tokio::test]
+    async fn two_text_deltas_are_streamed() {
+        use swarmy_core::Part;
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let completed = swarmy_llm::Response {
+            parts: vec![Part::Text { text: "ab".into() }],
+            stop_reason: swarmy_llm::StopReason::EndTurn,
+            usage: swarmy_llm::TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "a".into(),
+            },
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "b".into(),
+            },
+            swarmy_llm::Delta::PartDone {
+                output_index: 0,
+                part: Part::Text { text: "ab".into() },
+            },
+            swarmy_llm::Delta::Completed(completed),
+        ]));
+        let job = stream_test_job();
+        let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
+        assert_eq!(streamed, Some(true));
+        assert_eq!(response.parts.len(), 1);
+    }
+
+    /// Drive `Gateway::stream` with a failing provider stream. The stream
+    /// itself errors, and the caller (`attempt_provider`) records
+    /// `streamed: None` for such attempts so failed requests stay out of the
+    /// single-chunk count.
+    #[tokio::test]
+    async fn failing_stream_errors_without_a_streamed_flag() {
+        struct Failing;
+        impl swarmy_llm::Provider for Failing {
+            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+                Box::pin(futures::stream::iter(vec![Err(
+                    swarmy_llm::Error::Protocol("boom".into()),
+                )]))
+            }
+        }
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(Failing);
+        let job = stream_test_job();
+        assert!(gateway.stream(&client, &job, None, None).await.is_err());
     }
 }

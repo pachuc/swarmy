@@ -209,11 +209,32 @@ impl Client {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<api::TurnMetrics>, Error> {
-        self.get(
-            &format!("sessions/{}/metrics", segment(id)),
-            &page(after, limit),
-        )
-        .await
+        self.session_metrics_paged(id, after, limit, None, None)
+            .await
+    }
+
+    /// Read a page of turns with paging on the per-turn `inference` and
+    /// `tools` arrays. Very long turns truncate to the given limits and
+    /// report the remainder in the `dropped_*` counters.
+    /// # Errors
+    /// Returns an API, transport, or response decoding error.
+    pub async fn session_metrics_paged(
+        &self,
+        id: &str,
+        after: Option<&str>,
+        limit: usize,
+        inference_limit: Option<usize>,
+        tools_limit: Option<usize>,
+    ) -> Result<Vec<api::TurnMetrics>, Error> {
+        let mut query = page(after, limit);
+        if let Some(value) = inference_limit {
+            query.push(("inference_limit", value.to_string()));
+        }
+        if let Some(value) = tools_limit {
+            query.push(("tools_limit", value.to_string()));
+        }
+        self.get(&format!("sessions/{}/metrics", segment(id)), &query)
+            .await
     }
 
     /// Roll up at most `limit` of the most recent turns of a named agent's
