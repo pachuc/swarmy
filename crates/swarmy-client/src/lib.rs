@@ -670,9 +670,12 @@ impl EventStream {
             if !response.status().is_success() {
                 let failure = decode::<serde_json::Value>(response).await.unwrap_err();
                 // A rejected change must not be sent again on the next poll.
-                if retryable(&failure) {
+                if retryable(&failure) || expired_connection(&failure) {
                     // A transient rejection may have happened after the update was
-                    // applied. Reconnect with delivered cursors and the new selection.
+                    // applied. An expired connection was never applied, but the
+                    // subscription itself already validated, so a fresh connect
+                    // with the new selection recovers it. Either way reconnect
+                    // with delivered cursors and the new selection.
                     self.response = None;
                     self.connection_id = None;
                     self.buffer.clear();
@@ -786,6 +789,22 @@ fn retryable(error: &Error) -> bool {
             status.is_server_error() || *status == StatusCode::TOO_MANY_REQUESTS
         }
         _ => true,
+    }
+}
+
+/// Whether a subscription update failed only because the server no longer
+/// has the connection (slow-client disconnect, deploy, or restart). The
+/// update handler validates every cursor before looking the connection up,
+/// so a 404 here names a missing connection, never a missing session; a
+/// fresh connect with the requested selection recovers, while reverting
+/// would strand the client on the old feed and surface a fatal error.
+fn expired_connection(error: &Error) -> bool {
+    match error {
+        Error::Api { status, body } => {
+            status.as_u16() == 404 && body.code == "connection_not_found"
+        }
+        Error::Status { status, .. } => status.as_u16() == 404,
+        _ => false,
     }
 }
 fn subscription_changed(requested: &api::Subscription, current: &api::Subscription) -> bool {
@@ -1006,6 +1025,86 @@ mod tests {
                 .unwrap(),
             updated
         );
+    }
+
+    #[tokio::test]
+    async fn expired_connection_reconnects_instead_of_failing_the_switch() {
+        use axum::{http::HeaderMap, routing::put};
+        // The server drops slow clients and forgets the connection; the next
+        // subscription update then reports 404 connection_not_found. The
+        // client must reconnect with the new selection (for example the
+        // successor feed after a summarization) instead of reverting the
+        // change and failing the chat.
+        let app = Router::new()
+            .route(
+                "/v1/events",
+                get(|| async {
+                    let stream = futures_util::stream::once(async {
+                        Ok::<_, Infallible>(SseEvent::default().event("connected").data("{}"))
+                    })
+                    .chain(futures_util::stream::pending());
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-swarmy-connection-id", "connection".parse().unwrap());
+                    (headers, Sse::new(stream))
+                }),
+            )
+            .route(
+                "/v1/events/connection/subscription",
+                put(|| async {
+                    (
+                        HttpStatus::NOT_FOUND,
+                        Json(api::ApiError {
+                            code: "connection_not_found".into(),
+                            message: "unknown connection".into(),
+                            provider_text: None,
+                        }),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("old".into()),
+                sequence: 3,
+            }],
+            token_deltas: true,
+        });
+        let handle = stream.subscription_handle();
+        // Poll next so the initial connection has opened before changing it.
+        let mut pending = Box::pin(stream.next());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pending)
+                .await
+                .is_err()
+        );
+        drop(pending);
+        handle.set(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("new".into()),
+                sequence: 0,
+            }],
+            token_deltas: true,
+        });
+        // The expired connection reconnects and waits for new-feed events
+        // instead of returning the 404; the timeout below is the success
+        // case (still waiting), an immediate error is the failure case.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), stream.next_item())
+                .await
+                .is_err()
+        );
+        // The new selection survived instead of reverting to the old feed.
+        assert_eq!(stream.cursors().len(), 1);
+        assert_eq!(
+            stream.cursors()[0].log_id,
+            api::LogId::Session("new".into())
+        );
+        assert_eq!(stream.cursors()[0].sequence, 0);
     }
 
     #[tokio::test]
