@@ -1,7 +1,4 @@
-#[cfg(feature = "remote")]
-use crate::remote::ssh as remote_ssh;
-#[cfg(not(feature = "remote"))]
-use crate::remote_ssh;
+use swarmy_cloud::ssh as remote_ssh;
 use std::{path::Path, process::Stdio, time::Duration};
 
 use serde::Serialize;

@@ -9,11 +9,14 @@ use std::{
 use anyhow::Result;
 use swarmy_config::{RemoteNode, RemoteSettings};
 
-use super::{Cloud, Host, Instance, Launch, down, state::State, up, wait_running};
+use super::{
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, down, retry_profile_propagation, state::State,
+    up, wait_running,
+};
 
 #[derive(Default)]
 struct FakeCloud {
-    requests: RefCell<Vec<Launch>>,
+    requests: RefCell<Vec<MachineSpec>>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
@@ -22,7 +25,7 @@ struct FakeCloud {
     fail_profile_launch_once: Cell<bool>,
     launch_ids: RefCell<VecDeque<String>>,
     keys: RefCell<Vec<(String, Vec<u8>, String)>>,
-    observations: RefCell<VecDeque<Option<Instance>>>,
+    observations: RefCell<VecDeque<Option<Machine>>>,
     terminated: RefCell<Vec<String>>,
     deleted: RefCell<Vec<String>>,
     key_delete_attempts: RefCell<Vec<String>>,
@@ -33,30 +36,35 @@ struct FakeCloud {
 }
 
 impl Cloud for FakeCloud {
-    fn prepare_bucket(
-        &self,
-        bucket: &str,
-        region: &str,
-        name: &str,
-    ) -> impl Future<Output = Result<()>> {
-        self.bucket_ensures
-            .borrow_mut()
-            .push((bucket.into(), region.into(), name.into()));
-        if !self.bucket_creates.borrow().contains(&bucket.to_owned()) {
-            self.bucket_creates.borrow_mut().push(bucket.into());
+    fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
+        self.bucket_ensures.borrow_mut().push((
+            bucket.name.clone(),
+            bucket.region.clone(),
+            bucket.owner.clone(),
+        ));
+        if !self
+            .bucket_creates
+            .borrow()
+            .contains(&bucket.name.to_owned())
+        {
+            self.bucket_creates.borrow_mut().push(bucket.name.clone());
         }
+        let role = bucket
+            .node_credentials
+            .clone()
+            .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
         if !self.profile_present.replace(true) {
-            self.role_creates.borrow_mut().push(name.into());
-            self.profile_creates.borrow_mut().push(name.into());
+            self.role_creates.borrow_mut().push(role.clone());
+            self.profile_creates.borrow_mut().push(role);
         }
         std::future::ready(Ok(()))
     }
 
-    fn stock_image(&self) -> impl Future<Output = Result<String>> {
+    fn base_image(&self) -> impl Future<Output = Result<String>> {
         self.stock_reads.set(self.stock_reads.get() + 1);
         std::future::ready(Ok("ami-stock".into()))
     }
-    fn import_key(
+    fn import_ssh_key(
         &self,
         name: &str,
         public_key: Vec<u8>,
@@ -67,8 +75,8 @@ impl Cloud for FakeCloud {
             .push((name.into(), public_key, owner.into()));
         std::future::ready(Ok(()))
     }
-    fn launch(&self, request: &Launch) -> impl Future<Output = Result<String>> {
-        self.requests.borrow_mut().push(request.clone());
+    fn create(&self, spec: &MachineSpec) -> impl Future<Output = Result<String>> {
+        self.requests.borrow_mut().push(spec.clone());
         if self.fail_profile_launch_once.replace(false) {
             return std::future::ready(Err(anyhow::anyhow!(
                 "InvalidParameterValue: Invalid IAM Instance Profile name"
@@ -80,25 +88,25 @@ impl Cloud for FakeCloud {
             .pop_front()
             .unwrap_or_else(|| "i-test".into())))
     }
-    fn instance(&self, _: &str) -> impl Future<Output = Result<Option<Instance>>> {
+    fn get(&self, _: &str) -> impl Future<Output = Result<Option<Machine>>> {
         std::future::ready(Ok(self
             .observations
             .borrow_mut()
             .pop_front()
             .expect("unexpected describe call")))
     }
-    fn find_launch(&self, token: &str) -> impl Future<Output = Result<Option<String>>> {
+    fn find_by_tag(&self, token: &str) -> impl Future<Output = Result<Option<String>>> {
         self.find_tokens.borrow_mut().push(token.into());
         std::future::ready(Ok(Some("i-recovered".into())))
     }
-    fn terminate(&self, id: &str) -> impl Future<Output = Result<()>> {
+    fn destroy(&self, id: &str) -> impl Future<Output = Result<()>> {
         if self.fail_terminate.get() {
             return std::future::ready(Err(anyhow::anyhow!("access denied")));
         }
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
     }
-    fn delete_key(&self, name: &str) -> impl Future<Output = Result<()>> {
+    fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>> {
         self.key_delete_attempts.borrow_mut().push(name.into());
         if self.fail_delete.get() {
             return std::future::ready(Err(anyhow::anyhow!("access denied")));
@@ -179,12 +187,12 @@ impl Host for FakeHost {
     }
 }
 
-fn instance(status: &str) -> Instance {
-    Instance {
+fn instance(state: &str) -> Machine {
+    Machine {
         id: "i-test".into(),
-        status: status.into(),
         public_ip: "203.0.113.10".into(),
         private_ip: "10.0.0.10".into(),
+        state: state.into(),
     }
 }
 
@@ -197,9 +205,12 @@ fn observe_running(cloud: &FakeCloud) {
 
 fn settings() -> RemoteSettings {
     RemoteSettings {
-        subnet: Some("subnet-test".into()),
-        security_group: Some("sg-test".into()),
         managed_by_tag: "codex-launcher".into(),
+        aws: swarmy_config::AwsSettings {
+            subnet: Some("subnet-test".into()),
+            security_group: Some("sg-test".into()),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -270,12 +281,12 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
     );
     let request = cloud.requests.borrow()[0].clone();
     assert_eq!(request.image, "ami-stock");
-    assert_eq!(request.settings.disk_gb, 100);
-    assert_eq!(request.settings.instance_type, "m6id.xlarge");
+    assert_eq!(request.disk_gb, 100);
+    assert_eq!(request.instance_type, "m6id.xlarge");
     assert_eq!(request.name, "demo");
-    assert_eq!(request.settings.subnet.as_deref(), Some("subnet-test"));
-    assert_eq!(request.settings.security_group.as_deref(), Some("sg-test"));
-    assert_eq!(request.settings.managed_by_tag, "codex-launcher");
+    assert_eq!(request.subnet.as_deref(), Some("subnet-test"));
+    assert_eq!(request.security_group.as_deref(), Some("sg-test"));
+    assert_eq!(request.managed_by, "codex-launcher");
     assert_eq!(request.key_name, super::key_name(&node).unwrap());
     assert!(request.key_name.len() <= 64);
     assert_eq!(
@@ -508,7 +519,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         .extend(["i-test".into(), "i-second".into()]);
     cloud.observations.borrow_mut().extend([
         Some(instance("running")),
-        Some(Instance {
+        Some(Machine {
             id: "i-second".into(),
             private_ip: "10.0.0.11".into(),
             ..instance("running")
@@ -561,12 +572,11 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         let requests = cloud.requests.borrow();
         let join = &requests[1];
         assert_eq!(join.image, requests[0].image);
-        assert_eq!(join.settings.region, node.region);
-        assert_eq!(join.settings.subnet, settings().subnet);
-        assert_eq!(join.settings.security_group, settings().security_group);
-        assert_eq!(join.settings.instance_type, settings().instance_type);
-        assert_eq!(join.settings.disk_gb, settings().disk_gb);
-        assert_eq!(join.settings.managed_by_tag, "codex-launcher");
+        assert_eq!(join.subnet, settings().aws.subnet);
+        assert_eq!(join.security_group, settings().aws.security_group);
+        assert_eq!(join.instance_type, settings().aws.instance_type);
+        assert_eq!(join.disk_gb, settings().disk_gb);
+        assert_eq!(join.managed_by, "codex-launcher");
         assert_eq!(join.key_name, super::key_name(child).unwrap());
         assert_eq!(join.name, child.name);
     }
@@ -971,14 +981,15 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
 async fn profile_propagation_retries_one_failed_fake_launch() {
     let cloud = FakeCloud::default();
     cloud.fail_profile_launch_once.set(true);
-    let request = Launch {
-        settings: settings(),
-        image: "ami-test".into(),
-        name: "test".into(),
-        key_name: "test-key".into(),
-        profile: Some("swarmy-test".into()),
-    };
-    let id = super::aws::retry_profile_propagation(|| cloud.launch(&request), true, Duration::ZERO)
+    let request = MachineSpec::from_settings(
+        "test",
+        "ami-test",
+        "test-key",
+        b"ssh-ed25519 test".to_vec(),
+        &settings(),
+        Some("swarmy-test".into()),
+    );
+    let id = retry_profile_propagation(|| cloud.create(&request), true, Duration::ZERO)
         .await
         .unwrap();
     assert_eq!(id, "i-test");
@@ -1004,7 +1015,7 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
         .extend(["i-test".into(), "i-second".into()]);
     cloud.observations.borrow_mut().extend([
         Some(instance("running")),
-        Some(Instance {
+        Some(Machine {
             id: "i-second".into(),
             ..instance("running")
         }),
@@ -1023,11 +1034,8 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        cloud.requests.borrow()[0].settings.instance_type,
-        "m6i.large"
-    );
-    assert_eq!(cloud.requests.borrow()[0].settings.disk_gb, 40);
+    assert_eq!(cloud.requests.borrow()[0].instance_type, "m6i.large");
+    assert_eq!(cloud.requests.borrow()[0].disk_gb, 40);
     super::add_node::run(
         &cloud,
         &host,
@@ -1046,28 +1054,27 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
     .await
     .unwrap();
     let requests = cloud.requests.borrow();
-    let joining = &requests[1].settings;
+    let joining = &requests[1];
     assert_eq!(joining.instance_type, "m6id.4xlarge");
     assert_eq!(joining.disk_gb, 100);
-    assert_eq!(joining.region, first.region);
-    assert_eq!(joining.subnet, first.subnet);
-    assert_eq!(joining.security_group, first.security_group);
-    assert_eq!(joining.image.as_deref(), Some(requests[0].image.as_str()));
-    assert_eq!(joining.managed_by_tag, first.managed_by_tag);
+    assert_eq!(joining.subnet, first.aws.subnet);
+    assert_eq!(joining.security_group, first.aws.security_group);
+    assert_eq!(joining.image.as_str(), requests[0].image.as_str());
+    assert_eq!(joining.managed_by, first.managed_by_tag);
     drop(requests);
     let saved = state.require("demo").unwrap();
     let primary_settings = saved.launch_settings.unwrap();
     let child_settings = saved.nodes[0].launch_settings.as_ref().unwrap();
     assert_eq!(
         (
-            primary_settings.instance_type.as_str(),
+            primary_settings.aws.instance_type.as_str(),
             primary_settings.disk_gb
         ),
         ("m6i.large", 40)
     );
     assert_eq!(
         (
-            child_settings.instance_type.as_str(),
+            child_settings.aws.instance_type.as_str(),
             child_settings.disk_gb
         ),
         ("m6id.4xlarge", 100)
@@ -1140,7 +1147,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
         .extend(["i-test".into(), "i-second".into()]);
     cloud.observations.borrow_mut().extend([
         Some(instance("running")),
-        Some(Instance {
+        Some(Machine {
             id: "i-second".into(),
             ..instance("running")
         }),
@@ -1189,6 +1196,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
             .launch_settings
             .as_ref()
             .unwrap()
+            .aws
             .instance_type,
         "m6i.large"
     );

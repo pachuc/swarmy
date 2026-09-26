@@ -20,13 +20,6 @@ mod models_probe;
 mod models_probe_command;
 mod provider_report;
 mod provider_runtime;
-#[cfg(feature = "remote")]
-mod remote;
-mod remote_command;
-#[cfg(not(feature = "remote"))]
-#[allow(dead_code)] // The node CLI only uses tunnel health checks from this shared module.
-#[path = "remote/ssh.rs"]
-mod remote_ssh;
 mod selection_command;
 mod session_command;
 mod tools;
@@ -71,7 +64,7 @@ enum Command {
     /// Launch, connect to, and inspect remote development stacks
     Remote {
         #[command(subcommand)]
-        command: remote_command::Command,
+        command: swarmy_cloud::Command,
     },
     /// Collect unreferenced chunks older than the configured grace window
     Gc {
@@ -154,7 +147,7 @@ fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Remote { .. }) {
         anyhow::bail!("swarmy was built without remote support");
     }
-    remote_command::select(cli.remote.as_deref())?;
+    swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
         tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
@@ -241,7 +234,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         #[cfg(feature = "remote")]
-        Command::Remote { command } => Box::pin(remote::run(command, cli.json)).await?,
+        Command::Remote { command } => Box::pin(swarmy_cloud::run(command, cli.json)).await?,
         #[cfg(not(feature = "remote"))]
         Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),

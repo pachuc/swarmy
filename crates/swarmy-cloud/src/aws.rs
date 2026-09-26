@@ -7,9 +7,9 @@ use aws_sdk_ec2::{
         InstanceType, ResourceType, Tag, TagSpecification, VolumeType,
     },
 };
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 
-use super::{Cloud, Instance, Launch};
+use super::{Cloud, Machine, MachineSpec, ObjectBucket, retry_profile_propagation};
 
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
@@ -35,7 +35,7 @@ impl Aws {
         }
     }
 
-    async fn ensure_bucket(&self, bucket: &str, region: &str) -> Result<()> {
+    async fn ensure_bucket_exists(&self, bucket: &str, region: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
         let mut created = false;
         match location {
@@ -135,10 +135,9 @@ impl Aws {
         Ok(())
     }
 
-    async fn ensure_profile(&self, bucket: &str, name: &str) -> Result<()> {
-        let role = format!("swarmy-{name}");
+    async fn ensure_profile(&self, bucket: &str, role: &str) -> Result<()> {
         let mut created = false;
-        let existing = self.iam.get_role().role_name(&role).send().await;
+        let existing = self.iam.get_role().role_name(role).send().await;
         if let Err(error) = existing {
             if error
                 .as_service_error()
@@ -147,7 +146,7 @@ impl Aws {
             {
                 return Err(error).context("iam:GetRole");
             }
-            self.iam.create_role().role_name(&role)
+            self.iam.create_role().role_name(role)
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
                 .send().await.context("iam:CreateRole")?;
             created = true;
@@ -155,7 +154,7 @@ impl Aws {
         let policy = bucket_policy(bucket);
         self.iam
             .put_role_policy()
-            .role_name(&role)
+            .role_name(role)
             .policy_name("swarmy-bucket")
             .policy_document(policy.to_string())
             .send()
@@ -164,7 +163,7 @@ impl Aws {
         let profile = self
             .iam
             .get_instance_profile()
-            .instance_profile_name(&role)
+            .instance_profile_name(role)
             .send()
             .await;
         let has_role = match profile {
@@ -179,7 +178,7 @@ impl Aws {
             {
                 self.iam
                     .create_instance_profile()
-                    .instance_profile_name(&role)
+                    .instance_profile_name(role)
                     .send()
                     .await
                     .context("iam:CreateInstanceProfile")?;
@@ -191,8 +190,8 @@ impl Aws {
         if !has_role {
             self.iam
                 .add_role_to_instance_profile()
-                .instance_profile_name(&role)
-                .role_name(&role)
+                .instance_profile_name(role)
+                .role_name(role)
                 .send()
                 .await
                 .context("iam:AddRoleToInstanceProfile")?;
@@ -217,31 +216,29 @@ fn tags(resource: ResourceType, name: &str, owner: &str) -> TagSpecification {
 }
 
 fn launch_input(
-    request: &Launch,
+    spec: &MachineSpec,
     root_device: &str,
 ) -> Result<aws_sdk_ec2::operation::run_instances::RunInstancesInput> {
-    let disk_gb = i32::try_from(request.settings.disk_gb).context("remote.disk_gb is too large")?;
+    let disk_gb = i32::try_from(spec.disk_gb).context("machine disk_gb is too large")?;
     Ok(
         aws_sdk_ec2::operation::run_instances::RunInstancesInput::builder()
-            .image_id(&request.image)
-            .instance_type(InstanceType::from(request.settings.instance_type.as_str()))
+            .image_id(&spec.image)
+            .instance_type(InstanceType::from(spec.instance_type.as_str()))
             .min_count(1)
             .max_count(1)
-            .key_name(&request.key_name)
-            .set_iam_instance_profile(request.profile.as_ref().map(|name| {
+            .key_name(&spec.key_name)
+            .set_iam_instance_profile(spec.profile.as_ref().map(|name| {
                 aws_sdk_ec2::types::IamInstanceProfileSpecification::builder()
                     .name(name)
                     .build()
             }))
-            .client_token(&request.key_name)
+            .client_token(&spec.key_name)
             .network_interfaces(
                 InstanceNetworkInterfaceSpecification::builder()
                     .device_index(0)
-                    .set_subnet_id(request.settings.subnet.clone())
+                    .set_subnet_id(spec.subnet.clone())
                     .set_groups(
-                        request
-                            .settings
-                            .security_group
+                        spec.security_group
                             .clone()
                             .map(|group| vec![group]),
                     )
@@ -264,13 +261,13 @@ fn launch_input(
             )
             .tag_specifications(tags(
                 ResourceType::Instance,
-                &request.name,
-                &request.settings.managed_by_tag,
+                &spec.name,
+                &spec.managed_by,
             ))
             .tag_specifications(tags(
                 ResourceType::Volume,
-                &request.name,
-                &request.settings.managed_by_tag,
+                &spec.name,
+                &spec.managed_by,
             ))
             .build()
             .expect("both instance counts are present"),
@@ -285,40 +282,6 @@ fn bucket_region(location: Option<&aws_sdk_s3::types::BucketLocationConstraint>)
     }
 }
 
-fn profile_not_propagated(error: &anyhow::Error) -> bool {
-    let message = format!("{error:#}");
-    message.contains("InvalidParameterValue") && message.contains("Invalid IAM Instance Profile")
-}
-
-pub(super) async fn retry_profile_propagation<T, F, Fut>(
-    mut attempt: F,
-    profile: bool,
-    pause: Duration,
-) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        match attempt().await {
-            Ok(value) => return Ok(value),
-            Err(error)
-                if profile
-                    && profile_not_propagated(&error)
-                    && tokio::time::Instant::now() < deadline =>
-            {
-                tracing::info!("waiting for IAM instance profile to propagate to EC2");
-                tokio::time::sleep(
-                    pause.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-                )
-                .await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
 fn bucket_policy(bucket: &str) -> serde_json::Value {
     serde_json::json!({"Version":"2012-10-17","Statement":[
         {"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":format!("arn:aws:s3:::{bucket}")},
@@ -327,12 +290,17 @@ fn bucket_policy(bucket: &str) -> serde_json::Value {
 }
 
 impl Cloud for Aws {
-    async fn prepare_bucket(&self, bucket: &str, region: &str, name: &str) -> Result<()> {
-        self.ensure_bucket(bucket, region).await?;
-        self.ensure_profile(bucket, name).await
+    async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
+        self.ensure_bucket_exists(&bucket.name, &bucket.region)
+            .await?;
+        let role = bucket
+            .node_credentials
+            .clone()
+            .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
+        self.ensure_profile(&bucket.name, &role).await
     }
 
-    async fn stock_image(&self) -> Result<String> {
+    async fn base_image(&self) -> Result<String> {
         let output = self.ssm.get_parameter().name(UBUNTU_IMAGE).send().await?;
         Ok(output
             .parameter()
@@ -341,7 +309,7 @@ impl Cloud for Aws {
             .into())
     }
 
-    async fn import_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
+    async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
         self.ec2
             .import_key_pair()
             .key_name(name)
@@ -352,11 +320,11 @@ impl Cloud for Aws {
         Ok(())
     }
 
-    async fn launch(&self, request: &Launch) -> Result<String> {
+    async fn create(&self, spec: &MachineSpec) -> Result<String> {
         let images = self
             .ec2
             .describe_images()
-            .image_ids(&request.image)
+            .image_ids(&spec.image)
             .send()
             .await?;
         let root = images
@@ -366,7 +334,7 @@ impl Cloud for Aws {
             .context("AMI has no root device")?;
         let output = retry_profile_propagation(
             || async {
-                let input = launch_input(request, root)?;
+                let input = launch_input(spec, root)?;
                 self.ec2
                     .run_instances()
                     .set_image_id(input.image_id)
@@ -383,7 +351,7 @@ impl Cloud for Aws {
                     .await
                     .map_err(anyhow::Error::from)
             },
-            request.profile.is_some(),
+            spec.profile.is_some(),
             Duration::from_secs(2),
         )
         .await
@@ -396,7 +364,7 @@ impl Cloud for Aws {
             .into())
     }
 
-    async fn instance(&self, id: &str) -> Result<Option<Instance>> {
+    async fn get(&self, id: &str) -> Result<Option<Machine>> {
         let output = match self.ec2.describe_instances().instance_ids(id).send().await {
             Ok(output) => output,
             Err(error)
@@ -414,9 +382,9 @@ impl Cloud for Aws {
             .iter()
             .flat_map(aws_sdk_ec2::types::Reservation::instances)
             .next()
-            .map(|i| Instance {
+            .map(|i| Machine {
                 id: i.instance_id().unwrap_or_default().into(),
-                status: i
+                state: i
                     .state()
                     .and_then(|s| s.name())
                     .map_or("unknown", aws_sdk_ec2::types::InstanceStateName::as_str)
@@ -426,7 +394,7 @@ impl Cloud for Aws {
             }))
     }
 
-    async fn find_launch(&self, token: &str) -> Result<Option<String>> {
+    async fn find_by_tag(&self, token: &str) -> Result<Option<String>> {
         let output = self
             .ec2
             .describe_instances()
@@ -441,12 +409,12 @@ impl Cloud for Aws {
             .find_map(|i| i.instance_id().map(str::to_owned)))
     }
 
-    async fn terminate(&self, id: &str) -> Result<()> {
+    async fn destroy(&self, id: &str) -> Result<()> {
         // Tag-restricted policies cannot authorize mutations of missing resources.
         if self
-            .instance(id)
+            .get(id)
             .await?
-            .is_none_or(|instance| instance.status == "terminated")
+            .is_none_or(|machine| machine.state == "terminated")
         {
             return Ok(());
         }
@@ -464,7 +432,7 @@ impl Cloud for Aws {
         }
     }
 
-    async fn delete_key(&self, name: &str) -> Result<()> {
+    async fn delete_ssh_key(&self, name: &str) -> Result<()> {
         let keys = self
             .ec2
             .describe_key_pairs()
@@ -524,17 +492,20 @@ mod tests {
 
     #[test]
     fn ec2_request_tags_disk_network_and_key() {
-        let request = Launch {
-            settings: swarmy_config::RemoteSettings {
-                subnet: Some("subnet-test".into()),
-                security_group: Some("sg-test".into()),
-                managed_by_tag: "codex-launcher".into(),
-                ..Default::default()
-            },
-            image: "ami-test".into(),
+        let request = MachineSpec {
             name: "test".into(),
+            image: "ami-test".into(),
             key_name: "unique-key".into(),
+            ssh_public_key: b"ssh-ed25519 test".to_vec(),
+            cpus: 4,
+            memory_mib: 16 * 1024,
+            disk_gb: 100,
+            instance_type: "m6id.xlarge".into(),
+            subnet: Some("subnet-test".into()),
+            security_group: Some("sg-test".into()),
+            managed_by: "codex-launcher".into(),
             profile: None,
+            bootstrap: None,
         };
         let input = launch_input(&request, "/dev/sda1").unwrap();
         assert_eq!(input.image_id(), Some("ami-test"));
@@ -542,9 +513,9 @@ mod tests {
         assert_eq!(input.client_token(), Some("unique-key"));
         assert!(input.iam_instance_profile().is_none());
         let with_profile = launch_input(
-            &Launch {
+            &MachineSpec {
                 profile: Some("swarmy-test".into()),
-                ..request
+                ..request.clone()
             },
             "/dev/sda1",
         )
