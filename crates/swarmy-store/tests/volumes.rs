@@ -8,7 +8,7 @@ use std::{
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
 };
-use swarmy_store::{PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{Store, blob::MemoryBlobStore};
 use swarmy_volume::{ChunkStore, Manifest, SnapshotLoop, VolumeDevice, VolumeWriter};
 use ulid::Ulid;
 
@@ -334,19 +334,14 @@ async fn live_roots_are_retained_snapshots_attached_heads_and_images_only() {
                 &format!("image-{index}"),
                 &ImageTag("v1".into()),
                 image,
-                &PutImageOptions::default(),
+                None,
             )
             .await
             .unwrap();
         expected.insert(image);
     }
     test.store
-        .put_image(
-            "shared",
-            &ImageTag("v1".into()),
-            retained,
-            &PutImageOptions::default(),
-        )
+        .put_image("shared", &ImageTag("v1".into()), retained, None)
         .await
         .unwrap();
     let live = test.store.live_manifests().await.unwrap();

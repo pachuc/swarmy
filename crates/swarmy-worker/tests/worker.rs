@@ -21,9 +21,7 @@ use swarmy_core::{
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::{InferenceJob, Response, StopReason, TokenUsage};
-use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, Store, blob::ObjectBlobStore, runnable_partition,
-};
+use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
@@ -354,11 +352,11 @@ impl Fixture {
                 id,
                 None,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: Some(image),
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     route: Some(route),
-                },
+                }),
             )
             .await
             .unwrap();
@@ -373,7 +371,7 @@ impl Fixture {
                 image_fixture::image(&self.store).await,
                 "",
                 Timestamp::now(),
-                CreateAgentOptions::default(),
+                None,
             )
             .await
             .unwrap()
@@ -406,11 +404,11 @@ impl Fixture {
                 id,
                 Some(agent),
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     route,
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();
@@ -1805,12 +1803,12 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
             "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}
         })).unwrap()).unwrap();
         let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("tommy", image, "", Timestamp::now(), CreateAgentOptions::default()).await.unwrap();
+        let agent = f.store.create_agent("tommy", image, "", Timestamp::now(), None).await.unwrap();
         let id = loop {
             let id = SessionId::from_ulid(Ulid::generate());
             if runnable_partition(id) == 7 { break id; }
         };
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), AgentSessionOptions::default()).await.unwrap();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.store.set_main_session(agent.agent_id, id).await.unwrap();
         f.user_message(id).await;
         f.start("swarmy-scheduler", None);
@@ -1939,23 +1937,12 @@ async fn side_pressure_warns_at_75_percent_without_archiving() {
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store
-                .create_agent(
-                    "sidekick",
-                    image,
-                    "",
-                    Timestamp::now(),
-                    CreateAgentOptions::default(),
-                )
+                .create_agent("sidekick", image, "", Timestamp::now(), None)
                 .await
                 .unwrap();
             let id = side_id();
             f.store
-                .create_agent_session(
-                    id,
-                    Some(agent.agent_id),
-                    Timestamp::now(),
-                    AgentSessionOptions::default(),
-                )
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
             f.user_message(id).await;
@@ -1984,23 +1971,12 @@ async fn side_summary_archives_with_tail_and_continues_small() {
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store
-                .create_agent(
-                    "sidekick",
-                    image,
-                    "",
-                    Timestamp::now(),
-                    CreateAgentOptions::default(),
-                )
+                .create_agent("sidekick", image, "", Timestamp::now(), None)
                 .await
                 .unwrap();
             let id = side_id();
             f.store
-                .create_agent_session(
-                    id,
-                    Some(agent.agent_id),
-                    Timestamp::now(),
-                    AgentSessionOptions::default(),
-                )
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
             f.user_message(id).await;
@@ -2213,23 +2189,12 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store
-                .create_agent(
-                    "sidekick",
-                    image,
-                    "",
-                    Timestamp::now(),
-                    CreateAgentOptions::default(),
-                )
+                .create_agent("sidekick", image, "", Timestamp::now(), None)
                 .await
                 .unwrap();
             let id = side_id();
             f.store
-                .create_agent_session(
-                    id,
-                    Some(agent.agent_id),
-                    Timestamp::now(),
-                    AgentSessionOptions::default(),
-                )
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
             f.user_message(id).await;

@@ -179,11 +179,11 @@ pub async fn create(
                     id,
                     agent,
                     Timestamp::now(),
-                    swarmy_store::AgentSessionOptions {
+                    Some(swarmy_store::AgentSessionOptions {
                         image: image.as_deref(),
                         inference: Some(&choice),
                         route: body.route.as_deref(),
-                    },
+                    }),
                 )
                 .await
             {

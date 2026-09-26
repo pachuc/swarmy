@@ -12,9 +12,7 @@ use swarmy_core::{
     AgentId, AgentSettings, CredentialKind, CredentialRecord, CredentialScope, InferenceSelection,
     Lease, LeaseOwnerId, RouteStep, SessionId,
 };
-use swarmy_store::{
-    AgentSessionOptions, CredentialKey, PutImageOptions, Store, StoreError, blob::MemoryBlobStore,
-};
+use swarmy_store::{AgentSessionOptions, CredentialKey, Store, StoreError, blob::MemoryBlobStore};
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
@@ -455,7 +453,7 @@ async fn routed_session(f: &Fixture) -> SessionId {
             "fixture",
             &swarmy_core::ImageTag("test".into()),
             manifest,
-            &PutImageOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -465,11 +463,11 @@ async fn routed_session(f: &Fixture) -> SessionId {
             id,
             None,
             Timestamp::now(),
-            AgentSessionOptions {
+            Some(AgentSessionOptions {
                 image: Some("fixture:test"),
                 inference: Some(&InferenceSelection::default()),
                 route: Some("fallback"),
-            },
+            }),
         )
         .await
         .unwrap();
@@ -558,11 +556,11 @@ async fn session_route_assignment_validates_and_round_trips() {
                 SessionId::from_ulid(ulid::Ulid::generate()),
                 None,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: Some("fixture:test"),
                     inference: Some(&InferenceSelection::default()),
                     route: Some("missing")
-                }
+                })
             )
             .await,
         Err(StoreError::RouteMissing)

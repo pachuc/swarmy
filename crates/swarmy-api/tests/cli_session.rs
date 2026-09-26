@@ -37,8 +37,7 @@ use swarmy_core::{
 };
 use swarmy_llm::Delta;
 use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, PutImageOptions, ServiceDetail, ServiceHeartbeat,
-    ServiceRole, Store, blob::MemoryBlobStore,
+    AgentSessionOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
 };
 use tokio::{
     process::Command,
@@ -343,11 +342,11 @@ async fn interrupt_idle_session_exits_with_clear_error() {
                 id,
                 None,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: Some("fixture:test"),
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();
@@ -370,11 +369,11 @@ async fn session_show_json_includes_pending_interrupt() {
                 id,
                 None,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: Some("fixture:test"),
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();
@@ -1066,13 +1065,7 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
 async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     let agent = fixture
         .store
-        .create_agent(
-            "metrics-agent",
-            "fixture:test",
-            "",
-            Timestamp::now(),
-            CreateAgentOptions::default(),
-        )
+        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now(), None)
         .await
         .unwrap();
     let (session, _) = fixture

@@ -6,7 +6,7 @@ use std::{
 use swarmy_api::{AppState, router};
 use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
-use swarmy_store::{CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -38,12 +38,7 @@ async fn fixture() -> Option<(
         .await
         .unwrap();
     store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            manifest,
-            &PutImageOptions::default(),
-        )
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();
@@ -75,7 +70,7 @@ async fn projections_match_store_records_and_catalog() {
             "fixture:test",
             "test",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -255,7 +250,7 @@ async fn agent_update_rejects_invalid_merged_model() {
             "fixture:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap();

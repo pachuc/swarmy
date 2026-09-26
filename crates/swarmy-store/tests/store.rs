@@ -12,8 +12,7 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, CredentialKey, InterruptResult, PutImageOptions,
-    Store, StoreError, SubmitInferenceOptions,
+    CredentialKey, InterruptResult, Store, StoreError,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };
@@ -1551,9 +1550,7 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
         Err(StoreError::ManifestMissing)
     ));
     assert!(matches!(
-        test.store
-            .put_image("base", &tag, manifest, &PutImageOptions::default())
-            .await,
+        test.store.put_image("base", &tag, manifest, None).await,
         Err(StoreError::ManifestMissing)
     ));
     test.store.put_manifest(manifest, &header).await.unwrap();
@@ -1577,7 +1574,7 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
         Err(StoreError::InvalidManifest)
     ));
     test.store
-        .put_image("base", &tag, manifest, &PutImageOptions::default())
+        .put_image("base", &tag, manifest, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1797,12 +1794,7 @@ async fn image_listing_pages_by_name_and_tag() {
         .unwrap();
     for (name, tag) in [("ubuntu", "v2"), ("base", "v1"), ("ubuntu", "v1")] {
         test.store
-            .put_image(
-                name,
-                &ImageTag(tag.into()),
-                manifest,
-                &PutImageOptions::default(),
-            )
+            .put_image(name, &ImageTag(tag.into()), manifest, None)
             .await
             .unwrap();
     }
@@ -2040,7 +2032,7 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
                 "other",
                 &ImageTag(format!("{index:02}")),
                 manifest.unwrap(),
-                &PutImageOptions::default(),
+                None,
             )
             .await
             .unwrap();
@@ -2099,12 +2091,7 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
         .await
         .unwrap();
     test.store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            replacement,
-            &PutImageOptions::default(),
-        )
+        .put_image("fixture", &ImageTag("test".into()), replacement, None)
         .await
         .unwrap();
     assert_eq!(

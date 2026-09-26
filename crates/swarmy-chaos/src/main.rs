@@ -31,8 +31,7 @@ use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
 };
 use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, MAX_SCAN_LIMIT, PutImageOptions, Store,
-    blob::ObjectBlobStore, runnable_partition,
+    AgentSessionOptions, MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition,
 };
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
@@ -141,7 +140,7 @@ impl Fixture {
                 "chaos",
                 &swarmy_core::ImageTag("test".into()),
                 manifest,
-                &PutImageOptions::default(),
+                None,
             )
             .await?;
         self.image = Some(manifest);
@@ -170,7 +169,7 @@ impl Fixture {
                     "chaos",
                     &swarmy_core::ImageTag("test".into()),
                     manifest,
-                    &PutImageOptions::default(),
+                    None,
                 )
                 .await?;
         }
@@ -318,7 +317,7 @@ impl Fixture {
                         "chaos:test",
                         "Two sessions sharing a computer",
                         Timestamp::now(),
-                        CreateAgentOptions::default(),
+                        None,
                     )
                     .await?
                     .agent_id,
@@ -339,10 +338,10 @@ impl Fixture {
                     id,
                     agent,
                     Timestamp::now(),
-                    AgentSessionOptions {
+                    Some(AgentSessionOptions {
                         image: if shared { None } else { Some("chaos:test") },
                         ..Default::default()
-                    },
+                    }),
                 )
                 .await?;
             self.store

@@ -51,12 +51,7 @@ async fn dispatch_arguments(
     let id = session.session_id;
     if store.get_agent(agent).await.unwrap().is_some() {
         store
-            .create_agent_session(
-                id,
-                Some(agent),
-                jiff::Timestamp::now(),
-                AgentSessionOptions::default(),
-            )
+            .create_agent_session(id, Some(agent), jiff::Timestamp::now(), None)
             .await
             .unwrap();
     } else {
@@ -221,12 +216,7 @@ pub(super) async fn start(
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();
     store
-        .put_image(
-            "persistent",
-            &ImageTag("test".into()),
-            base,
-            &PutImageOptions::default(),
-        )
+        .put_image("persistent", &ImageTag("test".into()), base, None)
         .await
         .unwrap();
     (node, bus)
@@ -930,7 +920,7 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
             "persistent:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap()

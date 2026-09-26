@@ -9,8 +9,7 @@ use swarmy_core::{
     SessionId,
 };
 use swarmy_store::{
-    AgentSessionOptions, MeteringDimension, PutImageOptions, Store, UsageGroupBy,
-    blob::MemoryBlobStore,
+    AgentSessionOptions, MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore,
 };
 use ulid::Ulid;
 
@@ -183,12 +182,7 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         .await
         .unwrap();
     store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            manifest,
-            &PutImageOptions::default(),
-        )
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let first = SessionId::from_ulid(Ulid::generate());
@@ -199,11 +193,11 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
                 id,
                 None,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: Some("fixture:test"),
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();

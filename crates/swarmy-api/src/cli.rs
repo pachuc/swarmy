@@ -745,11 +745,11 @@ pub async fn agent_create(
                 &image,
                 body.description.as_deref().unwrap_or(""),
                 jiff::Timestamp::now(),
-                swarmy_store::CreateAgentOptions {
+                Some(swarmy_store::CreateAgentOptions {
                     settings: Some(&choice),
                     github_token: body.github_token.as_deref(),
                     replay_key: Some(&store_key),
-                },
+                }),
             )
             .await
             .map_err(storage)?;

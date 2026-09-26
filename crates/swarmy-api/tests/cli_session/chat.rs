@@ -1132,7 +1132,7 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
             "fixture",
             &swarmy_core::ImageTag("test".into()),
             manifest,
-            &PutImageOptions::default(),
+            None,
         )
         .await
         .unwrap();

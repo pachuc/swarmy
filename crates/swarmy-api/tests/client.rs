@@ -11,7 +11,7 @@ use swarmy_core::{
     CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, LiveTokenDelta, ManifestHeader,
     ManifestId, Message, MessageId, MessageRole, Part, SessionId,
 };
-use swarmy_store::{CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -45,13 +45,7 @@ impl Fixture {
     async fn session(&self, name: &str) -> SessionId {
         let agent = self
             .store
-            .create_agent(
-                name,
-                "fixture:test",
-                "",
-                jiff::Timestamp::now(),
-                CreateAgentOptions::default(),
-            )
+            .create_agent(name, "fixture:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         self.store
@@ -113,12 +107,7 @@ async fn fixture() -> Option<Fixture> {
         .await
         .unwrap();
     store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            manifest,
-            &PutImageOptions::default(),
-        )
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();

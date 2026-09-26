@@ -46,8 +46,9 @@ impl Store {
         image: &str,
         description: &str,
         now: Timestamp,
-        options: CreateAgentOptions<'_>,
+        options: Option<CreateAgentOptions<'_>>,
     ) -> Result<AgentRecord> {
+        let options = options.unwrap_or_default();
         let defaults = AgentSettings::default();
         self.create_agent_with_replay(
             name,
@@ -325,8 +326,9 @@ impl Store {
         id: SessionId,
         agent: Option<AgentId>,
         now: Timestamp,
-        options: AgentSessionOptions<'_>,
+        options: Option<AgentSessionOptions<'_>>,
     ) -> Result<SessionRecord> {
+        let options = options.unwrap_or_default();
         let session = SessionRecord {
             interrupt_requested: false,
             session_id: id,

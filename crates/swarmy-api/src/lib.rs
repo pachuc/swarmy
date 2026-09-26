@@ -444,11 +444,11 @@ async fn create_agent(
             &image_ref(&body.image),
             &body.description,
             Timestamp::now(),
-            CreateAgentOptions {
+            Some(CreateAgentOptions {
                 settings: Some(&settings),
                 replay_key: Some(&format!("agents:create:{}", body.idempotency_key)),
                 ..Default::default()
-            },
+            }),
         )
         .await
         .map_err(storage)?;

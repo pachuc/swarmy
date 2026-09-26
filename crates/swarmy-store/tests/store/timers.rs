@@ -9,7 +9,7 @@ async fn setup(store: &Store) -> (AgentId, SessionId, Lease) {
             image_fixture::image(store).await,
             "",
             Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap()
@@ -320,13 +320,7 @@ async fn timers_are_bounded_agent_scoped_and_retired_on_deletion() {
     let timers = store.list_timers(agent).await.unwrap();
     assert_eq!(timers.len(), swarmy_core::MAX_AGENT_TIMERS);
     let other = store
-        .create_agent(
-            "other",
-            "fixture:test",
-            "",
-            Timestamp::now(),
-            CreateAgentOptions::default(),
-        )
+        .create_agent("other", "fixture:test", "", Timestamp::now(), None)
         .await
         .unwrap()
         .agent_id;
@@ -401,19 +395,14 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
             image_fixture::image(store).await,
             "",
             Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap()
         .agent_id;
     let side = SessionId::from_ulid(Ulid::generate());
     store
-        .create_agent_session(
-            side,
-            Some(agent),
-            Timestamp::now(),
-            AgentSessionOptions::default(),
-        )
+        .create_agent_session(side, Some(agent), Timestamp::now(), None)
         .await
         .unwrap();
     store.wake_session(side, Timestamp::now()).await.unwrap();
@@ -459,12 +448,7 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
 async fn open_side(store: &Store, agent: AgentId) -> (SessionId, Lease) {
     let side = SessionId::from_ulid(Ulid::generate());
     store
-        .create_agent_session(
-            side,
-            Some(agent),
-            Timestamp::now(),
-            AgentSessionOptions::default(),
-        )
+        .create_agent_session(side, Some(agent), Timestamp::now(), None)
         .await
         .unwrap();
     store.wake_session(side, Timestamp::now()).await.unwrap();

@@ -111,8 +111,9 @@ impl Store {
         name: &str,
         tag: &ImageTag,
         manifest: ManifestId,
-        options: &PutImageOptions,
+        options: Option<&PutImageOptions>,
     ) -> Result<()> {
+        let options = options.cloned().unwrap_or_default();
         if options.memory_mib == Some(0) {
             return Err(StoreError::InvalidState);
         }
@@ -122,24 +123,19 @@ impl Store {
         }
         self.transaction(|trx| {
             let key = &key;
+            let scratch = &options.scratch;
+            let memory_mib = &options.memory_mib;
+            let display = &options.display;
             async move {
                 self.require_manifest(&trx, manifest).await?;
                 write(&trx, key, &manifest)?;
-                write(
-                    &trx,
-                    &self.image_scratch_key(name, tag, manifest),
-                    &options.scratch,
-                )?;
+                write(&trx, &self.image_scratch_key(name, tag, manifest), scratch)?;
                 write(
                     &trx,
                     &self.image_memory_key(name, tag, manifest),
-                    &options.memory_mib,
+                    memory_mib,
                 )?;
-                write(
-                    &trx,
-                    &self.image_display_key(name, tag, manifest),
-                    &options.display,
-                )
+                write(&trx, &self.image_display_key(name, tag, manifest), display)
             }
         })
         .await

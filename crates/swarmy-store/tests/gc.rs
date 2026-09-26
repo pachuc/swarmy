@@ -18,7 +18,7 @@ use swarmy_config::GarbageCollection;
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, GcRun, ImageTag, Lease, LeaseOwnerId, ManifestId, VolumeId,
 };
-use swarmy_store::{PutImageOptions, Store, StoreError, blob::MemoryBlobStore};
+use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 use swarmy_volume::{
     ChunkStore, Manifest, ManifestBuilder, VolumeDevice, VolumeError, VolumeWriter, gc::collect,
 };
@@ -245,12 +245,7 @@ async fn retained_revisions(test: &Fixture, chunks: &ChunkStore) -> Vec<(Manifes
         }
         if value == 2 {
             test.store
-                .put_image(
-                    "base",
-                    &ImageTag("stable".into()),
-                    next,
-                    &PutImageOptions::default(),
-                )
+                .put_image("base", &ImageTag("stable".into()), next, None)
                 .await
                 .unwrap();
         }
@@ -266,7 +261,7 @@ async fn retained_revisions(test: &Fixture, chunks: &ChunkStore) -> Vec<(Manifes
                 &format!("image-{index}"),
                 &ImageTag("stable".into()),
                 head,
-                &PutImageOptions::default(),
+                None,
             )
             .await
             .unwrap();
@@ -810,12 +805,7 @@ async fn computer_session(
         SessionId,
     };
     store
-        .put_image(
-            "base",
-            &ImageTag("test".into()),
-            head,
-            &PutImageOptions::default(),
-        )
+        .put_image("base", &ImageTag("test".into()), head, None)
         .await
         .unwrap();
     let session = swarmy_core::SessionRecord {

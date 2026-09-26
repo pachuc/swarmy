@@ -9,9 +9,7 @@ use swarmy_core::{
     AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
     SandboxSpec, VolumeId,
 };
-use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, PutImageOptions, Store, blob::ObjectBlobStore,
-};
+use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -365,10 +363,10 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
             "scratch",
             &ImageTag("test".into()),
             base,
-            &swarmy_store::PutImageOptions {
+            Some(&swarmy_store::PutImageOptions {
                 scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();
@@ -394,7 +392,7 @@ async fn scratch_mounts(
             "scratch:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -541,13 +539,7 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
     for cycle in 0..10 {
         let name = format!("scratch-cycle-{cycle}");
         let agent = store
-            .create_agent(
-                &name,
-                "scratch:test",
-                "",
-                jiff::Timestamp::now(),
-                CreateAgentOptions::default(),
-            )
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
@@ -589,13 +581,7 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
     for age_days in [2_u64, 1] {
         let name = format!("pressure-{age_days}");
         let agent = store
-            .create_agent(
-                &name,
-                "scratch:test",
-                "",
-                jiff::Timestamp::now(),
-                CreateAgentOptions::default(),
-            )
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         let path = node
@@ -630,7 +616,7 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
             "scratch:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -679,7 +665,7 @@ async fn scratch_idle(node: &mut Node, store: &Store) {
             "scratch:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions::default(),
+            None,
         )
         .await
         .unwrap();

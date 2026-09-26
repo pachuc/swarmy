@@ -1,4 +1,5 @@
 use super::*;
+use swarmy_store::SubmitInferenceOptions;
 
 #[tokio::test]
 async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {

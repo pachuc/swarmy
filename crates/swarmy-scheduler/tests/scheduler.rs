@@ -21,9 +21,7 @@ use swarmy_core::{
     AgentId, Event, LeaseOwnerId, MessageRole, Nudge, RequestId, RunnableEntry, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
 };
-use swarmy_store::{
-    AgentSessionOptions, CreateAgentOptions, Store, blob::MemoryBlobStore, runnable_partition,
-};
+use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
 
@@ -571,23 +569,12 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
         let active = f.create(7, SessionState::Runnable, old).await;
         let agent = f
             .store
-            .create_agent(
-                "named",
-                image_fixture::image(&f.store).await,
-                "",
-                old,
-                CreateAgentOptions::default(),
-            )
+            .create_agent("named", image_fixture::image(&f.store).await, "", old, None)
             .await
             .unwrap();
         let named = f
             .store
-            .create_agent_session(
-                id(),
-                Some(agent.agent_id),
-                old,
-                AgentSessionOptions::default(),
-            )
+            .create_agent_session(id(), Some(agent.agent_id), old, None)
             .await
             .unwrap();
         f.start_with_retention("7", &f.prefix, 1).await;
@@ -638,7 +625,7 @@ async fn due_side_timer_nudges_its_idle_session() {
     run(|f| async move {
         let agent = f
             .store
-            .create_agent("timer-side", image_fixture::image(&f.store).await, "", Timestamp::now(), CreateAgentOptions::default())
+            .create_agent("timer-side", image_fixture::image(&f.store).await, "", Timestamp::now(), None)
             .await
             .unwrap()
             .agent_id;
@@ -651,7 +638,7 @@ async fn due_side_timer_nudges_its_idle_session() {
             .find(|&session| runnable_partition(session) == 7)
             .unwrap();
         f.store
-            .create_agent_session(side, Some(agent), Timestamp::now(), AgentSessionOptions::default())
+            .create_agent_session(side, Some(agent), Timestamp::now(), None)
             .await
             .unwrap();
         f.store.wake_session(side, Timestamp::now()).await.unwrap();

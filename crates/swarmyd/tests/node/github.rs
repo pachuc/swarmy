@@ -1,5 +1,6 @@
 use super::*;
 use std::io::{BufRead, Write};
+use swarmy_store::CreateAgentOptions;
 
 struct Fake {
     child: Child,
@@ -111,12 +112,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         .await
         .unwrap();
     store
-        .put_image(
-            "credentials",
-            &ImageTag("test".into()),
-            base,
-            &PutImageOptions::default(),
-        )
+        .put_image("credentials", &ImageTag("test".into()), base, None)
         .await
         .unwrap();
     let first = format!("test_first_{}", ulid::Ulid::generate());
@@ -127,10 +123,10 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
             "credentials:test",
             "",
             jiff::Timestamp::now(),
-            CreateAgentOptions {
+            Some(CreateAgentOptions {
                 github_token: Some(&first),
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use swarmy_store::SubmitInferenceOptions;
 
 struct CompletionInput<'a> {
     provider: &'a str,

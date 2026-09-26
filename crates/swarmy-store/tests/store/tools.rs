@@ -23,12 +23,7 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
         .await
         .unwrap();
     store
-        .put_image(
-            "base",
-            &ImageTag("test".into()),
-            image,
-            &PutImageOptions::default(),
-        )
+        .put_image("base", &ImageTag("test".into()), image, None)
         .await
         .unwrap();
     store

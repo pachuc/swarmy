@@ -179,11 +179,11 @@ pub async fn upload(
             &validated.name,
             &ImageTag(validated.tag.clone()),
             manifest_id,
-            &swarmy_store::PutImageOptions {
+            Some(&swarmy_store::PutImageOptions {
                 scratch: validated.scratch.clone(),
                 memory_mib: validated.memory_mib,
                 display: validated.display,
-            },
+            }),
         )
         .await
         .map_err(storage)?;

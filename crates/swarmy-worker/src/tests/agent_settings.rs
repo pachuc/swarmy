@@ -2,6 +2,7 @@ use super::*;
 use futures::FutureExt;
 use swarmy_core::{AgentSettings, ReasoningEffort};
 use swarmy_llm::InferenceJob;
+use swarmy_store::{AgentSessionOptions, CreateAgentOptions};
 
 struct Fixture {
     store: Store,
@@ -53,10 +54,10 @@ impl Fixture {
                 id,
                 agent,
                 Timestamp::now(),
-                AgentSessionOptions {
+                Some(AgentSessionOptions {
                     image: agent.is_none().then_some("fixture:test"),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();
@@ -149,7 +150,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                 "fixture:test",
                 "",
                 Timestamp::now(),
-                CreateAgentOptions {
+                Some(CreateAgentOptions {
                     settings: Some(&AgentSettings {
                         system_prompt: Some("  Agent prompt.\n".into()),
                         model: Some("agent-model".into()),
@@ -160,7 +161,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                         route: None,
                     }),
                     ..Default::default()
-                },
+                }),
             )
             .await
             .unwrap();
@@ -222,13 +223,13 @@ async fn assert_default_settings(f: &Fixture) {
             "fixture:test",
             "",
             Timestamp::now(),
-            CreateAgentOptions {
+            Some(CreateAgentOptions {
                 settings: Some(&AgentSettings {
                     model: Some("partial-model".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();
@@ -240,13 +241,7 @@ async fn assert_default_settings(f: &Fixture) {
     );
     let defaults = f
         .store
-        .create_agent(
-            "defaults",
-            "fixture:test",
-            "",
-            Timestamp::now(),
-            CreateAgentOptions::default(),
-        )
+        .create_agent("defaults", "fixture:test", "", Timestamp::now(), None)
         .await
         .unwrap();
     for agent in [None, Some(defaults.agent_id)] {
@@ -273,9 +268,9 @@ async fn session_selection_routes_and_missing_gateway_waits() {
                 }).await.unwrap();
             }
             let id = SessionId::from_ulid(Ulid::generate());
-            f.store.create_agent_session(id, None, Timestamp::now(), AgentSessionOptions { image: Some("fixture:test"), inference: Some(&swarmy_core::InferenceSelection {
+            f.store.create_agent_session(id, None, Timestamp::now(), Some(AgentSessionOptions { image: Some("fixture:test"), inference: Some(&swarmy_core::InferenceSelection {
                 provider: Some("openai".into()), model: Some("gpt-5.5".into()), effort: Some(ReasoningEffort::Max),
-            }), ..Default::default() }).await.unwrap();
+            }), ..Default::default() })).await.unwrap();
             let job = f.infer(id).await;
             assert_eq!(job.provider, "openai");
             assert_eq!(job.request.settings.model, "gpt-5.5");
@@ -296,16 +291,16 @@ async fn session_selection_routes_and_missing_gateway_waits() {
         }
         let fake = f.infer(f.session(None).await).await;
         assert_eq!(fake.provider, "fake");
-        let named = f.store.create_agent("selected", "fixture:test", "", Timestamp::now(), CreateAgentOptions { settings: Some(&AgentSettings {
+        let named = f.store.create_agent("selected", "fixture:test", "", Timestamp::now(), Some(CreateAgentOptions { settings: Some(&AgentSettings {
             provider: Some("openai".into()), model: Some("gpt-5.5".into()), reasoning_effort: Some(ReasoningEffort::High), ..Default::default()
-        }), ..Default::default() }).await.unwrap();
+        }), ..Default::default() })).await.unwrap();
         let named_job = f.infer(f.session(Some(named.agent_id)).await).await;
         assert_eq!(named_job.provider, "openai");
         assert_eq!(named_job.request.settings.model, "gpt-5.5");
         let side = SessionId::from_ulid(Ulid::generate());
-        f.store.create_agent_session(side, Some(named.agent_id), Timestamp::now(), AgentSessionOptions { inference: Some(&swarmy_core::InferenceSelection {
+        f.store.create_agent_session(side, Some(named.agent_id), Timestamp::now(), Some(AgentSessionOptions { inference: Some(&swarmy_core::InferenceSelection {
             provider: Some("fake".into()), model: Some("session-model".into()), effort: Some(ReasoningEffort::Low)
-        }), ..Default::default() }).await.unwrap();
+        }), ..Default::default() })).await.unwrap();
         let side_job = f.infer(side).await;
         assert_eq!(side_job.provider, "fake");
         assert_eq!(side_job.request.settings.model, "session-model");

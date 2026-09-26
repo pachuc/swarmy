@@ -117,10 +117,10 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
             id,
             agent,
             Timestamp::now(),
-            AgentSessionOptions {
+            Some(AgentSessionOptions {
                 image,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .unwrap();

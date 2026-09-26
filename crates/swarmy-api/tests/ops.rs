@@ -8,7 +8,7 @@ use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config};
 use swarmy_client::Client;
 use swarmy_core::{CHUNK_SIZE, TurnStage};
-use swarmy_store::{CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
@@ -83,12 +83,7 @@ impl Fixture {
             .await
             .unwrap();
         self.store
-            .put_image(
-                "fixture",
-                &ImageTag("test".into()),
-                manifest,
-                &PutImageOptions::default(),
-            )
+            .put_image("fixture", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let agent = self
@@ -98,7 +93,7 @@ impl Fixture {
                 "fixture:test",
                 "",
                 jiff::Timestamp::now(),
-                CreateAgentOptions::default(),
+                None,
             )
             .await
             .unwrap();
