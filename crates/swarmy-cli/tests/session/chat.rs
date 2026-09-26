@@ -346,11 +346,12 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         terminal
             .screen(|screen| screen.contains("Tool: get_time") && screen.contains("Result:"))
             .await;
+        // Wait for the reply only. The "input locked" status is transient and
+        // the client may render the reply and the idle state in one frame, so
+        // requiring both together raced on slow runners (as with the wait
+        // below, which was relaxed for the same reason).
         let screen = terminal
-            .screen(|screen| {
-                screen.contains("Agent: Scripted conversation reply.")
-                    && screen.contains("input locked")
-            })
+            .screen(|screen| screen.contains("Agent: Scripted conversation reply."))
             .await;
         assert!(screen.find("Result:").unwrap() < screen.find("Agent:").unwrap());
         terminal.ready().await;
