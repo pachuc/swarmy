@@ -1602,7 +1602,16 @@ async fn check_side_successor(
     );
     assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
     let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-    assert_eq!(fresh.state, SessionState::Idle);
+    // Archival wakes the successor; a chat-shaped one replays to end-of-turn
+    // and idles again, so it may be runnable or briefly leased when observed.
+    assert!(
+        matches!(
+            fresh.state,
+            SessionState::Idle | SessionState::Runnable | SessionState::Leased
+        ),
+        "unexpected successor state {:?}",
+        fresh.state
+    );
     assert_eq!(fresh.agent_id, *agent);
     let opening = f.store.read_events(new, 0, 64).await.unwrap();
     let Event::MessageAppended { message, .. } = &opening[0] else {
@@ -1618,4 +1627,253 @@ async fn check_side_successor(
     );
     assert!(text.contains(&id.to_string()));
     assert!(opening.len() >= 2);
+}
+
+fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Response {
+    let mut parts = Vec::new();
+    if reasoning {
+        parts.push(Part::Reasoning {
+            text: format!("thinking about {call}"),
+            metadata: BTreeMap::new(),
+        });
+    }
+    parts.push(Part::ToolCall {
+        call_id: ToolCallId(call.into()),
+        tool: "get_time".into(),
+        input: serde_json::json!({}),
+    });
+    Response {
+        parts,
+        stop_reason: StopReason::ToolCalls,
+        usage: TokenUsage {
+            input_tokens,
+            ..Default::default()
+        },
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
+    }
+}
+
+fn write_fleet_side_script(fixture: &Fixture, summary: &str) {
+    // Forty tool rounds with input usage ramping past the 6000-token
+    // threshold at round 39, so the summary request lands mid-turn at call
+    // 40. The summary response reports usage above the pressure level so the
+    // gateway sends it down the slow path to archival. The remaining rounds
+    // run small in the successor and finish the task there.
+    let mut responses = serde_json::Map::new();
+    for round in 0..40_u64 {
+        let response =
+            side_tool_response(&format!("clock-{round}"), 150 + round * 150, round % 5 == 0);
+        responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
+    }
+    responses.insert(
+        "40".into(),
+        serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
+    );
+    for round in 41..45_u64 {
+        let response = side_tool_response(&format!("clock-{round}"), 12, round % 5 == 0);
+        responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
+    }
+    responses.insert(
+        "45".into(),
+        serde_json::to_value(side_response("Finished; nothing remains.".into(), 12)).unwrap(),
+    );
+    std::fs::write(
+        fixture.files.path().join("script.json"),
+        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
+    )
+    .unwrap();
+}
+
+async fn read_all_events(fixture: &Fixture, id: SessionId) -> Vec<Event> {
+    let mut events = Vec::new();
+    loop {
+        let after = events.last().map_or(0, Event::seq);
+        let page = fixture.store.read_events(id, after, 64).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        events.extend(page);
+    }
+    events
+}
+
+fn count_pressure(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|event| match event {
+            Event::MessageAppended { message, .. } => {
+                message.role == MessageRole::System
+                    && message.parts.iter().any(|part| match part {
+                        Part::Text { text } => text.contains("context_pressure"),
+                        _ => false,
+                    })
+            }
+            _ => false,
+        })
+        .count()
+}
+
+fn successor_messages(events: &[Event]) -> Vec<Message> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::MessageAppended { message, .. } | Event::InferenceCompleted { message, .. } => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 6000;
+            let summary = serde_json::json!({
+                "goals": "Finish the routes task", "state_of_work": "Handler done",
+                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
+            })
+            .to_string();
+            write_fleet_side_script(f, &summary);
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("sidekick", image, "", Timestamp::now())
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .await
+                .unwrap();
+            f.user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            // Usage crosses the threshold mid-turn, so the successor is
+            // archived out of the tool loop rather than at turn end. The turn
+            // continues in the successor until the scripted final answer.
+            let new = wait_successor(f, id).await;
+            assert_ne!(id, new);
+            // Wait for the continued task, then read the whole log: the
+            // successor holds the carried tail plus new rounds, past the
+            // first page.
+            f.idle(new).await;
+            let new_events = read_all_events(f, new).await;
+            assert_mid_turn_links(f, id, new).await;
+            let old_events = read_all_events(f, id).await;
+            assert_eq!(
+                count_pressure(&old_events) + count_pressure(&new_events),
+                1,
+                "pressure warns exactly once across the rollover"
+            );
+            let messages = successor_messages(&new_events);
+            assert_successor_opening(&new_events, &summary);
+            assert_successor_request_small(f, &new_events).await;
+            assert_continued_tool_pairs(&messages);
+        })
+    })
+    .await;
+}
+
+async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId) {
+    assert_eq!(
+        fixture
+            .store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        SessionState::Completed
+    );
+    assert_eq!(fixture.store.next_session(id).await.unwrap(), Some(new));
+    assert_eq!(fixture.store.previous_session(new).await.unwrap(), Some(id));
+}
+
+fn assert_successor_opening(new_events: &[Event], summary: &str) {
+    // The successor opens with the summary and carries a continue note,
+    // proving the rollover happened mid-task.
+    let Event::MessageAppended { message, .. } = &new_events[0] else {
+        panic!("opening missing")
+    };
+    assert_eq!(message.role, MessageRole::System);
+    let Part::Text { text } = &message.parts[0] else {
+        panic!("summary missing")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(summary).unwrap()
+    );
+    let continued = successor_messages(new_events)
+        .iter()
+        .flat_map(|message| &message.parts)
+        .any(|part| match part {
+            Part::Text { text } => text.contains("Continue the summarized task"),
+            _ => false,
+        });
+    assert!(continued, "mid-task successor needs its continue note");
+}
+
+async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event]) {
+    // The successor's first request stays under the threshold that
+    // archived its predecessor.
+    let request = new_events
+        .iter()
+        .find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
+    let job: swarmy_llm::InferenceJob = fixture
+        .store
+        .get_inference_input(request)
+        .await
+        .unwrap()
+        .unwrap();
+    let request_chars = serde_json::to_string(&job.request.messages).unwrap().len();
+    assert!(
+        request_chars / 4 < 6000,
+        "successor request too large: {request_chars} chars"
+    );
+}
+
+fn assert_continued_tool_pairs(messages: &[Message]) {
+    // The continued task really ran in the successor: several tool rounds
+    // completed after the rollover, every call kept its result, and reasoning
+    // crossed the boundary inside its assistant message.
+    let calls: Vec<_> = messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            Part::ToolCall { call_id, .. } => Some(call_id.0.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(calls.len() >= 4, "expected continued tool rounds");
+    let results: Vec<_> = messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            Part::ToolResult { call_id, .. } => Some(call_id.0.clone()),
+            _ => None,
+        })
+        .collect();
+    for call in &calls {
+        assert!(
+            results.contains(call),
+            "tool call {call} lost its result across the summary"
+        );
+    }
+    assert!(
+        messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Assistant)
+            .flat_map(|message| &message.parts)
+            .any(|part| matches!(part, Part::Reasoning { .. })),
+        "reasoning must cross the boundary with its message"
+    );
 }

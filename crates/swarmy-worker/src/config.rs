@@ -107,25 +107,26 @@ impl Config {
 impl Config {
     pub fn summarization_threshold(&self, provider: &str, model: &str) -> Option<u64> {
         self.summarize_at_tokens.or_else(|| {
-            self.catalog.summarize_at(provider, model).or_else(|| {
-                let context = self.model_context_window_tokens?;
-                Some(context - context / 4)
-            })
+            self.model_context_window_tokens
+                .map(|context| context - context / 4)
+                .or_else(|| self.catalog.summarize_at(provider, model))
         })
     }
 
     /// Side-session threshold in input tokens. An explicit override wins,
-    /// then the catalog's per-model or per-provider value, then three
-    /// quarters of the known window. Unknown models fall back to a default
-    /// well under the smallest supported window so long fleet tasks cannot
-    /// outgrow the provider limit.
+    /// then a stack-wide window override (so an operator proxying a model
+    /// behind a smaller window keeps that protection even when the catalog
+    /// knows the model), then the catalog's per-model or per-provider value,
+    /// then three quarters of a known window. Unknown models fall back to a
+    /// default well under the smallest supported window so long fleet tasks
+    /// cannot outgrow the provider limit.
     pub fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
         self.summarize_at_tokens
-            .or_else(|| self.catalog.summarize_at(provider, model))
             .or_else(|| {
                 self.model_context_window_tokens
                     .map(|context| context - context / 4)
             })
+            .or_else(|| self.catalog.summarize_at(provider, model))
             .unwrap_or(DEFAULT_SIDE_SUMMARIZE_AT_TOKENS)
     }
 

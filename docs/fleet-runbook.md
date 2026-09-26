@@ -138,12 +138,12 @@ Things learned on the way, all fixed in code or documented here:
   rather than killing it.
 - Long tasks survive the provider context window through side-session
   summarization. When a side session's last input usage passes its threshold
-  (explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else the catalog's per-model or
-  per-provider `summarize_at`, else three quarters of the model's window,
-  else 400k input tokens), the worker asks the model for goals, state of
-  work, open questions, and facts to keep, archives the old session, and
-  continues in a successor side session with that summary plus the last few
-  turns. The archived log stays readable and links to its successor through
+  (explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else three quarters of a
+  `SWARMY_MODEL_CONTEXT_WINDOW_TOKENS` override, else the catalog's per-model
+  or per-provider `summarize_at`, else 400k input tokens), the worker asks
+  the model for goals, state of work, open questions, and facts to keep,
+  archives the old session, and continues in a successor side session with
+  that summary plus the recent tool rounds and a continue note. The archived log stays readable and links to its successor through
   `next_session`/`previous_session`. `swarmy run --session OLD` follows to
   the successor and prints the summary notice; `fleet status` and `fleet
   collect` resolve the newest successor, so a task keeps its worker after

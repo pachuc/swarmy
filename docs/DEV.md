@@ -971,9 +971,9 @@ is three quarters of `model_context_window_tokens`
 (`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS`, default 400000 for the default model).
 Set the window when selecting a model with a different context capacity.
 Side sessions use the same mechanism with an input-token threshold: an
-explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else the catalog's per-model or
-per-provider `summarize_at`, else three quarters of the model's window, else
-400000 input tokens. Ephemeral sessions are not summarized automatically.
+explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else three quarters of a
+`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS` override, else the catalog's per-model
+or per-provider `summarize_at`, else 400000 input tokens. Ephemeral sessions are not summarized automatically.
 At 75 percent of the side threshold the worker appends a `context_pressure`
 system warning once per session; at the threshold it summarizes.
 

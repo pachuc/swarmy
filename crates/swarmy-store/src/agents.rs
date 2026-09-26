@@ -719,8 +719,10 @@ impl Store {
     }
 
     /// Replace a leased side session with a fresh idle side session.
-    /// The summary opening plus the last few turns carry context forward;
+    /// The summary opening plus the recent tool rounds carry context forward;
     /// archival and both links commit together without moving the main pointer.
+    /// The worker bounds the tail by tokens, so the store accepts any tail
+    /// length and never fails a step because of tail size.
     /// # Errors
     /// Rejects stale heads or leases, main sessions, ephemeral sessions, and storage failures.
     pub async fn summarize_side_session(
@@ -733,9 +735,6 @@ impl Store {
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
             return Err(StoreError::InvalidState);
-        }
-        if tail.len() > 20 {
-            return Err(StoreError::TooLarge);
         }
         // Keep the successor in the old session's runnable partition so the
         // same scheduler and worker continue the task without rebalancing.

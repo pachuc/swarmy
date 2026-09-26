@@ -379,11 +379,12 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
         Some(750)
     );
     assert_eq!(config.summarization_threshold("fake", "unknown"), None);
-    // The catalog window wins over a stack-wide window override.
+    // A stack-wide window override wins over the catalog, so an operator
+    // proxying a model behind a smaller window keeps that protection.
     config.model_context_window_tokens = Some(2000);
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
-        Some(750)
+        Some(1500)
     );
     assert_eq!(
         config.summarization_threshold("fake", "unknown"),
@@ -425,6 +426,17 @@ fn side_threshold_prefers_model_provider_and_defaults_to_400k() {
         config.side_summarization_threshold("fake", "small-context"),
         600
     );
+    // A stack-wide window override beats the catalog for known models.
+    config.model_context_window_tokens = Some(2000);
+    assert_eq!(
+        config.side_summarization_threshold("fake", "small-context"),
+        1500
+    );
+    assert_eq!(
+        config.side_summarization_threshold("fake", "window-only"),
+        1500
+    );
+    config.model_context_window_tokens = None;
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),
         750
