@@ -4141,6 +4141,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swarmy-core",
+]
+
+[[package]]
 name = "swarmy-chaos"
 version = "0.1.0"
 dependencies = [
@@ -4238,8 +4247,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "swarmy-catalog",
  "swarmy-core",
- "swarmy-llm",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4341,6 +4350,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "swarmy-catalog",
  "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",

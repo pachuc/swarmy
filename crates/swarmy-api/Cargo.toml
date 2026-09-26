@@ -23,7 +23,7 @@ swarmy-image.workspace = true
 swarmy-volume.workspace = true
 object_store.workspace = true
 tempfile.workspace = true
-swarmy-llm = { workspace = true, default-features = false }
+swarmy-llm.workspace = true
 swarmy-version.workspace = true
 jiff.workspace = true
 serde.workspace = true

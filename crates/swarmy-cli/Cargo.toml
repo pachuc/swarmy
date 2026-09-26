@@ -62,7 +62,7 @@ swarmy-core.workspace = true
 swarmy-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
-swarmy-llm = { workspace = true, default-features = false }
+swarmy-llm.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 jiff.workspace = true

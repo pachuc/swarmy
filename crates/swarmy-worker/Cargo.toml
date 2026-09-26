@@ -22,7 +22,7 @@ serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
 swarmy-harness.workspace = true
-swarmy-llm = { workspace = true, default-features = false }
+swarmy-llm.workspace = true
 swarmy-store.workspace = true
 swarmy-api-types.workspace = true
 tokio.workspace = true

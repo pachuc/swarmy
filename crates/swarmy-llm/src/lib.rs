@@ -253,7 +253,9 @@ pub enum Error {
     UnknownModel { provider: String, model: String },
     #[error("unsupported provider API: {0:?}")]
     Unsupported(Api),
-    #[error("{0} support was not compiled into this build; rebuild with the matching swarmy-llm feature")]
+    #[error(
+        "{0} support was not compiled into this build; rebuild with the matching swarmy-llm feature"
+    )]
     NotCompiledIn(String),
     #[error("credential I/O failed: {0}")]
     Io(#[from] std::io::Error),
