@@ -34,6 +34,10 @@ pub use metering::{MeteringDimension, UsageGroup, UsageGroupBy};
 pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
+mod routes;
+pub use routes::{
+    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
+};
 mod nodes;
 mod placed_tools;
 mod placements;
@@ -44,12 +48,19 @@ mod timers;
 mod tool_routing;
 mod tools;
 mod turns;
+pub use turns::SubmitRouteStep;
 mod volumes;
 
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
 
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use foundationdb::{
     Database, FdbBindingError, RangeOption, RetryableTransaction, Transaction,
@@ -60,8 +71,8 @@ use foundationdb::{
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use swarmy_core::{
-    EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId, SessionRecord,
-    SessionState, SnapshotRef, decode, encode,
+    AgentRecord, EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId,
+    SessionRecord, SessionState, SnapshotRef, decode, encode,
 };
 
 use blob::{BlobError, BlobStore};
@@ -77,6 +88,10 @@ pub enum StoreError {
     Keyring,
     #[error("credential does not exist")]
     CredentialMissing,
+    #[error("route does not exist")]
+    RouteMissing,
+    #[error("invalid route: {0}")]
+    InvalidRoute(String),
     #[error("credential refresh failed; login required")]
     CredentialRefresh,
     #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
@@ -198,6 +213,12 @@ struct StoredSession {
     inference: swarmy_core::InferenceSelection,
     #[serde(skip)]
     interrupt_requested: bool,
+    // The route override and attempt position live in side rows so the
+    // header keeps its legacy encoding.
+    #[serde(skip)]
+    route: Option<String>,
+    #[serde(skip)]
+    route_step: u32,
 }
 
 #[derive(Clone)]
@@ -206,6 +227,10 @@ pub struct Store {
     root: Subspace,
     blobs: Arc<dyn BlobStore>,
     images: session_images::ImageCache,
+    /// Logical store transactions started through [`Store::transaction`].
+    /// Binding-level retries inside one call count once; the counter exists
+    /// so tests can compare per-operation transaction costs.
+    transactions: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -236,6 +261,7 @@ impl Store {
             root: Subspace::from_bytes(prefix),
             images: Arc::default(),
             blobs,
+            transactions: Arc::default(),
         })
     }
 
@@ -247,7 +273,15 @@ impl Store {
             root,
             blobs,
             images: Arc::default(),
+            transactions: Arc::default(),
         }
+    }
+
+    /// Logical store transactions started so far. Tests use it to compare
+    /// per-operation costs; production code never branches on it.
+    #[must_use]
+    pub fn transaction_count(&self) -> u64 {
+        self.transactions.load(Ordering::Relaxed)
     }
 
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
@@ -255,6 +289,7 @@ impl Store {
         F: Fn(RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
+        self.transactions.fetch_add(1, Ordering::Relaxed);
         let result = self
             .db
             .run(|trx, maybe_committed| {
@@ -318,7 +353,7 @@ impl Store {
         }
     }
 
-    async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
+    pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
         read(trx, &self.session_key(id))
             .await?
             .ok_or(StoreError::SessionMissing)
@@ -339,6 +374,8 @@ impl Store {
             .await
     }
 
+    /// Fetch a session without its agent record. Callers that also need the
+    /// agent's route assignment use [`Store::fetch_session_with_agent`].
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn fetch_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
@@ -368,6 +405,47 @@ impl Store {
         Ok(Some(self.hydrate_session(session, snapshot).await?))
     }
 
+    /// Fetch a session with its agent record in one transaction, so the
+    /// scheduler resolves the agent's route assignment without a second
+    /// transaction per session. The agent is `None` for ephemeral sessions
+    /// and deleted agents.
+    /// # Errors
+    /// Returns storage or decoding errors.
+    pub async fn fetch_session_with_agent(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<(SessionRecord, Option<AgentRecord>)>> {
+        let stored = self
+            .transaction(|trx| async move {
+                let Some(session) = read::<StoredSession>(&trx, &self.session_key(id)).await?
+                else {
+                    return Ok(None);
+                };
+                let snapshot = if let Some(seq) = session.snapshot_seq {
+                    Some(
+                        trx.get(&self.snapshot_key(id, seq), false)
+                            .await?
+                            .ok_or(StoreError::Corrupt)?
+                            .to_vec(),
+                    )
+                } else {
+                    None
+                };
+                let agent_id = session.agent_id;
+                let session = self.session_metadata(&trx, session).await?;
+                let agent = self.read_agent(&trx, agent_id).await?;
+                Ok(Some((session, snapshot, agent)))
+            })
+            .await?;
+        let Some((session, snapshot, agent)) = stored else {
+            return Ok(None);
+        };
+        Ok(Some((
+            self.hydrate_session(session, snapshot).await?,
+            agent,
+        )))
+    }
+
     async fn session_metadata(
         &self,
         trx: &Transaction,
@@ -379,6 +457,8 @@ impl Store {
             session.plan,
             session.inference,
             session.interrupt_requested,
+            session.route,
+            session.route_step,
         ) = futures::try_join!(
             self.session_kind(trx, session.session_id),
             self.computer_deleted(trx, session.agent_id),
@@ -401,6 +481,20 @@ impl Store {
                     read(trx, &self.interrupt_key(session.session_id))
                         .await?
                         .unwrap_or(false),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read::<Option<String>>(trx, &self.session_route_key(session.session_id))
+                        .await?
+                        .flatten(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_route_step_key(session.session_id))
+                        .await?
+                        .unwrap_or(0),
                 )
             },
         )?;
@@ -427,6 +521,8 @@ impl Store {
             head_seq: session.head_seq,
             snapshot_ref,
             inference: session.inference,
+            route: session.route,
+            route_step: session.route_step,
         })
     }
 

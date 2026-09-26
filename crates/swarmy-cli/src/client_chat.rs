@@ -134,8 +134,17 @@ pub async fn run(
     } else {
         id.map(|value| value.to_string())
     };
-    let mut conversation =
-        Conversation::open(client.clone(), choice, image, agent, new, selection.into()).await?;
+    let route = selection.route.clone();
+    let mut conversation = Conversation::open(
+        client.clone(),
+        choice,
+        image,
+        agent,
+        new,
+        selection.into(),
+        route,
+    )
+    .await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;

@@ -189,7 +189,8 @@ fn main() -> anyhow::Result<()> {
                 command: auth_command::Command::Set(_)
                     | auth_command::Command::Ls
                     | auth_command::Command::Rm { .. }
-                    | auth_command::Command::Check { .. },
+                    | auth_command::Command::Check { .. }
+                    | auth_command::Command::Routes { .. },
                 ..
             }
     ) {
@@ -282,4 +283,39 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Version => swarmy_version::print("swarmy", cli.json)?,
     }
     Ok(())
+}
+
+// `run` and `chat` exist only in this binary: `swarmy-session` shares
+// `auth_command` but serves database commands instead, so the session-route
+// parse test lives here rather than in the shared module.
+#[cfg(test)]
+mod session_route_tests {
+    use clap::Parser;
+
+    #[test]
+    fn run_and_chat_accept_a_session_route() {
+        assert!(crate::Cli::try_parse_from(["swarmy", "run", "--route", "fallback", "hi"]).is_ok());
+        assert!(crate::Cli::try_parse_from(["swarmy", "chat", "--route", "fallback"]).is_ok());
+        // The route overrides one session only, so it stays available with an agent.
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy", "chat", "--agent", "tommy", "--route", "fallback"
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "run",
+                "--agent",
+                "tommy",
+                "--provider",
+                "openai",
+                "--route",
+                "fallback",
+                "hi",
+            ])
+            .is_err()
+        );
+    }
 }

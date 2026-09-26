@@ -87,6 +87,29 @@ pub struct InferenceFailureWait<'a> {
     pub wake_at: Timestamp,
 }
 
+/// Split a breaker record into its open retry time and stored reason. A
+/// record inside its probe window reads as open for one more second so only
+/// one probe runs at a time. Shared by route snapshots and the scheduler's
+/// tick cache so both see the same open steps.
+pub(crate) fn open_state(
+    breaker: Option<&Breaker>,
+    now: Timestamp,
+) -> (Option<Timestamp>, Option<String>) {
+    let open_until = breaker.and_then(|record| {
+        if record.open_until > now {
+            Some(record.open_until)
+        } else if record.probe_until.is_some_and(|until| until > now) {
+            now.checked_add(std::time::Duration::from_secs(1)).ok()
+        } else {
+            None
+        }
+    });
+    let reason = breaker
+        .filter(|_| open_until.is_some())
+        .map(|record| record.reason.clone());
+    (open_until, reason)
+}
+
 impl Store {
     /// Breaker records live under `(provider, label)`. The previous
     /// provider-only tuple is never read, so open provider-keyed breakers are
@@ -314,43 +337,59 @@ impl Store {
             {
                 return Err(StoreError::LeaseMismatch);
             }
-            let key = self.wait_key(id);
-            let mut wait = read::<InferenceWait>(&trx, &key)
-                .await?
-                .unwrap_or(InferenceWait {
-                    since: now,
-                    wake_at: failure.wake_at,
-                    last_failure_seq: 0,
-                    reasons: Vec::new(),
-                    attempts: 0,
-                });
-            if wait.last_failure_seq != failure.seq {
-                wait.attempts = wait.attempts.saturating_add(1);
-                let summary: String = failure.reason.chars().take(256).collect();
-                if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
-                    wait.reasons.push(summary);
-                }
-            }
-            let limit = wait
-                .since
-                .checked_add(max_wait)
-                .map_err(|_| StoreError::Corrupt)?;
-            if wait.last_failure_seq != 0 {
-                trx.clear(&self.wait_due_key(id, wait.wake_at));
-            }
-            wait.last_failure_seq = failure.seq;
-            wait.wake_at = if now >= limit {
-                now
-            } else {
-                failure.wake_at.min(limit)
-            };
-            write(&trx, &key, &wait)?;
-            write(&trx, &self.wait_due_key(id, wait.wake_at), &())?;
-            self.transition(&trx, session, SessionState::Sleeping, now)
-                .await?;
-            Ok(true)
+            self.park_leased_in(&trx, id, session, failure, now, max_wait)
+                .await
         })
         .await
+    }
+
+    /// Park a session whose lease was already checked in this transaction.
+    /// Shared by `park_inference` and the route failover, so both record
+    /// the same wait history for one failure.
+    pub(crate) async fn park_leased_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        session: crate::StoredSession,
+        failure: &InferenceFailureWait<'_>,
+        now: Timestamp,
+        max_wait: std::time::Duration,
+    ) -> Result<bool> {
+        let key = self.wait_key(id);
+        let mut wait = read::<InferenceWait>(trx, &key)
+            .await?
+            .unwrap_or(InferenceWait {
+                since: now,
+                wake_at: failure.wake_at,
+                last_failure_seq: 0,
+                reasons: Vec::new(),
+                attempts: 0,
+            });
+        if wait.last_failure_seq != failure.seq {
+            wait.attempts = wait.attempts.saturating_add(1);
+            let summary: String = failure.reason.chars().take(256).collect();
+            if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
+                wait.reasons.push(summary);
+            }
+        }
+        let limit = wait
+            .since
+            .checked_add(max_wait)
+            .map_err(|_| StoreError::Corrupt)?;
+        if wait.last_failure_seq != 0 {
+            trx.clear(&self.wait_due_key(id, wait.wake_at));
+        }
+        wait.last_failure_seq = failure.seq;
+        wait.wake_at = if now >= limit {
+            now
+        } else {
+            failure.wake_at.min(limit)
+        };
+        write(trx, &key, &wait)?;
+        write(trx, &self.wait_due_key(id, wait.wake_at), &())?;
+        self.transition(trx, session, SessionState::Sleeping, now)
+            .await?;
+        Ok(true)
     }
 
     /// Scan the next page of inference waits ready to wake.
@@ -405,6 +444,8 @@ impl Store {
     }
 
     /// Remove a completed turn's wait and any remaining due index entry.
+    /// A completed attempt also restarts the route chain, so the next turn
+    /// probes from the first step again.
     /// # Errors
     /// Returns storage failures.
     pub async fn clear_inference_wait(&self, id: SessionId) -> Result<()> {
@@ -413,6 +454,7 @@ impl Store {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
                 trx.clear(&self.wait_key(id));
             }
+            write(&trx, &self.session_route_step_key(id), &0_u32)?;
             Ok(())
         })
         .await

@@ -19,6 +19,9 @@ pub struct InferenceArgs {
     /// Reasoning effort: none, minimal, low, medium, high, xhigh, or max
     #[arg(long, value_parser = crate::selection_command::effort_or_default)]
     pub effort: Option<String>,
+    /// Inference failover route for this agent's turns
+    #[arg(long)]
+    pub route: Option<String>,
     /// Sandbox memory limit in MiB
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub memory: Option<u64>,

@@ -95,6 +95,141 @@ fn typed<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value)
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))
 }
+
+fn cli_route(record: &swarmy_core::RouteRecord) -> api::CliRoute {
+    api::CliRoute {
+        name: record.name.clone(),
+        steps: record
+            .steps
+            .iter()
+            .map(|step| api::RouteStep {
+                provider: step.provider.clone(),
+                entry: step.entry.clone(),
+                model: step.model.clone(),
+            })
+            .collect(),
+        updated_at: record.updated_at.to_string(),
+    }
+}
+
+/// Reject steps naming providers the catalog cannot serve, so a typo fails
+/// at `set` time instead of wedging turns later. Entries are not checked:
+/// a subscription login may land after the route is written.
+fn check_route_providers(
+    state: &AppState,
+    steps: &[api::RouteStep],
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    for step in steps {
+        if state.catalog.provider(&step.provider).is_none() {
+            return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
+        }
+    }
+    Ok(())
+}
+
+fn route_steps(steps: &[api::RouteStep]) -> Vec<swarmy_core::RouteStep> {
+    steps
+        .iter()
+        .map(|step| swarmy_core::RouteStep {
+            provider: step.provider.clone(),
+            entry: step.entry.clone(),
+            model: step.model.clone(),
+        })
+        .collect()
+}
+
+pub async fn routes(State(state): State<AppState>) -> ApiResult<Vec<api::CliRoute>> {
+    Ok(Json(
+        state
+            .store
+            .list_routes()
+            .await
+            .map_err(storage)?
+            .iter()
+            .map(cli_route)
+            .collect(),
+    ))
+}
+
+pub async fn route_show(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<api::CliRoute> {
+    let record = state
+        .store
+        .get_route(&name)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "route_not_found"))?;
+    Ok(Json(cli_route(&record)))
+}
+
+pub async fn route_set(
+    State(state): State<AppState>,
+    Json(body): Json<api::CliRouteInput>,
+) -> ApiResult<api::CliSaved> {
+    check_route_providers(&state, &body.steps)?;
+    let store = state.store.clone();
+    let name = body.name.clone();
+    let steps = route_steps(&body.steps);
+    super::replay(
+        &state,
+        &body.idempotency_key,
+        &format!("cli:routes:{}:set", body.name),
+        async move {
+            store.put_route(&name, &steps).await.map_err(storage)?;
+            Ok(Json(api::CliSaved { saved: true }))
+        },
+    )
+    .await
+}
+
+pub async fn route_remove(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<api::CliRouteDeleted> {
+    let deleted = state.store.delete_route(&name).await.map_err(storage)?;
+    if !deleted {
+        return Err(error(StatusCode::NOT_FOUND, "route_not_found"));
+    }
+    Ok(Json(api::CliRouteDeleted { deleted }))
+}
+
+pub async fn session_set_route(
+    State(state): State<AppState>,
+    Path(text): Path<String>,
+    Json(body): Json<api::SetSessionRoute>,
+) -> ApiResult<api::CliSessionDetail> {
+    let session_id = id(&text, SessionId::from_ulid)?;
+    let store = state.store.clone();
+    let catalog = state.catalog.clone();
+    let _: Json<Option<String>> = super::replay(
+        &state,
+        &body.idempotency_key,
+        &format!("cli:sessions:{session_id}:route"),
+        async move {
+            if let Some(name) = body.route.as_deref() {
+                let record = store
+                    .get_route(name)
+                    .await
+                    .map_err(storage)?
+                    .ok_or_else(|| error(StatusCode::BAD_REQUEST, "route_not_found"))?;
+                for step in &record.steps {
+                    if catalog.provider(&step.provider).is_none() {
+                        return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
+                    }
+                }
+            }
+            store
+                .set_session_route(session_id, body.route.as_deref())
+                .await
+                .map_err(storage)?;
+            Ok(Json(body.route.clone()))
+        },
+    )
+    .await?;
+    session_show(State(state), Path(text)).await
+}
 pub async fn sessions(
     State(state): State<AppState>,
     Query(page): Query<Page>,
@@ -506,6 +641,7 @@ fn settings(
         system_prompt: body.system_prompt.clone(),
         memory_mib: body.memory,
         gpu,
+        route: body.route.clone(),
     })
 }
 pub async fn agent_create(
@@ -569,6 +705,7 @@ pub async fn agent_update(
             "provider" => Ok(swarmy_core::InferenceField::Provider),
             "model" => Ok(swarmy_core::InferenceField::Model),
             "effort" => Ok(swarmy_core::InferenceField::Effort),
+            "route" => Ok(swarmy_core::InferenceField::Route),
             _ => Err(error(StatusCode::BAD_REQUEST, "invalid_reset")),
         })
         .collect::<Result<Vec<_>, _>>()?;
