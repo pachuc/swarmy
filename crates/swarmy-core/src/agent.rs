@@ -27,6 +27,9 @@ pub struct AgentRecord {
     pub provider: Option<String>,
     #[serde(default)]
     pub requirements: SandboxRequirements,
+    /// Failover chain for this agent's turns. `None` inherits the swarm default.
+    #[serde(default)]
+    pub route: Option<String>,
 }
 
 /// Optional inference overrides. Omitted fields inherit the stack defaults on create
@@ -39,6 +42,7 @@ pub struct AgentSettings {
     pub provider: Option<String>,
     pub memory_mib: Option<u64>,
     pub gpu: Option<GpuRequirement>,
+    pub route: Option<String>,
 }
 
 impl AgentRecord {
@@ -60,10 +64,14 @@ impl AgentSettings {
                 crate::InferenceField::Provider => agent.provider = None,
                 crate::InferenceField::Model => agent.model = None,
                 crate::InferenceField::Effort => agent.reasoning_effort = None,
+                crate::InferenceField::Route => agent.route = None,
             }
         }
         if let Some(provider) = &self.provider {
             agent.provider = Some(provider.clone());
+        }
+        if let Some(route) = &self.route {
+            agent.route = Some(route.clone());
         }
         if let Some(prompt) = &self.system_prompt {
             agent.system_prompt = Some(prompt.clone());

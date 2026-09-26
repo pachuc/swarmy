@@ -28,6 +28,8 @@ fn session() -> SessionRecord {
         head_seq: 7,
         snapshot_ref: None,
         inference: swarmy_core::InferenceSelection::default(),
+        route: None,
+        route_step: 0,
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
         plan: Vec::new(),
@@ -79,6 +81,9 @@ fn inference_event(calls: &[ToolCallRecord]) -> Event {
         cost_micros: 0,
         effort_requested: None,
         effort_clamped: false,
+        entry: None,
+        route: None,
+        route_step: None,
         seq: 3,
         request_id: RequestId::for_step(session().session_id, 2),
         message: Message {
@@ -448,6 +453,9 @@ async fn fake_provider_and_worker_tool_complete_a_turn() {
             cost_micros: 0,
             effort_requested: None,
             effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
             seq: seq + 1,
             request_id,
             message: Message {

@@ -810,6 +810,8 @@ async fn computer_session(
         kind: swarmy_core::SessionKind::Ephemeral,
         computer_deleted: false,
         plan: Vec::new(),
+        route: None,
+        route_step: 0,
         state: swarmy_core::SessionState::Idle,
         head_seq: 0,
         snapshot_ref: None,

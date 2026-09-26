@@ -1039,7 +1039,9 @@ protocol servers without real keys.
 - Admission: request and token buckets per provider, key, and model, consulted
   before inference admission so waiting sessions hold no worker lease.
 - Affinity: retain a session's provider/key choice while its prompt cache is warm.
-- Failover: ordered fallback models and providers on failure or quota exhaustion.
+- Failover: named routes carry ordered provider/entry steps with model
+  overrides and fail over at turn boundaries; the remaining work is
+  automatic selection when no route is assigned.
 - Metering expansion: aggregate usage by agent and key in addition to sessions.
 
 ## 10. Channels and self-organization

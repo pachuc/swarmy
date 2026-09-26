@@ -143,6 +143,7 @@ async fn assert_agent_routes(client: &Client) {
             model: None,
             effort: None,
             system_prompt: None,
+            route: None,
         })
         .await
         .unwrap();
@@ -158,6 +159,7 @@ async fn assert_agent_routes(client: &Client) {
                     provider: None,
                     model: None,
                     effort: None,
+                    route: None,
                     system_prompt: None,
                 }
             )
@@ -175,6 +177,7 @@ async fn assert_agent_routes(client: &Client) {
             provider: None,
             model: None,
             effort: None,
+            route: None,
         })
         .await
         .unwrap();
@@ -267,6 +270,7 @@ async fn client_round_trips_real_routes() {
             provider: None,
             model: None,
             effort: None,
+            route: None,
         })
         .await
         .unwrap();
@@ -458,6 +462,7 @@ async fn token_subscription_is_ready_before_open_returns() {
             provider: None,
             model: None,
             effort: None,
+            route: None,
         })
         .await
         .unwrap();

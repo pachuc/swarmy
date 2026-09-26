@@ -113,6 +113,7 @@ async fn setup(image: &str) -> BenchFixture {
             provider: Some("fake".into()),
             model: Some(settings.model.clone()),
             effort: None,
+            route: None,
         })
         .send()
         .await

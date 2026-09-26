@@ -592,6 +592,135 @@
         }
       }
     },
+    "/v1/cli/routes": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_routes",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CliRoute"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_set_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CliRouteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliSaved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/routes/{name}": {
+      "get": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_route",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliRoute"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_remove_route",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliRouteDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli/sessions": {
       "get": {
         "tags": [
@@ -631,6 +760,46 @@
           "cli_paths"
         ],
         "operationId": "cli_session",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CliSessionDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cli/sessions/{id}/route": {
+      "patch": {
+        "tags": [
+          "cli_paths"
+        ],
+        "operationId": "cli_set_session_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSessionRoute"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "",
@@ -1449,6 +1618,178 @@
         }
       }
     },
+    "/v1/routes": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_routes",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Route"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/{name}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_route",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Route name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Route"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_route",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Route name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRoute"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Route"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "delete_route",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Route name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteDeleted"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions": {
       "get": {
         "tags": [
@@ -1881,6 +2222,57 @@
         }
       }
     },
+    "/v1/sessions/{id}/route": {
+      "patch": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_session_route",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSessionRoute"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/wait-idle": {
       "get": {
         "tags": [
@@ -1995,6 +2387,12 @@
             "type": "string"
           },
           "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
             "type": [
               "string",
               "null"
@@ -2248,6 +2646,12 @@
               "type": "string"
             }
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -2348,6 +2752,64 @@
           },
           "tag": {
             "type": "string"
+          }
+        }
+      },
+      "CliRoute": {
+        "type": "object",
+        "description": "CLI projection of a named inference route.",
+        "required": [
+          "name",
+          "steps",
+          "updated_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteStep"
+            }
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "CliRouteDeleted": {
+        "type": "object",
+        "description": "CLI deletion marker for a named route.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CliRouteInput": {
+        "type": "object",
+        "description": "CLI input for replacing a route's steps in order.",
+        "required": [
+          "idempotency_key",
+          "name",
+          "steps"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteStep"
+            }
           }
         }
       },
@@ -2562,6 +3024,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -2687,6 +3155,12 @@
             "description": "Open a side conversation rather than the named agent's main session."
           },
           "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
             "type": [
               "string",
               "null"
@@ -3724,6 +4198,63 @@
           "max"
         ]
       },
+      "Route": {
+        "type": "object",
+        "description": "A named inference failover chain over auth entries.",
+        "required": [
+          "name",
+          "steps",
+          "updated_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteStep"
+            }
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "RouteDeleted": {
+        "type": "object",
+        "description": "Deleting a route reports the removal; assigned sessions fall back.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RouteStep": {
+        "type": "object",
+        "description": "One route step: the provider, the entry label (`*` for every entry of\nthe provider in creation order), and an optional model override.",
+        "required": [
+          "provider",
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
       "ServiceHealth": {
         "type": "object",
         "required": [
@@ -3823,6 +4354,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/SessionState"
           },
@@ -3889,6 +4426,43 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "SetRoute": {
+        "type": "object",
+        "description": "Setting a route replaces its steps in order.",
+        "required": [
+          "idempotency_key",
+          "steps"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteStep"
+            }
+          }
+        }
+      },
+      "SetSessionRoute": {
+        "type": "object",
+        "description": "Session route override for one conversation. `None` clears the override.",
+        "required": [
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4174,6 +4748,12 @@
               "null"
             ]
           },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -4213,6 +4793,12 @@
             ]
           },
           "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
             "type": [
               "string",
               "null"

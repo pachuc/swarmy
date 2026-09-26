@@ -17,6 +17,7 @@ pub async fn run(
     selection: SelectionArgs,
     json: bool,
 ) -> Result<()> {
+    let route = selection.route.clone();
     let mut conversation = Conversation::open(
         client,
         session.map(|id| id.to_string()),
@@ -24,6 +25,7 @@ pub async fn run(
         agent,
         new,
         selection.into(),
+        route,
     )
     .await?;
     announce(&conversation, json);
@@ -65,6 +67,7 @@ pub async fn chat(
     json: bool,
 ) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
+    let route = selection.route.clone();
     let mut conversation = Conversation::open(
         client,
         id.map(|id| id.to_string()),
@@ -72,6 +75,7 @@ pub async fn chat(
         agent,
         new,
         selection.into(),
+        route,
     )
     .await?;
     announce(&conversation, json);

@@ -99,6 +99,7 @@ Before starting this task:
 1. mkdir -p ~/work. For every other directory under ~/work: if it is a git clone whose branch has been pushed and `git status --porcelain` is empty, remove it; otherwise leave it in place and mention it in your final message. Never delete unpushed work.
 2. If `du -sb ~/.cargo-target` reports more than {TARGET_LIMIT_GIB} GiB, run `cargo clean` from any clone (the shared target directory lives outside the clones).
 3. Clone https://github.com/{config['repo']}.git into ~/work/{branch.split('/')[-1]}, and create branch {branch} from origin/master. Never reuse or force-push a branch.
+   Commit and push work in progress to {branch} at least once an hour and before any command expected to run longer than ten minutes (builds, test suites); a pushed branch with a work-in-progress commit is fine, an unpushed hour of work is not, because a session can end without warning.
    If a push is ever rejected because the token lacks the `workflow` scope (a change under .github/workflows), keep that change in a separate commit, move it out of the branch, save it as `ci/pending/{branch.split('/')[-1]}.patch` in the repository, commit and push that instead, and say in the pull request that the workflow change is pending an operator push.
 
 You are executing tasky {task_id}: {title}.

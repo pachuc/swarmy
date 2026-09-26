@@ -3,7 +3,17 @@ use jiff::Timestamp;
 use serde::Serialize;
 use swarmy_core::{Event, InflightRecord, Lease, RequestId, SessionId, SessionState, SnapshotRef};
 
-use crate::{Result, Store, StoreError, read, write};
+use crate::{InferenceWait, Result, Store, StoreError, read, write};
+
+/// Route position to persist with the inference handoff. The submitter
+/// resolved the route against open breakers before building the request, so
+/// the picked step commits with the request event instead of in a separate
+/// transaction. Skipped-step reasons join the wait history; the failure
+/// sequence is untouched because no failure is handled here.
+pub struct SubmitRouteStep {
+    pub step: u32,
+    pub reasons: Vec<String>,
+}
 
 impl Store {
     /// Persist the input, request event and inflight outbox, then release the lease.
@@ -33,8 +43,16 @@ impl Store {
         input: &T,
         before: &[Event],
     ) -> Result<Event> {
-        self.submit_inference_after_inner(expected_head, lease, record, input, None::<&T>, before)
-            .await
+        self.submit_inference_after_inner(
+            expected_head,
+            lease,
+            record,
+            input,
+            None::<&T>,
+            before,
+            None,
+        )
+        .await
     }
 
     /// Commit the gateway request with the event and inflight outbox. A failed
@@ -57,10 +75,44 @@ impl Store {
             input,
             Some(request),
             before,
+            None,
         )
         .await
     }
 
+    /// Commit the gateway request with the event, inflight outbox, and route
+    /// position. The picked step lands in the same transaction as the request
+    /// so a retryable failure advances from the attempt that actually ran.
+    /// # Errors
+    /// Rejects stale heads, expired or replaced leases, and invalid work.
+    // The handoff commits input, request, outbox, events, and route step
+    // atomically; splitting the parameters would separate that one write.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_inference_after_with_request_and_route<T: Serialize, R: Serialize>(
+        &self,
+        expected_head: u64,
+        lease: &Lease,
+        record: &InflightRecord,
+        input: &T,
+        request: &R,
+        before: &[Event],
+        route: Option<SubmitRouteStep>,
+    ) -> Result<Event> {
+        self.submit_inference_after_inner(
+            expected_head,
+            lease,
+            record,
+            input,
+            Some(request),
+            before,
+            route,
+        )
+        .await
+    }
+
+    // The handoff commits input, request, outbox, events, and route step
+    // atomically; splitting the parameters would separate that one write.
+    #[allow(clippy::too_many_arguments)]
     async fn submit_inference_after_inner<T: Serialize, R: Serialize>(
         &self,
         expected_head: u64,
@@ -69,6 +121,7 @@ impl Store {
         input: &T,
         request: Option<&R>,
         before: &[Event],
+        route: Option<SubmitRouteStep>,
     ) -> Result<Event> {
         let step = expected_head
             .checked_add(u64::try_from(before.len()).map_err(|_| StoreError::SequenceOverflow)?)
@@ -107,6 +160,7 @@ impl Store {
         self.transaction(|trx| {
             let (input, inflight, value, request, preceding) =
                 (&input, &inflight, &value, &request, &preceding);
+            let route = &route;
             async move {
                 let now = Timestamp::now();
                 let turn_key = self.turn_key(id);
@@ -120,6 +174,9 @@ impl Store {
                         expected: expected_head,
                         actual: session.head_seq,
                     });
+                }
+                if let Some(route) = route {
+                    self.write_submit_route_step(&trx, id, route, now).await?;
                 }
                 trx.set(
                     &self
@@ -150,6 +207,48 @@ impl Store {
         })
         .await?;
         Ok(event)
+    }
+
+    /// Persist the picked step with the request so a retryable failure
+    /// advances from the attempt that actually ran, not from a stale
+    /// position. No failure is handled here, so the handled-failure sequence
+    /// is left untouched.
+    /// # Errors
+    /// Returns storage failures.
+    async fn write_submit_route_step(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        route: &SubmitRouteStep,
+        now: Timestamp,
+    ) -> Result<()> {
+        let key = self.session_route_step_key(id);
+        let current: u32 = read(trx, &key).await?.unwrap_or(0);
+        if route.step == current && route.reasons.is_empty() {
+            return Ok(());
+        }
+        write(trx, &key, &route.step)?;
+        if route.reasons.is_empty() {
+            return Ok(());
+        }
+        let wait_key = self.wait_key(id);
+        let mut wait = read::<InferenceWait>(trx, &wait_key)
+            .await?
+            .unwrap_or(InferenceWait {
+                since: now,
+                wake_at: now,
+                last_failure_seq: 0,
+                reasons: Vec::new(),
+                attempts: 0,
+            });
+        for reason in &route.reasons {
+            let summary: String = reason.chars().take(256).collect();
+            if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
+                wait.reasons.push(summary);
+            }
+        }
+        write(trx, &wait_key, &wait)?;
+        Ok(())
     }
 
     /// Commit the final log event, snapshot pointer, and idle state together.
@@ -202,6 +301,8 @@ impl Store {
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
                 trx.clear(&self.interrupt_key(id));
+                // Turn end restarts the route chain with the next turn.
+                crate::write(&trx, &self.session_route_step_key(id), &0_u32)?;
                 self.transition(&trx, session, SessionState::Idle, now)
                     .await
             }

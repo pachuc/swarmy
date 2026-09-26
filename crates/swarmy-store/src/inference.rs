@@ -358,6 +358,8 @@ impl Store {
             cost_micros,
             provider,
             model,
+            route,
+            route_step,
             ..
         } = &completion.event
         else {
@@ -374,6 +376,8 @@ impl Store {
                 recorded_at: now,
                 entry: completion.entry.as_deref(),
                 entry_kind: completion.entry_kind.as_deref(),
+                route: route.clone(),
+                route_step: *route_step,
             },
             usage,
             *cost_micros,

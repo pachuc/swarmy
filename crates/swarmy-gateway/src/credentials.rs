@@ -121,6 +121,31 @@ impl AuthStore for ClusterCredentials {
         Ok(Some((Some(label.clone()), record.clone())))
     }
 
+    async fn get_exact(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<Option<CredentialRecord>, Error> {
+        let Some(credentials) = &self.credentials else {
+            return if self
+                .store
+                .has_credential(CredentialScope::Cluster, provider)
+                .await
+                .map_err(|error| store_error(&error))?
+            {
+                Err(Error::Credentials(
+                    "stored credential requires a readable cluster keyring",
+                ))
+            } else {
+                Ok(None)
+            };
+        };
+        credentials
+            .get_entry(CredentialScope::Cluster, provider, label)
+            .await
+            .map_err(|error| store_error(&error))
+    }
+
     async fn refresh(
         &self,
         provider: &str,

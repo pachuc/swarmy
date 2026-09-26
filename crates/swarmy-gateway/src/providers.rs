@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::{config::FileFake, credentials::ClusterCredentials};
 
-type ClientKey = (String, String, [u8; 32]);
+type ClientKey = (String, String, [u8; 32], Option<String>);
 
 pub struct Providers {
     pub catalog: Catalog,
@@ -203,7 +203,7 @@ impl Providers {
         self.clients
             .lock()
             .await
-            .retain(|(id, _, _), _| !changed.contains(id));
+            .retain(|(id, _, _, _), _| !changed.contains(id));
         let mut state = self.state.write().await;
         state.served.clone_from(&served);
         state.skipped.clone_from(&skipped);
@@ -218,12 +218,24 @@ impl Providers {
     }
 
     async fn auth(&self, provider: &ProviderInfo) -> Result<ResolvedAuth, swarmy_llm::Error> {
+        self.auth_pinned(provider, None).await
+    }
+
+    async fn auth_pinned(
+        &self,
+        provider: &ProviderInfo,
+        pinned: Option<&str>,
+    ) -> Result<ResolvedAuth, swarmy_llm::Error> {
         if provider.api == Api::Fake {
             // The scripted client needs no credentials, but stored entries
             // still select the breaker record so one entry's rate limit does
-            // not park the provider's other entries.
-            let mut entry = None;
-            if let Ok(resolver) = &self.resolver {
+            // not park the provider's other entries. A pinned step keeps its
+            // label even without a stored entry, so a missing entry cannot
+            // silently reroute a pinned turn through the pool.
+            let mut entry = pinned.map(str::to_owned);
+            if entry.is_none()
+                && let Ok(resolver) = &self.resolver
+            {
                 entry = resolver.entry_label(&provider.id).await;
             }
             return self
@@ -237,21 +249,38 @@ impl Providers {
                 })
                 .map_err(swarmy_llm::Error::Credentials);
         }
-        self.resolver
+        let resolver = self
+            .resolver
             .as_ref()
-            .map_err(|reason| swarmy_llm::Error::Credentials(reason))?
-            .resolve(&provider.id)
-            .await
+            .map_err(|reason| swarmy_llm::Error::Credentials(reason))?;
+        if let Some(label) = pinned {
+            return resolver.resolve_pinned(&provider.id, label).await;
+        }
+        resolver.resolve(&provider.id).await
     }
 
     /// Resolve the current credential version before reusing a client. The
     /// returned label identifies the stored entry behind the client, if any.
+    /// A pinned label selects exactly that entry; without one the pool
+    /// serves the first entry whose breaker is closed.
     /// # Errors
     /// Returns credential failures or an unsupported protocol.
     pub async fn client(
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
+    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
+        self.client_pinned(provider, model, None).await
+    }
+
+    /// Resolve one route step's entry without pool fallback.
+    /// # Errors
+    /// Returns credential failures or an unsupported protocol.
+    pub async fn client_pinned(
+        &self,
+        provider: &str,
+        model: &swarmy_llm::catalog::ModelInfo,
+        pinned: Option<&str>,
     ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
         let served = self
             .state
@@ -263,15 +292,22 @@ impl Providers {
         let info = self.catalog.provider(provider).filter(|_| served).ok_or(
             swarmy_llm::Error::Credentials("provider is not served by this gateway"),
         )?;
-        let resolved = self.auth(info).await?;
-        let key = (provider.to_owned(), model.id.clone(), resolved.version);
+        let resolved = self.auth_pinned(info, pinned).await?;
+        // The entry selects the key material, so identical credential bytes
+        // under two labels still retire independently on rotation.
+        let key = (
+            provider.to_owned(),
+            model.id.clone(),
+            resolved.version,
+            resolved.entry.clone(),
+        );
         let mut clients = self.clients.lock().await;
         if let Some(client) = clients.get(&key) {
             return Ok((client.clone(), resolved.entry, resolved.entry_kind));
         }
         let client = swarmy_llm::client_for(info, model, resolved.auth)?;
         // Retire obsolete credential versions without retaining their secrets indefinitely.
-        clients.retain(|(id, name, _), _| id != provider || name != &model.id);
+        clients.retain(|(id, name, _, _), _| id != provider || name != &model.id);
         clients.insert(key, client.clone());
         Ok((client, resolved.entry, resolved.entry_kind))
     }

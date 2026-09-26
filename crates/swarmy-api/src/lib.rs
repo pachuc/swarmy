@@ -87,6 +87,8 @@ fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>)
         StoreError::InvalidAgentName | StoreError::InvalidImage => {
             error(StatusCode::BAD_REQUEST, "invalid_request")
         }
+        StoreError::RouteMissing => error(StatusCode::BAD_REQUEST, "route_not_found"),
+        StoreError::InvalidRoute(_) => error(StatusCode::BAD_REQUEST, "invalid_route"),
         _ => error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
     }
 }
@@ -116,6 +118,7 @@ fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         system_prompt: record.system_prompt,
         created_at: record.created_at.to_string(),
         main_session_id: record.main_session.map(|value| value.to_string()),
+        route: record.route,
     }
 }
 fn session(record: &swarmy_core::SessionRecord) -> api::Session {
@@ -148,6 +151,7 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
             .and_then(|v| serde_json::to_value(v).ok())
             .and_then(|v| serde_json::from_value(v).ok()),
         next_session: None,
+        route: record.route.clone(),
     }
 }
 async fn session_with_next(
@@ -196,6 +200,15 @@ pub fn router(state: AppState) -> Router {
             get(cli::credentials).post(cli::credential_set),
         )
         .route("/v1/cli/credentials/{provider}", get(cli::credential))
+        .route("/v1/cli/routes", get(cli::routes).post(cli::route_set))
+        .route(
+            "/v1/cli/routes/{name}",
+            get(cli::route_show).delete(cli::route_remove),
+        )
+        .route(
+            "/v1/cli/sessions/{id}/route",
+            axum::routing::patch(cli::session_set_route),
+        )
         .route("/v1/cli/agents/{name}", get(cli::agent_show))
         .route("/v1/cli/images/{name}/{tag}", get(cli::image_show))
         .route("/v1/agents", get(agents).post(create_agent))
@@ -215,6 +228,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}/interrupt",
             axum::routing::post(conversation::interrupt),
+        )
+        .route(
+            "/v1/sessions/{id}/route",
+            axum::routing::patch(conversation::set_route),
         )
         .route("/v1/sessions/{id}/wait-idle", get(conversation::wait_idle))
         .route("/v1/sessions/{id}/events", get(events))
@@ -239,6 +256,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/credentials/{provider}/{label}",
             get(check_credential_entry).delete(remove_credential_entry),
+        )
+        .route("/v1/routes", get(list_routes))
+        .route(
+            "/v1/routes/{name}",
+            get(show_route).post(set_route).delete(delete_route),
         )
         .route(
             "/v1/credentials/{provider}/{label}/quota",
@@ -367,6 +389,7 @@ async fn create_agent(
         // Sandbox sizing is not part of the v1 API types yet; the image default applies.
         memory_mib: None,
         gpu: None,
+        route: body.route,
     };
     if body.idempotency_key.is_empty() || body.idempotency_key.len() > 256 {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_idempotency_key"));
@@ -407,6 +430,7 @@ async fn update_agent(
         // Sandbox sizing is not part of the v1 API types yet; the image default applies.
         memory_mib: None,
         gpu: None,
+        route: body.route,
     };
     let store = state.store.clone();
     replay(
@@ -980,6 +1004,113 @@ async fn remove_credential(
                     .map_err(storage)?;
             }
             Ok(Json(json!({"deleted": true})))
+        },
+    )
+    .await
+}
+
+fn api_route(record: swarmy_core::RouteRecord) -> api::Route {
+    api::Route {
+        name: record.name,
+        steps: record
+            .steps
+            .into_iter()
+            .map(|step| api::RouteStep {
+                provider: step.provider,
+                entry: step.entry,
+                model: step.model,
+            })
+            .collect(),
+        updated_at: record.updated_at.to_string(),
+    }
+}
+
+fn api_route_steps(steps: &[api::RouteStep]) -> Vec<swarmy_core::RouteStep> {
+    steps
+        .iter()
+        .map(|step| swarmy_core::RouteStep {
+            provider: step.provider.clone(),
+            entry: step.entry.clone(),
+            model: step.model.clone(),
+        })
+        .collect()
+}
+
+async fn list_routes(State(state): State<AppState>) -> ApiResult<Vec<api::Route>> {
+    Ok(Json(
+        state
+            .store
+            .list_routes()
+            .await
+            .map_err(storage)?
+            .into_iter()
+            .map(api_route)
+            .collect(),
+    ))
+}
+
+async fn show_route(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<api::Route> {
+    Ok(Json(api_route(
+        state
+            .store
+            .get_route(&name)
+            .await
+            .map_err(storage)?
+            .ok_or_else(|| error(StatusCode::NOT_FOUND, "route_not_found"))?,
+    )))
+}
+
+async fn set_route(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<api::SetRoute>,
+) -> ApiResult<api::Route> {
+    for step in &body.steps {
+        if state.catalog.provider(&step.provider).is_none() {
+            return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
+        }
+    }
+    let store = state.store.clone();
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("routes:{name}:set"),
+        async move {
+            store
+                .put_route(&name, &api_route_steps(&body.steps))
+                .await
+                .map_err(storage)?;
+            Ok(Json(api_route(
+                store
+                    .get_route(&name)
+                    .await
+                    .map_err(storage)?
+                    .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?,
+            )))
+        },
+    )
+    .await
+}
+
+async fn delete_route(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<api::DeleteRequest>,
+) -> ApiResult<api::RouteDeleted> {
+    let store = state.store.clone();
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("routes:{name}:remove"),
+        async move {
+            let deleted = store.delete_route(&name).await.map_err(storage)?;
+            if !deleted {
+                return Err(error(StatusCode::NOT_FOUND, "route_not_found"));
+            }
+            Ok(Json(api::RouteDeleted { deleted }))
         },
     )
     .await

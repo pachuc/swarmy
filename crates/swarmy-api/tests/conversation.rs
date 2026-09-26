@@ -91,6 +91,7 @@ impl Fixture {
                 provider: None,
                 model: None,
                 effort: None,
+                route: None,
             })
             .send()
             .await
@@ -213,6 +214,7 @@ async fn assert_ephemeral_selection(f: &Fixture) {
             provider: Some("fake".into()),
             model: Some("scripted".into()),
             effort: None,
+            route: None,
         })
         .send()
         .await
@@ -301,6 +303,7 @@ fn ephemeral(key: &str, provider: Option<&str>, model: Option<&str>) -> CreateSe
         provider: provider.map(str::to_owned),
         model: model.map(str::to_owned),
         effort: None,
+        route: None,
     }
 }
 
