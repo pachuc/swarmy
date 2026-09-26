@@ -107,15 +107,39 @@ impl Config {
 impl Config {
     pub fn summarization_threshold(&self, provider: &str, model: &str) -> Option<u64> {
         self.summarize_at_tokens.or_else(|| {
-            let context = self.model_context_window_tokens.or_else(|| {
-                self.catalog
-                    .model(provider, model)
-                    .map(|model| model.limit.context)
-            })?;
-            Some(context - context / 4)
+            self.catalog.summarize_at(provider, model).or_else(|| {
+                let context = self.model_context_window_tokens?;
+                Some(context - context / 4)
+            })
         })
     }
+
+    /// Side-session threshold in input tokens. An explicit override wins,
+    /// then the catalog's per-model or per-provider value, then three
+    /// quarters of the known window. Unknown models fall back to a default
+    /// well under the smallest supported window so long fleet tasks cannot
+    /// outgrow the provider limit.
+    pub fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
+        self.summarize_at_tokens
+            .or_else(|| self.catalog.summarize_at(provider, model))
+            .or_else(|| {
+                self.model_context_window_tokens
+                    .map(|context| context - context / 4)
+            })
+            .unwrap_or(DEFAULT_SIDE_SUMMARIZE_AT_TOKENS)
+    }
+
+    /// Warning level at 75 percent of the side-session threshold.
+    pub fn side_pressure_threshold(&self, provider: &str, model: &str) -> u64 {
+        let threshold = self.side_summarization_threshold(provider, model);
+        threshold - threshold / 4
+    }
 }
+
+/// Default side-session threshold in input tokens when the catalog has no
+/// window for the model. It sits well under the roughly 1M windows of the
+/// fleet models so summarization starts before the provider rejects a turn.
+pub const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
 
 fn duration(millis: u64) -> Result<Duration> {
     ensure!(millis >= 30, "worker duration must be at least 30 ms");

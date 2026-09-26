@@ -970,16 +970,23 @@ compares the latest provider input plus output token count with
 is three quarters of `model_context_window_tokens`
 (`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS`, default 400000 for the default model).
 Set the window when selecting a model with a different context capacity.
-Side sessions and ephemeral sessions are not summarized automatically.
+Side sessions use the same mechanism with an input-token threshold: an
+explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else the catalog's per-model or
+per-provider `summarize_at`, else three quarters of the model's window, else
+400000 input tokens. Ephemeral sessions are not summarized automatically.
+At 75 percent of the side threshold the worker appends a `context_pressure`
+system warning once per session; at the threshold it summarizes.
 
 The summary is a normal durable inference job with no tools. Its JSON contains
 goals, state of work, open questions, and facts worth keeping. A successful
 summary creates an idle main session with that opening context and a reference
-to the previous session. Creation, archival, links, and pointer replacement
+to the previous session, or an idle side session with that opening plus the
+last few turns. Creation, archival, links, and pointer replacement
 commit in one fenced transaction. Provider failure or invalid summary JSON
 keeps the existing session. `session list` and `agent show` identify archived
 sessions; `session show ID` still reads their full logs. Open chats display a
 notice and follow the chain, including after a missed live notification.
+`run --session OLD` follows to the successor and prints the same notice.
 
 The worker includes memory files in every named-agent inference, including
 turns in side sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to

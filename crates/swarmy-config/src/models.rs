@@ -15,6 +15,7 @@ use crate::{Error, Settings};
 pub struct CustomProvider {
     pub base_url: Option<String>,
     pub api: Option<Api>,
+    pub summarize_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -30,6 +31,7 @@ pub struct CustomModel {
     pub reasoning: Option<Vec<ReasoningEffort>>,
     pub cost: Option<Cost>,
     pub compat: Option<Compat>,
+    pub summarize_at: Option<u64>,
 }
 
 impl Settings {
@@ -56,6 +58,9 @@ impl Settings {
                 if let Some(url) = &custom.base_url {
                     provider.base_url.clone_from(url);
                 }
+                if let Some(threshold) = custom.summarize_at {
+                    provider.summarize_at = Some(threshold);
+                }
             } else {
                 let api = custom
                     .api
@@ -77,6 +82,7 @@ impl Settings {
                         env_keys: Vec::new(),
                         auth_kinds: vec!["api_key".into()],
                         models: BTreeMap::new(),
+                        summarize_at: custom.summarize_at,
                     },
                 );
             }
@@ -112,6 +118,7 @@ impl Settings {
                     release_date: None,
                     status: None,
                     compat: Compat::default(),
+                    summarize_at: None,
                 });
             custom.apply(model);
         }
@@ -142,6 +149,9 @@ impl CustomModel {
         }
         if let Some(output) = self.max_output_tokens {
             model.limit.output = Some(output);
+        }
+        if let Some(threshold) = self.summarize_at {
+            model.summarize_at = Some(threshold);
         }
         if let Some(efforts) = &self.reasoning {
             model.reasoning = if efforts.is_empty() {
@@ -187,6 +197,7 @@ fn fake_fixture_model(id: &str) -> ModelInfo {
         release_date: None,
         status: None,
         compat: Compat::default(),
+        summarize_at: None,
     }
 }
 
@@ -365,5 +376,36 @@ reasoning = []
             let error = read(config).err().unwrap().to_string();
             assert!(error.contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn summarize_thresholds_merge_per_provider_and_model() {
+        let settings = read(
+            r#"
+[custom_providers.openai]
+summarize_at = 500000
+[[models]]
+provider = "openai"
+id = "gpt-5.5"
+summarize_at = 400000
+"#,
+        )
+        .unwrap();
+        let catalog = settings.catalog().unwrap();
+        assert_eq!(catalog.summarize_at("openai", "gpt-5.5"), Some(400_000));
+        let settings = read(
+            r"
+[custom_providers.openai]
+summarize_at = 500000
+",
+        )
+        .unwrap();
+        let catalog = settings.catalog().unwrap();
+        assert_eq!(catalog.summarize_at("openai", "gpt-5.5"), Some(500_000));
+        let round_trip = read(&settings.to_toml().unwrap())
+            .unwrap()
+            .catalog()
+            .unwrap();
+        assert_eq!(round_trip.summarize_at("openai", "gpt-5.5"), Some(500_000));
     }
 }

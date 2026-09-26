@@ -437,6 +437,7 @@ async fn credential_changes_update_a_running_gateway() {
             swarmy_config::CustomProvider {
                 api: None,
                 base_url: Some(format!("{}/api/v1/", server.uri())),
+                ..Default::default()
             },
         )]);
         f.start_with(1, "openrouter", &providers, &[]);
@@ -924,7 +925,7 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
         let models: Vec<_> = ["fake", "scripted"].map(|provider| swarmy_config::CustomModel { provider: provider.into(), ..model.clone() }).into();
         let custom_providers = std::collections::BTreeMap::from([(
             "scripted".to_owned(),
-            swarmy_config::CustomProvider { api: Some(swarmy_llm::catalog::Api::Fake), base_url: Some("fake://scripted".into()) },
+            swarmy_config::CustomProvider { api: Some(swarmy_llm::catalog::Api::Fake), base_url: Some("fake://scripted".into()), ..Default::default() },
         )]);
         f.start_with(1, "fake,scripted", &custom_providers, &models);
         let result = AssertUnwindSafe(async {
@@ -1020,6 +1021,7 @@ fn switch_models() -> (
         swarmy_config::CustomProvider {
             api: Some(swarmy_llm::catalog::Api::Fake),
             base_url: Some("fake://scripted".into()),
+            ..Default::default()
         },
     )]);
     (model, models, providers)

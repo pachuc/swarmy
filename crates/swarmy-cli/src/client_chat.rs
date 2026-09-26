@@ -146,6 +146,12 @@ pub async fn run(
     execute!(io::stdout(), EnterAlternateScreen)?;
     terminal.clear()?;
     let mut view = View::new(&conversation);
+    if let Some(previous) = &conversation.predecessor {
+        view.entries.push(format!(
+            "System: Conversation summarized. Session {previous} archived; continuing in {}.",
+            conversation.id
+        ));
+    }
     // History is read after subscribing, so a concurrent append cannot be lost.
     let mut after = 0;
     while after < conversation.session.head_sequence {

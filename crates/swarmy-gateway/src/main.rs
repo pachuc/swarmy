@@ -999,11 +999,11 @@ impl Gateway {
         job: &InferenceJob,
         completion: &InferenceCompletion,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
-        // Main sessions need a worker turn-end step to decide whether to summarize.
+        // Named sessions need a worker turn-end step to decide whether to
+        // summarize. Main sessions compare total tokens; side sessions compare
+        // input tokens and emit a pressure warning first.
         if let Some(session) = self.store.fetch_session(job.session_id).await?
             && matches!(session.kind, swarmy_core::SessionKind::Named { .. })
-            && let Some(agent) = self.store.get_agent(session.agent_id).await?
-            && agent.main_session == Some(job.session_id)
         {
             return Ok(None);
         }

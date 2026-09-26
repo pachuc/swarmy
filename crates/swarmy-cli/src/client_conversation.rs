@@ -17,6 +17,9 @@ pub struct Conversation {
     pub last_text: String,
     pub tool_count: usize,
     pub tool_result: Option<serde_json::Value>,
+    /// The archived session id when `open` followed a summarization chain.
+    /// `run --session OLD` and chat use it to print the summary notice.
+    pub predecessor: Option<String>,
     observer: Option<tokio::sync::mpsc::UnboundedSender<swarmy_core::TurnStage>>,
     client: Client,
     endpoint: String,
@@ -177,12 +180,14 @@ impl Conversation {
             .await?
         };
         let mut session = session;
+        let predecessor = session.id.clone();
         while session.state == api::SessionState::Completed {
             let Some(next) = client.successor(&session).await? else {
                 break;
             };
             session = next;
         }
+        let predecessor = (predecessor != session.id).then_some(predecessor);
         let agent_record = if agent_record.is_none() {
             if let Some(agent_id) = &session.agent_id {
                 Some(client.agent(agent_id).await?)
@@ -212,6 +217,7 @@ impl Conversation {
             id: session.id.clone(),
             agent_name: agent_record.map(|a| a.name),
             created,
+            predecessor,
             min_sequence: head,
             delivered: head,
             current_turn: None,

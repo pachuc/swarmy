@@ -379,14 +379,65 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
         Some(750)
     );
     assert_eq!(config.summarization_threshold("fake", "unknown"), None);
+    // The catalog window wins over a stack-wide window override.
     config.model_context_window_tokens = Some(2000);
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
+        Some(750)
+    );
+    assert_eq!(
+        config.summarization_threshold("fake", "unknown"),
         Some(1500)
     );
     config.summarize_at_tokens = Some(100);
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
         Some(100)
+    );
+}
+
+#[test]
+fn side_threshold_prefers_model_provider_and_defaults_to_400k() {
+    let mut config = config(String::new(), String::new(), "side_fixture", Arc::default());
+    config.catalog = swarmy_config::Settings {
+        models: vec![
+            swarmy_config::CustomModel {
+                provider: "fake".into(),
+                id: "small-context".into(),
+                context_window: Some(1000),
+                summarize_at: Some(600),
+                ..Default::default()
+            },
+            swarmy_config::CustomModel {
+                provider: "fake".into(),
+                id: "window-only".into(),
+                context_window: Some(1000),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+    .catalog()
+    .unwrap();
+    config.summarize_at_tokens = None;
+    config.model_context_window_tokens = None;
+    assert_eq!(
+        config.side_summarization_threshold("fake", "small-context"),
+        600
+    );
+    assert_eq!(
+        config.side_summarization_threshold("fake", "window-only"),
+        750
+    );
+    assert_eq!(
+        config.side_summarization_threshold("fake", "unknown"),
+        crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS
+    );
+    assert_eq!(crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS, 400_000);
+    assert_eq!(config.side_pressure_threshold("fake", "small-context"), 450);
+    config.summarize_at_tokens = Some(100);
+    assert_eq!(
+        config.side_summarization_threshold("fake", "window-only"),
+        100
     );
 }

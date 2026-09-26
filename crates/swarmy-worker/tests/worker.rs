@@ -1400,3 +1400,222 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
     })).await;
 }
+
+fn side_id() -> SessionId {
+    loop {
+        let id = SessionId::from_ulid(Ulid::generate());
+        if runnable_partition(id) == 7 {
+            return id;
+        }
+    }
+}
+
+fn side_response(text: String, input_tokens: u64) -> Response {
+    Response {
+        parts: vec![Part::Text { text }],
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage {
+            input_tokens,
+            ..Default::default()
+        },
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
+    }
+}
+
+fn write_side_script(fixture: &Fixture, summary: &str) {
+    let responses = serde_json::json!({
+        "0": side_response("Working on the task".into(), 80),
+        "1": side_response("Still working".into(), 150),
+        "2": side_response(summary.to_owned(), 120),
+        "3": side_response("Done in the successor".into(), 12),
+        "4": side_response("Done in the successor".into(), 12),
+    });
+    std::fs::write(
+        fixture.files.path().join("script.json"),
+        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
+    )
+    .unwrap();
+}
+
+async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
+    timeout(WAIT, async {
+        loop {
+            if let Some(next) = fixture.store.next_session(id).await.unwrap() {
+                break next;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn has_pressure_marker(events: &[Event]) -> bool {
+    events.iter().any(|event| match event {
+        Event::MessageAppended { message, .. } => {
+            message.role == MessageRole::System
+                && message.parts.iter().any(|part| match part {
+                    Part::Text { text } => text.contains("context_pressure"),
+                    _ => false,
+                })
+        }
+        _ => false,
+    })
+}
+
+async fn wait_pressure(fixture: &Fixture, id: SessionId) {
+    timeout(WAIT, async {
+        loop {
+            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
+            if has_pressure_marker(&events) {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn side_pressure_warns_at_75_percent_without_archiving() {
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            let summary = serde_json::json!({
+                "goals": "Finish the routes task", "state_of_work": "Handler done",
+                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
+            })
+            .to_string();
+            write_side_script(f, &summary);
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("sidekick", image, "", Timestamp::now())
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .await
+                .unwrap();
+            f.user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            wait_pressure(f, id).await;
+            assert!(f.store.next_session(id).await.unwrap().is_none());
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn side_summary_archives_with_tail_and_continues_small() {
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            let summary = serde_json::json!({
+                "goals": "Finish the routes task", "state_of_work": "Handler done",
+                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
+            })
+            .to_string();
+            write_direct_trigger_script(f, &summary);
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("sidekick", image, "", Timestamp::now())
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_session_for_agent(id, Some(agent.agent_id), None, Timestamp::now())
+                .await
+                .unwrap();
+            f.user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            assert_ne!(id, new);
+            check_side_successor(f, &agent.agent_id, id, new, &summary).await;
+            f.user_message(new).await;
+            f.wake(new).await;
+            let fresh_events = f.idle(new).await;
+            assert!(
+                fresh_events
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            );
+            let request = fresh_events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            let job: swarmy_llm::InferenceJob =
+                f.store.get_inference_input(request).await.unwrap().unwrap();
+            assert!(job.request.messages.len() <= 12);
+        })
+    })
+    .await;
+}
+
+fn write_direct_trigger_script(fixture: &Fixture, summary: &str) {
+    let responses = serde_json::json!({
+        "0": side_response("Still working".into(), 150),
+        "1": side_response(summary.to_owned(), 120),
+        "2": side_response("Done in the successor".into(), 12),
+        "3": side_response("Done in the successor".into(), 12),
+    });
+    std::fs::write(
+        fixture.files.path().join("script.json"),
+        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
+    )
+    .unwrap();
+}
+
+async fn check_side_successor(
+    f: &mut Fixture,
+    agent: &AgentId,
+    id: SessionId,
+    new: SessionId,
+    summary: &str,
+) {
+    assert_eq!(
+        f.store
+            .get_agent(*agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .main_session,
+        None
+    );
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Completed
+    );
+    assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
+    let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+    assert_eq!(fresh.state, SessionState::Idle);
+    assert_eq!(fresh.agent_id, *agent);
+    let opening = f.store.read_events(new, 0, 64).await.unwrap();
+    let Event::MessageAppended { message, .. } = &opening[0] else {
+        panic!("opening missing")
+    };
+    assert_eq!(message.role, MessageRole::System);
+    let Part::Text { text } = &message.parts[0] else {
+        panic!("summary missing")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(summary).unwrap()
+    );
+    assert!(text.contains(&id.to_string()));
+    assert!(opening.len() >= 2);
+}

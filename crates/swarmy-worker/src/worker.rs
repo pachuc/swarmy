@@ -1299,7 +1299,14 @@ impl Worker {
                     .await?;
                     session.interrupt_requested = true;
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %session.session_id,
+                        %error,
+                        "finish_turn failed"
+                    );
+                    return Err(error.into());
+                }
             }
         };
         if let Some(turn) = turn {
@@ -1336,7 +1343,7 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &ActiveLease,
         snapshot: &Snapshot,
-        events: &[Event],
+        events: &mut Vec<Event>,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
@@ -1344,9 +1351,7 @@ impl Worker {
         let Some(agent) = self.store.get_agent(session.agent_id).await? else {
             return Ok(false);
         };
-        if agent.main_session != Some(session.session_id) {
-            return Ok(false);
-        }
+        let is_main = agent.main_session == Some(session.session_id);
         let Some((request_id, message)) = events.iter().rev().find_map(|event| match event {
             Event::InferenceCompleted {
                 request_id,
@@ -1366,7 +1371,7 @@ impl Worker {
             return Ok(false);
         };
         if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
-            return self.archive_summary(session, lease, message).await;
+            return self.archive_summary(session, lease, message, events).await;
         }
 
         let Some(Ok(response)) = self
@@ -1376,16 +1381,33 @@ impl Worker {
         else {
             return Ok(false);
         };
-        let tokens = response
-            .usage
-            .input_tokens
-            .saturating_add(response.usage.output_tokens);
-        if self
-            .config
-            .summarization_threshold(self.job_provider(&job), &job.request.settings.model)
-            .is_none_or(|threshold| tokens < threshold)
-        {
-            return Ok(false);
+        if is_main {
+            let tokens = response
+                .usage
+                .input_tokens
+                .saturating_add(response.usage.output_tokens);
+            if self
+                .config
+                .summarization_threshold(self.job_provider(&job), &job.request.settings.model)
+                .is_none_or(|threshold| tokens < threshold)
+            {
+                return Ok(false);
+            }
+        } else {
+            let provider = self.job_provider(&job).to_owned();
+            let model = job.request.settings.model.clone();
+            let threshold = self.config.side_summarization_threshold(&provider, &model);
+            let input = response.usage.input_tokens;
+            if input >= threshold {
+                // Fall through to the shared summary request below.
+            } else {
+                let pressure = self.config.side_pressure_threshold(&provider, &model);
+                if input >= pressure {
+                    self.emit_pressure(session, lease, events, input, threshold)
+                        .await?;
+                }
+                return Ok(false);
+            }
         }
         let request = swarmy_llm::Request {
             system_prompt: swarmy_harness::SUMMARY_PROMPT.into(),
@@ -1397,11 +1419,62 @@ impl Worker {
         Ok(true)
     }
 
+    /// Append a `context_pressure` warning once per session when input usage
+    /// passes 75 percent of the side threshold, so fleet status sees it coming.
+    async fn emit_pressure(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        events: &mut Vec<Event>,
+        input_tokens: u64,
+        threshold: u64,
+    ) -> Result<()> {
+        if events.iter().any(|event| match event {
+            Event::MessageAppended { message, .. } => {
+                message.role == swarmy_core::MessageRole::System
+                    && message.parts.iter().any(|part| match part {
+                        swarmy_core::Part::Text { text } => text.contains("context_pressure"),
+                        _ => false,
+                    })
+            }
+            _ => false,
+        }) {
+            return Ok(());
+        }
+        let message = swarmy_core::Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::System,
+            parts: vec![swarmy_core::Part::Text {
+                text: format!(
+                    "context_pressure: input {input_tokens} tokens at 75 percent of the {threshold} token side-session threshold. Summarization will archive this session soon; push work to keep it safe."
+                ),
+            }],
+        };
+        if let Err(error) = self
+            .append(
+                session,
+                lease,
+                events,
+                &[Event::MessageAppended { seq: 0, message }],
+            )
+            .await
+        {
+            tracing::warn!(
+                session_id = %session.session_id,
+                %error,
+                "context_pressure append failed"
+            );
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn archive_summary(
         &self,
         session: &SessionRecord,
         lease: &ActiveLease,
         message: Option<&swarmy_core::Message>,
+        events: &[Event],
     ) -> Result<bool> {
         let Some(message) = message else {
             return Ok(false);
@@ -1429,16 +1502,48 @@ impl Worker {
                 ),
             }],
         };
-        let mut token = lease.lock().await;
-        let (_, archived) = self
+        let is_main = self
             .store
-            .summarize_main_session(
-                session.session_id,
-                session.head_seq,
-                token.as_ref().context("lease released")?,
-                &opening,
-            )
-            .await?;
+            .get_agent(session.agent_id)
+            .await?
+            .is_some_and(|agent| agent.main_session == Some(session.session_id));
+        let mut token = lease.lock().await;
+        let (_, archived) = if is_main {
+            self.store
+                .summarize_main_session(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    &opening,
+                )
+                .await?
+        } else {
+            // Carry the last few turns forward so the successor keeps recent
+            // context alongside the summary; the next request stays small.
+            let tail: Vec<swarmy_core::Message> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::MessageAppended { message, .. } => Some(message.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .take(10)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            self.store
+                .summarize_side_session(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    &opening,
+                    &tail,
+                )
+                .await?
+        };
         *token = None;
         self.publish_events(session.session_id, &[archived]).await?;
         Ok(true)
