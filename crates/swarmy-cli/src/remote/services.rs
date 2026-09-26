@@ -71,7 +71,7 @@ impl<'a> Options<'a> {
         }
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
-        let remote = Settings {
+        let mut remote = Settings {
             api: settings.api.clone(),
             provider: settings.provider.clone(),
             model: settings.model.clone(),
@@ -87,6 +87,13 @@ impl<'a> Options<'a> {
             },
             ..Settings::default()
         };
+        if settings.remote.services == RemoteServices::Node && remote.api.token.is_empty() {
+            // Control nodes serve the API, which rejects every request while its
+            // token is empty. Provision a token here with the same generator
+            // `dev up` uses. Only fill when empty so a reinstall never rotates
+            // an existing token out from under connected profiles.
+            remote.api.token = ulid::Ulid::generate().to_string();
+        }
         let fake_script = if settings.remote.services == RemoteServices::Node
             && settings.provider == "fake"
         {
@@ -106,6 +113,12 @@ impl<'a> Options<'a> {
             config: remote.to_toml()?,
             fake_script,
         })
+    }
+
+    /// The TOML uploaded to the node's `.swarmy/config.toml`.
+    #[cfg(test)]
+    pub(crate) fn config_toml(&self) -> &str {
+        &self.config
     }
 }
 

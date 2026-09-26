@@ -305,6 +305,8 @@ impl Store {
                     snapshot_ref: None,
                     inference: swarmy_core::InferenceSelection::default(),
                     plan: Vec::new(),
+                    route: None,
+                    route_step: 0,
                 };
                 self.create_session_in(&trx, &session, now, None).await?;
                 agent.main_session = Some(id);

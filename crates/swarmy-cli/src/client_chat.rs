@@ -134,8 +134,17 @@ pub async fn run(
     } else {
         id.map(|value| value.to_string())
     };
-    let mut conversation =
-        Conversation::open(client.clone(), choice, image, agent, new, selection.into()).await?;
+    let route = selection.route.clone();
+    let mut conversation = Conversation::open(
+        client.clone(),
+        choice,
+        image,
+        agent,
+        new,
+        selection.into(),
+        route,
+    )
+    .await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
@@ -279,11 +288,14 @@ async fn send_or_queue(
 }
 
 /// Whether a send failure is the transient busy-session race that may be
-/// retried on the next idle state. The API reports it as a 409 conflict with
-/// code `session_not_idle` (or `stale_head` when the head moved between the
-/// ready render and the append); the local idle guard reports it as
+/// retried on the next idle state. Any 409 conflict on an append is a lost
+/// race with another writer (scheduler or sweep touch, head move, or a
+/// just-archived session): the API reports the common cases as
+/// `session_not_idle` or `stale_head`, and the local idle guard reports
 /// `session is not idle`. `api_client::call` wraps the client error in a
-/// string, so match the wrapped text as well as the typed error.
+/// string, so match the wrapped text as well as the typed error. Other
+/// statuses (deleted session, auth, storage, timeouts, transport) stay
+/// permanent errors.
 fn is_busy_send_error(error: &anyhow::Error) -> bool {
     if let Some(client) = error.downcast_ref::<swarmy_client::Error>() {
         return is_busy_client_error(client);
@@ -292,16 +304,13 @@ fn is_busy_send_error(error: &anyhow::Error) -> bool {
     text.contains("session_not_idle")
         || text.contains("stale_head")
         || text.contains("session is not idle")
+        || text.contains("409 Conflict")
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
     match error {
-        swarmy_client::Error::Api { status, body } => {
-            status.as_u16() == 409 && (body.code == "session_not_idle" || body.code == "stale_head")
-        }
-        swarmy_client::Error::Status { status, body } => {
+        swarmy_client::Error::Api { status, .. } | swarmy_client::Error::Status { status, .. } => {
             status.as_u16() == 409
-                && (body.contains("session_not_idle") || body.contains("stale_head"))
         }
         _ => false,
     }
@@ -664,6 +673,17 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "stale_head"
         )));
+        // Any other 409 on a send is also a lost append race (for example a
+        // conflict code the API added for a newly archived session), so it
+        // requeues too. No 409 from an append is permanent: deletions report
+        // 404, auth 401, and storage 500.
+        assert!(is_busy_send_error(&api_error(
+            reqwest::StatusCode::CONFLICT,
+            "main_session_close"
+        )));
+        assert!(is_busy_send_error(&anyhow::anyhow!(
+            "API at http://example: API returned 409 Conflict: stale head"
+        )));
         // The local idle guard reports the same race without a status code.
         assert!(is_busy_send_error(&anyhow::anyhow!("session is not idle")));
         // The retry path wraps the client error in a string; the code text
@@ -680,10 +700,6 @@ mod tests {
         assert!(!is_busy_send_error(&api_error(
             reqwest::StatusCode::UNAUTHORIZED,
             "unauthorized"
-        )));
-        assert!(!is_busy_send_error(&api_error(
-            reqwest::StatusCode::CONFLICT,
-            "main_session_close"
         )));
         assert!(!is_busy_send_error(&anyhow::anyhow!(
             "API at http://example: request timed out"

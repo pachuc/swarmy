@@ -168,6 +168,23 @@ class FleetTests(unittest.TestCase):
         self.assertTrue(swarmy_calls, "no swarmy calls recorded")
         self.assertFalse(any("--remote" in call for call in self.calls()))
 
+    def test_benchmark_local_remote_drops_the_flag(self):
+        prompt = self.root / "prompt.txt"
+        prompt.write_text("Print BENCH_COLD=true")
+        for remote, expect_flag in (("dev", True), ("local", False), ("", False)):
+            result = self.call("benchmark", "--remote", remote, "--provider", "fake", "--model", "fake",
+                               "--effort", "low", "--prompt-file", str(prompt))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_calls = [call for call in self.calls() if "run" in call[:3]]
+            self.assertTrue(run_calls)
+            self.assertEqual("--remote" in run_calls[-1], expect_flag)
+        result = self.call("benchmark", "--remote", "local", "--provider", "fake", "--model", "fake",
+                           "--effort", "low", "--prompt-file", str(prompt), "--image", "swarmy-dev:dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        last = [call for call in self.calls() if "run" in call[:3]][-1]
+        self.assertIn("--image", last)
+        self.assertEqual(last[last.index("--image") + 1], "swarmy-dev:dev")
+
     def test_pool_reuses_idle_workers_and_caps_creation(self):
         self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
         second = self.call("launch", "AAAAA2")

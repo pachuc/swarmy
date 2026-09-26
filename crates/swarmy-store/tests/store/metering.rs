@@ -98,6 +98,9 @@ fn completion_event(
         cost_micros: cost,
         effort_requested: None,
         effort_clamped: false,
+        entry: None,
+        route: None,
+        route_step: None,
     }
 }
 

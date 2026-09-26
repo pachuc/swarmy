@@ -73,12 +73,13 @@ pub struct GarbageCollection {
     pub delete_concurrency: std::num::NonZeroUsize,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
     pub max_wait_seconds: std::num::NonZeroU64,
     pub max_backoff_seconds: std::num::NonZeroU64,
     pub gateway_wait_seconds: std::num::NonZeroU64,
+    pub default_route: Option<String>,
 }
 
 impl Default for Inference {
@@ -87,6 +88,7 @@ impl Default for Inference {
             max_wait_seconds: std::num::NonZeroU64::new(3600).unwrap(),
             max_backoff_seconds: std::num::NonZeroU64::new(300).unwrap(),
             gateway_wait_seconds: std::num::NonZeroU64::new(30).unwrap(),
+            default_route: None,
         }
     }
 }
@@ -537,6 +539,9 @@ impl Settings {
                 .parse()
                 .map_err(|_| Error::Environment("SWARMY_VOLUME_SNAPSHOT_RETENTION".into()))?;
         }
+        if let Some(value) = environment.get("SWARMY_INFERENCE_DEFAULT_ROUTE") {
+            self.inference.default_route = (!value.is_empty()).then(|| value.clone());
+        }
         Ok(())
     }
 
@@ -911,10 +916,7 @@ impl Settings {
             "SWARMY_PLACEMENT_LEASE_SECONDS".into(),
             self.placement_lease_seconds.to_string(),
         );
-        environment.insert(
-            "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
-            self.inference.gateway_wait_seconds.to_string(),
-        );
+        self.inference_environment(&mut environment);
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(),
             self.volume_snapshots.period_seconds.to_string(),
@@ -931,6 +933,17 @@ impl Settings {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
         environment
+    }
+
+    fn inference_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
+            self.inference.gateway_wait_seconds.to_string(),
+        );
+        environment.insert(
+            "SWARMY_INFERENCE_DEFAULT_ROUTE".into(),
+            self.inference.default_route.clone().unwrap_or_default(),
+        );
     }
 
     fn provider_environment(&self, environment: &mut BTreeMap<String, String>) {

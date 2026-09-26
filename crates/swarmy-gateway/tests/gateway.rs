@@ -233,6 +233,8 @@ impl Fixture {
                     head_seq: 0,
                     snapshot_ref: None,
                     inference: swarmy_core::InferenceSelection::default(),
+                    route: None,
+                    route_step: 0,
                     kind: swarmy_core::SessionKind::Ephemeral,
                     computer_deleted: false,
                     plan: Vec::new(),
@@ -261,6 +263,9 @@ impl Fixture {
         let request_id = RequestId::for_step(session_id, lease.seq);
         let job = InferenceJob {
             provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
             session_id,
             step: lease.seq,
             request_id,

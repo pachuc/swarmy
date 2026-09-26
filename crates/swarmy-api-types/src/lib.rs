@@ -126,6 +126,8 @@ pub struct Agent {
     pub system_prompt: Option<String>,
     pub created_at: String,
     pub main_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -147,6 +149,8 @@ pub struct Session {
     pub effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -310,6 +314,8 @@ pub struct CreateAgent {
     pub model: Option<String>,
     pub effort: Option<ReasoningEffort>,
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub route: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateAgent {
@@ -319,6 +325,8 @@ pub struct UpdateAgent {
     pub model: Option<String>,
     pub effort: Option<ReasoningEffort>,
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub route: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateSession {
@@ -331,6 +339,8 @@ pub struct CreateSession {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub route: Option<String>,
 }
 /// `close` terminates the session; other fields override inference selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -340,6 +350,8 @@ pub struct UpdateSession {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub route: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateTurn {
@@ -416,6 +428,44 @@ pub struct DeleteRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CredentialDeleted {
     pub deleted: bool,
+}
+
+/// One route step: the provider, the entry label (`*` for every entry of
+/// the provider in creation order), and an optional model override.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RouteStep {
+    pub provider: String,
+    pub entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// A named inference failover chain over auth entries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Route {
+    pub name: String,
+    pub steps: Vec<RouteStep>,
+    pub updated_at: String,
+}
+
+/// Setting a route replaces its steps in order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetRoute {
+    pub idempotency_key: String,
+    pub steps: Vec<RouteStep>,
+}
+
+/// Deleting a route reports the removal; assigned sessions fall back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RouteDeleted {
+    pub deleted: bool,
+}
+
+/// Session route override for one conversation. `None` clears the override.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetSessionRoute {
+    pub idempotency_key: String,
+    pub route: Option<String>,
 }
 
 /// Operator-configured quota for an entry without published quotas.
@@ -562,6 +612,25 @@ pub struct CliCredential {
 pub struct CliSaved {
     pub saved: bool,
 }
+/// CLI projection of a named inference route.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CliRoute {
+    pub name: String,
+    pub steps: Vec<RouteStep>,
+    pub updated_at: String,
+}
+/// CLI input for replacing a route's steps in order.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CliRouteInput {
+    pub idempotency_key: String,
+    pub name: String,
+    pub steps: Vec<RouteStep>,
+}
+/// CLI deletion marker for a named route.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CliRouteDeleted {
+    pub deleted: bool,
+}
 /// Input for CLI agent creation or settings updates.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliAgentChoice {
@@ -578,6 +647,8 @@ pub struct CliAgentChoice {
     pub github_token: Option<String>,
     pub clear_github_token: Option<bool>,
     pub resets: Option<Vec<String>>,
+    #[serde(default)]
+    pub route: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliCredentialInput {
@@ -592,8 +663,9 @@ pub struct CliCredentialInput {
 /// CLI compatibility routes. These signatures are mirrored by the server router.
 pub mod cli_paths {
     use super::{
-        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
-        CliSession, CliSessionDetail, DoctorSnapshot,
+        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliRoute,
+        CliRouteDeleted, CliRouteInput, CliSaved, CliSession, CliSessionDetail, DoctorSnapshot,
+        SetSessionRoute,
     };
     #[utoipa::path(get, path = "/v1/cli/doctor",
         responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
@@ -631,6 +703,23 @@ pub mod cli_paths {
     #[utoipa::path(get, path = "/v1/cli/credentials/{provider}",
         responses((status = 200, body = CliCredential), (status = 400, body = ApiError)))]
     pub fn cli_credential() {}
+    #[utoipa::path(get, path = "/v1/cli/routes",
+        responses((status = 200, body = Vec<CliRoute>), (status = 400, body = ApiError)))]
+    pub fn cli_routes() {}
+    #[utoipa::path(get, path = "/v1/cli/routes/{name}",
+        responses((status = 200, body = CliRoute), (status = 400, body = ApiError)))]
+    pub fn cli_route() {}
+    #[utoipa::path(post, path = "/v1/cli/routes",
+    request_body = CliRouteInput,
+        responses((status = 200, body = CliSaved), (status = 400, body = ApiError)))]
+    pub fn cli_set_route() {}
+    #[utoipa::path(delete, path = "/v1/cli/routes/{name}",
+        responses((status = 200, body = CliRouteDeleted), (status = 400, body = ApiError)))]
+    pub fn cli_remove_route() {}
+    #[utoipa::path(patch, path = "/v1/cli/sessions/{id}/route",
+    request_body = SetSessionRoute,
+        responses((status = 200, body = CliSessionDetail), (status = 400, body = ApiError)))]
+    pub fn cli_set_session_route() {}
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
@@ -639,7 +728,8 @@ pub mod api_paths {
         Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
         CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, HealthResponse, Image, InterruptOutcome, InterruptSession, Model,
-        Provider, Session, SessionClosed, SetEntryQuota, Subscription, TurnMetrics, UpdateAgent,
+        Provider, Route, RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute,
+        SetSessionRoute, Subscription, TurnMetrics, UpdateAgent,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -695,6 +785,28 @@ pub mod api_paths {
         request_body = CloseSession,
         responses((status = 200, body = SessionClosed), (status = 404, body = ApiError)))]
     pub fn close_session() {}
+    #[utoipa::path(patch, path = "/v1/sessions/{id}/route",
+        params(("id" = String, Path, description = "Session id")),
+        request_body = SetSessionRoute,
+        responses((status = 200, body = Session), (status = 404, body = ApiError)))]
+    pub fn set_session_route() {}
+    #[utoipa::path(get, path = "/v1/routes",
+        responses((status = 200, body = Vec<Route>), (status = 401, body = ApiError)))]
+    pub fn list_routes() {}
+    #[utoipa::path(post, path = "/v1/routes/{name}",
+        params(("name" = String, Path, description = "Route name")),
+        request_body = SetRoute,
+        responses((status = 200, body = Route), (status = 400, body = ApiError)))]
+    pub fn set_route() {}
+    #[utoipa::path(get, path = "/v1/routes/{name}",
+        params(("name" = String, Path, description = "Route name")),
+        responses((status = 200, body = Route), (status = 404, body = ApiError)))]
+    pub fn show_route() {}
+    #[utoipa::path(delete, path = "/v1/routes/{name}",
+        params(("name" = String, Path, description = "Route name")),
+        request_body = DeleteRequest,
+        responses((status = 200, body = RouteDeleted), (status = 404, body = ApiError)))]
+    pub fn delete_route() {}
     #[utoipa::path(post, path = "/v1/sessions/{id}/messages",
         params(("id" = String, Path, description = "Session id")),
         request_body = AppendMessage,
@@ -855,10 +967,14 @@ pub mod api_paths {
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota,
+        api_paths::list_routes, api_paths::set_route, api_paths::show_route,
+        api_paths::delete_route, api_paths::set_session_route,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
-        cli_paths::cli_credential
+        cli_paths::cli_credential,
+        cli_paths::cli_routes, cli_paths::cli_route, cli_paths::cli_set_route,
+        cli_paths::cli_remove_route, cli_paths::cli_set_session_route
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
@@ -871,7 +987,9 @@ pub mod api_paths {
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
-    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput
+    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute,
+    CliRoute, CliRouteInput, CliRouteDeleted
 )))]
 pub struct ApiDocument;
 

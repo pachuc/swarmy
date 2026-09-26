@@ -70,6 +70,7 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
             None,
             false,
             swarmy_core::InferenceSelection::default(),
+            None,
         )
         .await?;
         let id = SessionId::from_ulid(conversation.id.parse()?);

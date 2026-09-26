@@ -9,6 +9,7 @@ pub struct Config {
     pub resend_interval: Duration,
     pub provider: String,
     pub max_inference_wait: Duration,
+    pub default_route: Option<String>,
 }
 
 impl Config {
@@ -20,6 +21,7 @@ impl Config {
             resend_interval: interval(settings.scheduler_resend_interval_ms)?,
             provider: settings.provider,
             max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
+            default_route: settings.inference.default_route,
         })
     }
 }

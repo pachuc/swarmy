@@ -49,6 +49,7 @@ async fn create_session(
     agent_id: Option<String>,
     new: bool,
     selection: swarmy_core::InferenceSelection,
+    route: Option<String>,
 ) -> Result<api::Session> {
     let image = image.map(image_ref).transpose()?;
     let result = client
@@ -65,6 +66,7 @@ async fn create_session(
                 .transpose()?
                 .map(serde_json::from_value)
                 .transpose()?,
+            route,
         })
         .await;
     match result {
@@ -138,6 +140,30 @@ fn print_tools(record: &serde_json::Value) {
     }
 }
 
+/// Assign an explicit `--route` to the opened session only; the agent and
+/// swarm default keep their assignments.
+async fn apply_session_route(
+    client: &Client,
+    endpoint: &str,
+    session: api::Session,
+    route: Option<&str>,
+) -> Result<api::Session> {
+    if route.is_some() && session.route.as_deref() != route {
+        return crate::api_client::call(
+            endpoint,
+            client.set_session_route(
+                &session.id,
+                &api::SetSessionRoute {
+                    idempotency_key: ulid::Ulid::generate().to_string(),
+                    route: route.map(str::to_owned),
+                },
+            ),
+        )
+        .await;
+    }
+    Ok(session)
+}
+
 impl Conversation {
     pub async fn open(
         client: Client,
@@ -146,6 +172,7 @@ impl Conversation {
         agent: Option<String>,
         new: bool,
         selection: swarmy_core::InferenceSelection,
+        route: Option<String>,
     ) -> Result<Self> {
         ensure!(!new || agent.is_some(), "--new requires --agent");
         ensure!(
@@ -170,12 +197,16 @@ impl Conversation {
         let session = if let Some(id) = id {
             client.session(&id).await?
         } else {
+            // Agent sessions inherit the agent and reject overrides at
+            // creation; the route override below assigns them afterwards.
+            let for_create = route.clone().filter(|_| agent_record.is_none());
             create_session(
                 &client,
                 image.as_deref(),
                 agent_record.as_ref().map(|a| a.id.clone()),
                 new,
                 selection,
+                for_create,
             )
             .await?
         };
@@ -211,6 +242,7 @@ impl Conversation {
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
         let endpoint = crate::api_client::endpoint()?;
+        session = apply_session_route(&client, &endpoint, session, route.as_deref()).await?;
         let head = session.head_sequence;
         Ok(Self {
             provider,
@@ -330,7 +362,14 @@ impl Conversation {
     }
 
     async fn poll_tick(&mut self) -> Result<bool> {
-        let session = self.client.session(&self.id).await?;
+        // A successor switch replaces self.id; a tick that started before
+        // the switch must not clobber the new session with the archived
+        // one it read, nor queue the archived feed into the new turn.
+        let id = self.id.clone();
+        let session = self.client.session(&id).await?;
+        if self.id != id {
+            return Ok(false);
+        }
         if !(session.state == api::SessionState::Idle && session.head_sequence >= self.min_sequence)
         {
             return Ok(false);
@@ -339,7 +378,10 @@ impl Conversation {
         // cursor advances on return, so also skip sequences already waiting
         // in pending when two ticks fire before the queue drains.
         let after = self.pending_after();
-        let history = self.client.events(&self.id, after, 100).await?;
+        let history = self.client.events(&id, after, 100).await?;
+        if self.id != id {
+            return Ok(false);
+        }
         let (fresh, has_idle) = select_fresh(history, after, session.head_sequence, &self.pending);
         for event in fresh {
             self.pending.push_back(StreamItem::Event(event));
@@ -444,6 +486,14 @@ impl Conversation {
                 }
                 if is_idle_event(event) {
                     self.observe_idle(event.sequence);
+                }
+            }
+            if let StreamItem::TokenDelta { log_id, .. } = &item {
+                // Deltas from the archived feed can arrive after following
+                // the successor; they belong to the old session, not the
+                // new view, so drop them instead of rendering stray text.
+                if *log_id != self.session.log_id {
+                    continue;
                 }
             }
             if let StreamItem::Event(event) = &item {

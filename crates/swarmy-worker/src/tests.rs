@@ -82,6 +82,7 @@ fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -
         max_inference_wait: Duration::from_secs(3600),
         gateway_wait: Duration::from_secs(30),
         allowed_providers: None,
+        default_route: None,
     }
 }
 
@@ -113,6 +114,9 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
             cost_micros: 0,
             effort_requested: None,
             effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
             seq: 0,
             request_id: RequestId::for_step(id, 1),
             message: Message {
@@ -172,6 +176,8 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 head_seq: 0,
                 snapshot_ref: None,
                 inference: swarmy_core::InferenceSelection::default(),
+                route: None,
+                route_step: 0,
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
                 plan: Vec::new(),
@@ -297,6 +303,8 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
                 head_seq: 0,
                 snapshot_ref: None,
                 inference: swarmy_core::InferenceSelection::default(),
+                route: None,
+                route_step: 0,
                 kind: swarmy_core::SessionKind::Ephemeral,
                 computer_deleted: false,
                 plan: Vec::new(),

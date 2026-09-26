@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, w
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, SessionId, SessionKind,
-    SessionRecord, SessionState, decode,
+    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, RouteRecord, SessionId,
+    SessionKind, SessionRecord, SessionState, decode,
 };
 
 /// The replay key and private token are committed with a new agent atomically.
@@ -208,6 +208,13 @@ impl Store {
                     return Err(StoreError::AgentExists);
                 }
                 let image = self.resolve_image(&trx, image).await?;
+                if let Some(name) = settings.route.as_deref()
+                    && read::<RouteRecord>(&trx, &self.route_key(name))
+                        .await?
+                        .is_none()
+                {
+                    return Err(StoreError::RouteMissing);
+                }
                 let default_memory: Option<u64> = read(
                     &trx,
                     &self.image_memory_key(&image.name, &image.tag, image.manifest_id),
@@ -225,6 +232,7 @@ impl Store {
                     model: settings.model.clone(),
                     reasoning_effort: settings.reasoning_effort,
                     provider: settings.provider.clone(),
+                    route: settings.route.clone(),
                     requirements: swarmy_core::SandboxRequirements {
                         memory_mib: settings.memory_mib.or(default_memory).unwrap_or(768),
                         gpu: settings.gpu.unwrap_or_default(),
@@ -342,18 +350,32 @@ impl Store {
 
     /// Apply overrides and explicit resets in the same transaction.
     /// # Errors
-    /// Rejects unknown agents, oversized records, and storage failures.
+    /// Rejects unknown agents, missing routes, oversized records, and storage failures.
     pub async fn set_agent_with_resets(
         &self,
         id: AgentId,
         settings: &AgentSettings,
         resets: &[swarmy_core::InferenceField],
     ) -> Result<AgentRecord> {
+        if let Some(name) = settings.route.as_deref() {
+            // Fail fast outside the write transaction; the transaction below
+            // rechecks so a concurrent deletion cannot slip through.
+            if self.get_route(name).await?.is_none() {
+                return Err(StoreError::RouteMissing);
+            }
+        }
         self.transaction(|trx| async move {
             let mut agent = self
                 .read_agent(&trx, id)
                 .await?
                 .ok_or(StoreError::AgentMissing)?;
+            if let Some(name) = settings.route.as_deref()
+                && read::<RouteRecord>(&trx, &self.route_key(name))
+                    .await?
+                    .is_none()
+            {
+                return Err(StoreError::RouteMissing);
+            }
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
             if agent.requirements != previous_requirements
@@ -418,6 +440,23 @@ impl Store {
         now: Timestamp,
         inference: &swarmy_core::InferenceSelection,
     ) -> Result<SessionRecord> {
+        self.create_session_with_route(id, agent, image, now, inference, None)
+            .await
+    }
+
+    /// Create a session with inference overrides and a route override before
+    /// its first turn. A named route must exist.
+    /// # Errors
+    /// Rejects missing routes, invalid agents/images, and duplicate sessions.
+    pub async fn create_session_with_route(
+        &self,
+        id: SessionId,
+        agent: Option<AgentId>,
+        image: Option<&str>,
+        now: Timestamp,
+        inference: &swarmy_core::InferenceSelection,
+        route: Option<&str>,
+    ) -> Result<SessionRecord> {
         let session = SessionRecord {
             interrupt_requested: false,
             session_id: id,
@@ -431,6 +470,8 @@ impl Store {
             head_seq: 0,
             snapshot_ref: None,
             inference: inference.clone(),
+            route: route.map(str::to_owned),
+            route_step: 0,
         };
         self.create_session_record(&session, now, image).await?;
         Ok(session)
@@ -475,6 +516,13 @@ impl Store {
         let key = self.session_key(id);
         if trx.get(&key, false).await?.is_some() {
             return Err(StoreError::SessionExists);
+        }
+        if let Some(name) = &session.route
+            && read::<RouteRecord>(trx, &self.route_key(name))
+                .await?
+                .is_none()
+        {
+            return Err(StoreError::RouteMissing);
         }
         self.check_computer(trx, session.agent_id).await?;
         let selected = match session.kind {
@@ -523,6 +571,8 @@ impl Store {
         write(trx, &self.session_plan_key(id), &session.plan)?;
         write(trx, &self.session_inference_key(id), &session.inference)?;
         write(trx, &self.session_kind_key(id), &session.kind)?;
+        write(trx, &self.session_route_key(id), &session.route)?;
+        write(trx, &self.session_route_step_key(id), &session.route_step)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         write(trx, &self.session_idle_key(id), &now)?;
         write(trx, &self.session_state_since_key(id), &now)?;
@@ -540,6 +590,8 @@ impl Store {
                 computer_deleted: false,
                 plan: Vec::new(),
                 interrupt_requested: false,
+                route: session.route.clone(),
+                route_step: session.route_step,
             },
         )?;
         if session.state == SessionState::Runnable {
@@ -605,6 +657,8 @@ impl Store {
                 snapshot_ref: None,
                 inference: swarmy_core::InferenceSelection::default(),
                 plan: Vec::new(),
+                route: None,
+                route_step: 0,
             };
             self.create_session_in(&trx, &session, now, None).await?;
             record.main_session = Some(id);
@@ -698,6 +752,8 @@ impl Store {
                     snapshot_ref: None,
                     inference: swarmy_core::InferenceSelection::default(),
                     plan: Vec::new(),
+                    route: None,
+                    route_step: 0,
                 };
                 self.create_session_in(&trx, &session, now, None).await?;
                 let mut created = self.session(&trx, id).await?;
@@ -1017,9 +1073,40 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
         provider: Option<String>,
     }
 
+    #[derive(serde::Deserialize)]
+    struct RoutelessAgent {
+        agent_id: AgentId,
+        name: String,
+        image: ImageRecord,
+        description: String,
+        created_at: Timestamp,
+        main_session: Option<SessionId>,
+        system_prompt: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
+        provider: Option<String>,
+        requirements: swarmy_core::SandboxRequirements,
+    }
+
     match decode(bytes) {
         Ok(agent) => Ok(agent),
         Err(error) => {
+            if let Ok(old) = decode::<RoutelessAgent>(bytes) {
+                return Ok(AgentRecord {
+                    agent_id: old.agent_id,
+                    name: old.name,
+                    image: old.image,
+                    description: old.description,
+                    created_at: old.created_at,
+                    main_session: old.main_session,
+                    system_prompt: old.system_prompt,
+                    model: old.model,
+                    reasoning_effort: old.reasoning_effort,
+                    provider: old.provider,
+                    route: None,
+                    requirements: old.requirements,
+                });
+            }
             if let Ok(old) = decode::<ProviderAgent>(bytes) {
                 return Ok(AgentRecord {
                     agent_id: old.agent_id,
@@ -1032,6 +1119,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: old.model,
                     reasoning_effort: old.reasoning_effort,
                     provider: old.provider,
+                    route: None,
                     requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
@@ -1047,6 +1135,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: old.model,
                     reasoning_effort: old.reasoning_effort,
                     provider: None,
+                    route: None,
                     requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
@@ -1062,6 +1151,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
+                    route: None,
                     requirements: swarmy_core::SandboxRequirements::default(),
                 });
             }
@@ -1077,6 +1167,7 @@ pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
                     model: None,
                     reasoning_effort: None,
                     provider: None,
+                    route: None,
                     requirements: swarmy_core::SandboxRequirements::default(),
                 }),
                 Err(_) => Err(error.into()),
@@ -1130,6 +1221,7 @@ mod tests {
             model: Some("gpt-5.5".into()),
             reasoning_effort: Some(ReasoningEffort::Max),
             provider: None,
+            route: None,
             requirements: swarmy_core::SandboxRequirements::default(),
         };
         let bytes = encode(&(
@@ -1145,6 +1237,47 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(decode_agent(&bytes).unwrap(), record);
+        assert_eq!(decode_agent(&encode(&record).unwrap()).unwrap(), record);
+    }
+
+    #[test]
+    fn routeless_records_decode_without_a_route() {
+        let record = AgentRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            name: "routed".into(),
+            image: ImageRecord {
+                name: "base".into(),
+                tag: ImageTag("test".into()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+            },
+            description: String::new(),
+            created_at: Timestamp::UNIX_EPOCH,
+            main_session: None,
+            system_prompt: None,
+            model: None,
+            reasoning_effort: None,
+            provider: Some("openai".into()),
+            route: Some("fallback".into()),
+            requirements: swarmy_core::SandboxRequirements::default(),
+        };
+        // The previous schema carried every field but the route.
+        let bytes = encode(&(
+            record.agent_id,
+            &record.name,
+            &record.image,
+            &record.description,
+            record.created_at,
+            record.main_session,
+            &record.system_prompt,
+            &record.model,
+            record.reasoning_effort,
+            &record.provider,
+            &record.requirements,
+        ))
+        .unwrap();
+        let decoded = decode_agent(&bytes).unwrap();
+        assert_eq!(decoded.route, None);
+        assert_eq!(decoded.provider, record.provider);
         assert_eq!(decode_agent(&encode(&record).unwrap()).unwrap(), record);
     }
 
@@ -1165,6 +1298,7 @@ mod tests {
             model: Some("model".into()),
             reasoning_effort: Some(ReasoningEffort::High),
             provider: Some("openai".into()),
+            route: Some("fallback".into()),
             requirements: swarmy_core::SandboxRequirements::default(),
         };
         let mut bytes = encode(&record).unwrap();

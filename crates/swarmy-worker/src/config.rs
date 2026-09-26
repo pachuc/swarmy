@@ -25,6 +25,7 @@ pub struct Config {
     pub max_inference_wait: Duration,
     pub gateway_wait: Duration,
     pub allowed_providers: Option<Vec<String>>,
+    pub default_route: Option<String>,
 }
 
 impl Config {
@@ -54,7 +55,11 @@ impl Config {
         ensure!(
             kill_point.as_deref().is_none_or(|value| matches!(
                 value,
-                "after_claim" | "after_request_event" | "before_release" | "after_release"
+                "after_claim"
+                    | "after_request_event"
+                    | "before_release"
+                    | "after_release"
+                    | "after_advance"
             )),
             "invalid SWARMY_WORKER_KILL_POINT"
         );
@@ -100,6 +105,7 @@ impl Config {
             max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
             gateway_wait: Duration::from_secs(settings.inference.gateway_wait_seconds.get()),
             allowed_providers: settings.providers,
+            default_route: settings.inference.default_route,
         })
     }
 }

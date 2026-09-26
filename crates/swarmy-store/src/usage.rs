@@ -23,6 +23,12 @@ pub struct UsageRecord {
     pub entry_kind: Option<String>,
     #[serde(default, with = "swarmy_core::trailing")]
     pub recorded_at: Option<jiff::Timestamp>,
+    /// Route that selected the entry, when a named route resolved it.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub route: Option<String>,
+    /// Index into the resolved route, so metering names the exact step.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub route_step: Option<u32>,
 }
 
 pub struct UsageAttribution<'a> {
@@ -32,10 +38,12 @@ pub struct UsageAttribution<'a> {
     pub recorded_at: jiff::Timestamp,
     pub entry: Option<&'a str>,
     pub entry_kind: Option<&'a str>,
+    pub route: Option<String>,
+    pub route_step: Option<u32>,
 }
 
 impl Store {
-    /// Read the entry attributed to a completed inference request.
+    /// Read the entry and route step attributed to a completed inference request.
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn inference_usage_record(&self, request: RequestId) -> Result<Option<UsageRecord>> {
@@ -177,6 +185,8 @@ impl Store {
                 model: attribution.model.into(),
                 entry_kind: kind.clone(),
                 recorded_at: Some(attribution.recorded_at),
+                route: attribution.route.clone(),
+                route_step: attribution.route_step,
             },
         )?;
         // Secondary index for bounded pruning, written in the same transaction.
