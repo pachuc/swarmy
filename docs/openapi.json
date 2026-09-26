@@ -2446,6 +2446,7 @@
           },
           "latencies": {
             "type": "object",
+            "description": "Turn-level latencies (`append_to_first_token`, `inference`,\n`append_to_idle`, `placement`) over the rolled-up turns. Per-tool\npercentiles are intentionally absent: the rollup scans summary rows\nonly, and tool timing lives on per-tool detail rows that the rollup\nnever fans out to.",
             "additionalProperties": {
               "$ref": "#/components/schemas/LatencyPercentiles"
             },
@@ -3927,7 +3928,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Whole-request duration from the first byte of the request to\ncompletion. Throughput divides by this interval, not by the\nstreaming interval, so single-chunk responses do not report\nabsurd rates."
+            "description": "Whole-request duration the store derives from the earliest\n`InferenceStarted` stage to the latest `InferenceFinished` stage for\nthis request id. The window starts when the gateway observes the\nattempt (before provider and entry resolution) and ends when the\nterminal stage lands, so it includes breaker waits and any backoff\nbetween retries that share the request id. Throughput divides by this\ninterval, not by the streaming interval, so single-chunk responses do\nnot report absurd rates."
           },
           "request_id": {
             "type": "string"
@@ -3938,8 +3939,11 @@
             "minimum": 0
           },
           "streamed": {
-            "type": "boolean",
-            "description": "Whether the response arrived as more than one content chunk.\nA single-chunk response (one content delta before completion)\nsets this to false so reports can label it."
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the response arrived as more than one content chunk (`Some(true)`\nstreamed, `Some(false)` delivered whole in one chunk). `None` means the\nrequest produced no content: a failed attempt, or a row written before\nthe flag existed. Reports skip `None` when counting single-chunk\nresponses."
           },
           "streaming_duration_ms": {
             "type": [
@@ -4648,19 +4652,19 @@
           "dropped_inference": {
             "type": "integer",
             "format": "int64",
-            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
+            "description": "Remainder of the `inference` array omitted by `inference_limit`, plus\nrows dropped by the legacy capped layout when the turn was migrated.",
             "minimum": 0
           },
           "dropped_stages": {
             "type": "integer",
             "format": "int64",
-            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
+            "description": "Always zero for turns written in the unbounded layout; kept so paged\nreads have a place for the remainder (unused for stages).",
             "minimum": 0
           },
           "dropped_tools": {
             "type": "integer",
             "format": "int64",
-            "description": "Kept for wire compatibility; the unbounded layout never drops rows.",
+            "description": "Remainder of the `tools` array omitted by `tools_limit`, plus rows\ndropped by the legacy capped layout when the turn was migrated.",
             "minimum": 0
           },
           "error": {
@@ -4673,7 +4677,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/InferenceMetric"
-            }
+            },
+            "description": "Inference requests in chronological order (earliest start first).\nA paged read truncates to `inference_limit` and reports the remainder\nin `dropped_inference`."
           },
           "inference_duration_ms": {
             "type": [
@@ -4690,13 +4695,14 @@
             "items": {
               "$ref": "#/components/schemas/StageTiming"
             },
-            "description": "Anchor stages reconstructed from the summary timestamps\n(submitted, appended, first token, first tool, idle). The\ndurable store no longer keeps a bounded stage list; this array\ncarries at most those anchors for backward compatibility."
+            "description": "Anchor and per-request stages reconstructed from the summary and detail\nrows: turn anchors (`submitted`, `appended`, `first_token`,\n`inference_started`, `inference_finished`, `idle`) plus one\n`inference_started` / `first_token` / `inference_finished` triple per\ninference request that survives paging. The durable store keeps no\nbounded stage list and emits no `first_tool` stage; tool timing lives\non the `tools` rows."
           },
           "tools": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ToolMetric"
-            }
+            },
+            "description": "Tool calls in chronological order (earliest dispatch first). A paged\nread truncates to `tools_limit` and reports the remainder in\n`dropped_tools`."
           },
           "turn_id": {
             "type": "string"

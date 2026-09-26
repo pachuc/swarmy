@@ -1,4 +1,4 @@
-//! Bounded, incrementally assembled measurements for one durable turn.
+//! Durable per-turn measurements assembled from unbounded detail rows.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -25,29 +25,29 @@ pub struct InferenceMetric {
     pub cost_micros: u64,
     pub time_to_first_token_ms: Option<f64>,
     pub streaming_duration_ms: Option<f64>,
-    /// Whole-request duration from the first byte of the request to
-    /// completion. Throughput divides by this interval, not by the
-    /// streaming interval, so single-chunk responses do not report
-    /// absurd rates.
+    /// Whole-request duration the store derives from the earliest
+    /// `InferenceStarted` stage to the latest `InferenceFinished` stage for
+    /// this request id. The window starts when the gateway observes the
+    /// attempt (before provider and entry resolution) and ends when the
+    /// terminal stage lands, so it includes breaker waits and any backoff
+    /// between retries that share the request id. Throughput divides by this
+    /// interval, not by the streaming interval, so single-chunk responses do
+    /// not report absurd rates.
     #[serde(default)]
     pub request_duration_ms: Option<f64>,
-    /// Whether the response arrived as more than one content chunk.
-    /// A single-chunk response (one content delta before completion)
-    /// sets this to false so reports can label it.
-    #[serde(default = "default_streamed")]
-    pub streamed: bool,
+    /// Whether the response arrived as more than one content chunk (`Some(true)`
+    /// streamed, `Some(false)` delivered whole in one chunk). `None` means the
+    /// request produced no content: a failed attempt, or a row written before
+    /// the flag existed. Reports skip `None` when counting single-chunk
+    /// responses.
+    #[serde(default)]
+    pub streamed: Option<bool>,
     pub output_tokens_per_second: Option<f64>,
     pub retries: u32,
     pub rate_limit_waits: u32,
     pub gateway_waits: u32,
     pub provider_failures: u32,
     pub error: Option<String>,
-}
-
-fn default_streamed() -> bool {
-    // Rows written before the flag existed carry no chunk information.
-    // Assume they streamed so old turns are not mislabeled single-chunk.
-    true
 }
 
 impl InferenceMetric {
@@ -102,25 +102,37 @@ pub struct ComputerMetric {
 pub struct TurnMetrics {
     pub session_id: String,
     pub turn_id: String,
-    /// Anchor stages reconstructed from the summary timestamps
-    /// (submitted, appended, first token, first tool, idle). The
-    /// durable store no longer keeps a bounded stage list; this array
-    /// carries at most those anchors for backward compatibility.
+    /// Anchor and per-request stages reconstructed from the summary and detail
+    /// rows: turn anchors (`submitted`, `appended`, `first_token`,
+    /// `inference_started`, `inference_finished`, `idle`) plus one
+    /// `inference_started` / `first_token` / `inference_finished` triple per
+    /// inference request that survives paging. The durable store keeps no
+    /// bounded stage list and emits no `first_tool` stage; tool timing lives
+    /// on the `tools` rows.
     pub stages: Vec<StageTiming>,
+    /// Inference requests in chronological order (earliest start first).
+    /// A paged read truncates to `inference_limit` and reports the remainder
+    /// in `dropped_inference`.
     pub inference: Vec<InferenceMetric>,
+    /// Tool calls in chronological order (earliest dispatch first). A paged
+    /// read truncates to `tools_limit` and reports the remainder in
+    /// `dropped_tools`.
     pub tools: Vec<ToolMetric>,
     pub computer: Option<ComputerMetric>,
     pub append_to_first_token_ms: Option<f64>,
     pub inference_duration_ms: Option<f64>,
     pub append_to_idle_ms: Option<f64>,
     pub error: Option<String>,
-    /// Kept for wire compatibility; the unbounded layout never drops rows.
+    /// Always zero for turns written in the unbounded layout; kept so paged
+    /// reads have a place for the remainder (unused for stages).
     #[serde(default)]
     pub dropped_stages: u64,
-    /// Kept for wire compatibility; the unbounded layout never drops rows.
+    /// Remainder of the `inference` array omitted by `inference_limit`, plus
+    /// rows dropped by the legacy capped layout when the turn was migrated.
     #[serde(default)]
     pub dropped_inference: u64,
-    /// Kept for wire compatibility; the unbounded layout never drops rows.
+    /// Remainder of the `tools` array omitted by `tools_limit`, plus rows
+    /// dropped by the legacy capped layout when the turn was migrated.
     #[serde(default)]
     pub dropped_tools: u64,
 }
@@ -202,6 +214,11 @@ pub struct AgentMetrics {
     pub agent_id: String,
     pub main_session_id: Option<String>,
     pub turns: u64,
+    /// Turn-level latencies (`append_to_first_token`, `inference`,
+    /// `append_to_idle`, `placement`) over the rolled-up turns. Per-tool
+    /// percentiles are intentionally absent: the rollup scans summary rows
+    /// only, and tool timing lives on per-tool detail rows that the rollup
+    /// never fans out to.
     pub latencies: BTreeMap<String, LatencyPercentiles>,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,

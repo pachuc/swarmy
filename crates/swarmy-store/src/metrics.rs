@@ -104,9 +104,9 @@ impl StoredInferenceMetricV1 {
             // no request interval; the reader recomputes it from stages.
             request_duration_ms: None,
             // Rows written before the flag existed carry no chunk
-            // information; assume they streamed so old turns are never
-            // mislabeled single-chunk.
-            streamed: true,
+            // information; `None` keeps them out of the single-chunk count
+            // so old turns are never mislabeled.
+            streamed: None,
             output_tokens_per_second: self.output_tokens_per_second,
             retries: self.retries,
             rate_limit_waits: self.rate_limit_waits,
@@ -195,8 +195,141 @@ struct StoredTurnSummaryV2 {
     throughput_sum: f64,
     #[serde(default)]
     throughput_count: u64,
+    /// Rows the legacy capped layout dropped before migration. Native `V2`
+    /// turns always store zero here; migrated turns keep their original
+    /// counters so old baseline sessions do not read as complete.
     #[serde(default)]
-    tool_count: u64,
+    dropped_stages: u64,
+    #[serde(default)]
+    dropped_inference: u64,
+    #[serde(default)]
+    dropped_tools: u64,
+}
+
+/// Frozen inference fields for one `V2` request row. This mirrors
+/// [`InferenceMetric`] at the `V2` layout revision: postcard is positional, so
+/// the API type cannot be embedded directly (the next field added to the API
+/// type would make every stored row undecodable). Convert to and from the API
+/// type with the helpers below, and add any future stored fields as trailing
+/// fields through `swarmy_core::trailing` (see `swarmy_core::usage`), never by
+/// inserting mid-struct.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct StoredInferenceMetricV2 {
+    request_id: String,
+    provider: String,
+    model: String,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cost_micros: u64,
+    time_to_first_token_ms: Option<f64>,
+    streaming_duration_ms: Option<f64>,
+    #[serde(default)]
+    request_duration_ms: Option<f64>,
+    #[serde(default)]
+    streamed: Option<bool>,
+    output_tokens_per_second: Option<f64>,
+    retries: u32,
+    rate_limit_waits: u32,
+    gateway_waits: u32,
+    provider_failures: u32,
+    error: Option<String>,
+}
+
+impl StoredInferenceMetricV2 {
+    fn into_api(self) -> InferenceMetric {
+        InferenceMetric {
+            request_id: self.request_id,
+            provider: self.provider,
+            model: self.model,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            output_tokens: self.output_tokens,
+            reasoning_tokens: self.reasoning_tokens,
+            cost_micros: self.cost_micros,
+            time_to_first_token_ms: self.time_to_first_token_ms,
+            streaming_duration_ms: self.streaming_duration_ms,
+            request_duration_ms: self.request_duration_ms,
+            streamed: self.streamed,
+            output_tokens_per_second: self.output_tokens_per_second,
+            retries: self.retries,
+            rate_limit_waits: self.rate_limit_waits,
+            gateway_waits: self.gateway_waits,
+            provider_failures: self.provider_failures,
+            error: self.error,
+        }
+    }
+
+    fn from_api(value: &InferenceMetric) -> Self {
+        Self {
+            request_id: value.request_id.clone(),
+            provider: value.provider.clone(),
+            model: value.model.clone(),
+            input_tokens: value.input_tokens,
+            cached_input_tokens: value.cached_input_tokens,
+            output_tokens: value.output_tokens,
+            reasoning_tokens: value.reasoning_tokens,
+            cost_micros: value.cost_micros,
+            time_to_first_token_ms: value.time_to_first_token_ms,
+            streaming_duration_ms: value.streaming_duration_ms,
+            request_duration_ms: value.request_duration_ms,
+            streamed: value.streamed,
+            output_tokens_per_second: value.output_tokens_per_second,
+            retries: value.retries,
+            rate_limit_waits: value.rate_limit_waits,
+            gateway_waits: value.gateway_waits,
+            provider_failures: value.provider_failures,
+            error: value.error.clone(),
+        }
+    }
+}
+
+/// Frozen tool fields for one `V2` tool row. Mirrors [`ToolMetric`] at the
+/// `V2` layout revision for the same positional-encoding reason as
+/// [`StoredInferenceMetricV2`]; future stored fields go last through
+/// `swarmy_core::trailing`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct StoredToolMetricV2 {
+    request_id: String,
+    name: String,
+    dispatched_ns: Option<i64>,
+    started_ns: Option<i64>,
+    completed_ns: Option<i64>,
+    exit_status: Option<i32>,
+    output_bytes: Option<u64>,
+    queue_ms: Option<f64>,
+    process_wall_ms: Option<f64>,
+}
+
+impl StoredToolMetricV2 {
+    fn into_api(self) -> ToolMetric {
+        ToolMetric {
+            request_id: self.request_id,
+            name: self.name,
+            dispatched_ns: self.dispatched_ns,
+            started_ns: self.started_ns,
+            completed_ns: self.completed_ns,
+            exit_status: self.exit_status,
+            output_bytes: self.output_bytes,
+            queue_ms: self.queue_ms,
+            process_wall_ms: self.process_wall_ms,
+        }
+    }
+
+    fn from_api(value: &ToolMetric) -> Self {
+        Self {
+            request_id: value.request_id.clone(),
+            name: value.name.clone(),
+            dispatched_ns: value.dispatched_ns,
+            started_ns: value.started_ns,
+            completed_ns: value.completed_ns,
+            exit_status: value.exit_status,
+            output_bytes: value.output_bytes,
+            queue_ms: value.queue_ms,
+            process_wall_ms: value.process_wall_ms,
+        }
+    }
 }
 
 /// One inference request row. Token counts and the streamed flag arrive with
@@ -205,7 +338,7 @@ struct StoredTurnSummaryV2 {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct StoredTurnInferenceV2 {
     #[serde(default)]
-    metric: InferenceMetric,
+    metric: StoredInferenceMetricV2,
     #[serde(default)]
     started_ns: Option<i64>,
     #[serde(default)]
@@ -224,7 +357,7 @@ enum StoredTurnMetrics {
     V1(StoredTurnMetricsV1),
     V2Summary(StoredTurnSummaryV2),
     V2Inference(StoredTurnInferenceV2),
-    V2Tool(ToolMetric),
+    V2Tool(StoredToolMetricV2),
 }
 
 impl StoredTurnMetrics {
@@ -249,9 +382,11 @@ impl StoredTurnMetrics {
                 dropped_inference: inner.dropped_inference,
                 dropped_tools: inner.dropped_tools,
             },
-            // Detail rows are never decoded as whole turns; callers that reach
-            // here read the wrong keyspace.
-            Self::V2Summary(_) | Self::V2Inference(_) | Self::V2Tool(_) => TurnMetrics::default(),
+            // Detail rows are never decoded as whole turns; reaching here
+            // means the caller read the wrong keyspace.
+            Self::V2Summary(_) | Self::V2Inference(_) | Self::V2Tool(_) => {
+                unreachable!("detail rows are never decoded as whole turns")
+            }
         }
     }
 
@@ -278,11 +413,10 @@ impl StoredTurnMetrics {
     }
 }
 
-/// Decode one stored row. The versioned envelope is tried first; rows written
-/// before the envelope existed fall back to the bare `V1` struct and then to
-/// the API type with the same field prefix. Truly undecodable rows are an
-/// error so callers can skip them with a warning.
-#[allow(dead_code)]
+/// Decode one stored row in tests. The versioned envelope is tried first;
+/// rows written before the envelope existed fall back to the bare `V1` struct
+/// and then to the API type with the same field prefix.
+#[cfg(test)]
 fn decode_record(bytes: &[u8]) -> Result<TurnMetrics> {
     if let Ok(record) = decode::<StoredTurnMetrics>(bytes) {
         match record {
@@ -355,12 +489,12 @@ fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
     Err(StoreError::Corrupt)
 }
 
-fn decode_tool(bytes: &[u8]) -> Result<ToolMetric> {
+fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
     if let Ok(StoredTurnMetrics::V2Tool(row)) = decode::<StoredTurnMetrics>(bytes) {
         return Ok(row);
     }
     if let Ok(row) = decode::<ToolMetric>(bytes) {
-        return Ok(row);
+        return Ok(StoredToolMetricV2::from_api(&row));
     }
     Err(StoreError::Corrupt)
 }
@@ -485,11 +619,11 @@ fn apply_computer(summary: &mut StoredTurnSummaryV2, value: &ComputerMetric) {
 struct TurnWrite {
     summary: StoredTurnSummaryV2,
     inference: BTreeMap<String, StoredTurnInferenceV2>,
-    tools: BTreeMap<String, ToolMetric>,
+    tools: BTreeMap<String, StoredToolMetricV2>,
     /// Rows migrated from a legacy `V1` record that must be written even
     /// when this batch does not touch them.
     migrated_inference: BTreeMap<String, StoredTurnInferenceV2>,
-    migrated_tools: BTreeMap<String, ToolMetric>,
+    migrated_tools: BTreeMap<String, StoredToolMetricV2>,
 }
 
 fn adjust_throughput(summary: &mut StoredTurnSummaryV2, old: Option<f64>, new: Option<f64>) {
@@ -516,23 +650,23 @@ fn inference_entry<'a>(
     inference
         .entry(request_id.to_owned())
         .or_insert_with(|| StoredTurnInferenceV2 {
-            metric: InferenceMetric {
+            metric: StoredInferenceMetricV2 {
                 request_id: request_id.to_owned(),
-                ..InferenceMetric::default()
+                ..StoredInferenceMetricV2::default()
             },
             ..StoredTurnInferenceV2::default()
         })
 }
 
 fn tool_entry<'a>(
-    tools: &'a mut BTreeMap<String, ToolMetric>,
+    tools: &'a mut BTreeMap<String, StoredToolMetricV2>,
     request_id: &str,
-) -> &'a mut ToolMetric {
+) -> &'a mut StoredToolMetricV2 {
     tools
         .entry(request_id.to_owned())
-        .or_insert_with(|| ToolMetric {
+        .or_insert_with(|| StoredToolMetricV2 {
             request_id: request_id.to_owned(),
-            ..ToolMetric::default()
+            ..StoredToolMetricV2::default()
         })
 }
 
@@ -544,7 +678,6 @@ fn apply_inference_update(
     inference: &mut BTreeMap<String, StoredTurnInferenceV2>,
     update: &InferenceMetric,
 ) {
-    let created = !inference.contains_key(&update.request_id);
     let row = inference_entry(inference, &update.request_id);
     let old_throughput = row.metric.output_tokens_per_second;
     let old_tokens = (
@@ -651,15 +784,13 @@ fn apply_inference_update(
         _ => {}
     }
     adjust_throughput(summary, old_throughput, new_throughput);
-    let _ = created;
 }
 
 fn apply_tool_update(
-    summary: &mut StoredTurnSummaryV2,
-    tools: &mut BTreeMap<String, ToolMetric>,
+    _summary: &mut StoredTurnSummaryV2,
+    tools: &mut BTreeMap<String, StoredToolMetricV2>,
     update: &ToolMetric,
 ) {
-    let created = !tools.contains_key(&update.request_id);
     let row = tool_entry(tools, &update.request_id);
     if !update.name.is_empty() {
         row.name = clipped(&update.name, 80);
@@ -685,17 +816,12 @@ fn apply_tool_update(
     if let Some(value) = update.process_wall_ms {
         row.process_wall_ms = Some(value);
     }
-    // Rows created by a bare tool patch (no dispatch stage yet) still count
-    // as calls; dispatch-created rows are counted on their stage below.
-    if created && row.dispatched_ns.is_none() {
-        summary.tool_count += 1;
-    }
 }
 
 fn apply_stage(
     summary: &mut StoredTurnSummaryV2,
     inference: &mut BTreeMap<String, StoredTurnInferenceV2>,
-    tools: &mut BTreeMap<String, ToolMetric>,
+    tools: &mut BTreeMap<String, StoredToolMetricV2>,
     event: &TurnEvent,
 ) {
     let wall = unix_ns(event);
@@ -760,13 +886,9 @@ fn apply_stage(
         TurnStage::ToolDispatched => {
             if let Some(request_id) = event.request_id {
                 let key = request_id.to_string();
-                let created = !tools.contains_key(&key);
                 let row = tool_entry(tools, &key);
                 if row.dispatched_ns.is_none() {
                     row.dispatched_ns = Some(wall);
-                }
-                if created {
-                    summary.tool_count += 1;
                 }
             }
             summary.first_tool_ns = Some(summary.first_tool_ns.unwrap_or(i64::MAX).min(wall));
@@ -774,12 +896,8 @@ fn apply_stage(
         TurnStage::ToolCompleted => {
             if let Some(request_id) = event.request_id {
                 let key = request_id.to_string();
-                let created = !tools.contains_key(&key);
                 let row = tool_entry(tools, &key);
                 row.completed_ns = Some(row.completed_ns.unwrap_or(i64::MIN).max(wall));
-                if created {
-                    summary.tool_count += 1;
-                }
             }
         }
         TurnStage::Idle => {
@@ -857,7 +975,7 @@ fn migrate_legacy(
 ) -> (
     StoredTurnSummaryV2,
     Vec<StoredTurnInferenceV2>,
-    Vec<ToolMetric>,
+    Vec<StoredToolMetricV2>,
 ) {
     let mut summary = StoredTurnSummaryV2 {
         session_id: record.session_id.clone(),
@@ -897,31 +1015,20 @@ fn migrate_legacy(
     summary.inference_started_ns = stage_min("inference_started");
     summary.inference_finished_ns = stage_max("inference_finished");
     summary.first_tool_ns = stage_min("tool_dispatched");
+    // The legacy caps dropped rows the unbounded layout keeps; carry the
+    // counters so migrated baseline sessions still report what was lost.
+    summary.dropped_stages = record.dropped_stages;
+    summary.dropped_inference = record.dropped_inference;
+    summary.dropped_tools = record.dropped_tools;
     let mut inference_rows = Vec::new();
     for mut metric in record.inference {
         let id = metric.request_id.clone();
         let mut row = StoredTurnInferenceV2 {
-            metric: InferenceMetric {
-                request_id: id.clone(),
-                ..InferenceMetric::default()
-            },
+            metric: StoredInferenceMetricV2::from_api(&metric),
             started_ns: stage_time("inference_started", Some(&id)),
             first_token_ns: stage_time("first_token", Some(&id)),
             finished_ns: stage_time("inference_finished", Some(&id)),
         };
-        row.metric.provider.clone_from(&metric.provider);
-        row.metric.model.clone_from(&metric.model);
-        row.metric.input_tokens = metric.input_tokens;
-        row.metric.cached_input_tokens = metric.cached_input_tokens;
-        row.metric.output_tokens = metric.output_tokens;
-        row.metric.reasoning_tokens = metric.reasoning_tokens;
-        row.metric.cost_micros = metric.cost_micros;
-        row.metric.streamed = metric.streamed;
-        row.metric.retries = metric.retries;
-        row.metric.rate_limit_waits = metric.rate_limit_waits;
-        row.metric.gateway_waits = metric.gateway_waits;
-        row.metric.provider_failures = metric.provider_failures;
-        row.metric.error.clone_from(&metric.error);
         derive_inference(&mut row);
         metric.time_to_first_token_ms = row.metric.time_to_first_token_ms;
         metric.streaming_duration_ms = row.metric.streaming_duration_ms;
@@ -945,9 +1052,13 @@ fn migrate_legacy(
         }
         inference_rows.push(row);
     }
-    summary.tool_count = u64::try_from(record.tools.len()).unwrap_or(u64::MAX);
     derive_summary(&mut summary);
-    (summary, inference_rows, record.tools)
+    let tool_rows = record
+        .tools
+        .into_iter()
+        .map(|tool| StoredToolMetricV2::from_api(&tool))
+        .collect();
+    (summary, inference_rows, tool_rows)
 }
 
 /// Bounded reverse scan for newest-first pagination. Mirrors the forward
@@ -992,6 +1103,130 @@ fn request_stage(name: &str, request_id: &str, unix_ns: Option<i64>) -> Option<S
         monotonic_ns: u64::try_from(unix_ns).unwrap_or(0),
         unix_ns,
     })
+}
+
+/// Turn anchors shared by the `V2` and migrated-legacy assembly paths.
+fn anchor_stages(summary: &StoredTurnSummaryV2) -> Vec<StageTiming> {
+    let mut stages = Vec::new();
+    for (name, stamp) in [
+        ("submitted", summary.submitted_ns),
+        ("appended", summary.appended_ns),
+        ("first_token", summary.first_token_ns),
+        ("inference_started", summary.inference_started_ns),
+        ("inference_finished", summary.inference_finished_ns),
+        ("idle", summary.idle_ns),
+    ] {
+        if let Some(row) = anchor_stage(name, stamp) {
+            stages.push(row);
+        }
+    }
+    stages
+}
+
+/// Chronological order for per-request rows. Request ids are blake3 hashes,
+/// so id order is arbitrary; the per-row start timestamp restores the order
+/// the turn executed in, with the id only breaking ties.
+fn sort_inference_rows(rows: &mut [StoredTurnInferenceV2]) {
+    rows.sort_by(|a, b| {
+        (a.started_ns.unwrap_or(i64::MAX), &a.metric.request_id)
+            .cmp(&(b.started_ns.unwrap_or(i64::MAX), &b.metric.request_id))
+    });
+}
+
+/// Chronological order for per-tool rows by dispatch, then start, then id.
+fn sort_tool_rows(rows: &mut [StoredToolMetricV2]) {
+    rows.sort_by(|a, b| {
+        (
+            a.dispatched_ns.unwrap_or(i64::MAX),
+            a.started_ns.unwrap_or(i64::MAX),
+            &a.request_id,
+        )
+            .cmp(&(
+                b.dispatched_ns.unwrap_or(i64::MAX),
+                b.started_ns.unwrap_or(i64::MAX),
+                &b.request_id,
+            ))
+    });
+}
+
+/// Assemble one public turn record from a summary plus its detail rows.
+/// Paging truncates the chronologically sorted arrays and reports the
+/// remainder plus any legacy dropped counters in `dropped_*`; a complete
+/// read reports only the legacy remainder (zero for native `V2` turns).
+fn assemble_turn(
+    summary: StoredTurnSummaryV2,
+    mut inference_rows: Vec<StoredTurnInferenceV2>,
+    mut tool_rows: Vec<StoredToolMetricV2>,
+    inference_limit: Option<usize>,
+    tools_limit: Option<usize>,
+) -> TurnMetrics {
+    let mut stages = anchor_stages(&summary);
+    sort_inference_rows(&mut inference_rows);
+    sort_tool_rows(&mut tool_rows);
+    let total_inference = inference_rows.len();
+    let total_tools = tool_rows.len();
+    let inference_page: Vec<StoredTurnInferenceV2> = match inference_limit {
+        Some(limit) => inference_rows.into_iter().take(limit).collect(),
+        None => inference_rows,
+    };
+    let tools_page: Vec<StoredToolMetricV2> = match tools_limit {
+        Some(limit) => tool_rows.into_iter().take(limit).collect(),
+        None => tool_rows,
+    };
+    for row in &inference_page {
+        if let Some(stage) =
+            request_stage("inference_started", &row.metric.request_id, row.started_ns)
+        {
+            stages.push(stage);
+        }
+        if let Some(stage) =
+            request_stage("first_token", &row.metric.request_id, row.first_token_ns)
+        {
+            stages.push(stage);
+        }
+        if let Some(stage) = request_stage(
+            "inference_finished",
+            &row.metric.request_id,
+            row.finished_ns,
+        ) {
+            stages.push(stage);
+        }
+    }
+    let mut turn = TurnMetrics {
+        session_id: summary.session_id.clone(),
+        turn_id: summary.turn_id.clone(),
+        stages,
+        inference: inference_page
+            .into_iter()
+            .map(|row| row.metric.into_api())
+            .collect(),
+        tools: tools_page.into_iter().map(|row| row.into_api()).collect(),
+        computer: summary.computer.clone(),
+        append_to_first_token_ms: None,
+        inference_duration_ms: None,
+        append_to_idle_ms: None,
+        error: summary.error.clone(),
+        dropped_stages: summary.dropped_stages,
+        dropped_inference: summary.dropped_inference,
+        dropped_tools: summary.dropped_tools,
+    };
+    turn.dropped_inference = turn.dropped_inference.saturating_add(
+        u64::try_from(total_inference.saturating_sub(turn.inference.len())).unwrap_or(u64::MAX),
+    );
+    turn.dropped_tools = turn.dropped_tools.saturating_add(
+        u64::try_from(total_tools.saturating_sub(turn.tools.len())).unwrap_or(u64::MAX),
+    );
+    turn.derive();
+    if turn.append_to_first_token_ms.is_none() {
+        turn.append_to_first_token_ms = summary.append_to_first_token_ms;
+    }
+    if turn.inference_duration_ms.is_none() {
+        turn.inference_duration_ms = summary.inference_duration_ms;
+    }
+    if turn.append_to_idle_ms.is_none() {
+        turn.append_to_idle_ms = summary.append_to_idle_ms;
+    }
+    turn
 }
 
 impl Store {
@@ -1266,7 +1501,7 @@ impl Store {
         &self,
         session: SessionId,
         turn: MessageId,
-    ) -> Result<(Vec<StoredTurnInferenceV2>, Vec<ToolMetric>)> {
+    ) -> Result<(Vec<StoredTurnInferenceV2>, Vec<StoredToolMetricV2>)> {
         let (inference_begin, inference_end) = self
             .root
             .subspace(&(
@@ -1369,89 +1604,13 @@ impl Store {
             .map(MessageId::from_ulid)
             .map_err(|_| StoreError::Corrupt)?;
         let (inference_rows, tool_rows) = self.turn_rows(session, turn).await?;
-        // Keep the raw rows for pseudo-stage construction before the
-        // truncating assembler consumes them.
-        let mut stages = Vec::new();
-        for (name, stamp) in [
-            ("submitted", summary.submitted_ns),
-            ("appended", summary.appended_ns),
-            ("first_token", summary.first_token_ns),
-            ("inference_started", summary.inference_started_ns),
-            ("inference_finished", summary.inference_finished_ns),
-            ("idle", summary.idle_ns),
-        ] {
-            if let Some(row) = anchor_stage(name, stamp) {
-                stages.push(row);
-            }
-        }
-        // Sort before truncating so paging is deterministic by request id.
-        let mut inference_sorted = inference_rows;
-        inference_sorted.sort_by(|a, b| a.metric.request_id.cmp(&b.metric.request_id));
-        let mut tools_sorted = tool_rows;
-        tools_sorted.sort_by(|a, b| a.request_id.cmp(&b.request_id));
-        let total_inference = inference_sorted.len();
-        let total_tools = tools_sorted.len();
-        // Pseudo-stages only for the requests that survive truncation; the
-        // dropped counters below record the remainder.
-        let inference_page: Vec<StoredTurnInferenceV2> = match inference_limit {
-            Some(limit) => inference_sorted.into_iter().take(limit).collect(),
-            None => inference_sorted,
-        };
-        let tools_page: Vec<ToolMetric> = match tools_limit {
-            Some(limit) => tools_sorted.into_iter().take(limit).collect(),
-            None => tools_sorted,
-        };
-        for row in &inference_page {
-            if let Some(stage) =
-                request_stage("inference_started", &row.metric.request_id, row.started_ns)
-            {
-                stages.push(stage);
-            }
-            if let Some(stage) =
-                request_stage("first_token", &row.metric.request_id, row.first_token_ns)
-            {
-                stages.push(stage);
-            }
-            if let Some(stage) = request_stage(
-                "inference_finished",
-                &row.metric.request_id,
-                row.finished_ns,
-            ) {
-                stages.push(stage);
-            }
-        }
-        let mut turn = TurnMetrics {
-            session_id: summary.session_id.clone(),
-            turn_id: summary.turn_id.clone(),
-            stages,
-            inference: inference_page.into_iter().map(|row| row.metric).collect(),
-            tools: tools_page,
-            computer: summary.computer.clone(),
-            append_to_first_token_ms: None,
-            inference_duration_ms: None,
-            append_to_idle_ms: None,
-            error: summary.error.clone(),
-            dropped_stages: 0,
-            dropped_inference: 0,
-            dropped_tools: 0,
-        };
-        // Recompute the dropped counters from the pre-truncation totals so a
-        // complete read reports zeros and a paged read reports the remainder.
-        turn.dropped_inference =
-            u64::try_from(total_inference.saturating_sub(turn.inference.len())).unwrap_or(u64::MAX);
-        turn.dropped_tools =
-            u64::try_from(total_tools.saturating_sub(turn.tools.len())).unwrap_or(u64::MAX);
-        turn.derive();
-        if turn.append_to_first_token_ms.is_none() {
-            turn.append_to_first_token_ms = summary.append_to_first_token_ms;
-        }
-        if turn.inference_duration_ms.is_none() {
-            turn.inference_duration_ms = summary.inference_duration_ms;
-        }
-        if turn.append_to_idle_ms.is_none() {
-            turn.append_to_idle_ms = summary.append_to_idle_ms;
-        }
-        Ok(turn)
+        Ok(assemble_turn(
+            summary,
+            inference_rows,
+            tool_rows,
+            inference_limit,
+            tools_limit,
+        ))
     }
 
     /// Read a bounded page of per-turn records, ordered by turn id.
@@ -1471,9 +1630,10 @@ impl Store {
     }
 
     /// Read a page of turns with paging on the per-turn arrays. Very long
-    /// turns truncate their `inference` and `tools` arrays to the given
-    /// limits (sorted by request id) and report the remainder in the
-    /// `dropped_*` counters; an absent limit returns the complete arrays.
+    /// turns truncate their chronologically sorted `inference` and `tools`
+    /// arrays to the given limits and report the remainder plus any legacy
+    /// dropped rows in the `dropped_*` counters; an absent limit returns the
+    /// complete arrays.
     /// # Errors
     /// Returns database failures.
     // One page assembles V2 summaries plus in-memory legacy turns; splitting
@@ -1514,65 +1674,7 @@ impl Store {
                     // rows; serve this page from the migrated record itself.
                     // The next write to the turn persists the migrated rows.
                     let (summary, rows, tools) = migrate_legacy(record);
-                    let mut stages = Vec::new();
-                    for (name, stamp) in [
-                        ("submitted", summary.submitted_ns),
-                        ("appended", summary.appended_ns),
-                        ("first_token", summary.first_token_ns),
-                        ("inference_started", summary.inference_started_ns),
-                        ("inference_finished", summary.inference_finished_ns),
-                        ("idle", summary.idle_ns),
-                    ] {
-                        if let Some(row) = anchor_stage(name, stamp) {
-                            stages.push(row);
-                        }
-                    }
-                    for row in &rows {
-                        if let Some(stage) = request_stage(
-                            "inference_started",
-                            &row.metric.request_id,
-                            row.started_ns,
-                        ) {
-                            stages.push(stage);
-                        }
-                        if let Some(stage) =
-                            request_stage("first_token", &row.metric.request_id, row.first_token_ns)
-                        {
-                            stages.push(stage);
-                        }
-                        if let Some(stage) = request_stage(
-                            "inference_finished",
-                            &row.metric.request_id,
-                            row.finished_ns,
-                        ) {
-                            stages.push(stage);
-                        }
-                    }
-                    let mut turn = TurnMetrics {
-                        session_id: summary.session_id.clone(),
-                        turn_id: summary.turn_id.clone(),
-                        stages,
-                        inference: rows.into_iter().map(|row| row.metric).collect(),
-                        tools,
-                        computer: summary.computer.clone(),
-                        append_to_first_token_ms: None,
-                        inference_duration_ms: None,
-                        append_to_idle_ms: None,
-                        error: summary.error.clone(),
-                        dropped_stages: 0,
-                        dropped_inference: 0,
-                        dropped_tools: 0,
-                    };
-                    turn.derive();
-                    if turn.append_to_first_token_ms.is_none() {
-                        turn.append_to_first_token_ms = summary.append_to_first_token_ms;
-                    }
-                    if turn.inference_duration_ms.is_none() {
-                        turn.inference_duration_ms = summary.inference_duration_ms;
-                    }
-                    if turn.append_to_idle_ms.is_none() {
-                        turn.append_to_idle_ms = summary.append_to_idle_ms;
-                    }
+                    let turn = assemble_turn(summary, rows, tools, inference_limit, tools_limit);
                     legacy_turns.insert(turn.turn_id.clone(), turn);
                 }
                 Err(error) => {
@@ -1592,9 +1694,7 @@ impl Store {
             );
         }
         // Legacy turns sort with the V2 turns by turn id.
-        let mut legacy: Vec<TurnMetrics> = legacy_turns.into_values().collect();
-        legacy.sort_by(|a, b| a.turn_id.cmp(&b.turn_id));
-        turns.extend(legacy);
+        turns.extend(legacy_turns.into_values());
         turns.sort_by(|a, b| a.turn_id.cmp(&b.turn_id));
         Ok(turns)
     }
@@ -1796,6 +1896,50 @@ mod tests {
             .collect()
     }
 
+    /// Checked-in `V2` summary bytes. Generated with
+    /// `swarmy_core::encode(&StoredTurnMetrics::V2Summary(fixture_summary()))`;
+    /// decoding them pins the unbounded layout the way the `V1` fixtures pin
+    /// the capped record.
+    const V2_SUMMARY_HEX: &str = "010101730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
+    /// Checked-in `V2` inference-row bytes for a single-chunk request.
+    const V2_INFERENCE_HEX: &str = "010201720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
+    /// Checked-in `V2` tool-row bytes.
+    const V2_TOOL_HEX: &str = "01030163046261736800000000000000";
+
+    fn fixture_summary() -> StoredTurnSummaryV2 {
+        StoredTurnSummaryV2 {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            appended_ns: Some(1_000_000),
+            idle_ns: Some(6_000_000),
+            ..StoredTurnSummaryV2::default()
+        }
+    }
+
+    fn fixture_inference() -> StoredTurnInferenceV2 {
+        StoredTurnInferenceV2 {
+            metric: StoredInferenceMetricV2 {
+                request_id: "r".into(),
+                provider: "fake".into(),
+                model: "scripted".into(),
+                output_tokens: 4,
+                streamed: Some(false),
+                ..StoredInferenceMetricV2::default()
+            },
+            started_ns: Some(2_000_000),
+            finished_ns: Some(5_000_000),
+            ..StoredTurnInferenceV2::default()
+        }
+    }
+
+    fn fixture_tool() -> StoredToolMetricV2 {
+        StoredToolMetricV2 {
+            request_id: "c".into(),
+            name: "bash".into(),
+            ..StoredToolMetricV2::default()
+        }
+    }
+
     #[test]
     fn versioned_envelope_decodes_checked_in_v1_bytes() {
         if V1_ENVELOPE_HEX.starts_with("PLACEHOLDER") || V1_BARE_HEX.starts_with("PLACEHOLDER") {
@@ -1830,6 +1974,86 @@ mod tests {
     }
 
     #[test]
+    fn versioned_envelope_decodes_checked_in_v2_bytes() {
+        let summary = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_SUMMARY_HEX)).unwrap();
+        let StoredTurnMetrics::V2Summary(decoded) = summary else {
+            panic!("expected V2Summary");
+        };
+        assert_eq!(decoded, fixture_summary());
+        let inference = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_INFERENCE_HEX)).unwrap();
+        let StoredTurnMetrics::V2Inference(row) = inference else {
+            panic!("expected V2Inference");
+        };
+        assert_eq!(row, fixture_inference());
+        assert_eq!(row.metric.streamed, Some(false));
+        let tool = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_TOOL_HEX)).unwrap();
+        let StoredTurnMetrics::V2Tool(row) = tool else {
+            panic!("expected V2Tool");
+        };
+        assert_eq!(row, fixture_tool());
+        // Bare frozen rows decode the same way as their enveloped form.
+        let bare: StoredTurnInferenceV2 =
+            swarmy_core::decode(&swarmy_core::encode(&fixture_inference()).unwrap()).unwrap();
+        assert_eq!(bare, fixture_inference());
+        let bare_tool: StoredToolMetricV2 =
+            swarmy_core::decode(&swarmy_core::encode(&fixture_tool()).unwrap()).unwrap();
+        assert_eq!(bare_tool, fixture_tool());
+    }
+
+    #[test]
+    fn detail_rows_sort_chronologically_not_by_hash() {
+        let row = |id: &str, started: Option<i64>| StoredTurnInferenceV2 {
+            metric: StoredInferenceMetricV2 {
+                request_id: id.into(),
+                ..StoredInferenceMetricV2::default()
+            },
+            started_ns: started,
+            ..StoredTurnInferenceV2::default()
+        };
+        // Ids chosen so hash order disagrees with time order; the later
+        // request must still sort first when its start is earlier.
+        let mut rows = vec![row("zzz", Some(3_000_000)), row("aaa", Some(2_000_000))];
+        sort_inference_rows(&mut rows);
+        assert_eq!(rows[0].metric.request_id, "aaa");
+        assert_eq!(rows[1].metric.request_id, "zzz");
+        // Rows without timestamps sort last with ties broken by id.
+        let mut rows = vec![row("b", None), row("a", None)];
+        sort_inference_rows(&mut rows);
+        assert_eq!(rows[0].metric.request_id, "a");
+        let tool = |id: &str, dispatched: Option<i64>| StoredToolMetricV2 {
+            request_id: id.into(),
+            dispatched_ns: dispatched,
+            ..StoredToolMetricV2::default()
+        };
+        let mut tools = vec![tool("zzz", Some(5)), tool("aaa", Some(1))];
+        sort_tool_rows(&mut tools);
+        assert_eq!(tools[0].request_id, "aaa");
+    }
+
+    #[test]
+    fn legacy_dropped_counters_survive_migration() {
+        let mut legacy = fixture_v1();
+        legacy.dropped_stages = 7;
+        legacy.dropped_inference = 27;
+        legacy.dropped_tools = 42;
+        let api = StoredTurnMetrics::V1(legacy).into_api();
+        let (summary, rows, tools) = migrate_legacy(api);
+        assert_eq!(summary.dropped_stages, 7);
+        assert_eq!(summary.dropped_inference, 27);
+        assert_eq!(summary.dropped_tools, 42);
+        // The assembled turn reports the migrated remainder even on a
+        // complete read, and adds paging truncation on top.
+        let turn = assemble_turn(summary.clone(), rows.clone(), tools.clone(), None, None);
+        assert_eq!(turn.dropped_stages, 7);
+        assert_eq!(turn.dropped_inference, 27);
+        assert_eq!(turn.dropped_tools, 42);
+        let paged = assemble_turn(summary, rows, tools, Some(0), Some(0));
+        assert_eq!(paged.dropped_inference, 27 + 1);
+        assert_eq!(paged.dropped_tools, 42);
+        assert_eq!(paged.dropped_stages, 7);
+    }
+
+    #[test]
     fn v2_summary_and_rows_round_trip() {
         let summary = StoredTurnSummaryV2 {
             session_id: "s".into(),
@@ -1841,18 +2065,18 @@ mod tests {
         for value in [
             StoredTurnMetrics::V2Summary(summary),
             StoredTurnMetrics::V2Inference(StoredTurnInferenceV2 {
-                metric: InferenceMetric {
+                metric: StoredInferenceMetricV2 {
                     request_id: "r".into(),
-                    ..InferenceMetric::default()
+                    ..StoredInferenceMetricV2::default()
                 },
                 started_ns: Some(2_000_000),
                 finished_ns: Some(5_000_000),
                 ..StoredTurnInferenceV2::default()
             }),
-            StoredTurnMetrics::V2Tool(ToolMetric {
+            StoredTurnMetrics::V2Tool(StoredToolMetricV2 {
                 request_id: "c".into(),
                 name: "bash".into(),
-                ..ToolMetric::default()
+                ..StoredToolMetricV2::default()
             }),
         ] {
             let bytes = swarmy_core::encode(&value).unwrap();
@@ -1950,7 +2174,6 @@ mod tests {
         );
         assert_eq!(state.tools.len(), 200);
         assert_eq!(state.inference.len(), 100);
-        assert_eq!(state.summary.tool_count, 200);
         assert_eq!(state.summary.append_to_idle_ms, Some(5.0));
     }
 
@@ -2062,7 +2285,6 @@ mod tests {
                 apply_one(&mut sequential, &patch);
             }
         }
-        assert_eq!(batched.summary.tool_count, sequential.summary.tool_count);
         assert_eq!(batched.tools, sequential.tools);
         assert_eq!(writes, 6);
         assert_eq!(batched.tools.len(), 3);

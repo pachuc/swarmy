@@ -352,13 +352,13 @@ class FleetTests(unittest.TestCase):
                     "tools": tools, "computer": computer, "error": error}
 
         sesa = [
-            turn(100.0, 200.0, 1000.0, [request(100, 10, 50, 5, 2000, 10.0, retries=1, waits=(1, 0, 0))],
+            turn(100.0, 200.0, 1000.0, [request(100, 10, 50, 5, 2000, 10.0, retries=1, waits=(1, 0, 0), streamed=False)],
                  [tool(0, 100_000_000)],
                  {"placement_ms": 50.0, "cold": True, "chunks_fetched": 4, "bytes_fetched": 1000}),
             turn(200.0, 300.0, 2000.0, [request(200, 20, 150, 15, 4000, 20.0)],
                  [tool(0, 200_000_000), tool(0, 300_000_000)],
                  {"placement_ms": 150.0, "cold": False, "chunks_fetched": 2, "bytes_fetched": 500}),
-            turn(300.0, 400.0, 3000.0, [request(300, 30, 100, 10, 6000, 30.0, retries=2, waits=(0, 2, 1), error="boom", streamed=False)],
+            turn(300.0, 400.0, 3000.0, [request(300, 30, 100, 10, 6000, 30.0, retries=2, waits=(0, 2, 1), error="boom", streamed=None)],
                  [], None, error="boom"),
         ]
         sesb = [

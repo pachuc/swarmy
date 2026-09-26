@@ -103,10 +103,25 @@ fn is_first_content(delta: &swarmy_llm::Delta) -> bool {
     }
 }
 
-/// Whether a response with this many content-bearing deltas counts as
-/// streamed. Exactly one content chunk means the provider delivered the whole
-/// response at once; the store divides throughput by the whole request in
-/// that case instead of by a millisecond streaming tail.
+/// One streaming chunk toward the `streamed` flag. Only incremental text,
+/// reasoning, and tool-argument deltas count: every real client emits one
+/// `PartDone` per part after the incremental deltas, so counting `PartDone`
+/// would label every single-chunk response as streamed.
+fn is_stream_chunk(delta: &swarmy_llm::Delta) -> bool {
+    match delta {
+        swarmy_llm::Delta::Text { text, .. } | swarmy_llm::Delta::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
+        swarmy_llm::Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+        swarmy_llm::Delta::PartDone { .. } | swarmy_llm::Delta::Completed(_) => false,
+    }
+}
+
+/// Whether a response with this many streaming chunks counts as streamed.
+/// Zero or one chunk means the provider delivered the whole response at once
+/// (the fake provider yields no incremental deltas at all); the store divides
+/// throughput by the whole request in that case instead of by a millisecond
+/// streaming tail.
 fn is_streamed_response(content_chunks: u32) -> bool {
     content_chunks > 1
 }
@@ -445,7 +460,7 @@ impl Gateway {
         job: &InferenceJob,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, bool), swarmy_llm::Error> {
+    ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         let mut stream = client.request_for_session(request, job.session_id);
@@ -453,18 +468,19 @@ impl Gateway {
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
         let mut token_position = 0_u64;
         let mut first_token = false;
-        // Count content-bearing deltas: more than one means the provider
-        // streamed the response, while exactly one means the whole response
-        // arrived in a single chunk (the fake provider and single-chunk
-        // OpenRouter responses behave this way).
+        // Count streaming chunks: more than one means the provider streamed
+        // the response, while zero or one means the whole response arrived in
+        // a single chunk (the fake provider yields no incremental deltas at
+        // all, and single-chunk OpenRouter responses yield one). `PartDone`
+        // is excluded from the count but still starts the first-token clock
+        // below so the fake provider reports a first token.
         let mut content_chunks = 0_u32;
         while let Some(delta) = stream.next().await {
             let delta = delta?;
-            let content = is_first_content(&delta);
-            if content {
+            if is_stream_chunk(&delta) {
                 content_chunks = content_chunks.saturating_add(1);
             }
-            if content && !first_token {
+            if is_first_content(&delta) && !first_token {
                 first_token = true;
                 if let Some(turn) = turn {
                     let event = Bus::turn_event(
@@ -513,7 +529,7 @@ impl Gateway {
         }
         let response = response
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))?;
-        Ok((response, is_streamed_response(content_chunks)))
+        Ok((response, Some(is_streamed_response(content_chunks))))
     }
 
     fn turn_id(job: &InferenceJob) -> Option<MessageId> {
@@ -562,7 +578,7 @@ impl Gateway {
         turn: Option<MessageId>,
         provider: &str,
         event: &Event,
-        streamed: bool,
+        streamed: Option<bool>,
     ) {
         let Some(turn) = turn else { return };
         let patch = match event {
@@ -699,9 +715,14 @@ impl Gateway {
         job: &InferenceJob,
         turn: Option<MessageId>,
         result: std::result::Result<Response, swarmy_llm::Error>,
-        streamed: bool,
+        streamed: Option<bool>,
         blocked: bool,
-    ) -> Result<Option<(std::result::Result<Response, swarmy_llm::Error>, bool)>> {
+    ) -> Result<
+        Option<(
+            std::result::Result<Response, swarmy_llm::Error>,
+            Option<bool>,
+        )>,
+    > {
         match result {
             Ok(response) => Ok(Some((Ok(response), streamed))),
             Err(error)
@@ -739,7 +760,7 @@ impl Gateway {
         effort_requested: Option<swarmy_core::ReasoningEffort>,
         effort_clamped: bool,
         result: std::result::Result<Response, swarmy_llm::Error>,
-        streamed: bool,
+        streamed: Option<bool>,
         blocked: bool,
         entry: Option<String>,
         entry_kind: Option<String>,
@@ -870,7 +891,7 @@ impl Gateway {
         pinned: Option<&str>,
     ) -> Result<(
         std::result::Result<Response, swarmy_llm::Error>,
-        bool,
+        Option<bool>,
         bool,
         Option<String>,
         Option<String>,
@@ -889,7 +910,7 @@ impl Gateway {
                     provider: provider.into(),
                     model: job.request.settings.model.clone(),
                 }),
-                false,
+                None,
                 false,
                 None,
                 None,
@@ -898,7 +919,9 @@ impl Gateway {
         let (client, entry, entry_kind) =
             match self.providers.client_pinned(provider, model, pinned).await {
                 Ok(resolved) => resolved,
-                Err(error) => return Ok((Err(error), false, pinned.map(str::to_owned), None)),
+                Err(error) => {
+                    return Ok((Err(error), None, false, pinned.map(str::to_owned), None));
+                }
             };
         let key = CredentialKey::for_label(provider, entry.clone());
         if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
@@ -915,7 +938,7 @@ impl Gateway {
                         std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
                     ),
                 }),
-                false,
+                None,
                 true,
                 entry,
                 entry_kind,
@@ -923,7 +946,7 @@ impl Gateway {
         }
         let (result, streamed) = match self.stream(&client, job, effort, turn).await {
             Ok((response, streamed)) => (Ok(response), streamed),
-            Err(error) => (Err(error), false),
+            Err(error) => (Err(error), None),
         };
         Ok((result, streamed, false, entry, entry_kind))
     }
@@ -1310,12 +1333,10 @@ mod retry_tests {
                 .into_iter()
                 .map(|result| result.unwrap())
                 .collect();
-            let chunks = deltas
-                .iter()
-                .filter(|delta| is_first_content(delta))
-                .count();
-            // One content chunk: the whole response arrived at once.
-            assert_eq!(chunks, 1);
+            // The fake provider yields no incremental deltas, only `PartDone`:
+            // zero streaming chunks still counts as a single-chunk response.
+            let chunks = deltas.iter().filter(|delta| is_stream_chunk(delta)).count();
+            assert_eq!(chunks, 0);
             assert!(!is_streamed_response(u32::try_from(chunks).unwrap()));
         });
         // Throughput divides by the whole request (first byte to completion):
@@ -1339,14 +1360,171 @@ mod retry_tests {
         turn.inference.push(swarmy_api_types::InferenceMetric {
             request_id: "r".into(),
             output_tokens: 363,
-            streamed: false,
+            streamed: Some(false),
             ..Default::default()
         });
         turn.derive();
         let request = &turn.inference[0];
-        assert!(!request.streamed);
+        assert_eq!(request.streamed, Some(false));
         assert_eq!(request.request_duration_ms, Some(1001.0));
         let expected = 363.0 * 1000.0 / 1001.0;
         assert!((request.output_tokens_per_second.unwrap() - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn part_done_does_not_count_as_a_stream_chunk() {
+        use swarmy_core::Part;
+        let text = swarmy_llm::Delta::Text {
+            output_index: 0,
+            text: "hi".into(),
+        };
+        let done = swarmy_llm::Delta::PartDone {
+            output_index: 0,
+            part: Part::Text { text: "hi".into() },
+        };
+        // `PartDone` still starts the first-token clock (the fake provider
+        // relies on it) but never counts toward the streamed flag.
+        assert!(is_first_content(&text));
+        assert!(is_first_content(&done));
+        assert!(is_stream_chunk(&text));
+        assert!(!is_stream_chunk(&done));
+        assert!(!is_stream_chunk(&swarmy_llm::Delta::Completed(
+            swarmy_llm::Response {
+                parts: Vec::new(),
+                stop_reason: swarmy_llm::StopReason::EndTurn,
+                usage: swarmy_llm::TokenUsage::default(),
+                quota_remaining: std::collections::BTreeMap::new(),
+                quota_resets: std::collections::BTreeMap::new(),
+            }
+        )));
+    }
+
+    /// Drive a scripted provider stream the way `Gateway::stream` does: count
+    /// incremental deltas and classify the response. One text delta plus the
+    /// terminal `PartDone` is a single-chunk response.
+    #[test]
+    fn one_text_delta_plus_part_done_is_single_chunk() {
+        use futures::StreamExt as _;
+        use swarmy_core::Part;
+        struct Scripted(Vec<swarmy_llm::Delta>);
+        impl swarmy_llm::Provider for Scripted {
+            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+                let deltas = self.0.clone();
+                Box::pin(async_stream::try_stream! {
+                    for delta in deltas {
+                        yield delta;
+                    }
+                })
+            }
+        }
+        let completed = swarmy_llm::Response {
+            parts: vec![Part::Text { text: "hi".into() }],
+            stop_reason: swarmy_llm::StopReason::EndTurn,
+            usage: swarmy_llm::TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
+        };
+        let provider = Scripted(vec![
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "hi".into(),
+            },
+            swarmy_llm::Delta::PartDone {
+                output_index: 0,
+                part: Part::Text { text: "hi".into() },
+            },
+            swarmy_llm::Delta::Completed(completed),
+        ]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use swarmy_llm::Provider as _;
+            let request = swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            };
+            let mut stream = provider.request(request);
+            let mut chunks = 0_u32;
+            let mut response = None;
+            while let Some(delta) = stream.next().await {
+                let delta = delta.unwrap();
+                if is_stream_chunk(&delta) {
+                    chunks += 1;
+                }
+                if let swarmy_llm::Delta::Completed(done) = delta {
+                    response = Some(done);
+                }
+            }
+            assert!(response.is_some());
+            assert_eq!(chunks, 1);
+            assert!(!is_streamed_response(chunks));
+        });
+    }
+
+    /// Two incremental text deltas plus `PartDone` count as streamed.
+    #[test]
+    fn two_text_deltas_are_streamed() {
+        use futures::StreamExt as _;
+        use swarmy_core::Part;
+        struct Scripted(Vec<swarmy_llm::Delta>);
+        impl swarmy_llm::Provider for Scripted {
+            fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
+                let deltas = self.0.clone();
+                Box::pin(async_stream::try_stream! {
+                    for delta in deltas {
+                        yield delta;
+                    }
+                })
+            }
+        }
+        let completed = swarmy_llm::Response {
+            parts: vec![Part::Text { text: "ab".into() }],
+            stop_reason: swarmy_llm::StopReason::EndTurn,
+            usage: swarmy_llm::TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
+        };
+        let provider = Scripted(vec![
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "a".into(),
+            },
+            swarmy_llm::Delta::Text {
+                output_index: 0,
+                text: "b".into(),
+            },
+            swarmy_llm::Delta::PartDone {
+                output_index: 0,
+                part: Part::Text { text: "ab".into() },
+            },
+            swarmy_llm::Delta::Completed(completed),
+        ]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use swarmy_llm::Provider as _;
+            let request = swarmy_llm::Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: swarmy_llm::GenerationSettings::default(),
+            };
+            let mut stream = provider.request(request);
+            let mut chunks = 0_u32;
+            while let Some(delta) = stream.next().await {
+                let delta = delta.unwrap();
+                if is_stream_chunk(&delta) {
+                    chunks += 1;
+                }
+            }
+            assert_eq!(chunks, 2);
+            assert!(is_streamed_response(chunks));
+        });
     }
 }
