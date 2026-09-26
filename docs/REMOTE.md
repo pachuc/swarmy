@@ -11,7 +11,10 @@ NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
 `base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
 the image build duration is printed separately from the total provisioning time.
 The local machine needs `ssh`,
-`ssh-keygen`, and `rsync`. AWS credentials use the SDK's standard credential chain.
+`ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
+provides the `remote` subcommands below; `make install-client` enables it,
+while a plain `cargo build` leaves it out for the slimmer node binary and
+such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
 The current FoundationDB client additionally connects to the advertised private
 address on TCP 4500; the client machine needs a route to it. The SSH coordinator
 forward alone does not establish an external-laptop deployment.
