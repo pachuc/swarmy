@@ -33,7 +33,7 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
     {
         let lease = &expired;
         assert!(matches!(
-            store.submit_inference(0, lease, &record, &"input").await,
+            store.submit_inference(0, lease, &record, &"input", SubmitInferenceOptions::<()>::default()).await,
             Err(StoreError::LeaseMismatch)
         ));
         assert!(matches!(
@@ -56,7 +56,7 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
         .await
         .unwrap();
     assert!(matches!(
-        store.submit_inference(0, &expired, &record, &"input").await,
+        store.submit_inference(0, &expired, &record, &"input", SubmitInferenceOptions::<()>::default()).await,
         Err(StoreError::LeaseMismatch)
     ));
     assert!(matches!(
@@ -109,7 +109,7 @@ async fn submission_and_idle_commit_all_records_together() {
         object_key: "test-snapshot".into(),
     };
     let event = store
-        .submit_inference(0, &live, &record, &"input")
+        .submit_inference(0, &live, &record, &"input", SubmitInferenceOptions::<()>::default())
         .await
         .unwrap();
     assert_eq!(event.seq(), 1);
@@ -269,14 +269,14 @@ async fn tool_fold_and_inference_share_the_lease_fence_and_commit() {
     };
     assert!(matches!(
         store
-            .submit_inference_after(0, &stale, &record, &"input", &[folded.clone()])
+            .submit_inference(0, &stale, &record, &"input", SubmitInferenceOptions::<()> { before: &[folded.clone()], ..Default::default() })
             .await,
         Err(StoreError::LeaseMismatch)
     ));
     assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
     let request = store
-        .submit_inference_after(0, &lease, &record, &"input", &[folded.clone()])
+        .submit_inference(0, &lease, &record, &"input", SubmitInferenceOptions::<()> { before: &[folded.clone()], ..Default::default() })
         .await
         .unwrap();
     folded.set_seq(1);
@@ -416,7 +416,7 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
         key_id: String::new(),
     };
     store
-        .submit_inference(0, &lease, &record, &"input")
+        .submit_inference(0, &lease, &record, &"input", SubmitInferenceOptions::<()>::default())
         .await
         .unwrap();
     let claim = swarmy_store::InferenceClaim {

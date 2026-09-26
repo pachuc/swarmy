@@ -12,7 +12,7 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    CredentialKey, InterruptResult, PutImageOptions, Store, StoreError,
+    CredentialKey, InterruptResult, PutImageOptions, Store, StoreError, SubmitInferenceOptions,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };

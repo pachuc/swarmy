@@ -24,7 +24,7 @@ use swarmy_llm::{
     TokenUsage,
 };
 use swarmy_store::{
-    CredentialKey, Store,
+    CredentialKey, Store, SubmitInferenceOptions,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tempfile::TempDir;
@@ -272,7 +272,7 @@ impl Fixture {
             request,
         };
         self.store
-            .submit_inference_after_with_request(
+            .submit_inference(
                 0,
                 &lease,
                 &InflightRecord {
@@ -282,8 +282,10 @@ impl Fixture {
                     key_id: "fake".into(),
                 },
                 &job,
-                &job.request,
-                &[],
+                SubmitInferenceOptions {
+                    request: Some(&job.request),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();

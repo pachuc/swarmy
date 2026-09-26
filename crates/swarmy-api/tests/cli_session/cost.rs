@@ -45,6 +45,7 @@ async fn complete(
                 key_id: String::new(),
             },
             &"input",
+            swarmy_store::SubmitInferenceOptions::<()>::default(),
         )
         .await
         .unwrap();

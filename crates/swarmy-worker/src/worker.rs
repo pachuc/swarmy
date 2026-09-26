@@ -11,7 +11,8 @@ use swarmy_core::{
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::{InferenceJob, InferenceJobRef};
 use swarmy_store::{
-    FailoverAction, MAX_SCAN_LIMIT, Store, StoreError, blob::BlobStore, runnable_partition,
+    FailoverAction, MAX_SCAN_LIMIT, Store, StoreError, SubmitInferenceOptions, blob::BlobStore,
+    runnable_partition,
 };
 use tokio::{
     sync::Mutex,
@@ -969,7 +970,7 @@ impl Worker {
             let mut token = lease.lock().await;
             let event = self
                 .store
-                .submit_inference_after_with_request_and_route(
+                .submit_inference(
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &InflightRecord {
@@ -979,9 +980,11 @@ impl Worker {
                         key_id: job.entry.clone().unwrap_or_default(),
                     },
                     &job,
-                    &job.request,
-                    &preceding,
-                    route,
+                    SubmitInferenceOptions {
+                        request: Some(&job.request),
+                        before: &preceding,
+                        route,
+                    },
                 )
                 .await?;
             *token = None;

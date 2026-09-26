@@ -49,7 +49,7 @@ mod timers;
 mod tool_routing;
 mod tools;
 mod turns;
-pub use turns::SubmitRouteStep;
+pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
 pub use volumes::PutImageOptions;
 

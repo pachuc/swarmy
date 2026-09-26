@@ -106,6 +106,7 @@ async fn complete(store: &Store, id: SessionId, seed: &CompletionSeed<'_>) {
                 key_id: String::new(),
             },
             &"input",
+            swarmy_store::SubmitInferenceOptions::<()>::default(),
         )
         .await
         .unwrap();
