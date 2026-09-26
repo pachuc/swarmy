@@ -96,6 +96,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = { version = "3", features = ["serde"] }
 swarmy-api = { path = "crates/swarmy-api" }
+swarmy-catalog = { path = "crates/swarmy-catalog" }
 swarmy-config = { path = "crates/swarmy-config" }
 swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }

@@ -15,7 +15,7 @@ import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG = ROOT / "crates/swarmy-llm/catalog"
+CATALOG = ROOT / "crates/swarmy-catalog/catalog"
 SOURCES = {
     "models.dev": "https://models.dev/api.json",
     "openrouter": "https://openrouter.ai/api/v1/models",

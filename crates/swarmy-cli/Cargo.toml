@@ -10,8 +10,13 @@ license.workspace = true
 # Provisioning (EC2, SSM, S3, IAM) is opt-in so the default build skips the
 # AWS SDKs entirely. Node builds and plain workspace checks use the default;
 # laptop installs and provisioning tests enable `remote`.
-default = []
+default = ["azure", "bedrock", "gemini"]
 remote = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm", "dep:aws-sdk-s3", "dep:aws-sdk-iam"]
+# The CLI probes every provider by default. Each cloud client forwards to the
+# matching swarmy-llm feature; nothing else enables any.
+azure = ["swarmy-llm/azure"]
+bedrock = ["swarmy-llm/bedrock"]
+gemini = ["swarmy-llm/gemini"]
 
 [lints]
 workspace = true
@@ -57,7 +62,7 @@ swarmy-core.workspace = true
 swarmy-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
-swarmy-llm.workspace = true
+swarmy-llm = { workspace = true, default-features = false }
 tokio.workspace = true
 tracing.workspace = true
 jiff.workspace = true
