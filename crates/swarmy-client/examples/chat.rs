@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let event = stream.next().await?;
         if let EventPayload::StoreRecord { record } = event.payload {
+            let record = serde_json::to_value(&record)?;
             if let Some(failure) = record.get("inference_failed") {
                 return Err(format!("inference failed: {failure}").into());
             }

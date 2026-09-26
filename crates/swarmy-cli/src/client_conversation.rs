@@ -407,7 +407,11 @@ impl Conversation {
             log_id: self.session.log_id.clone(),
             sequence: head,
             payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":head}}),
+                record: swarmy_core::Event::StateChanged {
+                    seq: head,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: swarmy_core::SessionState::Idle,
+                },
             },
         }));
     }
@@ -434,8 +438,9 @@ impl Conversation {
         Ok(Some(StreamItem::Event(api::Event {
             log_id: self.session.log_id.clone(),
             sequence: 0,
-            payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"session_summarized":{"previous_session_id":old,"session_id":next}}),
+            payload: api::EventPayload::SessionSummarized {
+                previous_session_id: old,
+                session_id: next,
             },
         })))
     }
@@ -552,18 +557,33 @@ impl Conversation {
                     progress.streamed.push_str(&text);
                 }
                 StreamItem::Event(event) => {
-                    let api::EventPayload::StoreRecord { record } = event.payload else {
-                        continue;
-                    };
-                    if self.record_event(
-                        &record,
-                        event.sequence,
-                        json,
-                        run,
-                        quiet,
-                        &mut progress,
-                    )? {
-                        return Ok(());
+                    let sequence = event.sequence;
+                    match event.payload {
+                        api::EventPayload::SessionSummarized {
+                            previous_session_id,
+                            session_id,
+                        } => {
+                            report_summary(quiet, json, &previous_session_id, &session_id);
+                            continue;
+                        }
+                        api::EventPayload::TimelineEvent { .. } => continue,
+                        api::EventPayload::StoreRecord { record } => {
+                            let value = match serde_json::to_value(&record) {
+                                Ok(value) => value,
+                                Err(_) => continue,
+                            };
+                            if self.record_event(
+                                &value,
+                                sequence,
+                                json,
+                                run,
+                                quiet,
+                                &mut progress,
+                            )? {
+                                return Ok(());
+                            }
+                        }
+                        _ => continue,
                     }
                 }
                 StreamItem::TokenDelta { .. } => {}
@@ -581,11 +601,6 @@ impl Conversation {
         progress: &mut TurnProgress,
     ) -> Result<bool> {
         if sequence < self.min_sequence {
-            return Ok(false);
-        }
-        if let Some(summary) = record.get("session_summarized") {
-            report_summary(quiet, json, summary);
-            progress.started = true;
             return Ok(false);
         }
         if !quiet && json {
@@ -775,30 +790,41 @@ struct TurnProgress {
 }
 
 fn is_idle_event(event: &api::Event) -> bool {
-    matches!(&event.payload, api::EventPayload::StoreRecord { record }
-        if record.get("state_changed").and_then(|v| v.get("to"))
-            == Some(&serde_json::json!("idle")))
+    matches!(
+        &event.payload,
+        api::EventPayload::StoreRecord {
+            record: swarmy_core::Event::StateChanged {
+                to: swarmy_core::SessionState::Idle,
+                ..
+            }
+        }
+    )
 }
 
 fn is_completed_event(payload: &api::EventPayload) -> bool {
-    matches!(payload, api::EventPayload::StoreRecord { record }
-        if record.get("state_changed").and_then(|v| v.get("to"))
-            == Some(&serde_json::json!("completed")))
+    matches!(
+        payload,
+        api::EventPayload::StoreRecord {
+            record: swarmy_core::Event::StateChanged {
+                to: swarmy_core::SessionState::Completed,
+                ..
+            }
+        }
+    )
 }
 
-fn report_summary(quiet: bool, json: bool, summary: &serde_json::Value) {
+fn report_summary(quiet: bool, json: bool, previous_session_id: &str, session_id: &str) {
     if quiet {
         return;
     }
     if json {
         println!(
             "{}",
-            serde_json::json!({"event":"session_summarized","previous_session_id":summary["previous_session_id"],"session_id":summary["session_id"]})
+            serde_json::json!({"event":"session_summarized","previous_session_id":previous_session_id,"session_id":session_id})
         );
     } else {
         eprintln!(
-            "Conversation summarized. Session {} archived; continuing in {}.",
-            summary["previous_session_id"], summary["session_id"]
+            "Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
         );
     }
 }
@@ -893,10 +919,14 @@ mod tests {
             log_id: api::LogId::Session("s".into()),
             sequence,
             payload: api::EventPayload::StoreRecord {
-                record: if idle {
-                    serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":sequence}})
-                } else {
-                    serde_json::json!({"message_appended":{"seq":sequence}})
+                record: swarmy_core::Event::StateChanged {
+                    seq: sequence,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: if idle {
+                        swarmy_core::SessionState::Idle
+                    } else {
+                        swarmy_core::SessionState::Runnable
+                    },
                 },
             },
         }

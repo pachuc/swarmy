@@ -710,9 +710,23 @@ pub enum EventPayload {
     NodeStatusChanged {
         node: Node,
     },
-    /// Stored events without a dedicated public projection retain their original data.
+    /// Durable session events keep their stored shape; the API carries the
+    /// typed event instead of an untyped JSON hole.
     StoreRecord {
-        record: serde_json::Value,
+        #[schema(value_type = serde_json::Value)]
+        record: swarmy_core::Event,
+    },
+    /// Live turn-timeline observations, which are never replayed.
+    TimelineEvent {
+        #[schema(value_type = serde_json::Value)]
+        event: swarmy_core::TurnEvent,
+    },
+    /// Client-local notice that a summarized session continues elsewhere.
+    /// The server never sends this; the CLI synthesizes it when following a
+    /// successor session.
+    SessionSummarized {
+        previous_session_id: String,
+        session_id: String,
     },
 }
 

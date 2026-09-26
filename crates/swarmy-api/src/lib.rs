@@ -642,10 +642,7 @@ async fn events(
         .into_iter()
         .map(|record| {
             let sequence = record.seq();
-            let payload = api::EventPayload::StoreRecord {
-                record: serde_json::to_value(record)
-                    .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?,
-            };
+            let payload = api::EventPayload::StoreRecord { record };
             Ok(api::Event {
                 log_id: api::LogId::Session(text.clone()),
                 sequence,

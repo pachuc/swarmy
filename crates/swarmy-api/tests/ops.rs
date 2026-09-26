@@ -482,10 +482,9 @@ async fn timeline_stream_delivers_turn_observations() {
         .unwrap()
         .unwrap();
     assert_eq!(event.sequence, 1);
-    let api::EventPayload::StoreRecord { record } = event.payload else {
-        panic!("timeline observations keep their stored shape");
+    let api::EventPayload::TimelineEvent { event: observation } = event.payload else {
+        panic!("timeline observations arrive typed");
     };
-    let observation: swarmy_core::TurnEvent = serde_json::from_value(record).unwrap();
     assert_eq!(observation.turn_id.to_string(), turn);
     assert_eq!(observation.stage, TurnStage::Submitted);
 }

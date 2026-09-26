@@ -54,6 +54,7 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return None;
                 };
+                let record = serde_json::to_value(&record).ok()?;
                 record
                     .get("message_appended")?
                     .get("message")?
@@ -440,16 +441,22 @@ impl View {
                 ..
             } => self.partial.push_str(&text),
             StreamItem::Event(event) => {
-                let api::EventPayload::StoreRecord { record } = event.payload else {
-                    return;
-                };
-                if let Some(summary) = record.get("session_summarized") {
-                    self.entries.push(format!(
-                        "System: Conversation summarized. Session {} archived; continuing in {}.",
-                        summary["previous_session_id"], summary["session_id"]
-                    ));
-                    return;
-                }
+                match event.payload {
+                    api::EventPayload::SessionSummarized {
+                        previous_session_id,
+                        session_id,
+                    } => {
+                        self.entries.push(format!(
+                            "System: Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
+                        ));
+                        return;
+                    }
+                    api::EventPayload::TimelineEvent { .. } => return,
+                    api::EventPayload::StoreRecord { record } => {
+                        let record = match serde_json::to_value(&record) {
+                            Ok(value) => value,
+                            Err(_) => return,
+                        };
                 if let Some(state) = record
                     .get("state_changed")
                     .and_then(|s| s.get("to"))
@@ -510,6 +517,9 @@ impl View {
                     && let api::LogId::Session(session_id) = &event.log_id
                 {
                     self.message(message, session_id);
+                }
+                    }
+                    _ => {}
                 }
             }
             StreamItem::TokenDelta { .. } => {}
@@ -574,11 +584,22 @@ mod tests {
     }
 
     fn state_event(to: &str, sequence: u64) -> StreamItem {
+        let to_state = match to {
+            "idle" => swarmy_core::SessionState::Idle,
+            "leased" => swarmy_core::SessionState::Leased,
+            "runnable" => swarmy_core::SessionState::Runnable,
+            "completed" => swarmy_core::SessionState::Completed,
+            _ => swarmy_core::SessionState::Runnable,
+        };
         StreamItem::Event(api::Event {
             log_id: api::LogId::Session("test".into()),
             sequence,
             payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"state_changed": {"from": "other", "to": to}}),
+                record: swarmy_core::Event::StateChanged {
+                    seq: sequence,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: to_state,
+                },
             },
         })
     }

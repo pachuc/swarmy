@@ -354,16 +354,10 @@ async fn catch_up(
             if record.seq() <= sub.cursors[index].sequence {
                 continue;
             }
-            let payload = match serde_json::to_value(&record) {
-                Ok(record) => api::EventPayload::StoreRecord { record },
-                Err(error) => {
-                    tracing::warn!(%error, "SSE event encoding failed");
-                    return Replay::Failed;
-                }
-            };
             // A cursor only advances when the corresponding event has entered
             // the bounded output queue. The client can replay after a disconnect.
             let next = record.seq();
+            let payload = api::EventPayload::StoreRecord { record };
             let mut upcoming = sub.clone();
             upcoming.cursors[index].sequence = next;
             let Ok(id_field) = encode_cursor(&upcoming) else {
@@ -506,11 +500,12 @@ async fn produce(
                             if !deliver(&sender, Event::default().event("token_delta").data(data), Duration::from_secs(2)).await { return; }
                         }
                         Some(FeedItem::Timeline(log, sequence, observation)) => {
-                            let Ok(record) = serde_json::to_value(&observation) else { return };
                             let Ok(data) = serde_json::to_string(&api::Event {
                                 log_id: log,
                                 sequence,
-                                payload: api::EventPayload::StoreRecord { record },
+                                payload: api::EventPayload::TimelineEvent {
+                                    event: observation,
+                                },
                             }) else { return };
                             if !deliver(&sender, Event::default().event("event").data(data), Duration::from_secs(2)).await { return; }
                         }
