@@ -64,6 +64,8 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         mapping = json.loads(os.environ.get('REPORT_METRICS', '{}'))
         sid = rest[2] if len(rest) > 2 else ''
         print(json.dumps(mapping.get(sid, [])))
+    elif rest[:1] == ['cost']:
+        print(json.dumps({'total': {'cost_dollars': os.environ.get('FLEET_COST', '0.0100')}}))
     elif rest[:3] == ['session', 'interrupt', '01AAAA']:
         (root / 'interrupted').write_text('yes')
     else:
@@ -126,6 +128,7 @@ class FleetTests(unittest.TestCase):
         self.assertIn("worker-1\tEWR2HD", status.stdout)
         self.assertIn("waiting for inference: 429 rate limited", status.stdout)
         self.assertIn("$1.25", status.stdout)
+        self.assertIn("cost today=$0.0100 this_month=$0.0100", status.stdout)
         collect = self.call("collect", "EWR2HD")
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertIn(["task", "pr", "EWR2HD", "https://github.com/pachuc/swarmy/pull/42"], self.calls())
