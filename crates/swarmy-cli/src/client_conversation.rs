@@ -324,7 +324,14 @@ impl Conversation {
     }
 
     async fn poll_tick(&mut self) -> Result<bool> {
-        let session = self.client.session(&self.id).await?;
+        // A successor switch replaces self.id; a tick that started before
+        // the switch must not clobber the new session with the archived
+        // one it read, nor queue the archived feed into the new turn.
+        let id = self.id.clone();
+        let session = self.client.session(&id).await?;
+        if self.id != id {
+            return Ok(false);
+        }
         if !(session.state == api::SessionState::Idle && session.head_sequence >= self.min_sequence)
         {
             return Ok(false);
@@ -333,7 +340,10 @@ impl Conversation {
         // cursor advances on return, so also skip sequences already waiting
         // in pending when two ticks fire before the queue drains.
         let after = self.pending_after();
-        let history = self.client.events(&self.id, after, 100).await?;
+        let history = self.client.events(&id, after, 100).await?;
+        if self.id != id {
+            return Ok(false);
+        }
         let (fresh, has_idle) = select_fresh(history, after, session.head_sequence, &self.pending);
         for event in fresh {
             self.pending.push_back(StreamItem::Event(event));
@@ -438,6 +448,14 @@ impl Conversation {
                 }
                 if is_idle_event(event) {
                     self.observe_idle(event.sequence);
+                }
+            }
+            if let StreamItem::TokenDelta { log_id, .. } = &item {
+                // Deltas from the archived feed can arrive after following
+                // the successor; they belong to the old session, not the
+                // new view, so drop them instead of rendering stray text.
+                if *log_id != self.session.log_id {
+                    continue;
                 }
             }
             if let StreamItem::Event(event) = &item {

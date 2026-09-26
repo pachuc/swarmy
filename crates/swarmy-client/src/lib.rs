@@ -567,6 +567,7 @@ impl Client {
             connection_id: None,
             delay: Duration::from_millis(100),
             retry_floor: Duration::ZERO,
+            updating: None,
         }
     }
 }
@@ -630,6 +631,17 @@ pub struct EventStream {
     connection_id: Option<String>,
     delay: Duration,
     retry_floor: Duration,
+    updating: Option<PendingUpdate>,
+}
+
+/// A subscription PUT in flight. The task is owned by the stream so that
+/// cancelling the awaiting future cannot drop the PUT between the server
+/// applying it and the client recording it: the next update finishes the
+/// stored task and records its selection first, so a retry never replays
+/// an already-applied cursor as a rewind.
+struct PendingUpdate {
+    next: api::Subscription,
+    task: tokio::task::JoinHandle<Result<(), Error>>,
 }
 impl EventStream {
     #[must_use]
@@ -675,6 +687,10 @@ impl EventStream {
         Ok(())
     }
     async fn update(&mut self) -> Result<(), Error> {
+        // Finish a PUT that a cancelled await left behind before sending
+        // anything new, so its applied selection is recorded and never
+        // replayed as a cursor rewind.
+        self.finish_pending().await?;
         let requested = self.changes.borrow().clone();
         let old: HashMap<_, _> = self
             .subscription
@@ -688,34 +704,84 @@ impl EventStream {
                 cursor.sequence = cursor.sequence.max(*sequence);
             }
         }
-        if let Some(id) = &self.connection_id {
-            let response = self
-                .client
-                .http
-                .put(self.client.url(&format!("events/{id}/subscription")))
-                .bearer_auth(&self.client.token)
-                .json(&next)
-                .send()
-                .await?;
-            if !response.status().is_success() {
-                let failure = decode::<serde_json::Value>(response).await.unwrap_err();
+        if !subscription_changed(&next, &self.subscription) {
+            return Ok(());
+        }
+        if self.connection_id.is_none() {
+            self.subscription = next;
+            return Ok(());
+        }
+        // Store the task before awaiting it: dropping this future leaves
+        // the PUT running, and the next update records it on completion.
+        let id = self.connection_id.clone().expect("checked connection");
+        let client = self.client.clone();
+        let body = next.clone();
+        let url = client.url(&format!("events/{id}/subscription"));
+        let token = client.token.clone();
+        let http = client.http.clone();
+        self.updating = Some(PendingUpdate {
+            next,
+            task: tokio::spawn(async move {
+                let response = http.put(url).bearer_auth(&token).json(&body).send().await?;
+                if !response.status().is_success() {
+                    return Err(decode::<serde_json::Value>(response).await.unwrap_err());
+                }
+                Ok(())
+            }),
+        });
+        self.finish_pending().await
+    }
+
+    /// Await the stored PUT task in place and record its outcome. Awaiting
+    /// through the stored handle keeps the task alive when this future is
+    /// cancelled: the task stays in `self.updating` and the next call
+    /// resumes the same wait instead of sending the same cursors again.
+    async fn finish_pending(&mut self) -> Result<(), Error> {
+        if self.updating.is_none() {
+            return Ok(());
+        }
+        let outcome = {
+            let pending = self.updating.as_mut().expect("checked pending update");
+            (&mut pending.task).await
+        };
+        let pending = self.updating.take().expect("checked pending update");
+        match outcome {
+            Ok(Ok(())) => {
+                self.subscription = pending.next;
+                Ok(())
+            }
+            Ok(Err(failure)) => {
                 // A rejected change must not be sent again on the next poll.
-                if retryable(&failure) {
-                    // A transient rejection may have happened after the update was
-                    // applied. Reconnect with delivered cursors and the new selection.
+                if retryable(&failure) || expired_connection(&failure) {
+                    // A transient rejection may have happened after the
+                    // update was applied. An expired connection was never
+                    // applied, but the subscription itself already
+                    // validated, so a fresh connect with the new selection
+                    // recovers it. Either way reconnect with delivered
+                    // cursors and the new selection.
                     self.response = None;
                     self.connection_id = None;
                     self.buffer.clear();
-                    self.subscription = next;
+                    self.subscription = pending.next;
                     self.backoff().await;
-                    return Ok(());
+                    Ok(())
+                } else {
+                    self.changes.send_replace(self.subscription.clone());
+                    Err(failure)
                 }
-                self.changes.send_replace(self.subscription.clone());
-                return Err(failure);
+            }
+            Err(_) => {
+                // The task itself was lost after the request was sent; the
+                // server may have applied it, so record the selection and
+                // reconnect instead of replaying the same cursors.
+                self.response = None;
+                self.connection_id = None;
+                self.buffer.clear();
+                self.subscription = pending.next;
+                self.backoff().await;
+                Ok(())
             }
         }
-        self.subscription = next;
-        Ok(())
     }
     /// Returns the next durable event. Connection failures are retried indefinitely;
     /// protocol and API errors are returned. Cursor advancement happens only on delivery.
@@ -818,6 +884,23 @@ fn retryable(error: &Error) -> bool {
         _ => true,
     }
 }
+
+/// Whether a subscription update failed only because the server no longer
+/// has the connection (slow-client disconnect, deploy, or restart). The
+/// update handler validates every cursor before looking the connection up,
+/// so a 404 here names a missing connection, never a missing session; a
+/// fresh connect with the requested selection recovers, while reverting
+/// would strand the client on the old feed and surface a fatal error.
+fn expired_connection(error: &Error) -> bool {
+    match error {
+        Error::Api { status, body } => {
+            status.as_u16() == 404 && body.code == "connection_not_found"
+        }
+        Error::Status { status, .. } => status.as_u16() == 404,
+        _ => false,
+    }
+}
+
 fn subscription_changed(requested: &api::Subscription, current: &api::Subscription) -> bool {
     requested.token_deltas != current.token_deltas
         || requested.cursors.len() != current.cursors.len()
@@ -1036,6 +1119,198 @@ mod tests {
                 .unwrap(),
             updated
         );
+    }
+
+    #[tokio::test]
+    async fn expired_connection_reconnects_instead_of_failing_the_switch() {
+        use axum::{http::HeaderMap, routing::put};
+        // The server drops slow clients and forgets the connection; the next
+        // subscription update then reports 404 connection_not_found. The
+        // client must reconnect with the new selection (for example the
+        // successor feed after a summarization) instead of reverting the
+        // change and failing the chat.
+        let app = Router::new()
+            .route(
+                "/v1/events",
+                get(|| async {
+                    let stream = futures_util::stream::once(async {
+                        Ok::<_, Infallible>(SseEvent::default().event("connected").data("{}"))
+                    })
+                    .chain(futures_util::stream::pending());
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-swarmy-connection-id", "connection".parse().unwrap());
+                    (headers, Sse::new(stream))
+                }),
+            )
+            .route(
+                "/v1/events/connection/subscription",
+                put(|| async {
+                    (
+                        HttpStatus::NOT_FOUND,
+                        Json(api::ApiError {
+                            code: "connection_not_found".into(),
+                            message: "unknown connection".into(),
+                            provider_text: None,
+                        }),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("old".into()),
+                sequence: 3,
+            }],
+            token_deltas: true,
+        });
+        let handle = stream.subscription_handle();
+        // Poll next so the initial connection has opened before changing it.
+        let mut pending = Box::pin(stream.next());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pending)
+                .await
+                .is_err()
+        );
+        drop(pending);
+        handle.set(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("new".into()),
+                sequence: 0,
+            }],
+            token_deltas: true,
+        });
+        // The expired connection reconnects and waits for new-feed events
+        // instead of returning the 404; the timeout below is the success
+        // case (still waiting), an immediate error is the failure case.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), stream.next_item())
+                .await
+                .is_err()
+        );
+        // The new selection survived instead of reverting to the old feed.
+        assert_eq!(stream.cursors().len(), 1);
+        assert_eq!(
+            stream.cursors()[0].log_id,
+            api::LogId::Session("new".into())
+        );
+        assert_eq!(stream.cursors()[0].sequence, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_update_records_the_applied_selection() {
+        use axum::{extract::State, http::HeaderMap, routing::put};
+        // A keystroke or poll tick can win the enclosing select while the
+        // subscription PUT is in flight, dropping the awaiting future after
+        // the server applied the switch but before the client recorded it.
+        // The PUT task is owned by the stream, so dropping the future leaves
+        // it running; the next update records the applied selection and
+        // never replays the same cursors as a rewind.
+        let (sent, mut received) = tokio::sync::mpsc::channel::<api::Subscription>(8);
+        let puts = Arc::new(AtomicU64::new(0));
+        let app = Router::new()
+            .route(
+                "/v1/events",
+                get(|| async {
+                    let stream = futures_util::stream::once(async {
+                        Ok::<_, Infallible>(SseEvent::default().event("connected").data("{}"))
+                    })
+                    .chain(futures_util::stream::pending());
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-swarmy-connection-id", "connection".parse().unwrap());
+                    (headers, Sse::new(stream))
+                }),
+            )
+            .route(
+                "/v1/events/connection/subscription",
+                put({
+                    let puts = puts.clone();
+                    move |State(sent): State<tokio::sync::mpsc::Sender<api::Subscription>>,
+                          Json(sub): Json<api::Subscription>| {
+                        let puts = puts.clone();
+                        async move {
+                            puts.fetch_add(1, Ordering::SeqCst);
+                            // Hold the response long enough that the test can
+                            // drop the awaiting future mid-update.
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            sent.send(sub).await.unwrap();
+                            HttpStatus::NO_CONTENT
+                        }
+                    }
+                }),
+            )
+            .with_state(sent);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new(&format!("http://{address}"), "token").unwrap();
+        let mut stream = client.stream(api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("old".into()),
+                sequence: 3,
+            }],
+            token_deltas: true,
+        });
+        let handle = stream.subscription_handle();
+        // Poll next so the initial connection has opened before changing it.
+        let mut pending = Box::pin(stream.next());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pending)
+                .await
+                .is_err()
+        );
+        drop(pending);
+        let updated = api::Subscription {
+            cursors: vec![api::Cursor {
+                log_id: api::LogId::Session("new".into()),
+                sequence: 0,
+            }],
+            token_deltas: true,
+        };
+        handle.set(updated.clone());
+        // Drop the awaiting future while the PUT is in flight: the server
+        // has not answered yet, so nothing is recorded.
+        let mut cancelled = Box::pin(stream.next_item());
+        // Poll once so the PUT starts, then wait for the server to see it.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut cancelled)
+                .await
+                .is_err()
+        );
+        let mut seen = false;
+        for _ in 0..50 {
+            if puts.load(Ordering::SeqCst) == 1 {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(seen, "server did not see the subscription PUT");
+        drop(cancelled);
+        // Let the owned PUT task finish and record the applied selection.
+        let applied = tokio::time::timeout(Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(applied, updated);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The next update finishes the stored task instead of sending the
+        // same cursors again, then waits for new-feed events.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), stream.next_item())
+                .await
+                .is_err()
+        );
+        // The recorded selection matches what the server applied, and the
+        // retry never replayed it.
+        assert_eq!(stream.cursors(), updated.cursors.as_slice());
+        assert_eq!(puts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

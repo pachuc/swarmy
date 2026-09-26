@@ -17,6 +17,7 @@ struct Terminal {
     receiver: mpsc::UnboundedReceiver<Vec<u8>>,
     parser: vt100::Parser,
     queries: Vec<u8>,
+    captured: Vec<u8>,
 }
 
 impl Terminal {
@@ -97,6 +98,7 @@ impl Terminal {
             receiver,
             parser: vt100::Parser::new(30, 140, 0),
             queries: Vec::new(),
+            captured: Vec::new(),
         }
     }
 
@@ -117,6 +119,7 @@ impl Terminal {
 
     fn process(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
+        self.captured.extend_from_slice(bytes);
         self.queries.extend_from_slice(bytes);
         if self.queries.windows(4).any(|bytes| bytes == b"\x1b[6n") {
             let (row, column) = self.parser.screen().cursor_position();
@@ -154,7 +157,28 @@ impl Terminal {
         timeout(WAIT, async {
             loop {
                 if let Some(status) = self.child.try_wait().unwrap() {
-                    assert_eq!(status.success(), success);
+                    // Drain the remaining PTY output first: the client prints
+                    // its error to stderr after leaving the alternate screen,
+                    // and the PTY merges it into this capture.
+                    while let Some(bytes) = self.receiver.recv().await {
+                        self.process(&bytes);
+                    }
+                    if status.success() != success {
+                        let mut tail = self
+                            .captured
+                            .iter()
+                            .rev()
+                            .take(4096)
+                            .copied()
+                            .collect::<Vec<_>>();
+                        tail.reverse();
+                        panic!(
+                            "chat exit status {} (expected success={success}); screen:\n{}\npty tail:\n{}",
+                            status.exit_code(),
+                            self.parser.screen().contents(),
+                            String::from_utf8_lossy(&tail),
+                        );
+                    }
                     break;
                 }
                 sleep(Duration::from_millis(20)).await;
@@ -322,11 +346,12 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         terminal
             .screen(|screen| screen.contains("Tool: get_time") && screen.contains("Result:"))
             .await;
+        // Wait for the reply only. The "input locked" status is transient and
+        // the client may render the reply and the idle state in one frame, so
+        // requiring both together raced on slow runners (as with the wait
+        // below, which was relaxed for the same reason).
         let screen = terminal
-            .screen(|screen| {
-                screen.contains("Agent: Scripted conversation reply.")
-                    && screen.contains("input locked")
-            })
+            .screen(|screen| screen.contains("Agent: Scripted conversation reply."))
             .await;
         assert!(screen.find("Result:").unwrap() < screen.find("Agent:").unwrap());
         terminal.ready().await;
