@@ -214,6 +214,20 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
         ),
         (swarmy_store::MeteringDimension::EntryKind, "api-key".into()),
         (swarmy_store::MeteringDimension::Model, "gpt-5".into()),
+        (
+            swarmy_store::MeteringDimension::AgentEntry,
+            swarmy_store::metering::agent_entry_key(
+                &session.agent_id.to_string(),
+                &swarmy_store::metering::entry_key("openai", "primary"),
+            ),
+        ),
+        (
+            swarmy_store::MeteringDimension::SessionEntry,
+            swarmy_store::metering::session_entry_key(
+                &id.to_string(),
+                &swarmy_store::metering::entry_key("openai", "primary"),
+            ),
+        ),
     ];
     for (dimension, key) in checks {
         let groups = store
@@ -373,6 +387,116 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
     assert_eq!(quota.free, Some(998));
     assert_eq!(quota.limit, Some(1_000));
     assert_eq!(quota.window_seconds, Some(18_000));
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn entry_breakdown_and_aggregate_match_single_key_views() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let first = test.create().await;
+    let second = test.create().await;
+    let agents = [
+        store.fetch_session(first).await.unwrap().unwrap().agent_id,
+        store.fetch_session(second).await.unwrap().unwrap().agent_id,
+    ];
+    let base = Timestamp::from_second(1_700_000_000).unwrap();
+    let (tokens, cost) = usage(10, 20, 500);
+    // The first session bills two entries; the second shares one of them.
+    complete_with(
+        store,
+        first,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            "api-key",
+            tokens.clone(),
+            cost,
+            base,
+        ),
+    )
+    .await;
+    complete_with(
+        store,
+        first,
+        &input("xai", "grok", "secondary", "api-key", tokens.clone(), cost, base),
+    )
+    .await;
+    complete_with(
+        store,
+        second,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            "api-key",
+            tokens.clone(),
+            cost,
+            base,
+        ),
+    )
+    .await;
+    let from = Timestamp::from_second(swarmy_store::metering::hour_floor(base.as_second())).unwrap();
+    let to = Timestamp::from_second(from.as_second() + 3_600).unwrap();
+    // One owner's combined keys split back into entries with their costs.
+    let breakdown = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::AgentEntry,
+            &format!("{}/", agents[0]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(breakdown.len(), 2);
+    for total in &breakdown {
+        let (owner, entry) = swarmy_store::metering::split_owner_key(&total.key).unwrap();
+        assert_eq!(owner, agents[0].to_string());
+        assert!(["openai/primary", "xai/secondary"].contains(&entry));
+        assert_eq!(total.totals.cost_micros, cost);
+        assert_eq!(total.completions, 1);
+    }
+    // The other owner sees only its own entry.
+    let breakdown = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::SessionEntry,
+            &format!("{second}/"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(breakdown.len(), 1);
+    assert_eq!(breakdown[0].totals.cost_micros, cost);
+    // The aggregate series equals the sum of the single-key series.
+    let aggregate = store
+        .usage_aggregate(
+            swarmy_store::MeteringDimension::Agent,
+            from,
+            to,
+            swarmy_store::UsageGroupBy::Day,
+        )
+        .await
+        .unwrap();
+    assert_eq!(aggregate.len(), 1);
+    assert_eq!(aggregate[0].completions, 3);
+    assert_eq!(aggregate[0].totals.cost_micros, cost * 3);
+    let mut summed = swarmy_core::UsageTotals::default();
+    for agent in &agents {
+        let groups = store
+            .usage(
+                swarmy_store::MeteringDimension::Agent,
+                &agent.to_string(),
+                from,
+                to,
+                swarmy_store::UsageGroupBy::Day,
+            )
+            .await
+            .unwrap();
+        for group in &groups {
+            summed.add(&group.totals.usage, group.totals.cost_micros);
+        }
+    }
+    assert_eq!(aggregate[0].totals, summed);
     test.cleanup().await;
 }
 
