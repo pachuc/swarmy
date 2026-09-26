@@ -159,7 +159,7 @@ struct Fixture {
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::swarmy());
+        let mut command = Command::new(cli_bin::bin("swarmy"));
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)

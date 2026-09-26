@@ -52,9 +52,3 @@ pub fn bin(name: &str) -> PathBuf {
     );
     binary
 }
-
-/// Resolve the `swarmy` CLI binary built beside the test profile directory.
-#[must_use]
-pub fn swarmy() -> PathBuf {
-    bin("swarmy")
-}

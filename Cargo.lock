@@ -4300,6 +4300,7 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "axum",
+ "blake3",
  "foundationdb",
  "futures",
  "futures-util",
@@ -4314,6 +4315,7 @@ dependencies = [
  "swarmy-client",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-harness",
  "swarmy-llm",
  "swarmy-store",
  "swarmy-volume",

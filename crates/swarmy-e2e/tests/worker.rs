@@ -23,7 +23,7 @@ use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
-use swarmy_llm::{InferenceJob, Response, StopReason, TokenUsage};
+use swarmy_llm::{Response, StopReason, TokenUsage};
 use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::{
