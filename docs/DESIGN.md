@@ -108,6 +108,73 @@ lease. Invalid or failed summaries leave the existing conversation usable. Side
 sessions do not automatically summarize the main conversation, and old
 transcripts remain readable.
 
+Side sessions, which carry every fleet task, summarize themselves before they
+can outgrow the provider window. When a side session's last input usage passes
+its threshold (explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else the catalog's
+per-model or per-provider `summarize_at`, else three quarters of the model's
+window, else 400k input tokens), the worker takes the same summary shape and
+opens a successor side session with that opening plus recent turns kept
+verbatim: whole turns up to roughly 20k tokens, cut only at user-message
+boundaries so a tool call never separates from its result, at least the last
+turn even when one turn alone exceeds the budget. The archived session links
+forward and back without moving the main pointer. At 75 percent of the
+threshold the worker appends one `context_pressure` system warning per session
+so `fleet status` shows it coming. The summary request carries no tools and
+caps its output at the smaller of the model's output limit and 4,096 tokens;
+when the estimated prompt plus that output would exceed a known window, the
+worker keeps the existing session instead of sending a summary that cannot fit.
+
+How other harnesses compact, and what swarmy takes from them. OpenCode
+(`sst/opencode`, `packages/core/src/session/compaction.ts`) compacts
+automatically when the estimated request exceeds the model window minus the
+larger of the request output limit and a 20k buffer, keeping 8k recent tokens.
+It serializes each assistant tool call together with its result (tool output
+truncated to 2,000 chars), carries a prior summary forward iteratively with a
+fixed markdown template (Objective, Important Details, Work State, Next Move,
+Relevant Files), caps summary output at 4,096 tokens, and refuses the summary
+when its prompt would not fit the remaining window. Pi (`badlogic/pi-mono`,
+`packages/agent/src/harness/compaction/compaction.ts`, `packages/coding-agent/docs/compaction.md`)
+triggers when usage passes the window minus a 16k reserve (per-model
+overrides supported), keeps 20k recent tokens, cuts only at user, assistant,
+bash, or custom boundaries and never at tool results, handles a split turn
+with a separate prefix summary, tracks read and modified files cumulatively,
+disables cache writes for the one-off summary request, and retries once after
+a provider overflow error or a length stop with no output. Codex CLI compacts
+automatically against a per-model token limit with a full-window percent and a
+post-turn percent, re-enters the remote summary as assistant summary-channel
+content, and reinjects initial context above the last user message for
+mid-turn compaction. Claude Code auto-compacts near the window with a
+structured summary while keeping recent turns verbatim. OpenHands offers a
+condenser family: an LLM summarizing condenser, observation masking that drops
+old tool outputs but keeps the actions, and a recent-events window that keeps
+the last turns verbatim. Aider recursively summarizes old chat history into a
+first-person summary (`I asked you...`, file and symbol names required, no
+fenced code blocks) while keeping a tail that fits its max tokens.
+
+Swarmy follows the token-budget plus turn-boundary shape from Pi and OpenCode
+(20k recent tokens, whole turns, never split tool pairs, prefix carried
+iteratively through chained summaries) and the bounded summary output
+(4,096, min with the model output limit, refuse when the prompt cannot fit).
+It compacts earlier than Pi and OpenCode (75 percent of the window, 400k
+default, pressure at 75 percent of that) because fleet turns have no
+compact-and-retry path: worker-3's routes session died at 943k input tokens
+on a 1M window with nothing pushed, so the threshold must fire with room to
+spare, not near the edge. The successor is a new session rather than an
+in-place edit, so the whole Anthropic cached prefix is replaced once instead
+of nibbled, and the full transcript stays readable behind the link.
+
+Provider and protocol notes that constrain the design. On the Responses API,
+reasoning items replay only with their assistant message: the converter keeps
+a reasoning item when its stored provider and model match the current request
+and otherwise drops it to text, so a summary never orphans reasoning from its
+message. Tool calls and results are paired by id in both converters (the PR
+141 repair), and the verbatim tail keeps whole turns for the same reason. The
+summary request uses the same model as the turn it replaces, so cached
+reasoning provenance still matches. The window comes from the catalog, which
+takes OpenRouter `context_length` per model; unknown models fall back to the
+conservative 400k default and operators running small-window models set a
+per-model `summarize_at`.
+
 Memory files live on the agent's home volume, by default under
 `/home/agent/memory`, configured with `SWARMY_MEMORY_DIR`. Agents use the file tools
 to record facts there. Before ordinary inference, the worker asks the current

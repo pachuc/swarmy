@@ -1409,12 +1409,19 @@ impl Worker {
                 return Ok(false);
             }
         }
-        let request = swarmy_llm::Request {
-            system_prompt: swarmy_harness::SUMMARY_PROMPT.into(),
-            messages: snapshot.replay(events).messages().to_vec(),
-            tools: Vec::new(),
-            settings: job.request.settings,
-        };
+        let request = summary_request(
+            &self.config,
+            self.job_provider(&job),
+            snapshot.replay(events).messages(),
+            job.request.settings.clone(),
+        );
+        if !summary_fits(&self.config, &request, self.job_provider(&job)) {
+            tracing::warn!(
+                session_id = %session.session_id,
+                "summary prompt exceeds the model window; retaining current session"
+            );
+            return Ok(false);
+        }
         self.build_inference(session, lease, &[], request).await?;
         Ok(true)
     }
@@ -1518,22 +1525,12 @@ impl Worker {
                 )
                 .await?
         } else {
-            // Carry the last few turns forward so the successor keeps recent
-            // context alongside the summary; the next request stays small.
-            let tail: Vec<swarmy_core::Message> = events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::MessageAppended { message, .. } => Some(message.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .take(10)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+            // Carry recent turns forward so the successor keeps immediate
+            // tool context alongside the summary; the next request stays small.
+            // The summary output itself is the opening, not tail.
+            let mut tail = select_side_tail(events);
+            tail.retain(|kept| kept.id != message.id);
+            let tail = tail;
             self.store
                 .summarize_side_session(
                     session.session_id,
@@ -1815,6 +1812,122 @@ fn fold_id(id: SessionId, step: u64) -> MessageId {
     MessageId::from_ulid(Ulid::from_bytes(bytes))
 }
 
+/// Recent context kept verbatim in a side successor, in tokens. Twenty
+/// thousand covers a few tool-heavy turns; the summary plus this tail plus a
+/// new turn stays far under the 400k default threshold.
+const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
+
+/// Summary output cap in tokens. Four thousand fits the structured goals,
+/// state, questions, and facts format with file paths and identifiers.
+const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
+
+/// Rough token estimate for one message, chars divided by four like the Pi
+/// and `OpenCode` heuristics. Images count as a fixed 4,800 chars.
+fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
+    let mut chars = 0;
+    for part in &message.parts {
+        chars += match part {
+            swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
+                text.len()
+            }
+            swarmy_core::Part::ToolCall { tool, input, .. } => {
+                tool.len() + serde_json::to_string(input).map_or(0, |json| json.len())
+            }
+            swarmy_core::Part::ToolResult { result, .. } => match result {
+                swarmy_core::ToolResult::Completed { output, .. } => output.len(),
+                swarmy_core::ToolResult::Error { error } => error.len(),
+            },
+            swarmy_core::Part::Image { .. } => 4_800,
+        };
+    }
+    chars.div_ceil(4) as u64
+}
+
+/// Recent tail for a side successor: whole turns up to the token budget,
+/// cut only at user-message boundaries so a tool call never separates from
+/// its result. Always keeps at least the last turn, even when one turn alone
+/// exceeds the budget.
+fn select_side_tail(events: &[Event]) -> Vec<swarmy_core::Message> {
+    let messages: Vec<swarmy_core::Message> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::MessageAppended { message, .. } | Event::InferenceCompleted { message, .. } => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    let mut total = 0;
+    let mut start = messages.len();
+    for (index, message) in messages.iter().enumerate().rev() {
+        total += estimate_message_tokens(message);
+        start = index;
+        if total >= SIDE_TAIL_BUDGET_TOKENS {
+            break;
+        }
+    }
+    let mut cut = start;
+    while cut > 0 && messages[cut].role != swarmy_core::MessageRole::User {
+        cut -= 1;
+    }
+    messages[cut..].to_vec()
+}
+
+/// Summary request with bounded output: the smaller of the model's output
+/// limit and the structured-summary cap, so the request fits providers that
+/// reject oversized max-token values.
+fn summary_request(
+    config: &crate::config::Config,
+    provider: &str,
+    messages: &[swarmy_core::Message],
+    settings: swarmy_llm::GenerationSettings,
+) -> swarmy_llm::Request {
+    let mut settings = settings;
+    let cap = config
+        .catalog
+        .model(provider, &settings.model)
+        .and_then(|model| model.limit.output)
+        .map_or(SUMMARY_OUTPUT_TOKENS, |limit| {
+            limit.min(SUMMARY_OUTPUT_TOKENS)
+        });
+    settings.max_output_tokens = Some(cap);
+    swarmy_llm::Request {
+        system_prompt: swarmy_harness::SUMMARY_PROMPT.into(),
+        messages: messages.to_vec(),
+        tools: Vec::new(),
+        settings,
+    }
+}
+
+/// Whether the summary request fits the model window. The estimate covers
+/// the replayed messages plus the prompt template, reserving the bounded
+/// output. Unknown windows skip the check; the early threshold keeps the
+/// prompt small in practice.
+fn summary_fits(
+    config: &crate::config::Config,
+    request: &swarmy_llm::Request,
+    provider: &str,
+) -> bool {
+    let Some(context) = config
+        .catalog
+        .model(provider, &request.settings.model)
+        .map(|model| model.limit.context)
+        .or(config.model_context_window_tokens)
+    else {
+        return true;
+    };
+    let output = request.settings.max_output_tokens.unwrap_or(0);
+    let mut chars: u64 = u64::try_from(swarmy_harness::SUMMARY_PROMPT.len()).unwrap_or(u64::MAX);
+    for message in &request.messages {
+        chars = chars.saturating_add(estimate_message_tokens(message).saturating_mul(4));
+    }
+    let estimated = chars.div_ceil(4);
+    estimated.saturating_add(output) <= context
+}
+
 fn pending_inference(events: &[Event]) -> Option<RequestId> {
     events
         .iter()
@@ -1995,5 +2108,76 @@ mod tool_output_tests {
             &capped[capped.len() - keep / 2..],
             &original[original.len() - keep / 2..]
         );
+    }
+}
+
+#[cfg(test)]
+mod side_tail_tests {
+    use super::{estimate_message_tokens, select_side_tail};
+    use swarmy_core::{Event, Message, MessageId, MessageRole, Part};
+    use ulid::Ulid;
+
+    fn message(role: MessageRole, text: &str) -> Message {
+        Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role,
+            parts: vec![Part::Text { text: text.into() }],
+        }
+    }
+
+    fn events(texts: &[(&str, MessageRole)]) -> Vec<Event> {
+        texts
+            .iter()
+            .map(|(text, role)| Event::MessageAppended {
+                seq: 0,
+                message: message(*role, text),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn estimate_counts_chars_like_pi_and_opencode() {
+        let text = message(MessageRole::User, &"x".repeat(400));
+        assert_eq!(estimate_message_tokens(&text), 100);
+        let image = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::User,
+            parts: vec![Part::Image {
+                media_type: "image/png".into(),
+                bytes: Vec::new(),
+                object_key: None,
+                detail: None,
+            }],
+        };
+        assert_eq!(estimate_message_tokens(&image), 1_200);
+    }
+
+    #[test]
+    fn tail_cuts_at_user_boundaries_not_mid_turn() {
+        let history = events(&[
+            ("old work", MessageRole::User),
+            ("old answer", MessageRole::Assistant),
+            ("new task", MessageRole::User),
+            ("new answer", MessageRole::Assistant),
+        ]);
+        let tail = select_side_tail(&history);
+        assert_eq!(tail.len(), 4);
+        assert_eq!(tail[0].role, MessageRole::User);
+        let long = format!("task {}", "y".repeat(80_000));
+        let history = events(&[
+            ("old work", MessageRole::User),
+            ("old answer", MessageRole::Assistant),
+            (&long, MessageRole::User),
+            ("reply", MessageRole::Assistant),
+            ("tool ran", MessageRole::Tool),
+        ]);
+        let tail = select_side_tail(&history);
+        assert!(tail.iter().any(|message| {
+            message.parts.iter().any(|part| match part {
+                Part::Text { text } => text.starts_with("task "),
+                _ => false,
+            })
+        }));
+        assert_eq!(tail[0].role, MessageRole::User);
     }
 }
