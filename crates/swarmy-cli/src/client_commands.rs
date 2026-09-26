@@ -29,6 +29,7 @@ pub async fn run(
     )
     .await?;
     announce(&conversation, json);
+    report_followed(&conversation, json);
     conversation.send(prompt).await?;
     let result = conversation.until_idle(json, true, false).await;
     if json {
@@ -54,6 +55,26 @@ fn announce(conversation: &Conversation, json: bool) {
         );
     } else {
         eprintln!("Session {}", conversation.id);
+    }
+}
+
+/// Print the summary notice when `open` followed an archived session.
+/// `run --session OLD` lands on the successor, so the operator sees where
+/// the transcript continued without re-reading the archived log.
+fn report_followed(conversation: &Conversation, json: bool) {
+    let Some(previous) = &conversation.predecessor else {
+        return;
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"event":"session_summarized","previous_session_id":previous,"session_id":conversation.id})
+        );
+    } else {
+        eprintln!(
+            "Conversation summarized. Session {previous} archived; continuing in {}.",
+            conversation.id
+        );
     }
 }
 

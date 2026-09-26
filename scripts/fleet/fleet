@@ -349,6 +349,49 @@ def session_events(config, session_id):
     return records(command(swarmy(config, "session", "show", session_id, "--json")))
 
 
+def current_session(config, session_id, sessions=None):
+    """Follow summarization links to the newest successor session.
+
+    Side sessions archive into a successor with the summary plus the last
+    few turns; the driver polls the task session, so status and collect
+    must resolve that chain or they report a completed session forever.
+    """
+    if not session_id:
+        return session_id
+    if sessions is None:
+        try:
+            sessions = {item["session_id"]: item
+                        for item in records(command(swarmy(config, "session", "ls", "--json")))
+                        if "session_id" in item}
+        except RuntimeError:
+            return session_id
+    seen = set()
+    current = session_id
+    while current not in seen:
+        seen.add(current)
+        item = sessions.get(current)
+        nxt = item.get("next_session") if isinstance(item, dict) else None
+        if isinstance(nxt, str) and nxt and nxt not in seen:
+            current = nxt
+        else:
+            break
+    return current
+
+
+def has_pressure(events):
+    """Whether the session log carries a context_pressure warning."""
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        try:
+            text = json.dumps(event)
+        except (TypeError, ValueError):
+            continue
+        if "context_pressure" in text:
+            return True
+    return False
+
+
 def state_for(session, events, log):
     state = session.get("state") if session else None
     wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
@@ -411,6 +454,7 @@ def status(config):
         # A task runs in its own side conversation; fall back to the main one
         # for launches recorded before that change.
         session_id = data.get("session_id") or detail.get("main_session")
+        session_id = current_session(config, session_id, sessions)
         events = session_events(config, session_id) if session_id else []
         session = sessions.get(session_id)
         state, reasons = state_for(session, events, logged) if task_id else ("idle", "")
@@ -422,6 +466,8 @@ def status(config):
             state_label = f"{state} {age_label(age)}"
         if reasons:
             state_label += "; " + reasons
+        if task_id and session_id and has_pressure(events):
+            state_label += "; context_pressure"
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
@@ -456,7 +502,7 @@ def verify_pr(url, data, config, *, merged=False):
 def collect(task_id, config):
     path, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = data["session_id"]
+    session_id = current_session(config, data["session_id"])
     message = last_message(session_events(config, session_id))
     match = URL.search(message)
     if match:
@@ -484,8 +530,11 @@ def collect(task_id, config):
 
 def resume(task_id, message, config):
     _, data = assignment(config, task_id)
-    # A follow-up on the task's own conversation continues it.
-    args = swarmy(config, "run", "--session", data["session_id"], "--json", message)
+    # A follow-up on the task's own conversation continues it. Resolve the
+    # newest successor first; run --session also follows, so this is a belt
+    # and braces against an archived id.
+    session_id = current_session(config, data["session_id"])
+    args = swarmy(config, "run", "--session", session_id, "--json", message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)
@@ -515,11 +564,21 @@ def release(task_id, config, *, force=False):
 def kill(task_id, config, timeout_seconds):
     _, data = assignment(config, task_id)
     agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = data["session_id"]
+    session_id = current_session(config, data["session_id"])
     command(swarmy(config, "session", "interrupt", session_id))
     deadline = time.monotonic() + timeout_seconds
     while True:
         sessions = records(command(swarmy(config, "session", "ls", "--json")))
+        by_id = {item.get("session_id"): item for item in sessions if item.get("session_id")}
+        live = current_session(config, session_id, by_id)
+        # An archived id during the wait means summarization moved the task;
+        # keep waiting on the successor and interrupt it once.
+        if live != session_id:
+            session_id = live
+            try:
+                command(swarmy(config, "session", "interrupt", session_id))
+            except RuntimeError:
+                pass
         session = next((item for item in sessions if item.get("session_id") == session_id and "state" in item), None)
         if session and session["state"] == "idle":
             break

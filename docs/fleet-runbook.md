@@ -133,6 +133,21 @@ Things learned on the way, all fixed in code or documented here:
   last durable state transition from `session ls --json`, not the task age.
   Older sessions without that timestamp show `?` until their next transition.
   A provider-limited worker holds no lease and resumes when the limit clears.
+  A session past 75 percent of its summarization threshold shows
+  `context_pressure` in the state column; push work and let it summarize
+  rather than killing it.
+- Long tasks survive the provider context window through side-session
+  summarization. When a side session's last input usage passes its threshold
+  (explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else three quarters of a
+  `SWARMY_MODEL_CONTEXT_WINDOW_TOKENS` override, else the catalog's per-model
+  or per-provider `summarize_at`, else 400k input tokens), the worker asks
+  the model for goals, state of work, open questions, and facts to keep,
+  archives the old session, and continues in a successor side session with
+  that summary plus the recent tool rounds and a continue note. The archived log stays readable and links to its successor through
+  `next_session`/`previous_session`. `swarmy run --session OLD` follows to
+  the successor and prints the summary notice; `fleet status` and `fleet
+  collect` resolve the newest successor, so a task keeps its worker after
+  summarization.
 - Launch: `scripts/fleet/fleet launch TASK --provider P --model M`. The
   driver prefers an idle worker created with that provider and creates one
   while the pool is below `workers`. Workers keep their disks, so the second

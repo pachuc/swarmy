@@ -774,6 +774,167 @@ impl Store {
         Ok((id, archived))
     }
 
+    /// Replace a leased side session with a fresh idle side session.
+    /// The summary opening plus the recent tool rounds carry context forward;
+    /// archival and both links commit together without moving the main pointer.
+    /// The worker bounds the tail by tokens, so the store accepts any tail
+    /// length and never fails a step because of tail size.
+    /// # Errors
+    /// Rejects stale heads or leases, main sessions, ephemeral sessions, and storage failures.
+    pub async fn summarize_side_session(
+        &self,
+        old: SessionId,
+        expected_head: u64,
+        lease: &swarmy_core::Lease,
+        opening: &swarmy_core::Message,
+        tail: &[swarmy_core::Message],
+    ) -> Result<(SessionId, swarmy_core::Event)> {
+        if opening.role != swarmy_core::MessageRole::System {
+            return Err(StoreError::InvalidState);
+        }
+        // Keep the successor in the old session's runnable partition so the
+        // same scheduler and worker continue the task without rebalancing.
+        let id = loop {
+            let id = SessionId::from_ulid(ulid::Ulid::generate());
+            if swarmy_core::runnable_partition(id) == swarmy_core::runnable_partition(old) {
+                break id;
+            }
+        };
+        let messages = side_messages(opening, tail);
+        let (prepared, archived_value, archived, new_head) =
+            self.prepare_side_rollover(&messages, expected_head).await?;
+        self.transaction(|trx| {
+            let (prepared, archived_value) = (&prepared, &archived_value);
+            async move {
+                let now = Timestamp::now();
+                self.check_worker_lease(&trx, old, lease, now).await?;
+                let mut previous = self.session(&trx, old).await?;
+                if previous.head_seq != expected_head {
+                    return Err(StoreError::StaleSequence {
+                        expected: expected_head,
+                        actual: previous.head_seq,
+                    });
+                }
+                let agent = self
+                    .read_agent(&trx, previous.agent_id)
+                    .await?
+                    .ok_or(StoreError::AgentMissing)?;
+                let kind = self.session_kind(&trx, old).await?;
+                let SessionKind::Named { agent_id } = kind else {
+                    return Err(StoreError::InvalidState);
+                };
+                if agent_id != agent.agent_id {
+                    return Err(StoreError::InvalidState);
+                }
+                if agent.main_session == Some(old) {
+                    return Err(StoreError::InvalidMainSession);
+                }
+                let inference: swarmy_core::InferenceSelection =
+                    read(&trx, &self.session_inference_key(old))
+                        .await?
+                        .unwrap_or_default();
+                let plan: Vec<swarmy_core::PlanStep> = read(&trx, &self.session_plan_key(old))
+                    .await?
+                    .unwrap_or_default();
+                let route: Option<String> =
+                    read::<Option<String>>(&trx, &self.session_route_key(old))
+                        .await?
+                        .flatten();
+                let route_step: u32 = read(&trx, &self.session_route_step_key(old))
+                    .await?
+                    .unwrap_or(0);
+                let session = SessionRecord {
+                    interrupt_requested: false,
+                    session_id: id,
+                    agent_id: agent.agent_id,
+                    kind: SessionKind::Named {
+                        agent_id: agent.agent_id,
+                    },
+                    computer_deleted: false,
+                    state: SessionState::Idle,
+                    head_seq: 0,
+                    snapshot_ref: None,
+                    inference,
+                    plan,
+                    route,
+                    route_step,
+                };
+                self.create_session_in(&trx, &session, now, None).await?;
+                self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
+                    .await?;
+                previous.head_seq = expected_head
+                    .checked_add(1)
+                    .ok_or(StoreError::SequenceOverflow)?;
+                self.transition(&trx, previous, SessionState::Completed, now)
+                    .await?;
+                write(&trx, &self.session_link_key("next", old), &id)?;
+                write(&trx, &self.session_link_key("previous", id), &old)?;
+                Ok(())
+            }
+        })
+        .await?;
+        Ok((id, archived))
+    }
+
+    async fn prepare_side_rollover(
+        &self,
+        messages: &[swarmy_core::Message],
+        expected_head: u64,
+    ) -> Result<(Vec<Vec<u8>>, Vec<u8>, swarmy_core::Event, u64)> {
+        let mut prepared = Vec::with_capacity(messages.len());
+        for (index, message) in messages.iter().enumerate() {
+            let seq = u64::try_from(index)
+                .ok()
+                .and_then(|i| i.checked_add(1))
+                .ok_or(StoreError::SequenceOverflow)?;
+            let event = swarmy_core::Event::MessageAppended {
+                seq,
+                message: message.clone(),
+            };
+            prepared.push(self.prepare(&event).await?);
+        }
+        let head = expected_head
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        let archived = swarmy_core::Event::StateChanged {
+            seq: head,
+            from: SessionState::Leased,
+            to: SessionState::Completed,
+        };
+        let archived_value = self.prepare(&archived).await?;
+        let new_head = u64::try_from(messages.len()).map_err(|_| StoreError::SequenceOverflow)?;
+        Ok((prepared, archived_value, archived, new_head))
+    }
+
+    async fn write_side_events(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        old: SessionId,
+        prepared: &[Vec<u8>],
+        archived_value: &[u8],
+        new_head: u64,
+    ) -> Result<()> {
+        let mut created = self.session(trx, id).await?;
+        created.head_seq = new_head;
+        write(trx, &self.session_key(id), &created)?;
+        for (index, value) in prepared.iter().enumerate() {
+            let seq = u64::try_from(index)
+                .ok()
+                .and_then(|i| i.checked_add(1))
+                .ok_or(StoreError::SequenceOverflow)?;
+            trx.set(&self.event_space(id).pack(&(seq,)), value);
+        }
+        let head = self
+            .session(trx, old)
+            .await?
+            .head_seq
+            .checked_add(1)
+            .ok_or(StoreError::SequenceOverflow)?;
+        trx.set(&self.event_space(old).pack(&(head,)), archived_value);
+        Ok(())
+    }
+
     fn session_link_key(&self, direction: &str, id: SessionId) -> Vec<u8> {
         self.root.pack(&(
             "session_chain",
@@ -854,6 +1015,17 @@ fn validate_github_token(token: Option<&str>) -> Result<()> {
         return Err(StoreError::InvalidGithubToken);
     }
     Ok(())
+}
+
+/// Opening summary plus the recent turns a side successor keeps.
+fn side_messages(
+    opening: &swarmy_core::Message,
+    tail: &[swarmy_core::Message],
+) -> Vec<swarmy_core::Message> {
+    let mut messages = Vec::with_capacity(1 + tail.len());
+    messages.push(opening.clone());
+    messages.extend(tail.iter().cloned());
+    messages
 }
 
 /// Postcard structs have no field count, so Serde defaults alone cannot read an
