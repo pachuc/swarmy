@@ -223,11 +223,13 @@ impl Store {
 
     fn record_buckets(&self, trx: &foundationdb::Transaction, input: &BucketInput<'_>) {
         let hour = crate::metering::hour_floor(input.recorded_at.as_second());
+        // Completions without an entry keep their provider, so breakdowns
+        // name it and only the entry is missing (`provider/-`).
         let entry_id = input.entry.map_or_else(
-            || "unknown".into(),
+            || crate::metering::unknown_entry_key(input.provider),
             |label| crate::metering::entry_key(input.provider, label),
         );
-        let dimensions = [
+        let singles = [
             (
                 crate::metering::MeteringDimension::Session.as_str(),
                 input.session.to_string(),
@@ -238,7 +240,7 @@ impl Store {
             ),
             (
                 crate::metering::MeteringDimension::Provider.as_str(),
-                input.provider.into(),
+                input.provider.to_owned(),
             ),
             (
                 crate::metering::MeteringDimension::Entry.as_str(),
@@ -246,26 +248,40 @@ impl Store {
             ),
             (
                 crate::metering::MeteringDimension::EntryKind.as_str(),
-                input.kind.unwrap_or("unknown").into(),
+                input.kind.unwrap_or("unknown").to_owned(),
             ),
             (
                 crate::metering::MeteringDimension::Model.as_str(),
-                input.model.into(),
+                input.model.to_owned(),
             ),
-            // Combined dimensions keep per-owner entry attribution without
-            // scanning completion records, which prune after their retention
-            // window. Providers derive from the entry names on read.
+        ];
+        for (dimension, key) in &singles {
+            self.metering_add_single(trx, dimension, key, hour, input.usage, input.cost);
+        }
+        // Combined dimensions keep per-owner entry attribution without
+        // scanning completion records, which prune after their retention
+        // window. Providers derive from the entry names on read.
+        let agent = input.agent.to_string();
+        let session = input.session.to_string();
+        for (dimension, owner) in [
             (
                 crate::metering::MeteringDimension::AgentEntry.as_str(),
-                crate::metering::agent_entry_key(&input.agent.to_string(), &entry_id),
+                agent.as_str(),
             ),
             (
                 crate::metering::MeteringDimension::SessionEntry.as_str(),
-                crate::metering::session_entry_key(&input.session.to_string(), &entry_id),
+                session.as_str(),
             ),
-        ];
-        for (dimension, key) in &dimensions {
-            self.metering_add(trx, dimension, key, hour, input.usage, input.cost);
+        ] {
+            self.metering_add_combined(
+                trx,
+                dimension,
+                owner,
+                &entry_id,
+                hour,
+                input.usage,
+                input.cost,
+            );
         }
     }
 }
