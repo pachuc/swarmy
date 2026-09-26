@@ -79,6 +79,8 @@ impl Provider for FakeProvider {
                 parts: parts.clone(),
                 stop_reason: StopReason::ToolCalls,
                 usage: TokenUsage::default(),
+                quota_remaining: BTreeMap::new(),
+                quota_resets: BTreeMap::new(),
             })
             .or_else(|| self.responses.get(&turn).cloned());
         let failure = self.failures.get(&turn).cloned();
@@ -176,6 +178,8 @@ impl RequestScript {
                 StopReason::EndTurn
             },
             usage: TokenUsage::default(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         })
     }
 }
@@ -329,6 +333,8 @@ mod tests {
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: TokenUsage::default(),
+                quota_remaining: BTreeMap::new(),
+                quota_resets: BTreeMap::new(),
             },
         );
         let request = Request {

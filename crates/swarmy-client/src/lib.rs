@@ -359,12 +359,22 @@ impl Client {
         if let Some(memory) = upload.memory_mib {
             query.push(("memory_mib".into(), memory.to_string()));
         }
-        let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::open(upload.file).await?);
+        let file = tokio::fs::File::open(upload.file).await?;
+        // The size is known, so send a fixed `Content-Length` instead of a
+        // chunked body. The server rejects an oversized upload from the header
+        // before spooling gigabytes it would only delete.
+        let len = file
+            .metadata()
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let stream = tokio_util::io::ReaderStream::new(file);
         let response = self
             .http
             .post(self.url("images/uploads"))
             .bearer_auth(&self.token)
             .query(&query)
+            .header(reqwest::header::CONTENT_LENGTH, len.to_string())
             .body(reqwest::Body::wrap_stream(stream))
             .send()
             .await?;
@@ -488,6 +498,36 @@ impl Client {
             Method::DELETE,
             &format!("credentials/{}/{}", segment(provider), segment(label)),
             &serde_json::json!({"idempotency_key":key}),
+        )
+        .await
+    }
+    /// Read one entry's quota view.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn entry_quota(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<api::EntryQuotaView, Error> {
+        self.get(
+            &format!("credentials/{}/{}/quota", segment(provider), segment(label)),
+            &[],
+        )
+        .await
+    }
+    /// Configure one entry's quota limit and window.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_entry_quota(
+        &self,
+        provider: &str,
+        label: &str,
+        body: &api::SetEntryQuota,
+    ) -> Result<api::EntryQuotaView, Error> {
+        self.send(
+            Method::POST,
+            &format!("credentials/{}/{}/quota", segment(provider), segment(label)),
+            body,
         )
         .await
     }

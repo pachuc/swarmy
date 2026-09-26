@@ -145,6 +145,8 @@ fn completed(parts: Vec<Part>, stop_reason: StopReason) -> Delta {
             total_tokens: 13,
             cache_write_input_tokens: 0,
         },
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
     })
 }
 
@@ -251,6 +253,8 @@ async fn fake_scripts_and_counter_work_through_dyn_provider() {
         parts: vec![text("scripted")],
         stop_reason: StopReason::EndTurn,
         usage: TokenUsage::default(),
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
     };
     let mut fake = FakeProvider::default();
     fake.latency = Duration::from_millis(20);

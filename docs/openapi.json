@@ -907,6 +907,124 @@
         }
       }
     },
+    "/v1/credentials/{provider}/{label}/quota": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "entry_quota",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "description": "Credential label",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryQuotaView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_entry_quota",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "Provider id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "description": "Credential label",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetEntryQuota"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryQuotaView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/docs": {
       "get": {
         "tags": [
@@ -3008,6 +3126,82 @@
           }
         }
       },
+      "EntryQuotaView": {
+        "type": "object",
+        "description": "Quota view for one entry, either observed or configured. Requests and\ntokens are separate observed dimensions; `free` carries requests remaining\nand `tokens_remaining` carries tokens remaining. Configured `used` counts\nwhole hourly buckets overlapping the window (hour granularity).",
+        "required": [
+          "source",
+          "used",
+          "remaining"
+        ],
+        "properties": {
+          "free": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remaining": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "requests_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string"
+          },
+          "tokens_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "used": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "window_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "Event": {
         "type": "object",
         "description": "A durable event has a cursor even when delivered on a multiplexed connection.",
@@ -4109,6 +4303,30 @@
           "sleeping",
           "completed"
         ]
+      },
+      "SetEntryQuota": {
+        "type": "object",
+        "description": "Operator-configured quota for an entry without published quotas.",
+        "required": [
+          "idempotency_key",
+          "limit",
+          "window_seconds"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "window_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "StageTiming": {
         "type": "object",

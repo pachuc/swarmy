@@ -35,7 +35,7 @@ def cold_from_events(events):
     raise ValueError("session did not print BENCH_COLD at the start")
 
 
-def commands(remote, provider, model, effort, directory):
+def commands(remote, provider, model, effort, directory, image=None):
     for name in TASKS:
         task = load(name)
         for repeat in (1, 2):
@@ -43,7 +43,8 @@ def commands(remote, provider, model, effort, directory):
             file.write_text(prompt(task))
             yield name, repeat, [str(DRIVER), "benchmark", "--remote", remote,
                                  "--provider", provider, "--model", model,
-                                 "--effort", effort, "--prompt-file", str(file)]
+                                 "--effort", effort, "--prompt-file", str(file),
+                                 *(["--image", image] if image else [])]
 
 
 def main(argv=None):
@@ -55,10 +56,13 @@ def main(argv=None):
     provider = os.environ.get("BENCH_PROVIDER", "chatgpt")
     model = os.environ.get("BENCH_MODEL", "gpt-6-sol")
     effort = os.environ.get("BENCH_EFFORT", "medium")
+    # The benchmark tasks build swarmy, so they need an image with the Rust
+    # toolchain (the swarmy-dev recipe); the remotes default to base-ubuntu.
+    image = os.environ.get("BENCH_IMAGE") or None
     if not args.label.replace("-", "").replace("_", "").isalnum():
         parser.error("label must contain only letters, digits, hyphens, and underscores")
     with tempfile.TemporaryDirectory(prefix="swarmy-benchmark-") as temp:
-        runs = list(commands(args.remote, provider, model, effort, Path(temp)))
+        runs = list(commands(args.remote, provider, model, effort, Path(temp), image))
         sessions = []
         records = []
         output_dir = ROOT / ".dev" / "benchmarks"

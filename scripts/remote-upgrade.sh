@@ -33,6 +33,12 @@ for binary in "${binaries[@]}"; do
         (( result == 1 )) || exit "$result"
     fi
 done
+# Nodes provisioned before API token provisioning carry an empty token while
+# serving the API. Fill it once; reruns keep the existing token.
+token_status=unchanged
+if systemctl cat swarmy-api.service >/dev/null 2>&1; then
+    token_status=$(ensure_api_token .swarmy/config.toml)
+fi
 for service in scheduler worker gateway api; do
     binary="swarmy-$service"
     if systemctl cat "$binary.service" >/dev/null 2>&1; then
@@ -45,6 +51,20 @@ for service in scheduler worker gateway api; do
         fi
     fi
 done
+# Control nodes serve the API, which rejects every request while its token is
+# empty. Fill a missing token for nodes provisioned before provisioning
+# generated one; never rotate an existing token. A fresh token needs the API
+# to reload its configuration even when its binary is unchanged.
+if [[ $token_status == generated ]]; then
+    already_restarted=false
+    for entry in "${restarted[@]}"; do
+        if [[ $entry == swarmy-api ]]; then already_restarted=true; fi
+    done
+    if [[ $already_restarted == false ]]; then
+        sudo -n systemctl restart swarmy-api.service
+        restarted+=(swarmy-api)
+    fi
+fi
 if unit_needs_restart swarmyd.service /usr/local/bin/swarmyd; then
     if [[ $services == services-only ]]; then
         echo 'swarmyd is out of date but --services-only skips its restart' >&2

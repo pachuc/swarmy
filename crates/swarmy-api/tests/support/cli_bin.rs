@@ -57,8 +57,9 @@ pub fn swarmy() -> PathBuf {
 /// no-ops when the binary is newer than the sources, so this is cheap on a
 /// warm target directory. The profile directory basename selects the cargo
 /// profile (`debug` builds default, `release` passes `--release`, anything
-/// else passes `--profile <name>`); `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET`
-/// flow through the environment to the child cargo invocation.
+/// else passes `--profile <name>`); a `<target>/<triple>/<profile>` layout
+/// passes `--target <triple>`, and `CARGO_TARGET_DIR` flows through the
+/// environment to the child cargo invocation.
 fn build(binary: &std::path::Path, profile: &std::path::Path) {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -74,6 +75,18 @@ fn build(binary: &std::path::Path, profile: &std::path::Path) {
         .arg("--bin")
         .arg("swarmy")
         .current_dir(&workspace);
+    // With `--target <triple>` the test binary lives at
+    // `<target-dir>/<triple>/<profile>/deps`, so the triple is the profile
+    // directory's parent basename. Cargo does not export the triple for a CLI
+    // `--target` build, so read it from the path instead.
+    if let Some(triple) = profile
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| name.contains('-'))
+    {
+        command.arg("--target").arg(triple);
+    }
     match profile
         .file_name()
         .and_then(|name| name.to_str())

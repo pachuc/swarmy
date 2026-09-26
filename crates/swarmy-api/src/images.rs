@@ -134,14 +134,15 @@ pub async fn upload(
         }
     };
     // A well-behaved client sends `Content-Length`; reject an oversized
-    // upload before spooling gigabytes the server would only delete.
+    // upload before spooling gigabytes the server would only delete. The body
+    // is dropped without draining so an oversized stream stops early instead
+    // of uploading fully before the rejection.
     if let Some(length) = headers
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|text| text.parse::<u64>().ok())
         && length > state.upload_max_bytes
     {
-        drain(body).await;
         return Err(oversized(state.upload_max_bytes));
     }
     let replay_key = format!("images:upload:{}", validated.idempotency_key);
@@ -210,8 +211,9 @@ pub async fn upload(
 
 /// Stream the body into a spool file under the control node's data
 /// directory, enforcing the configured maximum size. The returned directory
-/// guard deletes the spool on every path; oversized and empty bodies drain
-/// first so the client finishes writing before the rejection.
+/// guard deletes the spool on every path; an oversized stream is rejected as
+/// soon as the limit is reached without draining the remainder, so a client
+/// that streams past the ceiling stops early.
 async fn spool(
     state: &AppState,
     body: Body,
@@ -233,18 +235,13 @@ async fn spool(
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
     let mut stream = body.into_data_stream();
     let mut size: u64 = 0;
-    let mut too_large = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
-        if too_large {
-            continue;
-        }
         size = size.saturating_add(chunk.len() as u64);
         if size > max_bytes {
-            // Keep draining so the client finishes writing before the 413;
-            // the partial spool is deleted with the directory guard.
-            too_large = true;
-            continue;
+            // Stop reading here; the directory guard deletes the partial
+            // spool and dropping the stream signals the client to stop.
+            return Err(oversized(max_bytes));
         }
         if chunk.is_empty() {
             continue;
@@ -252,9 +249,6 @@ async fn spool(
         file.write_all(&chunk)
             .await
             .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
-    }
-    if too_large {
-        return Err(oversized(max_bytes));
     }
     if size == 0 {
         return Err(invalid("uploaded image is empty"));
@@ -266,8 +260,9 @@ async fn spool(
     Ok((directory, path, size))
 }
 
-/// Reject an upload over the configured limit with a 413 before spooling or
-/// after draining an oversized stream.
+/// Reject an upload over the configured limit with a 413. The header path
+/// and the spool path both stop without draining the remainder, so a client
+/// that streams past the ceiling stops early.
 fn oversized(max_bytes: u64) -> (StatusCode, Json<api::ApiError>) {
     (
         StatusCode::PAYLOAD_TOO_LARGE,

@@ -63,13 +63,14 @@ fn image_json(arguments: &[&str]) -> serde_json::Value {
 /// through `swarmyd vol` rather than the store.
 fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
     let swarmy = std::path::PathBuf::from(env!("CARGO_BIN_EXE_swarmy"));
-    let swarmyd = swarmy
-        .parent()
-        .expect("profile directory")
-        .join(format!("swarmyd{}", std::env::consts::EXE_SUFFIX));
+    let profile = swarmy.parent().expect("profile directory");
+    let swarmyd = profile.join(format!("swarmyd{}", std::env::consts::EXE_SUFFIX));
     if !swarmyd.exists() {
         // `cargo test -p swarmy-cli` does not build the daemon binary, so
-        // build it once; a warm target directory makes this a no-op.
+        // build it once; a warm target directory makes this a no-op. The
+        // profile directory comes from `CARGO_BIN_EXE_swarmy`, so custom
+        // `--profile`, `CARGO_TARGET_DIR`, and `--target` layouts resolve the
+        // same way as the `cli_bin` helper in `swarmy-api`.
         let mut build = Command::new("cargo");
         build
             .args(["build", "-p", "swarmyd", "--bin", "swarmyd"])
@@ -80,8 +81,26 @@ fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
                     .parent()
                     .expect("workspace root"),
             );
-        if !cfg!(debug_assertions) {
-            build.arg("--release");
+        if let Some(triple) = profile
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| name.contains('-'))
+        {
+            build.arg("--target").arg(triple);
+        }
+        match profile
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("debug")
+        {
+            "debug" => {}
+            "release" => {
+                build.arg("--release");
+            }
+            name => {
+                build.arg("--profile").arg(name);
+            }
         }
         assert!(build.status().unwrap().success());
     }

@@ -88,6 +88,22 @@ impl Default for Inference {
         }
     }
 }
+
+/// Metering retention policy. Raw completion records are kept for query
+/// debugging while hourly rollups remain the durable query path.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Metering {
+    pub raw_retention_days: std::num::NonZeroU64,
+}
+
+impl Default for Metering {
+    fn default() -> Self {
+        Self {
+            raw_retention_days: std::num::NonZeroU64::new(90).unwrap(),
+        }
+    }
+}
 impl Default for GarbageCollection {
     fn default() -> Self {
         Self {
@@ -149,6 +165,7 @@ pub struct Settings {
     pub placement_lease_seconds: std::num::NonZeroU64,
     pub gc: GarbageCollection,
     pub inference: Inference,
+    pub metering: Metering,
     pub node_id: Option<swarmy_core::NodeId>,
     pub node_roles: Vec<swarmy_core::NodeRole>,
     pub node_capacity: swarmy_core::NodeCapacity,
@@ -239,6 +256,7 @@ impl Default for Settings {
             placement_lease_seconds: std::num::NonZeroU64::new(30).unwrap(),
             gc: GarbageCollection::default(),
             inference: Inference::default(),
+            metering: Metering::default(),
             node_id: None,
             node_roles: vec![
                 swarmy_core::NodeRole::Sandbox,
@@ -550,6 +568,11 @@ impl Settings {
             if let Some(value) = environment.get(name) {
                 *target = value.parse().map_err(|_| Error::Environment(name.into()))?;
             }
+        }
+        if let Some(value) = environment.get("SWARMY_METERING_RAW_RETENTION_DAYS") {
+            self.metering.raw_retention_days = value
+                .parse()
+                .map_err(|_| Error::Environment("SWARMY_METERING_RAW_RETENTION_DAYS".into()))?;
         }
         Ok(())
     }
@@ -917,6 +940,10 @@ impl Settings {
         environment.insert(
             "SWARMY_VOLUME_SNAPSHOT_RETENTION".into(),
             self.volume_snapshots.retention.to_string(),
+        );
+        environment.insert(
+            "SWARMY_METERING_RAW_RETENTION_DAYS".into(),
+            self.metering.raw_retention_days.to_string(),
         );
         if let Some(value) = &self.worker_kill_point {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
@@ -1303,6 +1330,33 @@ mod tests {
         assert_eq!(settings.provider, "fake");
         assert_eq!(settings.nats_url, "nats://127.0.0.1:4222");
         assert!(toml::from_str::<Settings>("store_directroy = 'typo'").is_err());
+    }
+
+    #[test]
+    fn metering_retention_defaults_overrides_and_positive_values() {
+        let settings = Settings::default();
+        assert_eq!(settings.metering.raw_retention_days.get(), 90);
+        let mut settings = Settings::default();
+        settings
+            .apply_environment(&BTreeMap::from([(
+                "SWARMY_METERING_RAW_RETENTION_DAYS".into(),
+                "7".into(),
+            )]))
+            .unwrap();
+        assert_eq!(settings.metering.raw_retention_days.get(), 7);
+        assert_eq!(
+            settings.environment()["SWARMY_METERING_RAW_RETENTION_DAYS"],
+            "7"
+        );
+        assert!(
+            settings
+                .apply_environment(&BTreeMap::from([(
+                    "SWARMY_METERING_RAW_RETENTION_DAYS".into(),
+                    "0".into()
+                )]))
+                .is_err()
+        );
+        assert!(toml::from_str::<Settings>("[metering]\nraw_retention_days = 0").is_err());
     }
 
     #[test]

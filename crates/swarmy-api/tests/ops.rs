@@ -19,6 +19,7 @@ struct Fixture {
     client: Client,
     bus: Bus,
     server: JoinHandle<Result<(), std::io::Error>>,
+    base: String,
 }
 
 impl Drop for Fixture {
@@ -63,6 +64,7 @@ impl Fixture {
             client: Client::new(&base, "test-token").unwrap(),
             bus,
             server,
+            base,
         })
     }
 
@@ -294,6 +296,52 @@ async fn upload_rejects_bodies_over_the_configured_limit() {
         panic!("oversized upload must fail with an API error");
     };
     assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn upload_with_length_stops_before_streaming_the_body() {
+    // The client sends a fixed `Content-Length`, so the server rejects from
+    // the header without spooling. A throttled counting stream proves the
+    // server never reads the whole body: the rejection arrives while most
+    // chunks are still unsent.
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let Some(fixture) = Fixture::with_upload_max(32 * 1024).await else {
+        return;
+    };
+    let chunk = vec![0u8; 16 * 1024];
+    let total_chunks = 256u64;
+    let total = total_chunks * chunk.len() as u64;
+    let sent = Arc::new(AtomicU64::new(0));
+    let counted = sent.clone();
+    let body_stream = async_stream::stream! {
+        for _ in 0..total_chunks {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            counted.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+            yield Ok::<Vec<u8>, std::io::Error>(chunk.clone());
+        }
+    };
+    let url = format!(
+        "{}/v1/images/uploads?name=ops&tag=oversize-length&idempotency_key={}",
+        fixture.base,
+        Ulid::generate()
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth("test-token")
+        .header(reqwest::header::CONTENT_LENGTH, total.to_string())
+        .body(reqwest::Body::wrap_stream(body_stream))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    let pulled = sent.load(Ordering::SeqCst);
+    assert!(
+        pulled < total,
+        "server read {pulled} of {total} bytes before rejecting"
+    );
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@ use super::ssh;
 use anyhow::Result;
 use serde::Serialize;
 use std::{future::Future, path::Path, time::Duration};
-use swarmy_config::{RemoteNode, RemoteProfile, Settings};
+use swarmy_config::{RemoteNode, RemoteProfile, RemoteServices, Settings};
 use swarmy_core::{ImageRecord, NodeRecord};
 use tokio::time::timeout;
 
@@ -23,6 +23,7 @@ struct Status {
     sandboxes: u32,
     instance_type: Option<String>,
     tunnel: bool,
+    api_token: String,
     registrations: Vec<Registration>,
     registration_error: Option<String>,
     nodes: Vec<NodeStatus>,
@@ -50,6 +51,24 @@ struct NodeStatus {
 
 async fn reachable(node: &RemoteNode) -> bool {
     ssh::reachable_address(node).await.is_ok()
+}
+
+/// Token status for `remote status`. Only control nodes serve the API, so only
+/// they report whether the connected profile carries its token. Sandbox-only
+/// nodes and laptop-service remotes never use a node API token. After
+/// `remote upgrade` fills a missing node token, reconnect to refresh it here.
+fn api_token_status(node: &RemoteNode, profile: Option<&RemoteProfile>) -> &'static str {
+    let control = node
+        .launch_settings
+        .as_ref()
+        .is_some_and(|settings| settings.services == RemoteServices::Node);
+    if !control {
+        return "not-applicable";
+    }
+    match profile.and_then(|profile| profile.api_token.as_deref()) {
+        Some(token) if !token.is_empty() => "set",
+        _ => "missing",
+    }
 }
 
 fn instance_state(reachable: bool) -> String {
@@ -84,14 +103,16 @@ pub async fn run(json: bool) -> Result<()> {
     nodes.sort_by(|a, b| a.name.cmp(&b.name));
     let mut statuses = Vec::new();
     for node in nodes {
-        let tunnel = match RemoteProfile::read(Path::new(&base.state_dir), &node.name) {
-            Ok(profile) => ssh::healthy(&profile).await,
-            Err(_) => false,
+        let profile = RemoteProfile::read(Path::new(&base.state_dir), &node.name).ok();
+        let tunnel = match &profile {
+            Some(profile) => ssh::healthy(profile).await,
+            None => false,
         };
         let mut status = inspect(&node, tunnel, reachable(&node).await, || {
             inventory(&base, &node.name)
         })
         .await;
+        status.api_token = api_token_status(&node, profile.as_ref()).into();
         let mut pending: Vec<_> = node.nodes.iter().collect();
         while let Some(child) = pending.pop() {
             status.nodes.push(NodeStatus {
@@ -120,13 +141,14 @@ pub async fn run(json: bool) -> Result<()> {
 fn print_human(statuses: Vec<Status>) {
     for status in statuses {
         println!(
-            "{} instance={} type={} state={} sandboxes={} tunnel={}",
+            "{} instance={} type={} state={} sandboxes={} tunnel={} api_token={}",
             status.name,
             status.instance_id,
             status.instance_type.as_deref().unwrap_or("unknown"),
             status.instance_state,
             status.sandboxes,
-            if status.tunnel { "up" } else { "down" }
+            if status.tunnel { "up" } else { "down" },
+            status.api_token,
         );
         for node in status.nodes {
             println!(
@@ -197,6 +219,8 @@ where
         services: Vec::new(),
         image_error: None,
         tunnel,
+        // `run` fills the connected profile's token status after inspection.
+        api_token: String::new(),
         registrations: Vec::new(),
         registration_error: None,
     };
@@ -345,6 +369,42 @@ async fn inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn control_nodes_report_profile_token_presence_and_others_opt_out() {
+        let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
+        // Without saved launch settings the node predates service roles.
+        assert_eq!(api_token_status(&node, None), "not-applicable");
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            services: swarmy_config::RemoteServices::Laptop,
+            ..Default::default()
+        });
+        assert_eq!(api_token_status(&node, None), "not-applicable");
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            services: RemoteServices::Node,
+            ..Default::default()
+        });
+        assert_eq!(api_token_status(&node, None), "missing");
+        let mut profile = RemoteProfile {
+            name: "test".into(),
+            socket_path: std::path::PathBuf::from("socket"),
+            pid: 0,
+            ports: swarmy_config::RemotePorts::default(),
+            remote_ports: swarmy_config::RemotePorts::default(),
+            fdb_cluster_file: std::path::PathBuf::from("cluster"),
+            nats_url: String::new(),
+            s3_endpoint: String::new(),
+            api_url: None,
+            api_token: None,
+            s3_bucket: None,
+            s3_region: None,
+            default_image: None,
+        };
+        assert_eq!(api_token_status(&node, Some(&profile)), "missing");
+        profile.api_token = Some(String::new());
+        assert_eq!(api_token_status(&node, Some(&profile)), "missing");
+        profile.api_token = Some("provisioned-token".into());
+        assert_eq!(api_token_status(&node, Some(&profile)), "set");
+    }
     #[tokio::test]
     async fn api_backed_status_reports_live_stale_absent_and_unavailable() {
         let node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
