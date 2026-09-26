@@ -497,7 +497,31 @@ def status(config):
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
               f"{state_label}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+    day, month = fleet_cost(config)
+    if day is not None and month is not None:
+        print(f"cost today=${day} this_month=${month}")
     return 2 if stalled else 0
+
+
+def fleet_cost(config):
+    """Fleet-wide billed cost for the current calendar day and month.
+
+    Reads the metering rollups through `swarmy cost --json` so status needs
+    no database access. Returns `(None, None)` when the cluster predates
+    the cost command instead of failing the whole status output; any other
+    failure still raises.
+    """
+    today = datetime.now(timezone.utc).date()
+    try:
+        day = one(command(swarmy(config, "cost", "--json", "--group", "day",
+                                "--since", today.isoformat())))
+        month = one(command(swarmy(config, "cost", "--json", "--group", "month",
+                                   "--since", today.replace(day=1).isoformat())))
+    except RuntimeError as error:
+        if "unrecognized subcommand" not in str(error):
+            raise
+        return None, None
+    return day.get("total", {}).get("cost_dollars"), month.get("total", {}).get("cost_dollars")
 
 
 def last_message(events):

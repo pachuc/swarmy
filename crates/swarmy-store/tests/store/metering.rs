@@ -201,6 +201,7 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
     let from = Timestamp::from_second(hour).unwrap();
     let to = Timestamp::from_second(hour + 3_600).unwrap();
     let group_by = swarmy_store::UsageGroupBy::Day;
+    let entry = swarmy_store::metering::entry_key("openai", "primary");
     let checks = [
         (swarmy_store::MeteringDimension::Session, id.to_string()),
         (
@@ -208,12 +209,17 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
             session.agent_id.to_string(),
         ),
         (swarmy_store::MeteringDimension::Provider, "openai".into()),
-        (
-            swarmy_store::MeteringDimension::Entry,
-            swarmy_store::metering::entry_key("openai", "primary"),
-        ),
+        (swarmy_store::MeteringDimension::Entry, entry.clone()),
         (swarmy_store::MeteringDimension::EntryKind, "api-key".into()),
         (swarmy_store::MeteringDimension::Model, "gpt-5".into()),
+        (
+            swarmy_store::MeteringDimension::AgentEntry,
+            format!("{}/{entry}", session.agent_id),
+        ),
+        (
+            swarmy_store::MeteringDimension::SessionEntry,
+            format!("{id}/{entry}"),
+        ),
     ];
     for (dimension, key) in checks {
         let groups = store
@@ -373,6 +379,268 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
     assert_eq!(quota.free, Some(998));
     assert_eq!(quota.limit, Some(1_000));
     assert_eq!(quota.window_seconds, Some(18_000));
+    test.cleanup().await;
+}
+
+struct BreakdownSeed {
+    second: SessionId,
+    agents: [swarmy_core::AgentId; 2],
+    from: Timestamp,
+    to: Timestamp,
+    cost: u64,
+}
+
+/// Two sessions sharing one entry, with the first billing a second entry.
+async fn seed_two_entries(test: &TestStore) -> BreakdownSeed {
+    let store = &test.store;
+    let first = test.create().await;
+    let second = test.create().await;
+    let agents = [
+        store.fetch_session(first).await.unwrap().unwrap().agent_id,
+        store.fetch_session(second).await.unwrap().unwrap().agent_id,
+    ];
+    let base = Timestamp::from_second(1_700_000_000).unwrap();
+    let (tokens, cost) = usage(10, 20, 500);
+    for (id, provider, entry) in [
+        (first, "openai", "primary"),
+        (first, "xai", "secondary"),
+        (second, "openai", "primary"),
+    ] {
+        complete_with(
+            store,
+            id,
+            &input(
+                provider,
+                "gpt-5",
+                entry,
+                "api-key",
+                tokens.clone(),
+                cost,
+                base,
+            ),
+        )
+        .await;
+    }
+    let from =
+        Timestamp::from_second(swarmy_store::metering::hour_floor(base.as_second())).unwrap();
+    let to = Timestamp::from_second(from.as_second() + 3_600).unwrap();
+    BreakdownSeed {
+        second,
+        agents,
+        from,
+        to,
+        cost,
+    }
+}
+
+#[tokio::test]
+async fn entry_breakdown_splits_combined_keys_with_costs() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let seed = seed_two_entries(&test).await;
+    let store = &test.store;
+    // One owner's entries come back with their costs, without the owner.
+    let breakdown = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::AgentEntry,
+            &seed.agents[0].to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(breakdown.len(), 2);
+    for total in &breakdown {
+        assert!(["openai/primary", "xai/secondary"].contains(&total.key.as_str()));
+        assert_eq!(total.totals.cost_micros, seed.cost);
+        assert_eq!(total.completions, 1);
+    }
+    // The other owner sees only its own entry.
+    let breakdown = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::SessionEntry,
+            &seed.second.to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(breakdown.len(), 1);
+    assert_eq!(breakdown[0].totals.cost_micros, seed.cost);
+    test.cleanup().await;
+}
+
+/// An owner's day slice holds exactly that day: rows for the same owner on
+/// other days and for other owners never reach the totals, however many the
+/// fleet has written, because the read is one bounded range.
+#[tokio::test]
+async fn owner_day_totals_ignore_rows_outside_their_range() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    let owner = session.agent_id.to_string();
+    // Midnight-aligned days, so the queried window holds exactly 24 buckets.
+    let day = Timestamp::from_second(1_699_920_000).unwrap();
+    let next = Timestamp::from_second(1_699_920_000 + 86_400).unwrap();
+    let far = Timestamp::from_second(1_699_920_000 + 30 * 86_400).unwrap();
+    let (tokens, cost) = usage(10, 20, 500);
+    // Same owner, queried day, two entries.
+    for entry in ["primary", "secondary"] {
+        complete_with(
+            store,
+            id,
+            &input(
+                "openai",
+                "gpt-5",
+                entry,
+                "api-key",
+                tokens.clone(),
+                cost,
+                day,
+            ),
+        )
+        .await;
+    }
+    // Same owner, other days: must not leak into the day slice.
+    for at in [next, far] {
+        complete_with(
+            store,
+            id,
+            &input(
+                "openai",
+                "gpt-5",
+                "primary",
+                "api-key",
+                tokens.clone(),
+                cost,
+                at,
+            ),
+        )
+        .await;
+    }
+    // Another owner on the queried day: hidden by the owner range.
+    let other = test.create().await;
+    complete_with(
+        store,
+        other,
+        &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, day),
+    )
+    .await;
+    // Bulk history outside the range: thirty other-owner days must not move
+    // the day slice, however much the fleet has written elsewhere.
+    for back in 1_i64..=30 {
+        let at = Timestamp::from_second(day.as_second() - back * 86_400).unwrap();
+        complete_with(
+            store,
+            other,
+            &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, at),
+        )
+        .await;
+    }
+    let end = Timestamp::from_second(day.as_second() + 86_400).unwrap();
+    let totals = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::AgentEntry,
+            &owner,
+            Some((day, end)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(totals.len(), 2);
+    for total in &totals {
+        assert_eq!(total.completions, 1);
+        assert_eq!(total.totals.cost_micros, cost);
+    }
+    // The unwindowed read still sees the owner's whole history.
+    let all = store
+        .dimension_totals(swarmy_store::MeteringDimension::AgentEntry, &owner, None)
+        .await
+        .unwrap();
+    assert_eq!(all.iter().map(|total| total.completions).sum::<u64>(), 4);
+    test.cleanup().await;
+}
+
+/// Completions without an entry keep their provider in the rollups, so the
+/// breakdown names the provider with a `-` entry instead of `unknown`.
+#[tokio::test]
+async fn unattributed_completions_keep_their_provider() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    let (step, claim) = start_claim(store, id).await;
+    let request = claim.request_id;
+    let (tokens, cost) = usage(4, 4, 40);
+    let completion = swarmy_store::InferenceCompletion {
+        claim,
+        expected_head: step,
+        event: completion_event(request, "openai", "gpt-5", &tokens, cost),
+        now: Timestamp::from_second(1_700_000_000).unwrap(),
+        entry: None,
+        entry_kind: None,
+        quota_remaining: std::collections::BTreeMap::new(),
+        quota_resets: std::collections::BTreeMap::new(),
+    };
+    assert!(
+        store
+            .complete_inference(&completion, &"answer")
+            .await
+            .unwrap()
+    );
+    let totals = store
+        .dimension_totals(
+            swarmy_store::MeteringDimension::AgentEntry,
+            &session.agent_id.to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(totals.len(), 1);
+    assert_eq!(totals[0].key, "openai/-");
+    assert_eq!(totals[0].totals.cost_micros, cost);
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn aggregate_series_sums_single_key_views() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let seed = seed_two_entries(&test).await;
+    let store = &test.store;
+    let aggregate = store
+        .usage_aggregate(
+            swarmy_store::MeteringDimension::Agent,
+            seed.from,
+            seed.to,
+            swarmy_store::UsageGroupBy::Day,
+        )
+        .await
+        .unwrap();
+    assert_eq!(aggregate.len(), 1);
+    assert_eq!(aggregate[0].completions, 3);
+    assert_eq!(aggregate[0].totals.cost_micros, seed.cost * 3);
+    let mut summed = swarmy_core::UsageTotals::default();
+    for agent in &seed.agents {
+        let groups = store
+            .usage(
+                swarmy_store::MeteringDimension::Agent,
+                &agent.to_string(),
+                seed.from,
+                seed.to,
+                swarmy_store::UsageGroupBy::Day,
+            )
+            .await
+            .unwrap();
+        for group in &groups {
+            summed.add(&group.totals.usage, group.totals.cost_micros);
+        }
+    }
+    assert_eq!(aggregate[0].totals, summed);
     test.cleanup().await;
 }
 

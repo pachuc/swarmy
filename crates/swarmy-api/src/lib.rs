@@ -307,6 +307,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}/{label}/quota",
             get(entry_quota).post(set_entry_quota),
         )
+        .route("/v1/usage", get(usage))
+        .route("/v1/quotas", get(quotas))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
     // every swarm documents itself at its own version without a token.
@@ -1001,6 +1003,196 @@ async fn set_entry_quota(
     )
     .await
 }
+fn totals_view(totals: &swarmy_core::UsageTotals, completions: u64) -> api::UsageTotalsView {
+    api::UsageTotalsView {
+        input_tokens: totals.usage.input_tokens,
+        cached_input_tokens: totals.usage.cached_input_tokens,
+        cache_write_input_tokens: totals.usage.cache_write_input_tokens,
+        output_tokens: totals.usage.output_tokens,
+        reasoning_output_tokens: totals.usage.reasoning_output_tokens,
+        total_tokens: totals.usage.total_tokens,
+        cost_micros: totals.cost_micros,
+        cost_dollars: totals.dollars(),
+        completions,
+    }
+}
+
+fn usage_group_view(group: &swarmy_store::UsageGroup) -> api::UsageGroupView {
+    api::UsageGroupView {
+        start: group.start.to_string(),
+        end: group.end.to_string(),
+        totals: totals_view(&group.totals, group.completions),
+    }
+}
+
+/// Split one owner's entry totals into per-entry views, costliest first,
+/// with the distinct providers involved. Totals arrive already scoped to
+/// the owner, so the key is the entry name (`provider/label`); the
+/// provider is its leading segment.
+pub(crate) fn entry_breakdown(
+    totals: Vec<swarmy_store::DimensionTotal>,
+) -> (Vec<api::EntryUsageView>, Vec<String>) {
+    let mut entries: Vec<api::EntryUsageView> = totals
+        .into_iter()
+        .map(|total| {
+            let provider = total
+                .key
+                .split_once('/')
+                .map_or_else(|| total.key.clone(), |(provider, _)| provider.to_owned());
+            api::EntryUsageView {
+                entry: total.key,
+                provider,
+                totals: totals_view(&total.totals, total.completions),
+            }
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .totals
+            .cost_micros
+            .cmp(&left.totals.cost_micros)
+            .then_with(|| left.entry.cmp(&right.entry))
+    });
+    let providers: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.provider.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    (entries, providers)
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    by: Option<String>,
+    key: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    group: Option<String>,
+}
+
+/// Read a cost series from the metering rollups: one row per calendar
+/// group plus the total. Without `key` the series aggregates every key in
+/// the dimension, which is how `swarmy cost` shows the fleet-wide series.
+/// The span is capped at 400 days and the series at 500 groups; larger
+/// requests fail with `span_too_large` or `too_many_groups` instead of
+/// scanning unbounded history.
+async fn usage(
+    State(state): State<AppState>,
+    Query(query): Query<UsageQuery>,
+) -> ApiResult<api::UsageResponse> {
+    let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
+    let dimension = swarmy_store::MeteringDimension::parse(&sent_by)
+        .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_dimension"))?;
+    let group_by = match query.group.as_deref().unwrap_or("day") {
+        "day" => swarmy_store::UsageGroupBy::Day,
+        "week" => swarmy_store::UsageGroupBy::Week,
+        "month" => swarmy_store::UsageGroupBy::Month,
+        "year" => swarmy_store::UsageGroupBy::Year,
+        _ => return Err(error(StatusCode::BAD_REQUEST, "invalid_group")),
+    };
+    let now = Timestamp::now();
+    let to = query
+        .to
+        .as_deref()
+        .map(|bound| {
+            swarmy_core::time::parse_bound(bound, now)
+                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_to"))
+        })
+        .transpose()?
+        .unwrap_or(now);
+    let from = query
+        .from
+        .as_deref()
+        .map(|bound| {
+            swarmy_core::time::parse_bound(bound, now)
+                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_from"))
+        })
+        .transpose()?
+        .unwrap_or_else(|| {
+            to.checked_add(jiff::Span::new().hours(-30 * 24))
+                .unwrap_or(Timestamp::UNIX_EPOCH)
+        });
+    if to <= from {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_range"));
+    }
+    if to
+        .as_second()
+        .checked_sub(from.as_second())
+        .is_none_or(|span| span > MAX_USAGE_SPAN_SECONDS)
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "span_too_large"));
+    }
+    let groups = match query.key.as_deref() {
+        Some("") => return Err(error(StatusCode::BAD_REQUEST, "invalid_key")),
+        Some(key) => state
+            .store
+            .usage(dimension, key, from, to, group_by)
+            .await
+            .map_err(storage)?,
+        None => state
+            .store
+            .usage_aggregate(dimension, from, to, group_by)
+            .await
+            .map_err(storage)?,
+    };
+    if groups.len() > MAX_USAGE_GROUPS {
+        return Err(error(StatusCode::BAD_REQUEST, "too_many_groups"));
+    }
+    let mut total = swarmy_core::UsageTotals::default();
+    let mut completions: u64 = 0;
+    for group in &groups {
+        total.add(&group.totals.usage, group.totals.cost_micros);
+        completions = completions.saturating_add(group.completions);
+    }
+    Ok(Json(api::UsageResponse {
+        by: sent_by,
+        key: query.key,
+        group: match group_by {
+            swarmy_store::UsageGroupBy::Day => "day",
+            swarmy_store::UsageGroupBy::Week => "week",
+            swarmy_store::UsageGroupBy::Month => "month",
+            swarmy_store::UsageGroupBy::Year => "year",
+        }
+        .into(),
+        from: from.to_string(),
+        to: to.to_string(),
+        groups: groups.iter().map(usage_group_view).collect(),
+        total: totals_view(&total, completions),
+    }))
+}
+
+/// Longest usage span the API serves: 400 days. Longer windows fail with
+/// `span_too_large` instead of scanning unbounded rollup history.
+const MAX_USAGE_SPAN_SECONDS: i64 = 400 * 86_400;
+/// Most calendar groups one usage response carries. The span cap keeps this
+/// unreachable for day groups today; it guards future groupings.
+const MAX_USAGE_GROUPS: usize = 500;
+
+/// List every credential entry's quota in one request, so
+/// `swarmy auth quota` needs no round trip per entry.
+async fn quotas(State(state): State<AppState>) -> ApiResult<Vec<api::QuotaEntry>> {
+    let summaries = credential_store(&state)?
+        .list_entries(CredentialScope::Cluster)
+        .await
+        .map_err(storage)?;
+    let mut entries = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        let quota = state
+            .store
+            .entry_quota(&summary.provider, &summary.label)
+            .await
+            .map_err(storage)?;
+        entries.push(api::QuotaEntry {
+            provider: summary.provider,
+            label: summary.label,
+            kind: summary.kind,
+            quota: quota_view(quota),
+        });
+    }
+    Ok(Json(entries))
+}
+
 async fn remove_credential_entry(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,

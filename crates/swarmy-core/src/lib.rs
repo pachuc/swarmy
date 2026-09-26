@@ -85,6 +85,8 @@ pub use credential::{CredentialKind, CredentialRecord, CredentialScope, Credenti
 
 pub mod quota;
 
+pub mod time;
+
 mod usage;
 pub use usage::{TokenUsage, UsageTotals};
 

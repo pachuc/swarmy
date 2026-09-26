@@ -578,6 +578,89 @@ pub struct EntryQuotaView {
     pub tokens_remaining: Option<u64>,
 }
 
+/// One entry's quota with its identity, as listed by `swarmy auth quota`.
+/// Served in one request by `GET /v1/quotas`, so the JSON round-trips
+/// through these types.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct QuotaEntry {
+    pub provider: String,
+    pub label: String,
+    pub kind: String,
+    pub quota: EntryQuotaView,
+}
+
+/// Token, cost, and completion totals for one usage row. `cost_dollars`
+/// renders `cost_micros` rounded to four decimal places, matching the
+/// `session show` and `agent show` totals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UsageTotalsView {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub cost_dollars: String,
+    pub completions: u64,
+}
+
+/// One calendar group in a usage series, with RFC 3339 half-open bounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UsageGroupView {
+    pub start: String,
+    pub end: String,
+    #[serde(flatten)]
+    pub totals: UsageTotalsView,
+}
+
+/// A usage series over `[from, to)`: one row per calendar group plus the
+/// total across all groups. Without `key` the series aggregates every key
+/// in the dimension; with `key` it covers that session, agent, provider,
+/// entry, kind, or model only.
+///
+/// The response echoes the request bounds and the `by` value as sent
+/// (`kind`, not `entry_kind`). Buckets are whole hours: the hour containing
+/// `from` and the hour containing `to` are both included, so `to` behaves
+/// as inclusive of its hour. Defaults are `by=agent`, `group=day`, and the
+/// trailing 30 days; the span is capped at 400 days and the series at 500
+/// groups, rejected with `span_too_large` or `too_many_groups`. Bounds
+/// accept RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC
+/// midnight), `now`, relative spans (`7d`, `3mo`, `1y`), and
+/// calendar-aligned words (`day`, `2days`, `week`, `month`, `2months`,
+/// `year`); a bare word means the start of the current UTC period and a
+/// leading `N` means the start of the period `N - 1` back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UsageResponse {
+    pub by: String,
+    pub key: Option<String>,
+    pub group: String,
+    pub from: String,
+    pub to: String,
+    pub groups: Vec<UsageGroupView>,
+    pub total: UsageTotalsView,
+}
+
+/// One entry's share of an agent's or session's totals, as shown by
+/// `agent show` and `session show`. The provider is the entry name's
+/// leading segment (`openai` in `openai/work-key`); entries recorded
+/// without an entry read `provider/-`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EntryUsageView {
+    pub entry: String,
+    pub provider: String,
+    #[serde(flatten)]
+    pub totals: UsageTotalsView,
+}
+
+/// One entry's quota with its usage series, as printed by
+/// `swarmy auth quota --entry PROVIDER/LABEL --json`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EntryQuotaDetail {
+    pub quota: QuotaEntry,
+    pub usage: UsageResponse,
+}
+
 /// A durable event has a cursor even when delivered on a multiplexed connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Event {
@@ -658,6 +741,13 @@ pub struct CliSessionDetail {
     pub resolved: serde_json::Value,
     pub usage: serde_json::Value,
     pub cost_dollars: String,
+    /// Per-entry shares of the session totals, costliest first, read from
+    /// the session-entry rollups rather than completion records.
+    #[serde(default)]
+    pub entries: Vec<EntryUsageView>,
+    /// Providers involved in the session, derived from the entry names.
+    #[serde(default)]
+    pub providers: Vec<String>,
     pub scratch: serde_json::Value,
     pub requirements: serde_json::Value,
     pub placement: serde_json::Value,
@@ -813,9 +903,9 @@ pub mod api_paths {
         Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
         CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
-        InterruptSession, Model, ProbeModel, ProbeResult, Provider, Route, RouteDeleted, Session,
-        SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
-        TurnMetrics, UpdateAgent,
+        InterruptSession, Model, ProbeModel, ProbeResult, Provider, QuotaEntry, Route,
+        RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun,
+        Subscription, TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1055,6 +1145,19 @@ pub mod api_paths {
         request_body = SetEntryQuota,
         responses((status = 200, body = EntryQuotaView), (status = 400, body = ApiError), (status = 404, body = ApiError)))]
     pub fn set_entry_quota() {}
+    #[utoipa::path(get, path = "/v1/usage",
+        params(
+            ("by" = Option<String>, Query, description = "Rollup dimension: session, agent, provider, entry, kind, or model; defaults to agent and echoes as sent"),
+            ("key" = Option<String>, Query, description = "One key in the dimension; without it the series aggregates every key"),
+            ("from" = Option<String>, Query, description = "Range start: RFC 3339, calendar date, now, a span like 7d or 3mo, or a calendar word like month or 2months; defaults to 30 days before to"),
+            ("to" = Option<String>, Query, description = "Range end in the same forms; defaults to now; the hour containing it is included"),
+            ("group" = Option<String>, Query, description = "Calendar grouping: day, week, month, or year; defaults to day. The span is capped at 400 days (span_too_large) and the series at 500 groups (too_many_groups)"),
+        ),
+        responses((status = 200, body = UsageResponse), (status = 400, body = ApiError)))]
+    pub fn usage() {}
+    #[utoipa::path(get, path = "/v1/quotas",
+        responses((status = 200, body = Vec<QuotaEntry>), (status = 401, body = ApiError)))]
+    pub fn quotas() {}
 }
 
 /// The schema document is generated from the same types clients and servers serialize.
@@ -1079,7 +1182,8 @@ pub mod api_paths {
         api_paths::list_credentials, api_paths::set_credential,
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
-        api_paths::entry_quota, api_paths::set_entry_quota,
+        api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
+        api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
@@ -1100,7 +1204,9 @@ pub mod api_paths {
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
-    CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, Event, EventPayload, ApiError, CliSession, CliSessionDetail,
+    CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
+    UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
+    Event, EventPayload, ApiError, CliSession, CliSessionDetail,
     CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute,
     CliRoute, CliRouteInput, CliRouteDeleted
@@ -1217,6 +1323,12 @@ mod tests {
         check!(ProbeResult, {"provider":"openai","model":"gpt-5","usage":{},"cost_micros":12,"effort":"high","elapsed_seconds":1.5});
         check!(SetEntryQuota, {"idempotency_key":"k","limit":1000,"window_seconds":18000});
         check!(EntryQuotaView, {"source":"configured","used":3,"free":997,"limit":1000,"window_seconds":18000,"observed_at":null,"remaining":{},"requests_remaining":null,"tokens_remaining":null});
+        check!(QuotaEntry, {"provider":"openai","label":"main","kind":"api-key","quota":{"source":"observed","used":0,"free":100,"limit":null,"window_seconds":3600,"observed_at":"2026-09-26T12:00:00Z","remaining":{"requests":100},"requests_remaining":100,"tokens_remaining":null}});
+        check!(UsageTotalsView, {"input_tokens":10,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":16,"cost_micros":1200,"cost_dollars":"0.0012","completions":2});
+        check!(UsageGroupView, {"start":"2026-09-01T00:00:00Z","end":"2026-10-01T00:00:00Z","input_tokens":10,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":16,"cost_micros":1200,"cost_dollars":"0.0012","completions":2});
+        check!(EntryQuotaDetail, {"quota":{"provider":"openai","label":"main","kind":"api-key","quota":{"source":"observed","used":0,"free":97,"limit":null,"window_seconds":60,"observed_at":"2026-09-26T12:00:00Z","remaining":{"requests":97},"requests_remaining":97,"tokens_remaining":null}},"usage":{"by":"entry","key":"openai/main","group":"month","from":"2025-09-26T12:00:00Z","to":"2026-09-26T12:00:00Z","groups":[],"total":{"input_tokens":10,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":16,"cost_micros":1200,"cost_dollars":"0.0012","completions":2}}});
+        check!(UsageResponse, {"by":"agent","key":null,"group":"month","from":"2025-09-26T12:00:00Z","to":"2026-09-26T12:00:00Z","groups":[],"total":{"input_tokens":10,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":16,"cost_micros":1200,"cost_dollars":"0.0012","completions":2}});
+        check!(EntryUsageView, {"entry":"openai/main","provider":"openai","input_tokens":10,"cached_input_tokens":1,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":16,"cost_micros":1200,"cost_dollars":"0.0012","completions":2});
     }
 
     #[test]

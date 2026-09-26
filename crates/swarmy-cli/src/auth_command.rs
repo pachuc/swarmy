@@ -42,6 +42,22 @@ pub enum Command {
         #[command(subcommand)]
         command: RoutesCommand,
     },
+    /// Show quota per auth entry, or one entry's usage over time
+    Quota {
+        /// One entry in PROVIDER/LABEL form; without it every entry is listed
+        #[arg(long)]
+        entry: Option<String>,
+        /// Calendar grouping for the entry's usage rows
+        #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
+        group: String,
+        /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
+        /// or a calendar word like month or 2months for the start of this or last month
+        #[arg(long)]
+        since: Option<String>,
+        /// Range end: an absolute date or timestamp, a relative span, a calendar word, or now
+        #[arg(long)]
+        until: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -131,6 +147,25 @@ mod tests {
         assert!(crate::Cli::try_parse_from(["swarmy", "auth", "routes", "rm", "fallback"]).is_ok());
         assert!(
             crate::Cli::try_parse_from(["swarmy", "auth", "routes", "set", "fallback"]).is_err()
+        );
+    }
+
+    #[test]
+    fn quota_flags_parse_without_connecting_to_the_stack() {
+        assert!(crate::Cli::try_parse_from(["swarmy", "auth", "quota"]).is_ok());
+        assert!(
+            crate::Cli::try_parse_from([
+                "swarmy",
+                "auth",
+                "quota",
+                "--entry",
+                "openai/main",
+                "--group",
+                "month",
+                "--since",
+                "1y",
+            ])
+            .is_ok()
         );
     }
 }

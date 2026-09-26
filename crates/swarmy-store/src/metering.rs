@@ -1,21 +1,36 @@
-//! Hourly metering buckets keyed by (`dimension`, `key`, `hour`).
+//! Hourly metering buckets with hour-scoped range reads.
 //!
 //! Buckets are the query path; raw completion records are retained only for
 //! debugging and pruned after `[metering] raw_retention_days`. Each counter
 //! is a little-endian `u64` updated with a `FoundationDB` atomic `Add`, so the
 //! completion record and its bucket updates commit in one transaction.
+//!
+//! Single dimensions pack (`dimension`, `hour`, `key`, `field`) and the
+//! combined breakdown dimensions pack (`dimension`, `owner`, `hour`,
+//! `entry`, `field`). Every read is one contiguous range over the queried
+//! hours: a single key reads its hour slice, an aggregate reads the whole
+//! hour slice, and one owner's entries read the owner's hour slice. Hour
+//! always precedes the varying key parts so time bounds stay inside the
+//! range instead of filtering a full-dimension scan in memory. Buckets
+//! written before this layout (keyed `dimension`, `key`, `hour`, `field`)
+//! are superseded: lifetime totals under the `usage` keys are unaffected,
+//! but the cost series restarts.
 
 use std::collections::BTreeMap;
 
 use foundationdb::Transaction;
 use foundationdb::options::MutationType;
+use foundationdb::tuple::Subspace;
 use jiff::{Timestamp, ToSpan, civil::Weekday};
 use serde::{Deserialize, Serialize};
 use swarmy_core::{TokenUsage, UsageTotals};
 
 use crate::{Result, Store, StoreError, read, scan};
 
-/// Queryable rollup dimensions. `Entry` is `provider/label`.
+/// Queryable rollup dimensions. `Entry` is `provider/label`. The
+/// `AgentEntry` and `SessionEntry` combinations are written for the
+/// `agent show` and `session show` breakdowns; they are internal because the
+/// public `by=` filter stays limited to the six single dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeteringDimension {
     Session,
@@ -24,6 +39,8 @@ pub enum MeteringDimension {
     Entry,
     EntryKind,
     Model,
+    AgentEntry,
+    SessionEntry,
 }
 
 impl MeteringDimension {
@@ -37,10 +54,15 @@ impl MeteringDimension {
             Self::Entry => "entry",
             Self::EntryKind => "entry_kind",
             Self::Model => "model",
+            Self::AgentEntry => "agent_entry",
+            Self::SessionEntry => "session_entry",
         }
     }
 
-    /// Parse a dimension name from CLI or API input.
+    /// Parse a dimension name from CLI or API input. The combined dimensions
+    /// stay internal: `agent show` and `session show` read them, but `by=`
+    /// accepts only the six single dimensions (with `kind` as the CLI-facing
+    /// alias for `entry_kind`).
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -48,7 +70,7 @@ impl MeteringDimension {
             "agent" => Some(Self::Agent),
             "provider" => Some(Self::Provider),
             "entry" => Some(Self::Entry),
-            "entry_kind" => Some(Self::EntryKind),
+            "entry_kind" | "kind" => Some(Self::EntryKind),
             "model" => Some(Self::Model),
             _ => None,
         }
@@ -71,6 +93,15 @@ pub enum UsageGroupBy {
 pub struct UsageGroup {
     pub start: Timestamp,
     pub end: Timestamp,
+    pub totals: UsageTotals,
+    pub completions: u64,
+}
+
+/// One key's summed buckets across all hours, used for per-entry
+/// breakdowns in the show commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionTotal {
+    pub key: String,
     pub totals: UsageTotals,
     pub completions: u64,
 }
@@ -99,11 +130,59 @@ pub fn entry_key(provider: &str, label: &str) -> String {
     format!("{provider}/{label}")
 }
 
+/// Entry name for completions recorded without an entry. The provider stays
+/// known, so breakdowns name it and only the entry is missing.
+#[must_use]
+pub fn unknown_entry_key(provider: &str) -> String {
+    entry_key(provider, "-")
+}
+
+/// Whether a combined dimension nests its owner as a tuple element.
+fn is_combined(dimension: MeteringDimension) -> bool {
+    matches!(
+        dimension,
+        MeteringDimension::AgentEntry | MeteringDimension::SessionEntry
+    )
+}
+
+/// Split an `owner/entry` query key for the combined dimensions. Owner ids
+/// are ULIDs without slashes, so the entry is everything after the first
+/// slash, including its own `provider/label` separator.
+fn split_combined_key(key: &str) -> Result<(String, String)> {
+    key.split_once('/')
+        .map(|(owner, entry)| (owner.to_owned(), entry.to_owned()))
+        .ok_or(StoreError::Corrupt)
+}
+
 fn add(trx: &Transaction, key: &[u8], delta: u64) {
     if delta == 0 {
         return;
     }
     trx.atomic_op(key, &delta.to_le_bytes(), MutationType::Add);
+}
+
+/// One completion's bucket writes, shared by the single and combined
+/// dimension writers.
+pub(crate) struct BucketWrite<'a> {
+    pub dimension: &'a str,
+    pub hour: i64,
+    pub usage: &'a TokenUsage,
+    pub cost_micros: u64,
+}
+
+/// One completion's counter updates, shared by the single and combined
+/// bucket writers.
+fn bucket_deltas(usage: &TokenUsage, cost_micros: u64) -> [(&'static str, u64); 8] {
+    [
+        ("input", usage.input_tokens),
+        ("cached", usage.cached_input_tokens),
+        ("cache_write", usage.cache_write_input_tokens),
+        ("output", usage.output_tokens),
+        ("reasoning", usage.reasoning_output_tokens),
+        ("total", usage.total_tokens),
+        ("cost", cost_micros),
+        ("completions", 1),
+    ]
 }
 
 fn counter(bytes: &[u8]) -> u64 {
@@ -117,43 +196,155 @@ fn counter(bytes: &[u8]) -> u64 {
 }
 
 impl Store {
-    pub(crate) fn metering_bucket_key(
+    pub(crate) fn metering_bucket_key_single(
         &self,
         dimension: &str,
-        key: &str,
         hour: i64,
+        key: &str,
         field: &str,
     ) -> Vec<u8> {
         self.root
-            .pack(&("metering_hour", dimension, key, hour, field))
+            .pack(&("metering_hour", dimension, hour, key, field))
     }
 
-    pub(crate) fn metering_add(
+    pub(crate) fn metering_bucket_key_combined(
+        &self,
+        dimension: &str,
+        owner: &str,
+        hour: i64,
+        entry: &str,
+        field: &str,
+    ) -> Vec<u8> {
+        self.root
+            .pack(&("metering_hour", dimension, owner, hour, entry, field))
+    }
+
+    pub(crate) fn metering_add_single(
         &self,
         trx: &Transaction,
-        dimension: &str,
         key: &str,
-        hour: i64,
-        usage: &TokenUsage,
-        cost_micros: u64,
+        write: &BucketWrite<'_>,
     ) {
-        let deltas = [
-            ("input", usage.input_tokens),
-            ("cached", usage.cached_input_tokens),
-            ("cache_write", usage.cache_write_input_tokens),
-            ("output", usage.output_tokens),
-            ("reasoning", usage.reasoning_output_tokens),
-            ("total", usage.total_tokens),
-            ("cost", cost_micros),
-            ("completions", 1),
-        ];
-        for (field, delta) in deltas {
+        for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
             add(
                 trx,
-                &self.metering_bucket_key(dimension, key, hour, field),
+                &self.metering_bucket_key_single(write.dimension, write.hour, key, field),
                 delta,
             );
         }
+    }
+
+    pub(crate) fn metering_add_combined(
+        &self,
+        trx: &Transaction,
+        owner: &str,
+        entry: &str,
+        write: &BucketWrite<'_>,
+    ) {
+        for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
+            add(
+                trx,
+                &self.metering_bucket_key_combined(
+                    write.dimension,
+                    owner,
+                    write.hour,
+                    entry,
+                    field,
+                ),
+                delta,
+            );
+        }
+    }
+
+    /// One contiguous hour slice of a single dimension: every key in
+    /// `[from_hour, to_hour]` inclusive.
+    fn single_hour_range(
+        &self,
+        dimension: MeteringDimension,
+        from_hour: i64,
+        to_hour: i64,
+    ) -> (Vec<u8>, Vec<u8>) {
+        single_hour_range(&self.root, dimension.as_str(), from_hour, to_hour)
+    }
+
+    /// One owner's slice of a combined dimension, optionally narrowed to an
+    /// inclusive hour window. The owner is a tuple element, so the range
+    /// holds exactly that owner's rows and nothing else's.
+    fn owner_hour_range(
+        &self,
+        dimension: MeteringDimension,
+        owner: &str,
+        hours: Option<(i64, i64)>,
+    ) -> (Vec<u8>, Vec<u8>) {
+        owner_hour_range(&self.root, dimension.as_str(), owner, hours)
+    }
+}
+
+/// One contiguous hour slice of a single dimension: every key in
+/// `[from_hour, to_hour]` inclusive. A free function so unit tests prove
+/// the range holds exactly the queried rows without a database.
+fn single_hour_range(
+    root: &Subspace,
+    dimension: &str,
+    from_hour: i64,
+    to_hour: i64,
+) -> (Vec<u8>, Vec<u8>) {
+    let begin = root.pack(&("metering_hour", dimension, from_hour));
+    let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
+    let end = root.pack(&("metering_hour", dimension, end_hour));
+    (begin, end)
+}
+
+/// One owner's slice of a combined dimension, optionally narrowed to an
+/// inclusive hour window. The owner is a tuple element, so the range holds
+/// exactly that owner's rows and nothing else's.
+fn owner_hour_range(
+    root: &Subspace,
+    dimension: &str,
+    owner: &str,
+    hours: Option<(i64, i64)>,
+) -> (Vec<u8>, Vec<u8>) {
+    let Some((from_hour, to_hour)) = hours else {
+        return root.subspace(&("metering_hour", dimension, owner)).range();
+    };
+    let begin = root.pack(&("metering_hour", dimension, owner, from_hour));
+    let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
+    let end = root.pack(&("metering_hour", dimension, owner, end_hour));
+    (begin, end)
+}
+
+impl Store {
+    /// Page one contiguous bucket range into raw rows. Every caller passes a
+    /// range built by `single_hour_range` or `owner_hour_range`, so reads
+    /// stay proportional to the queried hours, never the fleet's history.
+    async fn scan_bucket_range(
+        &self,
+        begin: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let mut cursor = begin.clone();
+        let mut rows = Vec::new();
+        loop {
+            let batch = self
+                .transaction(|trx| {
+                    let range = (cursor.clone(), end.clone());
+                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                })
+                .await?;
+            if batch.is_empty() {
+                break;
+            }
+            let full = batch.len() >= crate::MAX_SCAN_LIMIT;
+            for (raw_key, _) in &batch {
+                cursor.clone_from(raw_key);
+                cursor.push(0);
+            }
+            rows.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(rows)
     }
 }
 
@@ -261,38 +452,57 @@ fn accumulate(
     let slot = groups
         .entry(start.as_second())
         .or_insert((start, end, UsageTotals::default(), 0));
-    slot.2.usage.input_tokens = slot
-        .2
-        .usage
-        .input_tokens
-        .saturating_add(totals.usage.input_tokens);
-    slot.2.usage.cached_input_tokens = slot
-        .2
-        .usage
-        .cached_input_tokens
-        .saturating_add(totals.usage.cached_input_tokens);
-    slot.2.usage.cache_write_input_tokens = slot
-        .2
-        .usage
-        .cache_write_input_tokens
-        .saturating_add(totals.usage.cache_write_input_tokens);
-    slot.2.usage.output_tokens = slot
-        .2
-        .usage
-        .output_tokens
-        .saturating_add(totals.usage.output_tokens);
-    slot.2.usage.reasoning_output_tokens = slot
-        .2
-        .usage
-        .reasoning_output_tokens
-        .saturating_add(totals.usage.reasoning_output_tokens);
-    slot.2.usage.total_tokens = slot
-        .2
-        .usage
-        .total_tokens
-        .saturating_add(totals.usage.total_tokens);
-    slot.2.cost_micros = slot.2.cost_micros.saturating_add(totals.cost_micros);
+    slot.2.add(&totals.usage, totals.cost_micros);
     slot.3 = slot.3.saturating_add(completions);
+}
+
+/// Add one counter row to a per-group field fold, summing across keys that
+/// share the group. Each coordinate holds one atomic counter, so every row
+/// adds exactly once.
+fn fold_row<K: Ord>(
+    folded: &mut BTreeMap<K, BTreeMap<String, u64>>,
+    key: K,
+    field: String,
+    value: u64,
+) {
+    let slot = folded.entry(key).or_default().entry(field).or_default();
+    *slot = slot.saturating_add(value);
+}
+
+/// Build summed totals from one key-hour's field counters.
+fn totals_of(fields: &BTreeMap<String, u64>) -> (UsageTotals, u64) {
+    let totals = UsageTotals {
+        usage: TokenUsage {
+            input_tokens: fields.get("input").copied().unwrap_or(0),
+            cached_input_tokens: fields.get("cached").copied().unwrap_or(0),
+            cache_write_input_tokens: fields.get("cache_write").copied().unwrap_or(0),
+            output_tokens: fields.get("output").copied().unwrap_or(0),
+            reasoning_output_tokens: fields.get("reasoning").copied().unwrap_or(0),
+            total_tokens: fields.get("total").copied().unwrap_or(0),
+        },
+        cost_micros: fields.get("cost").copied().unwrap_or(0),
+    };
+    (totals, fields.get("completions").copied().unwrap_or(0))
+}
+
+/// Fold an hourly map into calendar groups in time order.
+fn group_hours(
+    hours: &BTreeMap<i64, (UsageTotals, u64)>,
+    group_by: UsageGroupBy,
+) -> Vec<UsageGroup> {
+    let mut grouped: BTreeMap<i64, (Timestamp, Timestamp, UsageTotals, u64)> = BTreeMap::new();
+    for (hour, (totals, completions)) in hours {
+        accumulate(&mut grouped, *hour, group_by, totals, *completions);
+    }
+    grouped
+        .into_values()
+        .map(|(start, end, totals, completions)| UsageGroup {
+            start,
+            end,
+            totals,
+            completions,
+        })
+        .collect()
 }
 
 impl Store {
@@ -306,62 +516,49 @@ impl Store {
         if to_hour < from_hour {
             return Ok(BTreeMap::new());
         }
-        let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
-        let begin = self
-            .root
-            .pack(&("metering_hour", dimension.as_str(), key, from_hour));
-        let end = self
-            .root
-            .pack(&("metering_hour", dimension.as_str(), key, end_hour));
+        let (owner, entry) = if is_combined(dimension) {
+            split_combined_key(key)?
+        } else {
+            (String::new(), String::new())
+        };
+        let (begin, end) = if is_combined(dimension) {
+            self.owner_hour_range(dimension, &owner, Some((from_hour, to_hour)))
+        } else {
+            self.single_hour_range(dimension, from_hour, to_hour)
+        };
+        let rows = self.scan_bucket_range(begin, end).await?;
         let mut hours: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
-        let mut cursor = begin.clone();
-        loop {
-            let rows = self
-                .transaction(|trx| {
-                    let range = (cursor.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if rows.is_empty() {
-                break;
-            }
-            // Range bounds already restrict hours; unpack failures still error.
+        if is_combined(dimension) {
             let prefix = self
                 .root
-                .subspace(&("metering_hour", dimension.as_str(), key));
+                .subspace(&("metering_hour", dimension.as_str(), owner.as_str()));
             for (raw_key, value) in &rows {
-                let (hour, field): (i64, String) =
+                let (hour, row_entry, field): (i64, String, String) =
                     prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
-                if FIELDS.contains(&field.as_str()) {
+                if row_entry == entry && FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
                         .or_default()
                         .insert(field.clone(), counter(value));
                 }
-                cursor.clone_from(raw_key);
-                cursor.push(0);
             }
-            if rows.len() < crate::MAX_SCAN_LIMIT {
-                break;
+        } else {
+            let prefix = self.root.subspace(&("metering_hour", dimension.as_str()));
+            for (raw_key, value) in &rows {
+                let (hour, row_key, field): (i64, String, String) =
+                    prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+                if row_key == key && FIELDS.contains(&field.as_str()) {
+                    hours
+                        .entry(hour)
+                        .or_default()
+                        .insert(field.clone(), counter(value));
+                }
             }
         }
         let mut result = BTreeMap::new();
         for (hour, fields) in hours {
-            let totals = UsageTotals {
-                usage: TokenUsage {
-                    input_tokens: fields.get("input").copied().unwrap_or(0),
-                    cached_input_tokens: fields.get("cached").copied().unwrap_or(0),
-                    cache_write_input_tokens: fields.get("cache_write").copied().unwrap_or(0),
-                    output_tokens: fields.get("output").copied().unwrap_or(0),
-                    reasoning_output_tokens: fields.get("reasoning").copied().unwrap_or(0),
-                    total_tokens: fields.get("total").copied().unwrap_or(0),
-                },
-                cost_micros: fields.get("cost").copied().unwrap_or(0),
-            };
-            result.insert(
-                hour,
-                (totals, fields.get("completions").copied().unwrap_or(0)),
-            );
+            let (totals, completions) = totals_of(&fields);
+            result.insert(hour, (totals, completions));
         }
         Ok(result)
     }
@@ -385,17 +582,98 @@ impl Store {
         let hours = self
             .bucket_hours(dimension, key, from_hour, to_hour)
             .await?;
-        let mut grouped: BTreeMap<i64, (Timestamp, Timestamp, UsageTotals, u64)> = BTreeMap::new();
-        for (hour, (totals, completions)) in &hours {
-            accumulate(&mut grouped, *hour, group_by, totals, *completions);
+        Ok(group_hours(&hours, group_by))
+    }
+
+    /// Sum hourly buckets over `[from, to)` across every key in `dimension`
+    /// into calendar groups. `swarmy cost` without a key filter reads the
+    /// fleet-wide series through this instead of enumerating keys. The read
+    /// is one hour slice, so a status poll costs the window, not the
+    /// fleet's whole history.
+    /// # Errors
+    /// Returns decoding or storage errors.
+    pub async fn usage_aggregate(
+        &self,
+        dimension: MeteringDimension,
+        from: Timestamp,
+        to: Timestamp,
+        group_by: UsageGroupBy,
+    ) -> Result<Vec<UsageGroup>> {
+        if to <= from {
+            return Ok(Vec::new());
         }
-        Ok(grouped
-            .into_values()
-            .map(|(start, end, totals, completions)| UsageGroup {
-                start,
-                end,
-                totals,
-                completions,
+        let from_hour = hour_floor(from.as_second());
+        let to_hour = hour_floor(to.as_second().saturating_sub(1));
+        if to_hour < from_hour {
+            return Ok(Vec::new());
+        }
+        let (begin, end) = self.single_hour_range(dimension, from_hour, to_hour);
+        let rows = self.scan_bucket_range(begin, end).await?;
+        let prefix = self.root.subspace(&("metering_hour", dimension.as_str()));
+        // Each (hour, key, field) coordinate holds one atomic counter, so
+        // every row in the slice folds exactly once.
+        let mut folded: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
+        for (raw_key, value) in &rows {
+            let (hour, _key, field): (i64, String, String) =
+                prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+            if FIELDS.contains(&field.as_str()) {
+                fold_row(&mut folded, hour, field, counter(value));
+            }
+        }
+        let mut hours: BTreeMap<i64, (UsageTotals, u64)> = BTreeMap::new();
+        for (hour, fields) in folded {
+            let (totals, completions) = totals_of(&fields);
+            hours.insert(hour, (totals, completions));
+        }
+        Ok(group_hours(&hours, group_by))
+    }
+
+    /// Sum one owner's entries in a combined dimension into per-entry
+    /// totals. The show commands list one owner's entries this way; with an
+    /// hour window the read is that owner's slice of those hours, otherwise
+    /// the owner's whole slice. Either way no other owner's rows are read.
+    /// # Errors
+    /// Returns decoding or storage errors.
+    pub async fn dimension_totals(
+        &self,
+        dimension: MeteringDimension,
+        owner: &str,
+        hours: Option<(Timestamp, Timestamp)>,
+    ) -> Result<Vec<DimensionTotal>> {
+        let window = hours
+            .filter(|(from, to)| to > from)
+            .map(|(from, to)| {
+                (
+                    hour_floor(from.as_second()),
+                    hour_floor(to.as_second().saturating_sub(1)),
+                )
+            })
+            .filter(|(from_hour, to_hour)| to_hour >= from_hour);
+        if hours.is_some() && window.is_none() {
+            return Ok(Vec::new());
+        }
+        let (begin, end) = self.owner_hour_range(dimension, owner, window);
+        let rows = self.scan_bucket_range(begin, end).await?;
+        let prefix = self
+            .root
+            .subspace(&("metering_hour", dimension.as_str(), owner));
+        let mut folded: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+        for (raw_key, value) in &rows {
+            let (_hour, entry, field): (i64, String, String) =
+                prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+            if FIELDS.contains(&field.as_str()) {
+                fold_row(&mut folded, entry, field, counter(value));
+            }
+        }
+        Ok(folded
+            .into_iter()
+            .map(|(key, fields)| {
+                let (totals, completions) = totals_of(&fields);
+                DimensionTotal {
+                    key,
+                    totals,
+                    completions,
+                }
             })
             .collect())
     }
@@ -649,6 +927,87 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foundationdb::tuple::Subspace;
+
+    /// The single-dimension hour slice holds exactly its hours across every
+    /// key, and nothing else: rows for other hours or dimensions sort
+    /// outside `[begin, end)`, so the aggregate never reads them however
+    /// many the fleet has written.
+    #[test]
+    fn single_hour_slice_excludes_rows_outside_its_hours() {
+        let root = Subspace::all();
+        let row = |dimension: &str, hour: i64, key: &str| {
+            root.pack(&("metering_hour", dimension, hour, key, "input"))
+        };
+        // Row hours are always multiples of 3_600, so the end bound one hour
+        // past the last queried hour excludes exactly the hours after it.
+        let (begin, end) = single_hour_range(&root, "agent", 3_600, 7_200);
+        for hour in [3_600, 7_200] {
+            for key in ["a", "z"] {
+                let packed = row("agent", hour, key);
+                assert!(begin <= packed && packed < end, "{hour}/{key}");
+            }
+        }
+        for hour in [0, 3_600 - 3_600, 7_200 + 3_600, 100_000_000] {
+            let packed = row("agent", hour, "a");
+            assert!(packed < begin || packed >= end, "{hour}");
+        }
+        for dimension in ["session", "agent_entry"] {
+            let packed = row(dimension, 2_000, "a");
+            assert!(packed < begin || packed >= end, "{dimension}");
+        }
+        // Growing history outside the window never enters the slice.
+        let (again, _) = single_hour_range(&root, "agent", 3_600, 7_200);
+        assert_eq!(begin, again);
+    }
+
+    /// One owner's slice of a combined dimension holds exactly that owner's
+    /// rows in the queried hours: other owners and other hours sort outside
+    /// the range, so an entry breakdown costs one owner, not the fleet.
+    #[test]
+    fn owner_hour_slice_excludes_other_owners_and_hours() {
+        let root = Subspace::all();
+        let row = |owner: &str, hour: i64, entry: &str| {
+            root.pack(&("metering_hour", "agent_entry", owner, hour, entry, "cost"))
+        };
+        let (begin, end) = owner_hour_range(&root, "agent_entry", "owner-a", Some((3_600, 7_200)));
+        for hour in [3_600, 7_200] {
+            for entry in ["openai/main", "openai/-"] {
+                let packed = row("owner-a", hour, entry);
+                assert!(begin <= packed && packed < end, "{hour}/{entry}");
+            }
+        }
+        for owner in ["owner-b", "owner-a2", "owner"] {
+            let packed = row(owner, 3_600, "openai/main");
+            assert!(packed < begin || packed >= end, "{owner}");
+        }
+        for hour in [0, 7_200 + 3_600, 100_000_000] {
+            let packed = row("owner-a", hour, "openai/main");
+            assert!(packed < begin || packed >= end, "{hour}");
+        }
+        // Without a window the slice is still exactly one owner's rows.
+        let (all_begin, all_end) = owner_hour_range(&root, "agent_entry", "owner-a", None);
+        for hour in [0, 1_000, 10_000_000] {
+            let packed = row("owner-a", hour, "openai/main");
+            assert!(all_begin <= packed && packed < all_end, "{hour}");
+        }
+        let packed = row("owner-b", 1_000, "openai/main");
+        assert!(packed < all_begin || packed >= all_end);
+    }
+
+    #[test]
+    fn combined_keys_split_owner_from_entry() {
+        assert_eq!(
+            split_combined_key("owner/openai/main").unwrap(),
+            ("owner".to_owned(), "openai/main".to_owned())
+        );
+        assert_eq!(
+            split_combined_key("owner/openai/-").unwrap(),
+            ("owner".to_owned(), "openai/-".to_owned())
+        );
+        assert!(split_combined_key("owner").is_err());
+        assert_eq!(unknown_entry_key("openai"), "openai/-");
+    }
 
     fn stamp(year: i16, month: i8, day: i8, hour: i8) -> Timestamp {
         jiff::civil::date(year, month, day)

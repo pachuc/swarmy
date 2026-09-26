@@ -80,6 +80,21 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         mapping = json.loads(os.environ.get('REPORT_METRICS', '{}'))
         sid = rest[2] if len(rest) > 2 else ''
         print(json.dumps(mapping.get(sid, [])))
+    elif rest[:1] == ['cost']:
+        if os.environ.get('NO_COST'):
+            print("error: unrecognized subcommand 'cost'", file=sys.stderr)
+            sys.exit(2)
+        if os.environ.get('FLEET_COST_FAIL'):
+            print("error: connection refused", file=sys.stderr)
+            sys.exit(1)
+        # Day and month polls carry different --since values; answer each
+        # from its own variable so the status test pins both down.
+        since = args[args.index('--since') + 1] if '--since' in args else ''
+        if since == datetime.now(timezone.utc).date().isoformat():
+            value = os.environ.get('FLEET_COST_DAY', '0.0100')
+        else:
+            value = os.environ.get('FLEET_COST_MONTH', '0.2500')
+        print(json.dumps({'total': {'cost_dollars': value}}))
     elif rest[:3] == ['session', 'interrupt', '01AAAA']:
         (root / 'interrupted').write_text('yes')
     else:
@@ -142,6 +157,7 @@ class FleetTests(unittest.TestCase):
         self.assertIn("worker-1\tEWR2HD", status.stdout)
         self.assertIn("waiting for inference: 429 rate limited", status.stdout)
         self.assertIn("$1.25", status.stdout)
+        self.assertIn("cost today=$0.0100 this_month=$0.2500", status.stdout)
         collect = self.call("collect", "EWR2HD")
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertIn(["task", "pr", "EWR2HD", "https://github.com/pachuc/swarmy/pull/42"], self.calls())
@@ -159,6 +175,23 @@ class FleetTests(unittest.TestCase):
         self.assertFalse(any("delete" in call for call in self.calls()))
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertEqual(workers, {"worker-1": None})
+
+    def test_status_without_cost_command_omits_the_cost_line(self):
+        # Clusters predating `swarmy cost` fail it with clap's unknown
+        # subcommand error; status still prints the workers.
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        old_env = dict(self.env, NO_COST="1")
+        status = self.call("status", env=old_env)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("worker-1\tEWR2HD", status.stdout)
+        self.assertNotIn("cost today=", status.stdout)
+
+    def test_status_cost_failure_still_fails(self):
+        # A real cost failure is not an old cluster and must surface.
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        broken = dict(self.env, FLEET_COST_FAIL="1")
+        status = self.call("status", env=broken)
+        self.assertNotEqual(status.returncode, 0)
 
     def test_empty_remote_uses_the_local_api_configuration(self):
         # On a control node the driver runs without a tunnel profile.

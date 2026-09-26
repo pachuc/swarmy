@@ -10,6 +10,9 @@ mod agents;
 #[path = "cli_session/chat.rs"]
 mod chat;
 
+#[path = "cli_session/cost.rs"]
+mod cost;
+
 #[path = "support/cli_bin.rs"]
 mod cli_bin;
 
@@ -286,6 +289,9 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         std::sync::Arc::new(object_store::memory::InMemory::new()),
     );
     api.default_image = Some("fixture:test".into());
+    // Quota tests seed credential entries through the store with this
+    // keyring, so the API decrypts the same records the tests write.
+    api.credential_keyring = Some(swarmy_config::Keyring::from_bytes([7; 32]));
     // Several terminal tests append events directly to the store without a
     // live publication, so the stream's store poll is the only repair path.
     // Keep it below the 15 second test wait but above the 3 second client
