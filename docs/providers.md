@@ -129,15 +129,22 @@ implicit route of the selected provider's entries in creation order, so
 configurations without routes keep working exactly as before.
 
 When a step's entry has an open breaker or returns a retryable failure, the
-worker records the reason and moves the session to the next step of its route
-for the next attempt, applying that step's model override. Failover never
-happens mid-stream: one request uses one entry, and the next attempt starts a
-new step. When every step is open, the session waits for the earliest retry
-time among them. When the provider or model changes across a failover, the
-request builder does not replay reasoning blocks from the previous provider:
-reasoning signatures are provider- and model-specific, so the thinking text
-travels as plain text instead. Every completion records the entry and route
-step used, so metering attributes cost to the entry that earned it.
+worker records the reason and moves the session to the next usable step of
+its route for the next attempt, applying that step's model override. When
+every later step is open but an earlier step recovered, the session wraps
+back to the recovered step instead of sleeping through the later retry.
+Failover never happens mid-stream: one request uses one entry, and the next
+attempt starts a new step. When every step is open, the session waits for
+the earliest retry time among them. A step naming an entry with no ready
+credential is skipped with a recorded reason; a route that selects nothing
+usable falls back to the implicit chain. Waits for a provider no gateway
+serves yet never consume a route step: the session retries its current step
+once a gateway advertises the provider. When the provider or model changes
+across a failover, the request builder does not replay reasoning blocks
+from the previous provider: reasoning signatures are provider- and
+model-specific, so the thinking text travels as plain text instead. Every
+completion records the entry and route step used, so metering attributes
+cost to the entry that earned it.
 
 Three common shapes, from the design discussion:
 

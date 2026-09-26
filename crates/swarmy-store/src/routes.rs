@@ -82,8 +82,9 @@ impl RouteSnapshot {
             })
     }
 
-    /// First usable step at or after the session's attempt position, falling
-    /// back to the earliest retry when every later step is open. The worker
+    /// First usable step at or after the session's attempt position, wrapping
+    /// to a recovered earlier step when every later step is open, and falling
+    /// back to the earliest retry when every step is open. The worker
     /// submits there so the gateway's probe discipline records the outcome
     /// for the next attempt instead of spinning locally.
     #[must_use]
