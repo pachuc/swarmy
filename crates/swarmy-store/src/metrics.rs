@@ -2134,7 +2134,8 @@ mod tests {
 
     #[test]
     fn stored_layout_round_trips_and_converts_to_the_api_type() {
-        let stored = StoredTurnMetrics::from_public(StoredTurnMetrics::V1(fixture_v1()).into_public());
+        let stored =
+            StoredTurnMetrics::from_public(StoredTurnMetrics::V1(fixture_v1()).into_public());
         let bytes = swarmy_core::encode(&stored).unwrap();
         let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
         assert_eq!(decoded, stored);
