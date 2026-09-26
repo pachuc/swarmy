@@ -50,10 +50,11 @@ pub enum Command {
         /// Calendar grouping for the entry's usage rows
         #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
         group: String,
-        /// Range start: an absolute date or timestamp, or a relative span like 7d, 3mo, or 1y
+        /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
+    /// or a calendar word like month or 2months for the start of this or last month
         #[arg(long)]
         since: Option<String>,
-        /// Range end: an absolute date or timestamp, a relative span, or now
+        /// Range end: an absolute date or timestamp, a relative span, a calendar word, or now
         #[arg(long)]
         until: Option<String>,
     },

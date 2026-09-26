@@ -277,10 +277,10 @@ async fn usage_series_matches_store_views_for_every_dimension_and_group() {
             for (group, want) in response.groups.iter().zip(&expected) {
                 assert_eq!(group.start, want.start.to_string());
                 assert_eq!(group.end, want.end.to_string());
-                assert_eq!(group.input_tokens, want.totals.usage.input_tokens);
-                assert_eq!(group.cost_micros, want.totals.cost_micros);
-                assert_eq!(group.completions, want.completions);
-                assert_eq!(group.cost_dollars, want.totals.dollars());
+                assert_eq!(group.totals.input_tokens, want.totals.usage.input_tokens);
+                assert_eq!(group.totals.cost_micros, want.totals.cost_micros);
+                assert_eq!(group.totals.completions, want.completions);
+                assert_eq!(group.totals.cost_dollars, want.totals.dollars());
             }
             let mut total = swarmy_core::UsageTotals::default();
             let mut completions = 0;
@@ -318,15 +318,24 @@ async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
     let Some(fixture) = Fixture::new().await else {
         return;
     };
-    seed(&fixture.store).await;
+    let (first, _, _) = seed(&fixture.store).await;
     let from = stamp(1_700_000_000 - 3_600);
     let to = stamp(1_700_000_000 + 86_400);
+    let to_ts: Timestamp = to.parse().unwrap();
     for (by, key, from, to, group) in [
         ("team", None, from.as_str(), to.as_str(), "day"),
         ("agent", None, from.as_str(), to.as_str(), "hour"),
         ("agent", Some(""), from.as_str(), to.as_str(), "day"),
         ("agent", None, to.as_str(), from.as_str(), "day"),
         ("agent", None, "yesterday", to.as_str(), "day"),
+        // A 401-day span exceeds the 400-day cap.
+        (
+            "agent",
+            None,
+            "2023-01-01T00:00:00Z",
+            "2024-02-06T00:00:00Z",
+            "day",
+        ),
     ] {
         let error = fixture
             .client
@@ -339,6 +348,60 @@ async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
             "{by:?} {key:?}"
         );
     }
+    // The span cap names its limit.
+    let error = fixture
+        .client
+        .usage(
+            "agent",
+            None,
+            "2023-01-01T00:00:00Z",
+            "2024-02-06T00:00:00Z",
+            "day",
+        )
+        .await
+        .unwrap_err();
+    let swarmy_client::Error::Api { body, .. } = error else {
+        panic!("expected API error");
+    };
+    assert_eq!(body.code, "span_too_large");
+    // The response echoes `by` as sent, so `kind` stays `kind`.
+    let echoed = fixture
+        .client
+        .usage("kind", Some("api-key"), &from, &to, "day")
+        .await
+        .unwrap();
+    assert_eq!(echoed.by, "kind");
+    // The hour containing `to` is included: a completion thirty minutes
+    // before the bound still lands in the series.
+    let half_hour_before_to = Timestamp::from_second(to_ts.as_second() - 1_800).unwrap();
+    complete(
+        &fixture.store,
+        first,
+        &CompletionSeed {
+            provider: "openai",
+            model: "gpt-5",
+            entry: "primary",
+            kind: "api-key",
+            at: half_hour_before_to,
+            cost: 7,
+        },
+    )
+    .await;
+    let covering = fixture
+        .client
+        .usage(
+            "session",
+            Some(&first.to_string()),
+            &stamp(to_ts.as_second() - 3_600),
+            &to,
+            "day",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        covering.groups.iter().map(|group| group.totals.completions).sum::<u64>(),
+        1
+    );
     // The `kind` alias reads the same buckets as `entry_kind`.
     let kind = fixture
         .client

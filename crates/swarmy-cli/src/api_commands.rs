@@ -97,8 +97,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     Ok(())
 }
 /// Parse a `--since` or `--until` bound, defaulting to `default` when the
-/// flag is absent. The client resolves relative spans locally so the API
-/// only ever sees absolute bounds.
+/// flag is absent. The client resolves relative spans and calendar words
+/// locally so the API only ever sees absolute bounds.
 fn cost_bound(
     value: Option<&str>,
     default: &str,
@@ -109,7 +109,7 @@ fn cost_bound(
     swarmy_core::time::parse_bound(text, now).with_context(|| {
         format!(
             "--{flag} must be a date like 2026-09-01, an RFC 3339 timestamp, now, \
-             or a span like 7d, 3mo, or 1y"
+             a span like 7d, 3mo, or 1y, or a calendar word like month or 2months"
         )
     })
 }
@@ -212,14 +212,14 @@ fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result
             UsageRow {
                 start: &group.start,
                 end: &group.end,
-                input: group.input_tokens,
-                cached: group.cached_input_tokens,
-                cache_write: group.cache_write_input_tokens,
-                output: group.output_tokens,
-                reasoning: group.reasoning_output_tokens,
-                total: group.total_tokens,
-                cost_dollars: &group.cost_dollars,
-                completions: group.completions,
+                input: group.totals.input_tokens,
+                cached: group.totals.cached_input_tokens,
+                cache_write: group.totals.cache_write_input_tokens,
+                output: group.totals.output_tokens,
+                reasoning: group.totals.reasoning_output_tokens,
+                total: group.totals.total_tokens,
+                cost_dollars: &group.totals.cost_dollars,
+                completions: group.totals.completions,
             }
             .render()
         );
@@ -1290,20 +1290,15 @@ async fn quota(
     until: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let credentials = request(endpoint, client.cli_credentials()).await?;
+    // One request lists every entry's quota; the per-entry usage series
+    // below is the only second call, and only for `--entry`.
+    let views = request(endpoint, client.quotas()).await?;
     if let Some(entry) = entry {
         let (provider, label) = entry.split_once('/').context("expected PROVIDER/LABEL")?;
-        let kind = credentials
+        let view = views
             .iter()
-            .find(|credential| credential.provider == provider && credential.label == label)
-            .map_or_else(|| "-".into(), |credential| credential.kind.clone());
-        let quota = request(endpoint, client.entry_quota(provider, label)).await?;
-        let view = swarmy_api_types::QuotaEntry {
-            provider: provider.into(),
-            label: label.into(),
-            kind,
-            quota,
-        };
+            .find(|view| view.provider == provider && view.label == label)
+            .with_context(|| format!("unknown entry {entry}"))?;
         let now = jiff::Timestamp::now();
         let end = cost_bound(until, "now", "until", now)?;
         let start = cost_bound(since, "30d", "since", now)?;
@@ -1322,27 +1317,16 @@ async fn quota(
         if json {
             println!(
                 "{}",
-                serde_json::to_string(&json!({"quota": view, "usage": response}))?
+                serde_json::to_string(&swarmy_api_types::EntryQuotaDetail {
+                    quota: view.clone(),
+                    usage: response,
+                })?
             );
         } else {
-            println!("{}", quota_line(&view));
+            println!("{}", quota_line(view));
             print_usage(&response, false)?;
         }
         return Ok(());
-    }
-    let mut views = Vec::with_capacity(credentials.len());
-    for credential in &credentials {
-        let quota = request(
-            endpoint,
-            client.entry_quota(&credential.provider, &credential.label),
-        )
-        .await?;
-        views.push(swarmy_api_types::QuotaEntry {
-            provider: credential.provider.clone(),
-            label: credential.label.clone(),
-            kind: credential.kind.clone(),
-            quota,
-        });
     }
     if json {
         println!("{}", serde_json::to_string(&views)?);

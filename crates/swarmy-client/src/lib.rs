@@ -527,9 +527,18 @@ impl Client {
         )
         .await
     }
+    /// List every credential entry's quota in one request.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn quotas(&self) -> Result<Vec<api::QuotaEntry>, Error> {
+        self.get("quotas", &[]).await
+    }
     /// Read a cost series from the metering rollups: one row per calendar
     /// group plus the total. Times are absolute RFC 3339 bounds; without
-    /// `key` the series aggregates every key in the dimension.
+    /// `key` the series aggregates every key in the dimension. The server
+    /// echoes `by` as sent, defaults to `by=agent`, `group=day`, and the
+    /// trailing 30 days, and caps the span at 400 days (`span_too_large`)
+    /// with at most 500 groups (`too_many_groups`).
     /// # Errors
     /// Returns transport, API, or decoding failures.
     pub async fn usage(

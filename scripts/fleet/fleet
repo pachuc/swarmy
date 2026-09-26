@@ -437,7 +437,8 @@ def fleet_cost(config):
 
     Reads the metering rollups through `swarmy cost --json` so status needs
     no database access. Returns `(None, None)` when the cluster predates
-    the cost command instead of failing the whole status output.
+    the cost command instead of failing the whole status output; any other
+    failure still raises.
     """
     today = datetime.now(timezone.utc).date()
     try:
@@ -445,7 +446,9 @@ def fleet_cost(config):
                                 "--since", today.isoformat())))
         month = one(command(swarmy(config, "cost", "--json", "--group", "month",
                                    "--since", today.replace(day=1).isoformat())))
-    except RuntimeError:
+    except RuntimeError as error:
+        if "unrecognized subcommand" not in str(error):
+            raise
         return None, None
     return day.get("total", {}).get("cost_dollars"), month.get("total", {}).get("cost_dollars")
 

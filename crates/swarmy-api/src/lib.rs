@@ -308,6 +308,7 @@ pub fn router(state: AppState) -> Router {
             get(entry_quota).post(set_entry_quota),
         )
         .route("/v1/usage", get(usage))
+        .route("/v1/quotas", get(quotas))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
     // every swarm documents itself at its own version without a token.
@@ -1012,61 +1013,44 @@ fn usage_group_view(group: &swarmy_store::UsageGroup) -> api::UsageGroupView {
     api::UsageGroupView {
         start: group.start.to_string(),
         end: group.end.to_string(),
-        input_tokens: group.totals.usage.input_tokens,
-        cached_input_tokens: group.totals.usage.cached_input_tokens,
-        cache_write_input_tokens: group.totals.usage.cache_write_input_tokens,
-        output_tokens: group.totals.usage.output_tokens,
-        reasoning_output_tokens: group.totals.usage.reasoning_output_tokens,
-        total_tokens: group.totals.usage.total_tokens,
-        cost_micros: group.totals.cost_micros,
-        cost_dollars: group.totals.dollars(),
-        completions: group.completions,
+        totals: totals_view(&group.totals, group.completions),
     }
 }
 
-/// Split combined `{owner}/{entry}` rollup keys into per-entry views,
-/// costliest first, with the distinct providers involved. Entries without
-/// a slash predate the provider-label join and surface under themselves.
+/// Split one owner's entry totals into per-entry views, costliest first,
+/// with the distinct providers involved. Totals arrive already scoped to
+/// the owner, so the key is the entry name (`provider/label`); the
+/// provider is its leading segment.
 pub(crate) fn entry_breakdown(
     totals: Vec<swarmy_store::DimensionTotal>,
-    owner: &str,
 ) -> (Vec<api::EntryUsageView>, Vec<String>) {
-    let prefix = format!("{owner}/");
     let mut entries: Vec<api::EntryUsageView> = totals
         .into_iter()
-        .filter_map(|total| {
-            let entry = total.key.strip_prefix(&prefix)?;
-            Some(api::EntryUsageView {
-                entry: entry.into(),
-                provider: entry
-                    .split_once('/')
-                    .map_or(entry, |(provider, _)| provider)
-                    .into(),
-                input_tokens: total.totals.usage.input_tokens,
-                cached_input_tokens: total.totals.usage.cached_input_tokens,
-                cache_write_input_tokens: total.totals.usage.cache_write_input_tokens,
-                output_tokens: total.totals.usage.output_tokens,
-                reasoning_output_tokens: total.totals.usage.reasoning_output_tokens,
-                total_tokens: total.totals.usage.total_tokens,
-                cost_micros: total.totals.cost_micros,
-                cost_dollars: total.totals.dollars(),
-                completions: total.completions,
-            })
+        .map(|total| {
+            let provider = total
+                .key
+                .split_once('/')
+                .map_or(total.key.as_str(), |(provider, _)| provider);
+            api::EntryUsageView {
+                entry: total.key,
+                provider: provider.into(),
+                totals: totals_view(&total.totals, total.completions),
+            }
         })
         .collect();
     entries.sort_by(|left, right| {
         right
+            .totals
             .cost_micros
-            .cmp(&left.cost_micros)
+            .cmp(&left.totals.cost_micros)
             .then_with(|| left.entry.cmp(&right.entry))
     });
-    let mut providers: Vec<String> = entries
+    let providers: Vec<String> = entries
         .iter()
         .map(|entry| entry.provider.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    providers.sort();
     (entries, providers)
 }
 
@@ -1082,19 +1066,16 @@ struct UsageQuery {
 /// Read a cost series from the metering rollups: one row per calendar
 /// group plus the total. Without `key` the series aggregates every key in
 /// the dimension, which is how `swarmy cost` shows the fleet-wide series.
+/// The span is capped at 400 days and the series at 500 groups; larger
+/// requests fail with `span_too_large` or `too_many_groups` instead of
+/// scanning unbounded history.
 async fn usage(
     State(state): State<AppState>,
     Query(query): Query<UsageQuery>,
 ) -> ApiResult<api::UsageResponse> {
-    let by = query.by.as_deref().unwrap_or("agent");
-    let dimension = swarmy_store::MeteringDimension::parse(by)
+    let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
+    let dimension = swarmy_store::MeteringDimension::parse(&sent_by)
         .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_dimension"))?;
-    if matches!(
-        dimension,
-        swarmy_store::MeteringDimension::AgentEntry | swarmy_store::MeteringDimension::SessionEntry
-    ) {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_dimension"));
-    }
     let group_by = match query.group.as_deref().unwrap_or("day") {
         "day" => swarmy_store::UsageGroupBy::Day,
         "week" => swarmy_store::UsageGroupBy::Week,
@@ -1127,6 +1108,13 @@ async fn usage(
     if to <= from {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_range"));
     }
+    if to
+        .as_second()
+        .checked_sub(from.as_second())
+        .is_none_or(|span| span > MAX_USAGE_SPAN_SECONDS)
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "span_too_large"));
+    }
     let groups = match query.key.as_deref() {
         Some("") => return Err(error(StatusCode::BAD_REQUEST, "invalid_key")),
         Some(key) => state
@@ -1140,6 +1128,9 @@ async fn usage(
             .await
             .map_err(storage)?,
     };
+    if groups.len() > MAX_USAGE_GROUPS {
+        return Err(error(StatusCode::BAD_REQUEST, "too_many_groups"));
+    }
     let mut total = swarmy_core::UsageTotals::default();
     let mut completions: u64 = 0;
     for group in &groups {
@@ -1147,7 +1138,7 @@ async fn usage(
         completions = completions.saturating_add(group.completions);
     }
     Ok(Json(api::UsageResponse {
-        by: dimension.as_str().into(),
+        by: sent_by,
         key: query.key,
         group: match group_by {
             swarmy_store::UsageGroupBy::Day => "day",
@@ -1161,6 +1152,37 @@ async fn usage(
         groups: groups.iter().map(usage_group_view).collect(),
         total: totals_view(&total, completions),
     }))
+}
+
+/// Longest usage span the API serves: 400 days. Longer windows fail with
+/// `span_too_large` instead of scanning unbounded rollup history.
+const MAX_USAGE_SPAN_SECONDS: i64 = 400 * 86_400;
+/// Most calendar groups one usage response carries. The span cap keeps this
+/// unreachable for day groups today; it guards future groupings.
+const MAX_USAGE_GROUPS: usize = 500;
+
+/// List every credential entry's quota in one request, so
+/// `swarmy auth quota` needs no round trip per entry.
+async fn quotas(State(state): State<AppState>) -> ApiResult<Vec<api::QuotaEntry>> {
+    let summaries = credential_store(&state)?
+        .list_entries(CredentialScope::Cluster)
+        .await
+        .map_err(storage)?;
+    let mut entries = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        let quota = state
+            .store
+            .entry_quota(&summary.provider, &summary.label)
+            .await
+            .map_err(storage)?;
+        entries.push(api::QuotaEntry {
+            provider: summary.provider,
+            label: summary.label,
+            kind: summary.kind,
+            quota: quota_view(quota),
+        });
+    }
+    Ok(Json(entries))
 }
 
 async fn remove_credential_entry(

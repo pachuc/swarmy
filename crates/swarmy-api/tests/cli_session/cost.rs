@@ -123,23 +123,34 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
     id
 }
 
-/// Midnight UTC starting the calendar month `months` before this one.
-fn month_start_ago(months: i64) -> Timestamp {
-    let first = Timestamp::now()
+/// An hour into each of the twelve calendar months ending with the current
+/// one, all inside (`parse_bound("1y", now)`, `now`]. Starting from the month
+/// after the window start keeps every seed in range no matter the day or the
+/// hour, so the series always prints twelve rows.
+fn seed_months(now: Timestamp) -> Vec<Timestamp> {
+    use jiff::ToSpan as _;
+    let from = swarmy_core::time::parse_bound("1y", now).expect("test window in range");
+    let first = from
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date()
-        .first_of_month();
-    let past = first
-        .checked_sub(jiff::Span::new().months(months))
+        .first_of_month()
+        .checked_add(1.months())
         .expect("test month in range");
-    Timestamp::from_second(
-        past.to_zoned(jiff::tz::TimeZone::UTC)
-            .expect("test date valid")
-            .timestamp()
-            .as_second()
-            + 3_600,
-    )
-    .unwrap()
+    (0..12)
+        .map(|month| {
+            let date = first
+                .checked_add(month.months())
+                .expect("test month in range");
+            Timestamp::from_second(
+                date.to_zoned(jiff::tz::TimeZone::UTC)
+                    .expect("test date valid")
+                    .timestamp()
+                    .as_second()
+                    + 3_600,
+            )
+            .unwrap()
+        })
+        .collect()
 }
 
 fn cost_of(line: &str) -> f64 {
@@ -163,15 +174,15 @@ async fn cost_by_agent_month_prints_twelve_rows_and_matching_total() {
     run(|fixture| async move {
         let id = session_for(&fixture, None).await;
         // One completion per calendar month for the trailing year.
-        for month in 0..12 {
+        for (index, at) in seed_months(Timestamp::now()).iter().enumerate() {
             complete(
                 &fixture.store,
                 id,
                 "openai",
                 "gpt-5",
                 "primary",
-                month_start_ago(month),
-                100 * u64::try_from(month + 1).unwrap(),
+                *at,
+                100 * u64::try_from(index + 1).unwrap(),
             )
             .await;
         }
@@ -384,9 +395,9 @@ async fn agent_and_session_show_name_entries_and_cost_per_entry() {
             serde_json::from_value(agent["entries"].clone()).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].entry, "xai/aux");
-        assert_eq!(entries[0].cost_micros, 1_500);
+        assert_eq!(entries[0].totals.cost_micros, 1_500);
         assert_eq!(entries[1].entry, "openai/main");
-        assert_eq!(entries[1].cost_micros, 500);
+        assert_eq!(entries[1].totals.cost_micros, 500);
         let shown = fixture
             .output(&["session", "show", &first.to_string()])
             .await;

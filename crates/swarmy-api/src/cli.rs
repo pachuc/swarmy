@@ -441,11 +441,11 @@ pub async fn session_show(
             .store
             .dimension_totals(
                 swarmy_store::MeteringDimension::SessionEntry,
-                &format!("{session_id}/"),
+                &session_id.to_string(),
+                None,
             )
             .await
             .map_err(storage)?,
-        &session_id.to_string(),
     );
     let mut after = 0;
     let mut events = Vec::new();
@@ -588,11 +588,11 @@ async fn agent_detail(
             .store
             .dimension_totals(
                 swarmy_store::MeteringDimension::AgentEntry,
-                &format!("{}/", record.agent_id),
+                &record.agent_id.to_string(),
+                None,
             )
             .await
             .map_err(storage)?,
-        &record.agent_id.to_string(),
     );
     value["entries"] = json!(entries);
     value["providers"] = json!(providers);

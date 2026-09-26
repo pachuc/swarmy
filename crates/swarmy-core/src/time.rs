@@ -9,11 +9,16 @@ use jiff::{Timestamp, ToSpan};
 /// Parse a `--since` or `--until` bound against `now`.
 ///
 /// Accepts RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC
-/// midnight), `now`, and relative spans (`30s`, `5m`, `12h`, `7d`, `2w`,
-/// `3mo`, `1y`). Month and year spans step the calendar, so `1mo` before
-/// March 31 lands at the end of February rather than a fixed day count.
-/// `m` means minutes to match the quota window parser; months spell `mo`.
-/// Never panics on non-`ASCII` input.
+/// midnight), `now`, relative spans (`30s`, `5m`, `12h`, `7d`, `2w`,
+/// `3mo`, `1y`), and calendar-aligned words (`day`, `2days`, `week`,
+/// `3weeks`, `month`, `2months`, `year`, `5years`). Month and year spans
+/// step the calendar, so `1mo` before March 31 lands at the end of February
+/// rather than a fixed day count. `m` means minutes to match the quota
+/// window parser; months spell `mo`. A bare calendar word means the start
+/// of the current UTC day, week (Monday), month, or year; a leading number
+/// `N` means the start of the period `N - 1` back, so `month` starts this
+/// month and `2months` starts last month. Never panics on non-`ASCII`
+/// input.
 #[must_use]
 pub fn parse_bound(value: &str, now: Timestamp) -> Option<Timestamp> {
     let value = value.trim();
@@ -31,6 +36,9 @@ pub fn parse_bound(value: &str, now: Timestamp) -> Option<Timestamp> {
             .to_zoned(jiff::tz::TimeZone::UTC)
             .ok()
             .map(|zoned| zoned.timestamp());
+    }
+    if let Some(start) = calendar_start(value, now) {
+        return Some(start);
     }
     let (number, unit) = split_span(value)?;
     if number.is_empty() {
@@ -65,6 +73,66 @@ pub fn parse_bound(value: &str, now: Timestamp) -> Option<Timestamp> {
 fn checked_sub(now: Timestamp, number: i64, unit_seconds: i64) -> Option<Timestamp> {
     let seconds = number.checked_mul(unit_seconds)?;
     now.checked_sub(seconds.seconds()).ok()
+}
+
+/// Start of the calendar period named by `value`, or `None` when it is not
+/// a calendar word. Accepts `day`, `week`, `month`, `year`, their plurals,
+/// and a leading count (`2days`, `3months`): `N` periods means the start of
+/// the period `N - 1` back, so `month` starts this month and `2months`
+/// starts last month. Counts below one are rejected.
+fn calendar_start(value: &str, now: Timestamp) -> Option<Timestamp> {
+    // Longest suffixes first so `days` wins over `s` in the span parser
+    // below; this check runs before spans anyway.
+    let (number, unit) = [
+        ("days", "day"),
+        ("weeks", "week"),
+        ("months", "month"),
+        ("years", "year"),
+        ("day", "day"),
+        ("week", "week"),
+        ("month", "month"),
+        ("year", "year"),
+    ]
+    .iter()
+    .find_map(|(suffix, unit)| value.strip_suffix(suffix).map(|number| (number, *unit)))?;
+    let back: i64 = if number.is_empty() {
+        1
+    } else {
+        number.parse().ok()?
+    };
+    if back < 1 {
+        return None;
+    }
+    let zoned = now.to_zoned(jiff::tz::TimeZone::UTC);
+    let date = zoned.date();
+    let start = match unit {
+        "day" => date,
+        "week" => {
+            let days: i64 = match date.weekday() {
+                jiff::civil::Weekday::Monday => 0,
+                jiff::civil::Weekday::Tuesday => 1,
+                jiff::civil::Weekday::Wednesday => 2,
+                jiff::civil::Weekday::Thursday => 3,
+                jiff::civil::Weekday::Friday => 4,
+                jiff::civil::Weekday::Saturday => 5,
+                jiff::civil::Weekday::Sunday => 6,
+            };
+            date.saturating_sub(jiff::ToSpan::days(days))
+        }
+        "month" => date.first_of_month(),
+        _ => date.first_of_year(),
+    };
+    let span = match unit {
+        "day" => jiff::ToSpan::days(back - 1),
+        "week" => jiff::ToSpan::days((back - 1).checked_mul(7)?),
+        "month" => (back - 1).months(),
+        _ => (back - 1).years(),
+    };
+    let start = start.checked_sub(span).ok()?;
+    start
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .ok()
+        .map(|zoned| zoned.timestamp())
 }
 
 fn split_span(value: &str) -> Option<(&str, &str)> {
@@ -141,6 +209,52 @@ mod tests {
     }
 
     #[test]
+    fn calendar_words_align_to_period_starts() {
+        // 2026-09-26 is a Saturday.
+        let now = now();
+        assert_eq!(
+            parse_bound("day", now),
+            Some("2026-09-26T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("week", now),
+            Some("2026-09-21T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("month", now),
+            Some("2026-09-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("year", now),
+            Some("2026-01-01T00:00:00Z".parse().unwrap())
+        );
+        // A leading count reaches the start of the period N - 1 back, so
+        // `2months` starts last month for a quota question about last month.
+        assert_eq!(
+            parse_bound("2days", now),
+            Some("2026-09-25T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("2weeks", now),
+            Some("2026-09-14T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("2months", now),
+            Some("2026-08-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("3months", now),
+            Some("2026-07-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            parse_bound("2years", now),
+            Some("2025-01-01T00:00:00Z".parse().unwrap())
+        );
+        // Singular with a count of one matches the bare word.
+        assert_eq!(parse_bound("1month", now), parse_bound("month", now));
+    }
+
+    #[test]
     fn invalid_bounds_are_rejected() {
         let now = now();
         for value in [
@@ -150,6 +264,7 @@ mod tests {
             "mo",
             "1M",
             "-7d",
+            "0months",
             "5é",
             "é",
             "2026-13-01",

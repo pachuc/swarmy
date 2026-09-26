@@ -186,25 +186,33 @@ requires replacement, not refresh.
 Every completion rolls into hourly metering buckets per session, agent,
 provider, entry, kind, and model, so cost questions read rollups rather
 than scanning completion records. `swarmy cost` prints one row per
-calendar group with a total row; `--since` and `--until` accept absolute
-dates (`2026-09-01`), RFC 3339 timestamps, `now`, and relative spans
-(`7d`, `3mo`, `1y`). `--json` emits the same series for scripts, and
-`GET /v1/usage` serves it over the API with `by`, `key`, `from`, `to`,
-and `group` filters.
+calendar group with a total row. `--since` and `--until` accept absolute
+dates (`2026-09-01`), RFC 3339 timestamps, `now`, relative spans
+(`7d`, `3mo`, `1y`), and calendar-aligned words: a bare `day`, `week`,
+`month`, or `year` means the start of the current UTC day, week (Monday),
+month, or year, and a leading count reaches further back (`2months`
+starts last month, `3months` the month before). `--json` emits the same
+series for scripts, and `GET /v1/usage` serves it over the API with `by`,
+`key`, `from`, `to`, and `group` filters. The API defaults to
+`by=agent`, `group=day`, and the trailing 30 days, echoes `by` as sent
+(`kind`, not `entry_kind`), and caps the span at 400 days with at most
+500 groups (`span_too_large`, `too_many_groups`). Hours are whole: the
+hour containing `to` is included, so `to` behaves as inclusive of its
+hour.
 
 ```sh
 # What did the coder agent cost each week this quarter?
-swarmy cost --agent coder --group week --since 3mo
+swarmy cost --agent coder --group week --since 3months
 
 # The coder agent's cost this week and this month.
-swarmy cost --agent coder --group day --since 7d
-swarmy cost --agent coder --group month --since 1mo
+swarmy cost --agent coder --group day --since week
+swarmy cost --agent coder --group day --since month
 
 # The year in aggregate: the whole fleet by month, with the yearly total.
-swarmy cost --by agent --group month --since 1y
+swarmy cost --by agent --group month --since year
 
 # This week's spend on one entry.
-swarmy cost --entry openai/work-key --group day --since 7d
+swarmy cost --entry openai/work-key --group day --since week
 ```
 
 `swarmy auth quota` lists every entry with used, free, window, and when
@@ -217,12 +225,16 @@ answers quota questions per month:
 ```sh
 swarmy auth quota
 # What quota did the subscription use last month and the month before?
-swarmy auth quota --entry chatgpt/default --group month --since 2mo
+swarmy auth quota --entry chatgpt/default --group month --since 3months --until month
 ```
 
 `agent show` and `session show` name the entries and providers behind
 their totals with the cost per entry, and `swarm status` ends with the
-fleet's cost for the current day and month.
+fleet's cost for the current day and month. Completions recorded without
+an entry roll into `provider/-`, so the breakdown still names the
+provider. Agents and sessions that ran before these views existed show
+their lifetime totals with no entry breakdown, and upgrading resets the
+hourly cost series while lifetime totals are unaffected.
 
 ## Choosing and inspecting models
 
