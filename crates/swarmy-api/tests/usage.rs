@@ -314,14 +314,12 @@ async fn usage_series_matches_store_views_for_every_dimension_and_group() {
 }
 
 #[tokio::test]
-async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
+async fn usage_rejects_bad_filters() {
     let Some(fixture) = Fixture::new().await else {
         return;
     };
-    let (first, _, _) = seed(&fixture.store).await;
     let from = stamp(1_700_000_000 - 3_600);
     let to = stamp(1_700_000_000 + 86_400);
-    let to_ts: Timestamp = to.parse().unwrap();
     for (by, key, from, to, group) in [
         ("team", None, from.as_str(), to.as_str(), "day"),
         ("agent", None, from.as_str(), to.as_str(), "hour"),
@@ -364,6 +362,17 @@ async fn usage_rejects_bad_filters_and_entry_quota_round_trips() {
         panic!("expected API error");
     };
     assert_eq!(body.code, "span_too_large");
+}
+
+#[tokio::test]
+async fn usage_echoes_by_and_entry_quota_round_trips() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let (first, _, _) = seed(&fixture.store).await;
+    let from = stamp(1_700_000_000 - 3_600);
+    let to = stamp(1_700_000_000 + 86_400);
+    let to_ts: Timestamp = to.parse().unwrap();
     // The response echoes `by` as sent, so `kind` stays `kind`.
     let echoed = fixture
         .client
