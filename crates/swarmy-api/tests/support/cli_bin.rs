@@ -37,12 +37,12 @@ fn profile_dir() -> PathBuf {
 /// sibling binary is missing because the workspace was not built first.
 #[must_use]
 pub fn bin(name: &str) -> PathBuf {
-    if name == "swarmy" {
-        if let Some(path) = std::env::var_os("CARGO_BIN_EXE_swarmy") {
-            let path = PathBuf::from(path);
-            assert!(path.exists(), "missing swarmy binary at {}", path.display());
-            return path;
-        }
+    if name == "swarmy"
+        && let Some(path) = std::env::var_os("CARGO_BIN_EXE_swarmy")
+    {
+        let path = PathBuf::from(path);
+        assert!(path.exists(), "missing swarmy binary at {}", path.display());
+        return path;
     }
     let binary = profile_dir().join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
