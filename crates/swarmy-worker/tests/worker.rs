@@ -1822,3 +1822,151 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
     })).await;
 }
+
+#[tokio::test]
+async fn route_skips_an_expired_entry_for_the_next_step() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            // The subscription entry is stored but expired, so expansion
+            // skips it exactly like a missing label; the turn serves the
+            // key without ever failing on the dead entry.
+            f.store
+                .credentials(f.keyring.clone().expect("call keyring() first"))
+                .put_entry(
+                    swarmy_core::CredentialScope::Cluster,
+                    "fake-a",
+                    "sub",
+                    &swarmy_core::CredentialRecord {
+                        kind: swarmy_core::CredentialKind::OAuth {
+                            access: "stale-access".into(),
+                            refresh: "stale-refresh".into(),
+                            expires_at: Timestamp::now()
+                                .checked_sub(Duration::from_secs(60))
+                                .unwrap(),
+                            extra: BTreeMap::new(),
+                        },
+                        updated_at: Timestamp::now(),
+                    },
+                )
+                .await
+                .unwrap();
+            f.put_entry_for("fake-b", "key").await;
+            f.put_route("sub-then-key", &[("fake-a", "sub"), ("fake-b", "key")])
+                .await;
+            f.script(false, "get_time");
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            f.start("swarmy-worker", None);
+            f.gateway_serves("fake-a").await;
+            f.gateway_serves("fake-b").await;
+            let id = f.create_with_route("sub-then-key").await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event, Event::InferenceFailed { .. })),
+                "the skipped entry never fails the turn"
+            );
+            let completed = events.iter().find_map(|event| match event {
+                Event::InferenceCompleted {
+                    entry,
+                    route,
+                    route_step,
+                    ..
+                } => Some((entry.clone(), route.clone(), *route_step)),
+                _ => None,
+            });
+            assert_eq!(
+                completed,
+                Some((Some("key".into()), Some("sub-then-key".into()), Some(0))),
+                "the turn serves the next usable step"
+            );
+            assert_eq!(f.calls(), 1);
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failover_survives_worker_restart_without_second_advance() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("first").await;
+            f.put_entry("second").await;
+            f.put_route("ab", &[("openai", "first"), ("openai", "second")])
+                .await;
+            // The first attempt fails with a long retry, so any second
+            // advance would wrap to the open first entry and park the
+            // session instead of completing.
+            f.rate_limit_script(1, 3600);
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-gateway", None);
+            // The first worker dies right after handing attempt one to the
+            // gateway path; its lease lapses and the replacement recovers
+            // the turn from the durable outbox.
+            f.start("swarmy-worker", Some("after_release"));
+            f.gateway_serves("openai").await;
+            let id = f.create_with_route("ab").await;
+            f.wake(id).await;
+            // Attempt one is durable and its worker is dead before the
+            // replacement starts: the kill fires synchronously after the
+            // submit, so a durable request means the death already
+            // happened, with a short grace for the event publish.
+            timeout(WAIT, async {
+                loop {
+                    let session =
+                        f.store.fetch_session(id).await.unwrap().unwrap();
+                    if session.state == SessionState::WaitingInference {
+                        break;
+                    }
+                    if f
+                        .store
+                        .read_events(id, 0, 64)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|event| {
+                            matches!(event, Event::InferenceRequested { .. })
+                        })
+                    {
+                        break;
+                    }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .unwrap();
+            sleep(Duration::from_secs(3)).await;
+            f.start("swarmy-worker", None);
+            let events = f.idle(id).await;
+            let completed = events.iter().find_map(|event| match event {
+                Event::InferenceCompleted {
+                    entry,
+                    route,
+                    route_step,
+                    ..
+                } => Some((entry.clone(), route.clone(), *route_step)),
+                _ => None,
+            });
+            assert_eq!(
+                completed,
+                Some((Some("second".into()), Some("ab".into()), Some(1))),
+                "the turn fails over exactly once across the restart"
+            );
+            assert_eq!(f.calls(), 2);
+            let record = f.store.fetch_session(id).await.unwrap().unwrap();
+            assert_eq!(record.route_step, 1, "no second step advance");
+            assert_eq!(
+                record.state,
+                SessionState::Idle,
+                "no park behind the failover"
+            );
+        })
+    })
+    .await;
+}

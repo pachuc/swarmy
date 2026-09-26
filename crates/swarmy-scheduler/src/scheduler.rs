@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use swarmy_bus::Bus;
 use swarmy_core::{AgentRecord, Event, SessionId, SessionState, WakeReply, WakeRequest};
-use swarmy_store::{MAX_SCAN_LIMIT, PoolEntry, RouteStepStatus, Store, StoreError, runnable_partition};
+use swarmy_store::{
+    MAX_SCAN_LIMIT, PoolEntry, RouteStepStatus, Store, StoreError, runnable_partition,
+};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;

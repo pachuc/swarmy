@@ -349,9 +349,7 @@ impl Store {
         }
         // Creation order is the failover order; labels break ties for
         // entries written in the same transaction.
-        entries.sort_by(|left, right| {
-            left.0.cmp(&right.0).then(left.1.label.cmp(&right.1.label))
-        });
+        entries.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.label.cmp(&right.1.label)));
         Ok(entries.into_iter().map(|(_, entry)| entry).collect())
     }
 
@@ -768,14 +766,16 @@ impl Store {
             }
             // Ephemeral sessions carry no agent record, so only named
             // sessions read one here; the snapshot covers both either way.
-            let (agent_route, agent_provider) =
-                if matches!(self.session_kind(&trx, id).await?, SessionKind::Named { .. }) {
-                    self.read_agent(&trx, stored.agent_id)
-                        .await?
-                        .map_or((None, None), |record| (record.route, record.provider))
-                } else {
-                    (None, None)
-                };
+            let (agent_route, agent_provider) = if matches!(
+                self.session_kind(&trx, id).await?,
+                SessionKind::Named { .. }
+            ) {
+                self.read_agent(&trx, stored.agent_id)
+                    .await?
+                    .map_or((None, None), |record| (record.route, record.provider))
+            } else {
+                (None, None)
+            };
             let snapshot = self
                 .route_snapshot_in(
                     &trx,

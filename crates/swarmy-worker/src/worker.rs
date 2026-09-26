@@ -733,24 +733,23 @@ impl Worker {
         // Without any route assignment the implicit chain is one step and
         // the gateway pool picks the entry, so unrouted ephemeral turns
         // skip the snapshot read entirely.
-        let snapshot =
-            if session.needs_route_snapshot(self.config.default_route.as_deref()) {
-                let snapshot = self.route_snapshot(session).await?;
-                warn_on_route_fallback(session, snapshot.name.as_deref());
-                snapshot
-            } else {
-                swarmy_store::RouteSnapshot {
-                    name: None,
-                    steps: vec![swarmy_store::RouteStepStatus {
-                        provider: selection.provider.clone(),
-                        label: None,
-                        model: None,
-                        open_until: None,
-                        reason: None,
-                    }],
-                    skipped: Vec::new(),
-                }
-            };
+        let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
+            let snapshot = self.route_snapshot(session).await?;
+            warn_on_route_fallback(session, snapshot.name.as_deref());
+            snapshot
+        } else {
+            swarmy_store::RouteSnapshot {
+                name: None,
+                steps: vec![swarmy_store::RouteStepStatus {
+                    provider: selection.provider.clone(),
+                    label: None,
+                    model: None,
+                    open_until: None,
+                    reason: None,
+                }],
+                skipped: Vec::new(),
+            }
+        };
         self.finish_prepare(
             session,
             request,

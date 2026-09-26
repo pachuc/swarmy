@@ -639,3 +639,229 @@ async fn agent_and_session_assignment_validate_routes() {
         Err(StoreError::RouteMissing)
     ));
 }
+
+impl Fixture {
+    /// Store an expired OAuth entry: present in the store but never ready,
+    /// so route expansion must skip it like a missing label.
+    async fn expired_entry(&self, provider: &str, label: &str) {
+        self.store
+            .credentials(self.keyring.clone())
+            .put_entry(
+                CredentialScope::Cluster,
+                provider,
+                label,
+                &CredentialRecord {
+                    kind: CredentialKind::OAuth {
+                        access: "stale-access".into(),
+                        refresh: "stale-refresh".into(),
+                        expires_at: Timestamp::now()
+                            .checked_sub(Duration::from_secs(60))
+                            .unwrap(),
+                        extra: BTreeMap::new(),
+                    },
+                    updated_at: Timestamp::now(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn stored_but_unready_entries_skip_like_missing_labels() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.expired_entry("chatgpt", "sub").await;
+    f.entry("openai", "key").await;
+    f.store
+        .put_route(
+            "sub-then-key",
+            &[
+                Fixture::step("chatgpt", "sub"),
+                Fixture::step("openai", "key"),
+            ],
+        )
+        .await
+        .unwrap();
+    // The expired first step skips with a reason; the turn serves the key
+    // without ever failing on the dead subscription entry.
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let snapshot = f
+        .snapshot(agent, Some("sub-then-key"), Some("chatgpt"))
+        .await;
+    assert_eq!(snapshot.name.as_deref(), Some("sub-then-key"));
+    assert_eq!(
+        snapshot
+            .steps
+            .iter()
+            .map(|step| (step.provider.clone(), step.label.clone()))
+            .collect::<Vec<_>>(),
+        [("openai".to_owned(), Some("key".to_owned()))]
+    );
+    assert!(
+        snapshot
+            .skipped
+            .iter()
+            .any(|reason| reason.contains("chatgpt/sub")),
+        "skipped steps record their reason: {:?}",
+        snapshot.skipped
+    );
+    assert_eq!(snapshot.pick(0), Some(0));
+}
+
+#[tokio::test]
+async fn failover_resume_after_advance_is_a_noop() {
+    use swarmy_store::{FailoverAction, FailoverOutcome};
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    for label in ["primary", "backup"] {
+        f.entry("openai", label).await;
+    }
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let id = routed_session(&f).await;
+    let lease = leased(&f, id).await;
+    let now = Timestamp::now();
+    let retry_at = now.checked_add(Duration::from_secs(60)).unwrap();
+    let failover = |route_step: u32, seq: u64| {
+        f.store.failover_route_step(
+            id,
+            &lease,
+            seq,
+            "openai/primary: quota reached",
+            retry_at,
+            route_step,
+            Some("fallback"),
+            Some("openai"),
+            None,
+            "openai",
+            Timestamp::now(),
+            Duration::from_secs(3600),
+        )
+    };
+    // The first handling advances past the failed step in one transaction.
+    let before = f.store.transaction_count();
+    let outcome: FailoverOutcome = failover(0, 7).await.unwrap();
+    assert_eq!(before + 1, f.store.transaction_count());
+    assert!(matches!(outcome.action, FailoverAction::AdvanceTo(1)));
+    assert_eq!(outcome.route.as_deref(), Some("fallback"));
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().route_step,
+        1
+    );
+    let attempts = f.store.inference_wait(id).await.unwrap().unwrap().attempts;
+    // A resumed worker replays the same failure after a restart or lease
+    // lapse: no second advance, no park while the successor request is in
+    // flight, and no new wait attempt counted.
+    let outcome: FailoverOutcome = failover(1, 7).await.unwrap();
+    assert!(matches!(outcome.action, FailoverAction::AlreadyHandled));
+    let record = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(record.route_step, 1, "no second step advance");
+    assert_eq!(
+        record.state,
+        swarmy_core::SessionState::Leased,
+        "no park while the successor request is in flight"
+    );
+    let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+    assert_eq!(wait.last_failure_seq, 7);
+    assert_eq!(wait.attempts, attempts, "no new attempt counted");
+}
+
+#[tokio::test]
+async fn failover_and_park_cost_one_transaction_each() {
+    use swarmy_store::FailoverAction;
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    for label in ["primary", "backup"] {
+        f.entry("openai", label).await;
+    }
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    // The agent and route resolve together in one transaction.
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let before = f.store.transaction_count();
+    f.snapshot(agent, Some("fallback"), Some("openai")).await;
+    assert_eq!(before + 1, f.store.transaction_count());
+    // The failure path resolves, advances, and records the wait in one
+    // transaction, matching the pre-routes park.
+    let id = routed_session(&f).await;
+    let lease = leased(&f, id).await;
+    let now = Timestamp::now();
+    let retry_at = now.checked_add(Duration::from_secs(60)).unwrap();
+    let before = f.store.transaction_count();
+    let outcome = f
+        .store
+        .failover_route_step(
+            id,
+            &lease,
+            7,
+            "openai/primary: quota reached",
+            retry_at,
+            0,
+            Some("fallback"),
+            Some("openai"),
+            None,
+            "openai",
+            now,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome.action, FailoverAction::AdvanceTo(1)));
+    assert_eq!(before + 1, f.store.transaction_count());
+    // Exhaustion parks and restarts the chain in one transaction too.
+    let far = now.checked_add(Duration::from_secs(3600)).unwrap();
+    for label in ["primary", "backup"] {
+        f.store
+            .entry_failure(
+                &CredentialKey::entry("openai", label),
+                far,
+                &format!("openai/{label}: quota reached"),
+            )
+            .await
+            .unwrap();
+    }
+    let before = f.store.transaction_count();
+    let outcome = f
+        .store
+        .failover_route_step(
+            id,
+            &lease,
+            8,
+            "openai/backup: quota reached",
+            retry_at,
+            1,
+            Some("fallback"),
+            Some("openai"),
+            None,
+            "openai",
+            now,
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome.action, FailoverAction::Park));
+    assert_eq!(before + 1, f.store.transaction_count());
+    // The pre-routes baseline parks in one transaction as well.
+    let other = routed_session(&f).await;
+    let other_lease = leased(&f, other).await;
+    let before = f.store.transaction_count();
+    assert!(
+        f.store
+            .park_inference(
+                other,
+                &other_lease,
+                &swarmy_store::InferenceFailureWait {
+                    seq: 1,
+                    reason: "openai/primary: quota reached",
+                    wake_at: retry_at,
+                },
+                now,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(before + 1, f.store.transaction_count());
+}
