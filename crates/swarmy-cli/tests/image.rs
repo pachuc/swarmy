@@ -99,12 +99,7 @@ fn ensure_sibling(package: &str, binary: &str) -> std::path::PathBuf {
         );
     // Cargo does not export the triple for a CLI `--target` build, so read
     // it from the test binary's path instead.
-    if let Some(triple) = profile
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        .filter(|name| name.contains('-'))
-    {
+    if let Some(triple) = target_triple(&profile) {
         build.arg("--target").arg(triple);
     }
     match profile
@@ -374,4 +369,29 @@ async fn root_custom_recipe_registers_requested_name() {
     );
     assert_eq!(built["name"], "base-ubuntu");
     check_registration(&api, &format!("base-ubuntu:{tag}"), &tag, &built);
+}
+
+/// The `--target` triple to pass to a sibling build, if the profile
+/// directory sits under one.
+///
+/// Cargo lays out `<target-dir>/<profile>` without `--target` and
+/// `<target-dir>/<triple>/<profile>` with it, and writes `CACHEDIR.TAG` at
+/// the target directory root. So when the profile's parent holds that file
+/// there is no triple; when the grandparent holds it, the parent is the
+/// triple. Without either marker fall back to the shape of the name: a
+/// triple such as `x86_64-unknown-linux-gnu` has at least two hyphens and
+/// no leading dot, which a `CARGO_TARGET_DIR` such as `.cargo-target`
+/// fails (fleet workers set exactly that, and the old hyphen check passed
+/// it to cargo as `--target .cargo-target`).
+fn target_triple(profile: &std::path::Path) -> Option<String> {
+    let parent = profile.parent()?;
+    if parent.join("CACHEDIR.TAG").exists() {
+        return None;
+    }
+    let name = parent.file_name()?.to_str()?;
+    let grandparent_is_target = parent
+        .parent()
+        .is_some_and(|dir| dir.join("CACHEDIR.TAG").exists());
+    let shaped_like_triple = name.matches('-').count() >= 2 && !name.starts_with('.');
+    (grandparent_is_target || shaped_like_triple).then(|| name.to_owned())
 }
