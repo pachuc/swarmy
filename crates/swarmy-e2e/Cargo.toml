@@ -1,0 +1,40 @@
+[package]
+name = "swarmy-e2e"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+build = "../swarmy-store/build.rs"
+
+[lints]
+workspace = true
+
+# Test-only crate: no library code. The moved suites spawn the real
+# scheduler, worker, gateway, and CLI binaries, so those binary-only crates
+# are not linked here; a `cargo build --workspace` step puts their binaries
+# beside the test profiles before this suite runs.
+[dev-dependencies]
+swarmy-api.workspace = true
+swarmy-client.workspace = true
+swarmy-bus.workspace = true
+swarmy-core.workspace = true
+swarmy-store.workspace = true
+swarmy-llm.workspace = true
+swarmy-config.workspace = true
+swarmy-api-types.workspace = true
+swarmy-volume.workspace = true
+axum.workspace = true
+object_store.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
+async-nats.workspace = true
+foundationdb.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+ulid.workspace = true
+wiremock.workspace = true

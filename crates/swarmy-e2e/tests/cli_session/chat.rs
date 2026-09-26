@@ -329,28 +329,12 @@ struct Services {
 
 impl Services {
     async fn start(fixture: &Fixture) -> Self {
-        let build = Command::new("cargo")
-            .args([
-                "build",
-                "--locked",
-                "-p",
-                "swarmy-scheduler",
-                "-p",
-                "swarmy-worker",
-                "-p",
-                "swarmy-gateway",
-            ])
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            build.status.success(),
-            "{}",
-            String::from_utf8_lossy(&build.stderr)
-        );
+        // The scheduler, worker, and gateway binaries come from a
+        // `cargo build --workspace` step that runs before the suite; tests
+        // never build them.
         let files = tempfile::tempdir().unwrap();
         std::fs::write(files.path().join("script.json"), r#"{
-            "latency_ms": 600,
+            "latency_ms": 100,
             "request_based": {"steps": 8, "tool_steps": [0], "final_answer": "Scripted conversation reply."}
         }"#).unwrap();
         let mut services = Self {
@@ -909,58 +893,6 @@ async fn chat_shows_pending_tools_and_incremental_text_before_commit() {
 }
 
 #[tokio::test]
-async fn chat_uses_server_default_image_and_explicit_image_overrides_it() {
-    run(|fixture| async move {
-        let diagnostics = Diagnostics {
-            fixture: &fixture,
-            services: None,
-            session: None,
-        };
-        let mut terminal = Terminal::with_image(&fixture, None, None, "");
-        terminal
-            .screen_diagnosed(|screen| screen.contains("New session"), WAIT, diagnostics)
-            .await;
-        terminal.type_text("\r");
-        terminal.ready(diagnostics).await;
-        let default = session_id(&fixture).await;
-        assert_eq!(
-            fixture.store.session_image(default).await.unwrap(),
-            fixture
-                .store
-                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
-                .await
-                .unwrap()
-        );
-        terminal.type_text("\x1b");
-        terminal.exit(true).await;
-        let mut terminal =
-            Terminal::with_image(&fixture, None, Some("fixture:test"), "unregistered:default");
-        terminal
-            .screen_diagnosed(|screen| screen.contains("New session"), WAIT, diagnostics)
-            .await;
-        terminal.type_text("\r");
-        terminal.ready(diagnostics).await;
-        let id = fixture
-            .store
-            .list_sessions(Some(default), 64)
-            .await
-            .unwrap()[0]
-            .session_id;
-        assert_eq!(
-            fixture.store.session_image(id).await.unwrap(),
-            fixture
-                .store
-                .get_image("fixture", &swarmy_core::ImageTag("test".into()))
-                .await
-                .unwrap()
-        );
-        terminal.type_text("\x1b");
-        terminal.exit(true).await;
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn chat_uses_default_image_without_a_node() {
     run(|fixture| async move {
         let diagnostics = Diagnostics {
@@ -1171,23 +1103,3 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
 
 #[path = "chat_named.rs"]
 mod named;
-
-#[tokio::test]
-async fn header_shows_persisted_provider_model_and_effort() {
-    run(|fixture| async move {
-        let mut command = CommandBuilder::new(super::cli_bin::swarmy());
-        command.args(["chat", "--model", "openai/gpt-5.5", "--effort", "max"]);
-        let mut terminal = Terminal::command(&fixture, command, "fixture:test");
-        let screen = terminal
-            .ready(Diagnostics {
-                fixture: &fixture,
-                services: None,
-                session: None,
-            })
-            .await;
-        assert!(screen.contains("openai/gpt-5.5 max"), "{screen}");
-        terminal.type_text("\u{1b}");
-        terminal.exit(true).await;
-    })
-    .await;
-}

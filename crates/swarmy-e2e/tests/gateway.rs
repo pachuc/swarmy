@@ -1,5 +1,8 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
+#[path = "support/image.rs"]
 mod image_fixture;
+
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
 
 use std::{
     future::Future,
@@ -145,7 +148,7 @@ impl Fixture {
         models: &[swarmy_config::CustomModel],
     ) {
         self.children.push(
-            Command::new(env!("CARGO_BIN_EXE_swarmy-gateway"))
+            Command::new(cli_bin::bin("swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
                 .env(

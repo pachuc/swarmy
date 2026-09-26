@@ -4089,7 +4089,6 @@ dependencies = [
  "futures-util",
  "jiff",
  "object_store",
- "portable-pty",
  "reqwest",
  "serde",
  "serde_json",
@@ -4112,7 +4111,6 @@ dependencies = [
  "unicode-width",
  "utoipa",
  "utoipa-swagger-ui",
- "vt100",
 ]
 
 [[package]]
@@ -4294,6 +4292,36 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "ulid",
+]
+
+[[package]]
+name = "swarmy-e2e"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "axum",
+ "foundationdb",
+ "futures",
+ "futures-util",
+ "jiff",
+ "object_store",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "swarmy-api",
+ "swarmy-api-types",
+ "swarmy-bus",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-llm",
+ "swarmy-store",
+ "swarmy-volume",
+ "tempfile",
+ "tokio",
+ "ulid",
+ "vt100",
+ "wiremock",
 ]
 
 [[package]]
@@ -4503,14 +4531,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
- "axum",
  "blake3",
  "foundationdb",
  "futures",
  "jiff",
  "serde",
  "serde_json",
- "swarmy-api",
  "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",

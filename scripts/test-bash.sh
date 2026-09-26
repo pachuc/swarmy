@@ -14,6 +14,7 @@ test_binary=$(cargo test -p swarmy-chaos --test bash --locked --no-run --message
 sudo -E "$test_binary" --nocapture
 
 # Open the terminal client with only its default image and execute pwd.
-cargo test -p swarmy-cli --test session --locked --no-run
-test_binary=$(cargo test -p swarmy-cli --test session --locked --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.name == "session") | .executable')
+export SWARMY_SKIP_CLI_BUILD=1
+cargo test -p swarmy-e2e --test cli_session --locked --no-run
+test_binary=$(cargo test -p swarmy-e2e --test cli_session --locked --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.name == "cli_session") | .executable')
 sudo -E "$test_binary" root_chat_default_image_executes_pwd --nocapture
