@@ -1154,13 +1154,13 @@ fn sort_tool_rows(rows: &mut [StoredToolMetricV2]) {
 /// remainder plus any legacy dropped counters in `dropped_*`; a complete
 /// read reports only the legacy remainder (zero for native `V2` turns).
 fn assemble_turn(
-    summary: StoredTurnSummaryV2,
+    summary: &StoredTurnSummaryV2,
     mut inference_rows: Vec<StoredTurnInferenceV2>,
     mut tool_rows: Vec<StoredToolMetricV2>,
     inference_limit: Option<usize>,
     tools_limit: Option<usize>,
 ) -> TurnMetrics {
-    let mut stages = anchor_stages(&summary);
+    let mut stages = anchor_stages(summary);
     sort_inference_rows(&mut inference_rows);
     sort_tool_rows(&mut tool_rows);
     let total_inference = inference_rows.len();
@@ -1200,7 +1200,10 @@ fn assemble_turn(
             .into_iter()
             .map(|row| row.metric.into_api())
             .collect(),
-        tools: tools_page.into_iter().map(|row| row.into_api()).collect(),
+        tools: tools_page
+            .into_iter()
+            .map(StoredToolMetricV2::into_api)
+            .collect(),
         computer: summary.computer.clone(),
         append_to_first_token_ms: None,
         inference_duration_ms: None,
@@ -1605,7 +1608,7 @@ impl Store {
             .map_err(|_| StoreError::Corrupt)?;
         let (inference_rows, tool_rows) = self.turn_rows(session, turn).await?;
         Ok(assemble_turn(
-            summary,
+            &summary,
             inference_rows,
             tool_rows,
             inference_limit,
@@ -1674,7 +1677,7 @@ impl Store {
                     // rows; serve this page from the migrated record itself.
                     // The next write to the turn persists the migrated rows.
                     let (summary, rows, tools) = migrate_legacy(record);
-                    let turn = assemble_turn(summary, rows, tools, inference_limit, tools_limit);
+                    let turn = assemble_turn(&summary, rows, tools, inference_limit, tools_limit);
                     legacy_turns.insert(turn.turn_id.clone(), turn);
                 }
                 Err(error) => {
@@ -2043,11 +2046,11 @@ mod tests {
         assert_eq!(summary.dropped_tools, 42);
         // The assembled turn reports the migrated remainder even on a
         // complete read, and adds paging truncation on top.
-        let turn = assemble_turn(summary.clone(), rows.clone(), tools.clone(), None, None);
+        let turn = assemble_turn(&summary, rows.clone(), tools.clone(), None, None);
         assert_eq!(turn.dropped_stages, 7);
         assert_eq!(turn.dropped_inference, 27);
         assert_eq!(turn.dropped_tools, 42);
-        let paged = assemble_turn(summary, rows, tools, Some(0), Some(0));
+        let paged = assemble_turn(&summary, rows, tools, Some(0), Some(0));
         assert_eq!(paged.dropped_inference, 27 + 1);
         assert_eq!(paged.dropped_tools, 42);
         assert_eq!(paged.dropped_stages, 7);
