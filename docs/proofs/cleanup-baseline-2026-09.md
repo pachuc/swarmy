@@ -26,9 +26,13 @@ the shared target directory:
   parallel rustc are OOM-killed on the AWS SDK crates under the 8 GiB
   cap, and so are 4- and 2-job builds (see the failed attempts). A
   single `rustc` on `aws-sdk-ec2` survives.
-- No dev stack running: the `cargo test` runs below would be the plain
-  command, so tests that need FoundationDB, NATS, or SeaweedFS would
-  skip cleanly.
+- The dev stack was running for the test and clippy runs below
+  (`scripts/dev-stack.sh start`, `.dev/env` sourced, per AGENTS.md), so
+  the store, bus, and API tests execute instead of skipping. The build
+  rows above were measured without it; a warm target directory makes
+  that distinction moot for timing.
+- `/usr/bin/time` is not installed on this sandbox, so every timing
+  below uses `date +%s` around the command (1 s resolution).
 
 ## Timings
 
@@ -45,9 +49,10 @@ dev profile, so this rebuilds the core crate and all its dependents).
 | `cargo build --locked -p swarmy-cli` | 1290 (runs: 1291, 1290) | n/a (sequential, see note) | n/a |
 | `cargo build --locked -p swarmy-gateway` | 498 (runs: 498, 510) | n/a | n/a |
 | `cargo build --locked -p swarmyd` | 26 (runs: 26, 26) | n/a | n/a |
-| `cargo test --workspace --locked` (all-in) | not measured | not measured | not measured |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | not measured | not measured | not measured |
-| `cargo test --workspace --locked` execution only (after `--no-run`) | n/a | not measured | n/a |
+| `cargo test --workspace --locked` (all-in) | not measured (see split below) | not measured (see split below) | not measured |
+| `cargo test --workspace --locked --no-run` (test build) | 1806 | 1 | n/a |
+| `cargo test --workspace --locked` execution only (after `--no-run`) | n/a | 3 (runs: 3, 3; fail-fast, see below) | n/a |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | not measured | 414 | 53 |
 
 Per-package note: the three `-p` builds ran from one clean target, one
 after another in the order cli, gateway, swarmyd, and the whole sequence
@@ -69,10 +74,45 @@ No multi-job configuration completed a workspace build on this computer,
 so there are no successful four-job timings to keep; every number in the
 table above used one job.
 
-The single-job battery was abandoned during `test-uncached-1` on
-operator direction, so the test, clippy, and execution-split rows were
-not measured in this pass. The repeat procedure below covers them for
-the final task of the goal.
+The test and clippy rows were measured on 2026-09-26 with the dev
+stack running, on the same checkout and the same single-job
+configuration. `cargo test --workspace --locked --no-run` from an empty
+target directory took 1806 s (rc 0); rerun unchanged it took 1 s.
+Clippy took 414 s cached (rc 0, no warnings) and 53 s after `touch
+crates/swarmy-core/src/lib.rs`. Clippy's cached run recompiles the
+workspace crates under clippy-driver, so it pays minutes even though
+the `cargo test` build is warm; the core touch then rebuilds only the
+core crate and its dependents.
+
+The execution-only runs never get past `swarmy-api`'s `cli_auth` suite:
+both runs took 3 s and stopped fail-fast with rc 101. What ran before
+the stop passed (swarmy-api lib 2 passed, bin 0 tests, `cli.rs` 4
+passed); all 5 `cli_auth` tests failed:
+
+- `labelless_set_replaces_the_default_entry`
+- `two_labels_under_one_provider_are_independent`
+- `key_sources_are_exclusive_and_support_files_and_environment`
+- `azure_login_saves_to_cluster_and_missing_cli_reports_login_needed`
+- `set_list_check_remove_and_import`
+
+Every one panics at `crates/swarmy-api/tests/support/cli_bin.rs:104`
+because the helper's first step, `cargo build -p swarmy-cli --bin
+swarmy`, fails: the child cargo receives `--target .cargo-target`.
+The helper reads the target triple from the test binary's path, and any
+target-directory basename containing a hyphen looks like a triple to
+it; the fleet sandbox's shared `CARGO_TARGET_DIR`,
+`/home/agent/.cargo-target`, always qualifies. On a checkout with the
+default `target/` directory the heuristic does not trigger, so this
+failure is specific to the sandbox shape, not to the checked-in code.
+Per the task instructions the failure is recorded here, not debugged;
+no Rust code in this task was changed on account of it.
+
+What a worker actually pays for the task checks today, cached, is the
+test build (1 s) plus the execution run (3 s, red: it stops at
+`cli_auth` and the rest of the suite never runs) plus clippy (414 s),
+about 418 s end to end, dominated by clippy. Uncached, the test build
+alone costs 1806 s. Until the `cli_auth` sandbox failure is fixed,
+fleet workers cannot get a green full-suite run whatever they pay.
 
 ## CI history
 

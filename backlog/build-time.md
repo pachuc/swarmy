@@ -53,9 +53,12 @@ lines of source and tests per crate, dependency edges, cold/cached/
 core-touch workspace build times and per-package build times on a
 16-vCPU sandbox capped at 8 GiB (single job; 2-, 4-, and 16-job builds
 are OOM-killed on the AWS SDK crates), and recent CI wall times. The
-test and clippy rows were not measured in that pass; the repeat
-procedure in the proof covers them for the final task of the cleanup
-goal.
+test and clippy rows were filled in on 2026-09-26 with the dev stack
+running: the test build costs 1806 s cold and 1 s warm, the test run
+itself stops fail-fast after 3 s on the `cli_auth` suite (which cannot
+pass under the sandbox's shared target directory), and clippy costs
+414 s warm and 53 s after a core touch, so the cached task checks total
+about 418 s, dominated by clippy.
 
 ## Trigger
 
