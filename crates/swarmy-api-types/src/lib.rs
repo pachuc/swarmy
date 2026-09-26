@@ -579,8 +579,8 @@ pub struct EntryQuotaView {
 }
 
 /// One entry's quota with its identity, as listed by `swarmy auth quota`.
-/// The CLI composes this from the credential list and one quota view per
-/// entry, so the JSON round-trips through these types.
+/// Served in one request by `GET /v1/quotas`, so the JSON round-trips
+/// through these types.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct QuotaEntry {
     pub provider: String,

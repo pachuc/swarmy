@@ -123,32 +123,24 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
     id
 }
 
-/// An hour into each of the twelve calendar months ending with the current
-/// one, all inside (`parse_bound("1y", now)`, `now`]. Starting from the month
-/// after the window start keeps every seed in range no matter the day or the
-/// hour, so the series always prints twelve rows.
+/// One completion in each of the twelve calendar months ending with the
+/// current one, all strictly before `now`. Stepping calendar months back
+/// from an hour ago keeps every seed inside (`parse_bound("1y", now)`,
+/// `now`] no matter the day or the hour: seeding forward from the window
+/// start at month-start plus one hour lands in the future during the first
+/// hour of any month, and the usage query excludes that future hour, so
+/// the series prints eleven rows instead of twelve.
 fn seed_months(now: Timestamp) -> Vec<Timestamp> {
     use jiff::ToSpan as _;
-    let from = swarmy_core::time::parse_bound("1y", now).expect("test window in range");
-    let first = from
-        .to_zoned(jiff::tz::TimeZone::UTC)
-        .date()
-        .first_of_month()
-        .checked_add(1.months())
-        .expect("test month in range");
-    (0..12)
-        .map(|month| {
-            let date = first
-                .checked_add(month.months())
-                .expect("test month in range");
-            Timestamp::from_second(
-                date.to_zoned(jiff::tz::TimeZone::UTC)
-                    .expect("test date valid")
-                    .timestamp()
-                    .as_second()
-                    + 3_600,
-            )
-            .unwrap()
+    let base = now
+        .checked_sub(1.hours())
+        .expect("test window in range")
+        .to_zoned(jiff::tz::TimeZone::UTC);
+    (0_i64..12)
+        .map(|back| {
+            base.checked_sub(back.months())
+                .expect("test month in range")
+                .timestamp()
         })
         .collect()
 }

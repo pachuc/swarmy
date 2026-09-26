@@ -528,6 +528,17 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, day),
     )
     .await;
+    // Bulk history outside the range: thirty other-owner days must not move
+    // the day slice, however much the fleet has written elsewhere.
+    for back in 1_i64..=30 {
+        let at = Timestamp::from_second(day.as_second() - back * 86_400).unwrap();
+        complete_with(
+            store,
+            other,
+            &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, at),
+        )
+        .await;
+    }
     let end = Timestamp::from_second(day.as_second() + 86_400).unwrap();
     let totals = store
         .dimension_totals(
