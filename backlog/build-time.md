@@ -45,6 +45,21 @@ The user wants to discuss the approach first (2026-09-26). Items 5 and 6
 are configuration and can happen with the dev2 fleet move; items 1 and 2
 are the ones that change the picture and deserve a decision.
 
+## Baseline
+
+The September 2026 cleanup baseline is recorded in
+[docs/proofs/cleanup-baseline-2026-09.md](../docs/proofs/cleanup-baseline-2026-09.md):
+lines of source and tests per crate, dependency edges, cold/cached/
+core-touch workspace build times and per-package build times on a
+16-vCPU sandbox capped at 8 GiB (single job; 2-, 4-, and 16-job builds
+are OOM-killed on the AWS SDK crates), and recent CI wall times. The
+test and clippy rows were filled in on 2026-09-26 with the dev stack
+running: the test build costs 1806 s cold and 1 s warm, the test run
+itself stops fail-fast after 3 s on the `cli_auth` suite (which cannot
+pass under the sandbox's shared target directory), and clippy costs
+414 s warm and 53 s after a core touch, so the cached task checks total
+about 418 s, dominated by clippy.
+
 ## Trigger
 
 The discussion, or the next time a worker or benchmark is blocked on a
