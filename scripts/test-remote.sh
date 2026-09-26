@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Run after building the workspace and starting scripts/dev-stack.sh.
+# Run after building the workspace with the provisioning client enabled
+# (cargo build --workspace --locked --features swarmy-cli/remote) and
+# starting scripts/dev-stack.sh.
 set -euo pipefail
 if [[ -z ${SWARMY_REMOTE_TEST_KEY:-} ]]; then
     echo 'Skipping remote SSH acceptance: SWARMY_REMOTE_TEST_KEY is unset.'
@@ -7,6 +9,10 @@ if [[ -z ${SWARMY_REMOTE_TEST_KEY:-} ]]; then
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cli="$repo/target/debug/swarmy"
+if ! "$cli" remote --help >/dev/null 2>&1; then
+    echo "$cli was built without the remote feature; rebuild with --features swarmy-cli/remote" >&2
+    exit 1
+fi
 work=$(mktemp -d /tmp/swarmy-remote-test.XXXXXX)
 # Do not let an existing project profile or endpoints change this fixture.
 while IFS= read -r variable; do

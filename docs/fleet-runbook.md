@@ -18,10 +18,11 @@ automate; every step here is a plain command.
 | Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | check current EC2 prices for both shapes, plus S3 and inference | separate control and sandbox nodes |
 
-The node build uses `swarmy-cli --no-default-features`: provisioning commands
-and the EC2, S3, IAM, and SSM clients belong on the laptop. A 6 GiB fleet
+The node build uses the default features, which omit provisioning commands
+and the EC2, S3, IAM, and SSM clients; those belong on the laptop, where
+`make install` builds the client with the `remote` feature. A 6 GiB fleet
 sandbox measured 957,428 KiB peak resident memory for the release build without
-that feature. The default-feature build reached 6,123,248 KiB in the EC2
+the `remote` feature. The build with it reached 6,123,248 KiB in the EC2
 compiler and was killed by its memory limit. The node checks for 6 GiB
 `MemAvailable` before building; use at least an 8 GiB instance so the OS and
 backing services have room too. Inference's Bedrock SDK remains part of the

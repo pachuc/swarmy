@@ -23,13 +23,24 @@ large_stack_frames = "deny"
 [workspace.dependencies]
 swarmy-gateway = { path = "crates/swarmy-gateway" }
 swarmy-version = { path = "crates/swarmy-version" }
-aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "credentials-process", "sso"] }
+# Every TLS client in the workspace uses ring as its only crypto provider, so
+# the C-based aws-lc backend is never compiled. reqwest's `rustls-tls`,
+# async-nats' `ring`, and object_store's `aws` (via reqwest) already select
+# ring. The AWS SDKs need explicit flavors: aws-config's `rustls` alias pulls
+# the default HTTPS client built on aws-lc, so it uses `legacy-client` (the
+# ring-based connector) instead; the generated SDKs' `rustls` feature is that
+# same ring connector, without the aws-lc default client.
+aws-config = { version = "1", default-features = false, features = ["legacy-client", "rt-tokio", "credentials-process", "sso"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-smithy-types = { version = "1", default-features = false }
-aws-sdk-ec2 = "1"
-aws-sdk-ssm = "1"
-aws-sdk-s3 = "1"
-aws-sdk-iam = "1"
+# The provisioning SDKs stay out of the default build (swarmy-cli gates them
+# behind its opt-in `remote` feature) and skip the aws-lc default HTTPS
+# client. S3 keeps `sigv4a` and `http-1x` from its defaults; the other three
+# SDKs' defaults add nothing beyond `rustls` and `rt-tokio`.
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "sigv4a", "http-1x"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-credential-types = "1"
 portable-pty = "0.9"
 vt100 = "0.16"
@@ -41,7 +52,7 @@ axum = "0.8"
 tower = "0.5"
 swarmy-api-types = { path = "crates/swarmy-api-types" }
 swarmy-client = { path = "crates/swarmy-client" }
-async-nats = "0.49"
+async-nats = { version = "0.49", features = ["ring"] }
 async-stream = "0.3"
 async-trait = "0.1"
 chacha20poly1305 = "0.10"

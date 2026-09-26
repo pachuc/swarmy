@@ -102,7 +102,7 @@ if (( mem_available_kib < 6 * 1024 * 1024 )); then
 fi
 build_started=$SECONDS
 if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked --no-default-features -p swarmy-cli
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmy-cli
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
         -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
     sudo install -m 0755 target/release/{swarmy,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker,swarmy-api} /usr/local/bin/

@@ -1,12 +1,12 @@
 # One-command install and check for swarmy.
 #
 #   make install       install the client plus every service binary into ~/.cargo/bin
-#   make install-client install only the client (needs no libfdb_c)
+#   make install-client install only the client with remote provisioning (needs no libfdb_c)
 #   make install-core   install the service binaries (need libfdb_c)
 #   make install-node  also install swarmyd (only useful on a machine with root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models        regenerate the provider and model catalog
-#   make check         the three CI commands: fmt, test, clippy
+#   make check         the CI commands: fmt, test, clippy, plus the remote-feature pass
 #   make uninstall     remove the installed swarmy binaries
 #
 # The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
@@ -36,10 +36,12 @@ fdb-check:
 	fi
 	@echo "Using FoundationDB client library from $(FDB_LIB_DIR)"
 
-# The client links no database library and installs without libfdb_c.
+# The client links no database library and installs without libfdb_c. The
+# `remote` feature compiles the EC2, SSM, S3, and IAM SDKs for provisioning;
+# plain cargo builds leave it off for the slimmer node binary.
 install-client:
 	@echo "==> swarmy-cli"
-	@$(CARGO) install --locked --path "crates/swarmy-cli" || exit 1
+	@$(CARGO) install --locked --features remote --path "crates/swarmy-cli" || exit 1
 	@echo "Installed: $$(ls $(HOME)/.cargo/bin | grep '^swarmy' | tr '\n' ' ')"
 	@$(HOME)/.cargo/bin/swarmy --version
 
@@ -72,7 +74,11 @@ check:
 	bash scripts/test-remote-upgrade.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) test --workspace --locked
+	# The workspace test and clippy leave the opt-in `remote` feature off;
+	# build the provisioning client once and test and lint it with it on.
+	$(CARGO) test --locked -p swarmy-cli --features remote
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 
 uninstall:
 	@for bin in swarmy swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
