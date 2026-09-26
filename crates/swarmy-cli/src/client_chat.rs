@@ -452,9 +452,8 @@ impl View {
                 }
                 api::EventPayload::TimelineEvent { .. } => return,
                 api::EventPayload::StoreRecord { record } => {
-                    let record = match serde_json::to_value(&record) {
-                        Ok(value) => value,
-                        Err(_) => return,
+                    let Ok(record) = serde_json::to_value(&record) else {
+                        return;
                     };
                     if let Some(state) = record
                         .get("state_changed")

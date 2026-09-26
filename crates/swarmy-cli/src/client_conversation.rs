@@ -564,13 +564,10 @@ impl Conversation {
                             session_id,
                         } => {
                             report_summary(quiet, json, &previous_session_id, &session_id);
-                            continue;
                         }
-                        api::EventPayload::TimelineEvent { .. } => continue,
                         api::EventPayload::StoreRecord { record } => {
-                            let value = match serde_json::to_value(&record) {
-                                Ok(value) => value,
-                                Err(_) => continue,
+                            let Ok(value) = serde_json::to_value(&record) else {
+                                continue;
                             };
                             if self.record_event(
                                 &value,
@@ -583,7 +580,7 @@ impl Conversation {
                                 return Ok(());
                             }
                         }
-                        _ => continue,
+                        _ => {}
                     }
                 }
                 StreamItem::TokenDelta { .. } => {}
