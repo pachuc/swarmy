@@ -9,12 +9,22 @@ async fn named_chat_header_and_notices_identify_the_session() {
             .await
             .unwrap();
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
-        assert!(first.ready().await.contains("tommy |"));
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: None,
+        };
+        assert!(first.ready(diagnostics).await.contains("tommy |"));
         let first_id = session_id(&fixture).await;
         first.type_text("\x1b");
         first.exit(true).await;
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
-        assert!(first.ready().await.contains(&first_id.to_string()));
+        assert!(
+            first
+                .ready(diagnostics)
+                .await
+                .contains(&first_id.to_string())
+        );
         assert_eq!(
             fixture
                 .store
@@ -33,7 +43,7 @@ async fn named_chat_header_and_notices_identify_the_session() {
             Some(&agent.agent_id.to_string()),
             true,
         );
-        assert!(second.ready().await.contains("tommy |"));
+        assert!(second.ready(diagnostics).await.contains("tommy |"));
         fixture
             .store
             .append_events(
@@ -53,7 +63,11 @@ async fn named_chat_header_and_notices_identify_the_session() {
             .await
             .unwrap();
         let screen = first
-            .screen(|screen| screen.contains("Computer recovered"))
+            .screen_diagnosed(
+                |screen| screen.contains("Computer recovered"),
+                WAIT,
+                diagnostics,
+            )
             .await;
         assert!(screen.contains(&format!("System [session {first_id}]:")));
         first.type_text("\x1b");
@@ -98,21 +112,59 @@ async fn root_named_chats_share_a_background_process_and_delete() {
         assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
         let agent: swarmy_core::AgentRecord = serde_json::from_slice(&created.stdout).unwrap();
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
-        first.ready().await;
+        first
+            .ready(Diagnostics {
+                fixture: &fixture,
+                services: Some(&services),
+                session: None,
+            })
+            .await;
         let first_id = session_id(&fixture).await;
         let mut second = Terminal::with_agent(&fixture, None, None, "", Some(&agent.agent_id.to_string()), true);
-        second.ready().await;
+        second
+            .ready(Diagnostics {
+                fixture: &fixture,
+                services: Some(&services),
+                session: Some(first_id),
+            })
+            .await;
         let sessions = fixture.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap();
         assert_eq!(sessions.len(), 2);
         let second_id = sessions.iter().find(|session| session.session_id != first_id).unwrap().session_id;
         first.type_text("start\r");
         let output = bash_result(&fixture, first_id, &services).await;
         assert!(output.trim().parse::<u32>().is_ok(), "{output}");
-        first.screen(|screen| screen.contains("Started background process") && screen.contains("Enter: send")).await;
+        first
+            .screen_diagnosed(
+                |screen| {
+                    screen.contains("Started background process")
+                        && screen.contains("Enter: send")
+                },
+                WAIT,
+                Diagnostics {
+                    fixture: &fixture,
+                    services: Some(&services),
+                    session: Some(first_id),
+                },
+            )
+            .await;
         let placement = fixture.store.get_by_agent(agent.agent_id).await.unwrap().unwrap();
         second.type_text("inspect\r");
         assert_eq!(bash_result(&fixture, second_id, &services).await.trim(), "shared-process-alive");
-        second.screen(|screen| screen.contains("Inspected background process") && screen.contains("Enter: send")).await;
+        second
+            .screen_diagnosed(
+                |screen| {
+                    screen.contains("Inspected background process")
+                        && screen.contains("Enter: send")
+                },
+                WAIT,
+                Diagnostics {
+                    fixture: &fixture,
+                    services: Some(&services),
+                    session: Some(second_id),
+                },
+            )
+            .await;
         assert_eq!(fixture.store.get_by_agent(agent.agent_id).await.unwrap().unwrap().epoch, placement.epoch);
         let show = fixture.output(&["agent", "show", "tommy", "--json"]).await;
         assert!(show.status.success());
@@ -176,7 +228,15 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
             command.args(["agent", "delete", "tommy", "--json"]);
             let mut terminal = Terminal::command(&fixture, command, "fixture:test");
             terminal
-                .screen(|screen| screen.contains("Delete agent tommy and its computer? [y/N]"))
+                .screen_diagnosed(
+                    |screen| screen.contains("Delete agent tommy and its computer? [y/N]"),
+                    WAIT,
+                    Diagnostics {
+                        fixture: &fixture,
+                        services: None,
+                        session: None,
+                    },
+                )
                 .await;
             terminal.type_text(answer);
             terminal.exit(deleted).await;
@@ -205,7 +265,14 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
     run(|fixture| async move {
         let agent = fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
         let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
-        chat.ready().await;
+        // No provider call happens in this test: summarization runs
+        // in-process and is instant, so every wait below uses the short
+        // client budget.
+        chat.ready(Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: None,
+        }).await;
         let old = fixture.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session.unwrap();
         fixture.store.wake_session(old, Timestamp::now()).await.unwrap();
         let (lease, session, _) = fixture.store.claim_step(old, LeaseOwnerId::from_ulid(Ulid::generate()), Timestamp::now().checked_add(Duration::from_secs(30)).unwrap()).await.unwrap();
@@ -214,24 +281,39 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
             parts: vec![Part::Text { text: "Goals: fix parser. State: tests pass. Open questions: release date. Facts: project path.".into() }],
         }).await.unwrap();
         fixture.bus.publish_live(LiveFeed::SessionEvents(old), &event).await.unwrap();
-        let screen = chat.screen(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send")).await;
+        // One diagnostics value for the whole follow sequence; every wait
+        // below is client-side (see above), so all use WAIT.
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: None,
+            session: Some(new),
+        };
+        let screen = chat.screen_diagnosed(|screen| screen.contains("Conversation summarized.") && screen.contains(&new.to_string()) && screen.contains("Enter: send"), WAIT, diagnostics).await;
         assert!(screen.contains("archived;"));
         // The client switches to the successor session after observing the
         // archived state. Typing before it has settled sends to the old
         // session, so wait for the successor to be idle and the screen ready.
-        idle(&fixture, new).await;
-        chat.ready().await;
+        idle(&fixture, None, new, WAIT).await;
+        chat.ready(diagnostics).await;
         chat.type_text("Continue the work\r");
         // Input is queued while busy, so typing after ready lands even if a
-        // non-idle state record arrives first; the shared wait is enough.
-        timeout(WAIT, async {
+        // non-idle state record arrives first; the client budget is enough.
+        // Reads retry database timeouts within the budget instead of panicking.
+        let budget = WAIT;
+        let deadline = Instant::now() + budget;
+        let landed = timeout(budget, async {
             loop {
-                if fixture.store.read_events(new, 0, 64).await.unwrap().iter().any(|event| matches!(event,
+                if read_events_tolerant(&fixture, new, 0, 64, deadline).await.iter().any(|event| matches!(event,
                     Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
                 sleep(Duration::from_millis(25)).await;
             }
-        }).await.unwrap();
-        assert_eq!(fixture.store.fetch_session(old).await.unwrap().unwrap().state, SessionState::Completed);
+        }).await;
+        assert!(
+            landed.is_ok(),
+            "user message did not land within {budget:?}:\n{}",
+            diagnostics.report().await
+        );
+        assert_eq!(fetch_session_tolerant(&fixture, old, Instant::now() + WAIT).await.unwrap().state, SessionState::Completed);
         let listing = fixture.output(&["session", "list", "--json"]).await;
         assert!(listing.status.success());
         let listing = String::from_utf8(listing.stdout).unwrap();
@@ -270,11 +352,28 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         }"#).await;
         fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
         let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
-        chat.ready().await;
+        chat
+            .ready(Diagnostics {
+                fixture: &fixture,
+                services: Some(&services),
+                session: None,
+            })
+            .await;
         let id = session_id(&fixture).await;
+        let diagnostics = Diagnostics {
+            fixture: &fixture,
+            services: Some(&services),
+            session: Some(id),
+        };
         chat.type_text("save\r");
         bash_result(&fixture, id, &services).await;
-        chat.screen(|screen| screen.contains("Saved memory") && screen.contains("Enter: send")).await;
+        chat
+            .screen_diagnosed(
+                |screen| screen.contains("Saved memory") && screen.contains("Enter: send"),
+                WAIT,
+                diagnostics,
+            )
+            .await;
         let agent = fixture.store.fetch_session(id).await.unwrap().unwrap().agent_id;
         let volume = swarmy_core::VolumeId::from_ulid(agent.as_ulid());
         let manifest = fixture.store.get_volume(volume).await.unwrap().unwrap().head_manifest;
@@ -283,7 +382,13 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         for (prompt, answer, fact) in [("remember", "Read memory", "violet"), ("update", "Updated memory", "orange")] {
             let before = fixture.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             chat.type_text(&format!("{prompt}\r"));
-            chat.screen(|screen| screen.contains(answer) && screen.contains("Enter: send")).await;
+            chat
+                .screen_diagnosed(
+                    |screen| screen.contains(answer) && screen.contains("Enter: send"),
+                    WAIT,
+                    diagnostics,
+                )
+                .await;
             let events = fixture.store.read_events(id, before, 64).await.unwrap();
             let request = events.iter().rev().find_map(|event| match event {
                 Event::InferenceRequested { request_id, .. } => Some(*request_id), _ => None,
