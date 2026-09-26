@@ -591,7 +591,14 @@ class FleetTests(unittest.TestCase):
         }
         self.assertEqual(mod.current_session({}, "01AAAA", sessions), "01BBBB")
         self.assertEqual(mod.current_session({}, "01BBBB", sessions), "01BBBB")
-        self.assertTrue(mod.has_pressure([{"message_appended": {"text": "context_pressure"}}]))
+        warning = {"message_appended": {"message": {"role": "system",
+                   "parts": [{"text": {"text": "context_pressure: input 80 tokens"}}]}}}
+        tool_output = {"message_appended": {"message": {"role": "tool",
+                       "parts": [{"tool_result": {"result": {"completed": {"output": "docs say context_pressure"}}}}]}}}
+        user_text = {"message_appended": {"message": {"role": "user",
+                     "parts": [{"text": {"text": "context_pressure in a prompt"}}]}}}
+        self.assertTrue(mod.has_pressure([warning]))
+        self.assertFalse(mod.has_pressure([tool_output, user_text]))
         self.assertFalse(mod.has_pressure([{"message_appended": {"text": "hello"}}]))
 
 if __name__ == "__main__":

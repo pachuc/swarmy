@@ -398,16 +398,22 @@ def current_session(config, session_id, sessions=None):
 
 
 def has_pressure(events):
-    """Whether the session log carries a context_pressure warning."""
+    """Whether the worker appended a context_pressure warning.
+
+    Only system messages count: the worker writes the warning as a system
+    message, and tool output (a file that mentions the warning by name, for
+    example) must not trip the flag.
+    """
     for event in events:
         if not isinstance(event, dict):
             continue
-        try:
-            text = json.dumps(event)
-        except (TypeError, ValueError):
+        message = (event.get("message_appended") or {}).get("message")
+        if not isinstance(message, dict) or message.get("role") != "system":
             continue
-        if "context_pressure" in text:
-            return True
+        for part in message.get("parts") or []:
+            text = (part.get("text") or {}).get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and "context_pressure" in text:
+                return True
     return False
 
 
