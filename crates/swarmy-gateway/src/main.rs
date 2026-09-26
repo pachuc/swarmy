@@ -29,6 +29,8 @@ struct Gateway {
     bus: Bus,
     providers: Providers,
     default_provider: String,
+    summarize_at_tokens: Option<u64>,
+    model_context_window_tokens: Option<u64>,
     ack_wait: Duration,
     max_deliver: i64,
     resend_interval: Duration,
@@ -76,6 +78,11 @@ fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
         _ => (false, None),
     }
 }
+
+/// Default side-session threshold in input tokens when the catalog has no
+/// window for the model. This mirrors the worker default so the gateway
+/// diverts the same completions the worker would summarize.
+const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
 
 /// The fake provider yields whole parts without streaming text deltas, so a
 /// completed part is the first observable content for those turns.
@@ -197,6 +204,14 @@ async fn run(config: config::Config) -> Result<()> {
         bus,
         providers,
         default_provider: config.settings.provider,
+        summarize_at_tokens: config
+            .settings
+            .summarize_at_tokens
+            .map(std::num::NonZeroU64::get),
+        model_context_window_tokens: config
+            .settings
+            .model_context_window_tokens
+            .map(std::num::NonZeroU64::get),
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
@@ -1064,18 +1079,56 @@ impl Gateway {
         Ok(())
     }
 
+    /// Warning level at 75 percent of the side-session threshold, mirroring
+    /// the worker so the gateway only diverts completions that could warn or
+    /// summarize. An explicit override wins, then a stack-wide window
+    /// override, then the catalog value, else a conservative default.
+    fn side_pressure_threshold(&self, provider: &str, model: &str) -> u64 {
+        let threshold = self
+            .summarize_at_tokens
+            .or_else(|| {
+                self.model_context_window_tokens
+                    .map(|context| context - context / 4)
+            })
+            .or_else(|| self.providers.catalog.summarize_at(provider, model))
+            .unwrap_or(DEFAULT_SIDE_SUMMARIZE_AT_TOKENS);
+        threshold - threshold / 4
+    }
+
     async fn terminal_snapshot(
         &self,
         job: &InferenceJob,
         completion: &InferenceCompletion,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
-        // Main sessions need a worker turn-end step to decide whether to summarize.
+        // Named sessions need a worker step to decide whether to summarize.
+        // Main sessions always take the slow path. Side sessions take it only
+        // once the completion reaches the pressure level, so text-only turns
+        // below that keep the single-transaction fast path instead of paying
+        // for a scheduler nudge, a worker lease, and a snapshot upload.
         if let Some(session) = self.store.fetch_session(job.session_id).await?
             && matches!(session.kind, swarmy_core::SessionKind::Named { .. })
-            && let Some(agent) = self.store.get_agent(session.agent_id).await?
-            && agent.main_session == Some(job.session_id)
         {
-            return Ok(None);
+            let main = self
+                .store
+                .get_agent(session.agent_id)
+                .await?
+                .is_some_and(|agent| agent.main_session == Some(job.session_id));
+            if main {
+                return Ok(None);
+            }
+            let provider = if job.provider.is_empty() {
+                self.default_provider.as_str()
+            } else {
+                job.provider.as_str()
+            };
+            let input = match &completion.event {
+                Event::InferenceCompleted { usage, .. } => usage.input_tokens,
+                Event::InferenceFailed { .. } => return Ok(None),
+                _ => 0,
+            };
+            if input >= self.side_pressure_threshold(provider, &job.request.settings.model) {
+                return Ok(None);
+            }
         }
         // A concurrent log append is not in the immutable request. Let the
         // worker replay it instead of advancing a snapshot over unseen events.
@@ -1435,6 +1488,8 @@ mod retry_tests {
             bus,
             providers,
             default_provider: "fake".into(),
+            summarize_at_tokens: None,
+            model_context_window_tokens: None,
             ack_wait: Duration::from_secs(30),
             max_deliver: 5,
             resend_interval: Duration::from_secs(1),

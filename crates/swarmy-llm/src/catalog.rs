@@ -29,6 +29,10 @@ pub struct ProviderInfo {
     pub env_keys: Vec<String>,
     pub auth_kinds: Vec<String>,
     pub models: BTreeMap<String, ModelInfo>,
+    /// Optional per-provider summarization threshold in input tokens.
+    /// When absent, each model's own threshold or window applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarize_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +55,10 @@ pub struct ModelInfo {
     pub status: Option<String>,
     #[serde(default)]
     pub compat: Compat,
+    /// Optional per-model summarization threshold in input tokens.
+    /// When absent, three quarters of the context window applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarize_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +163,15 @@ const EFFORTS: [ReasoningEffort; 7] = [
 ];
 
 impl ModelInfo {
+    /// Summarization threshold in input tokens for this model.
+    /// An explicit per-model value wins; otherwise three quarters of the
+    /// context window keeps long tasks well under the provider limit.
+    #[must_use]
+    pub fn summarize_at_tokens(&self) -> u64 {
+        self.summarize_at
+            .unwrap_or_else(|| self.limit.context - self.limit.context / 4)
+    }
+
     /// Efforts in ascending order. Budgets and toggles expose the ordinary
     /// scale; xhigh and max require an explicit entry in an effort list.
     #[must_use]
@@ -253,6 +270,22 @@ impl Catalog {
     #[must_use]
     pub fn model(&self, provider: &str, id: &str) -> Option<&ModelInfo> {
         self.provider(provider)?.models.get(id)
+    }
+
+    /// Summarization threshold in input tokens for a provider and model.
+    /// A per-model value wins, then a per-provider value, then three
+    /// quarters of the model's context window. Returns `None` for unknown
+    /// models so callers can apply their own default.
+    #[must_use]
+    pub fn summarize_at(&self, provider: &str, model: &str) -> Option<u64> {
+        let provider_info = self.provider(provider)?;
+        let model_info = provider_info.models.get(model)?;
+        Some(
+            model_info
+                .summarize_at
+                .or(provider_info.summarize_at)
+                .unwrap_or_else(|| model_info.summarize_at_tokens()),
+        )
     }
 
     /// Case-insensitive substring matches over `provider/model`, in stable order.
@@ -400,5 +433,59 @@ mod tests {
             swarmy_core::decode::<ReasoningEffort>(&encoded).unwrap(),
             effort
         );
+    }
+
+    #[test]
+    fn summarize_threshold_derives_from_window_with_overrides() {
+        let catalog = Catalog::get();
+        let model = catalog.model("openai", "gpt-5.5").unwrap();
+        assert_eq!(
+            model.summarize_at_tokens(),
+            model.limit.context - model.limit.context / 4
+        );
+        assert_eq!(
+            catalog.summarize_at("openai", "gpt-5.5"),
+            Some(model.summarize_at_tokens())
+        );
+        assert_eq!(catalog.summarize_at("openai", "missing"), None);
+        let mut explicit = model.clone();
+        explicit.summarize_at = Some(400_000);
+        assert_eq!(explicit.summarize_at_tokens(), 400_000);
+        let providers = vec![ProviderInfo {
+            id: "test".into(),
+            name: "Test".into(),
+            api: Api::Fake,
+            base_url: String::new(),
+            env_keys: Vec::new(),
+            auth_kinds: vec!["api_key".into()],
+            models: [(
+                "m".into(),
+                ModelInfo {
+                    id: "m".into(),
+                    name: "m".into(),
+                    family: None,
+                    api: None,
+                    base_url: None,
+                    reasoning: None,
+                    tool_call: true,
+                    attachment: false,
+                    input_modalities: vec!["text".into()],
+                    limit: Limit {
+                        context: 1_000_000,
+                        output: None,
+                    },
+                    cost: Cost::default(),
+                    release_date: None,
+                    status: None,
+                    compat: Compat::default(),
+                    summarize_at: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            summarize_at: Some(500_000),
+        }];
+        let custom = Catalog::from_providers(providers);
+        assert_eq!(custom.summarize_at("test", "m"), Some(500_000));
     }
 }

@@ -33,16 +33,17 @@ python3 -m unittest discover -s benchmarks -p 'test_*.py'
 
 The swarm runner calls the fleet driver's `benchmark` action for each isolated
 session, waits for completion, and invokes `scripts/fleet/fleet report
---label LABEL --session ID ...` on the six session IDs. The fleet driver reads
-its remote from `scripts/fleet/fleet.toml`; configure it to match the runner
-remote. The `report` action lands in a sibling task, so do not run the live
-script until that driver action is installed. The driver uses ephemeral
+--remote REMOTE --label LABEL --session ID --wall ID=SECONDS ...` on the six
+session IDs with each run's wall time. The runner passes the remote through,
+so `benchmark` and `report` need no `scripts/fleet/fleet.toml`. The driver uses ephemeral
 sessions rather than tasky assignments, so benchmark branches do not consume
 real task IDs or workers.
 The swarm runner asks each session to print `BENCH_COLD=true` or `false`
 before cloning, based on whether both its cargo target and registry are empty.
-It records that Boolean per run, along with session IDs and raw event JSONL, in
+It records that Boolean and the wall time of each `fleet benchmark` invocation
+per run, along with session IDs and raw event JSONL, in
 `.dev/benchmarks/` so a report can be retried without launching another run.
+The report prints the wall time as `wall_s` next to `duration_s`.
 The lane adapter records the same cache state before starting Codex. The
 daytona runner writes `.dev/benchmarks/LABEL-daytona.json` (or `--output`)
 with `{ "label": LABEL, "runs": [...] }`. Each run includes task, run (1 or 2),
