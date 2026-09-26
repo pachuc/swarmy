@@ -24,7 +24,9 @@ use swarmy_core::{
 };
 use swarmy_harness::{Harness, Tool, ToolRegistry, execution_result};
 use swarmy_llm::GenerationSettings;
-use swarmy_store::{AgentSessionOptions, PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore,
+};
 use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 

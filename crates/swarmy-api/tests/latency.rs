@@ -10,7 +10,7 @@ use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
     InferenceSelection, Message, MessageId, MessageRole, Part, SessionId, SessionState,
 };
-use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore};
+use swarmy_store::{AgentSessionOptions, CreateAgentOptions, Store, blob::ObjectBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -323,6 +323,7 @@ async fn fake_turn_records_first_token_metrics() {
             &image,
             "",
             jiff::Timestamp::now(),
+            CreateAgentOptions::default(),
         )
         .await
         .unwrap();

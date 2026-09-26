@@ -30,27 +30,7 @@ async fn authenticated_routes_and_create_replay() {
     )
     .await
     .unwrap();
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            manifest,
-            &PutImageOptions::default(),
-        )
-        .await
-        .unwrap();
+    register_fixture_image(&store).await;
     register_services(&store).await;
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();
     let mut state = AppState::new(
@@ -359,6 +339,31 @@ async fn assert_session_routes(store: &Store, client: &reqwest::Client, base: &s
     assert_event(client, base, &session_id.to_string()).await;
 }
 
+async fn register_fixture_image(store: &Store) -> ManifestId {
+    let manifest = ManifestId::from_ulid(Ulid::generate());
+    store
+        .put_manifest(
+            manifest,
+            &ManifestHeader {
+                size: u64::from(CHUNK_SIZE),
+                chunk_size: CHUNK_SIZE,
+                root_hash: ContentHash::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .put_image(
+            "fixture",
+            &ImageTag("test".into()),
+            manifest,
+            &PutImageOptions::default(),
+        )
+        .await
+        .unwrap();
+    manifest
+}
+
 async fn register_services(store: &Store) {
     for role in [
         ServiceRole::Scheduler,
@@ -465,27 +470,7 @@ async fn route_server() -> Option<(
     )
     .await
     .unwrap();
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .put_image(
-            "fixture",
-            &ImageTag("test".into()),
-            manifest,
-            &PutImageOptions::default(),
-        )
-        .await
-        .unwrap();
+    register_fixture_image(&store).await;
     register_services(&store).await;
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();
     let mut state = AppState::new(

@@ -930,6 +930,7 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
             "persistent:test",
             "",
             jiff::Timestamp::now(),
+            CreateAgentOptions::default(),
         )
         .await
         .unwrap()

@@ -7,10 +7,18 @@ use swarmy_core::{
     SessionKind, SessionRecord, SessionState, decode,
 };
 
-/// The replay key and private token are committed with a new agent atomically.
-pub struct AgentCreationReplay<'a> {
-    pub key: &'a str,
+/// Options for creating a named agent. The replay key and private token are
+/// committed with a new agent atomically; a retry after an unknown commit
+/// returns the original record instead of another agent.
+#[derive(Clone, Debug, Default)]
+pub struct CreateAgentOptions<'a> {
+    /// Inference overrides pinned with the agent.
+    pub settings: Option<&'a AgentSettings>,
+    /// Private GitHub token, stored as a side field so records and public
+    /// views never contain it.
     pub github_token: Option<&'a str>,
+    /// Idempotency key for the creation.
+    pub replay_key: Option<&'a str>,
 }
 
 struct CreationOptions<'a> {
@@ -38,132 +46,18 @@ impl Store {
         image: &str,
         description: &str,
         now: Timestamp,
+        options: CreateAgentOptions<'_>,
     ) -> Result<AgentRecord> {
-        self.create_agent_with(
-            name,
-            image,
-            description,
-            &AgentSettings::default(),
-            None,
-            now,
-        )
-        .await
-    }
-
-    /// Create a named agent with inference overrides, pinning its image atomically.
-    /// # Errors
-    /// Rejects duplicate names or ids, invalid names, unknown images, and storage failures.
-    pub async fn create_agent_with_settings(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with(name, image, description, settings, None, now)
-            .await
-    }
-
-    /// Create an agent and its private GitHub token in one transaction.
-    /// The token is a side field so legacy records and public views never contain it.
-    /// # Errors
-    /// Rejects invalid credentials and the same conditions as `create_agent`.
-    pub async fn create_agent_with_github_token(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        github_token: Option<&str>,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with(
-            name,
-            image,
-            description,
-            &AgentSettings::default(),
-            github_token,
-            now,
-        )
-        .await
-    }
-
-    /// Create a named agent with inference overrides and a private GitHub token,
-    /// writing the public record and the token side field in one transaction.
-    /// # Errors
-    /// Rejects duplicate names or ids, invalid names or credentials, unknown images,
-    /// and storage failures.
-    pub async fn create_agent_with(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        github_token: Option<&str>,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
+        let defaults = AgentSettings::default();
         self.create_agent_with_replay(
             name,
             image,
             description,
-            settings,
+            options.settings.unwrap_or(&defaults),
             now,
             CreationOptions {
-                github_token,
-                replay_key: None,
-            },
-        )
-        .await
-    }
-
-    /// Create an agent and its replay marker in the same transaction. A retry
-    /// after an unknown commit returns the original record instead of another agent.
-    /// # Errors
-    /// Returns validation and storage errors.
-    pub async fn create_agent_with_settings_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        key: &str,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            settings,
-            now,
-            CreationOptions {
-                github_token: None,
-                replay_key: Some(key),
-            },
-        )
-        .await
-    }
-
-    /// Create an agent with a private token and a replay marker in one transaction.
-    /// # Errors
-    /// Rejects invalid names, credentials, missing images, and storage failures.
-    pub async fn create_agent_with_token_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        replay: AgentCreationReplay<'_>,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            settings,
-            now,
-            CreationOptions {
-                github_token: replay.github_token,
-                replay_key: Some(replay.key),
+                github_token: options.github_token,
+                replay_key: options.replay_key,
             },
         )
         .await

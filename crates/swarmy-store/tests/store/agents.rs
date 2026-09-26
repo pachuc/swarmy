@@ -9,8 +9,20 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let (a, b) = tokio::join!(
-        store.create_agent("tommy", image, "coding", timestamp(0)),
-        store.create_agent("tommy", image, "coding", timestamp(0))
+        store.create_agent(
+            "tommy",
+            image,
+            "coding",
+            timestamp(0),
+            CreateAgentOptions::default()
+        ),
+        store.create_agent(
+            "tommy",
+            image,
+            "coding",
+            timestamp(0),
+            CreateAgentOptions::default()
+        )
     );
     let agent = match (a, b) {
         (Ok(agent), Err(StoreError::AgentExists)) | (Err(StoreError::AgentExists), Ok(agent)) => {
@@ -38,7 +50,9 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
             .is_empty()
     );
     assert!(matches!(
-        store.create_agent("", image, "", timestamp(0)).await,
+        store
+            .create_agent("", image, "", timestamp(0), CreateAgentOptions::default())
+            .await,
         Err(StoreError::InvalidAgentName)
     ));
     let id = assert_named_session_pin(store, &agent, image).await;
@@ -65,7 +79,13 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     ));
     assert_ne!(
         store
-            .create_agent("tommy", image, "", timestamp(1))
+            .create_agent(
+                "tommy",
+                image,
+                "",
+                timestamp(1),
+                CreateAgentOptions::default()
+            )
             .await
             .unwrap()
             .agent_id,
@@ -274,7 +294,13 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
         .await
         .unwrap();
     let agent = store
-        .create_agent("named", image, "", timestamp(0))
+        .create_agent(
+            "named",
+            image,
+            "",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     let named = store
@@ -331,7 +357,16 @@ async fn agent_inference_settings_create_and_independent_updates() {
         route: None,
     };
     let mut expected = store
-        .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
+        .create_agent(
+            "custom",
+            image,
+            "reviewer",
+            timestamp(0),
+            CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(expected.system_prompt, settings.system_prompt);
@@ -421,7 +456,16 @@ async fn concurrent_settings_and_rejected_updates(
     );
     assert!(matches!(
         store
-            .create_agent_with_settings("oversized", image, "", &oversized, timestamp(0))
+            .create_agent(
+                "oversized",
+                image,
+                "",
+                timestamp(0),
+                CreateAgentOptions {
+                    settings: Some(&oversized),
+                    ..Default::default()
+                }
+            )
             .await,
         Err(StoreError::TooLarge)
     ));
@@ -449,7 +493,13 @@ async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let mut expected = store
-        .create_agent("legacy", image, "old record", timestamp(0))
+        .create_agent(
+            "legacy",
+            image,
+            "old record",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     // This tuple has exactly the five fields of the original Postcard record.
@@ -544,7 +594,13 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("main", image, "", timestamp(0))
+        .create_agent(
+            "main",
+            image,
+            "",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(agent.main_session, None);
@@ -639,7 +695,13 @@ async fn legacy_agents_acquire_a_main_session_without_losing_their_image() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("legacy", image, "description", timestamp(0))
+        .create_agent(
+            "legacy",
+            image,
+            "description",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     // Tuples have the same postcard representation as the old five-field record.
@@ -709,11 +771,23 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("main", image, "", timestamp(0))
+        .create_agent(
+            "main",
+            image,
+            "",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     let other = store
-        .create_agent("other", image, "", timestamp(0))
+        .create_agent(
+            "other",
+            image,
+            "",
+            timestamp(0),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     for owner in [None, Some(other.agent_id)] {
@@ -838,7 +912,16 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     };
     let agent = test
         .store
-        .create_agent_with_settings("memory", image, "", &settings, timestamp(0))
+        .create_agent(
+            "memory",
+            image,
+            "",
+            timestamp(0),
+            CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(agent.requirements.memory_mib, 2048);

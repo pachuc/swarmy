@@ -22,7 +22,7 @@ use swarmy_bus::Bus;
 use swarmy_config::Keyring;
 use swarmy_core::{AgentId, AgentSettings, CredentialScope, ImageTag, SessionId};
 use swarmy_llm::catalog::Catalog;
-use swarmy_store::{MAX_SCAN_LIMIT, Store};
+use swarmy_store::{CreateAgentOptions, MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
 use ulid::Ulid;
 use utoipa::OpenApi;
@@ -439,13 +439,16 @@ async fn create_agent(
     }
     let record = state
         .store
-        .create_agent_with_settings_replay(
+        .create_agent(
             &body.name,
             &image_ref(&body.image),
             &body.description,
-            &settings,
             Timestamp::now(),
-            &format!("agents:create:{}", body.idempotency_key),
+            CreateAgentOptions {
+                settings: Some(&settings),
+                replay_key: Some(&format!("agents:create:{}", body.idempotency_key)),
+                ..Default::default()
+            },
         )
         .await
         .map_err(storage)?;

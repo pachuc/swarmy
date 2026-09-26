@@ -122,12 +122,15 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
     let first = format!("test_first_{}", ulid::Ulid::generate());
     let second = format!("test_second_{}", ulid::Ulid::generate());
     let agent = store
-        .create_agent_with_github_token(
+        .create_agent(
             "github",
             "credentials:test",
             "",
-            Some(&first),
             jiff::Timestamp::now(),
+            CreateAgentOptions {
+                github_token: Some(&first),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

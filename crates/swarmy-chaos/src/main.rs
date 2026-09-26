@@ -31,8 +31,8 @@ use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
 };
 use swarmy_store::{
-    AgentSessionOptions, MAX_SCAN_LIMIT, PutImageOptions, Store, blob::ObjectBlobStore,
-    runnable_partition,
+    AgentSessionOptions, CreateAgentOptions, MAX_SCAN_LIMIT, PutImageOptions, Store,
+    blob::ObjectBlobStore, runnable_partition,
 };
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
@@ -318,6 +318,7 @@ impl Fixture {
                         "chaos:test",
                         "Two sessions sharing a computer",
                         Timestamp::now(),
+                        CreateAgentOptions::default(),
                     )
                     .await?
                     .agent_id,

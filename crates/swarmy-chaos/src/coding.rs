@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use swarmy_core::{Event, Message, MessageId, MessageRole, Part, SessionState, ToolResult};
 use tokio::time::{Instant, sleep, timeout};
 
+use swarmy_store::CreateAgentOptions;
+
 use crate::{Fixture, process::Kind};
 
 const WORK: &str = "/home/agent/work/proof";
@@ -170,6 +172,7 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
             "chaos:test",
             "Coding proof",
             jiff::Timestamp::now(),
+            CreateAgentOptions::default(),
         )
         .await?;
     let (session, _) = f

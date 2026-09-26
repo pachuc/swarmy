@@ -21,7 +21,9 @@ use swarmy_core::{
     AgentId, Event, LeaseOwnerId, MessageRole, Nudge, RequestId, RunnableEntry, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
 };
-use swarmy_store::{AgentSessionOptions, Store, blob::MemoryBlobStore, runnable_partition};
+use swarmy_store::{
+    AgentSessionOptions, CreateAgentOptions, Store, blob::MemoryBlobStore, runnable_partition,
+};
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
 
@@ -569,7 +571,13 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
         let active = f.create(7, SessionState::Runnable, old).await;
         let agent = f
             .store
-            .create_agent("named", image_fixture::image(&f.store).await, "", old)
+            .create_agent(
+                "named",
+                image_fixture::image(&f.store).await,
+                "",
+                old,
+                CreateAgentOptions::default(),
+            )
             .await
             .unwrap();
         let named = f
@@ -630,12 +638,7 @@ async fn due_side_timer_nudges_its_idle_session() {
     run(|f| async move {
         let agent = f
             .store
-            .create_agent(
-                "timer-side",
-                image_fixture::image(&f.store).await,
-                "",
-                Timestamp::now(),
-            )
+            .create_agent("timer-side", image_fixture::image(&f.store).await, "", Timestamp::now(), CreateAgentOptions::default())
             .await
             .unwrap()
             .agent_id;

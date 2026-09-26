@@ -37,8 +37,8 @@ use swarmy_core::{
 };
 use swarmy_llm::Delta;
 use swarmy_store::{
-    AgentSessionOptions, PutImageOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store,
-    blob::MemoryBlobStore,
+    AgentSessionOptions, CreateAgentOptions, PutImageOptions, ServiceDetail, ServiceHeartbeat,
+    ServiceRole, Store, blob::MemoryBlobStore,
 };
 use tokio::{
     process::Command,
@@ -1066,7 +1066,13 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
 async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     let agent = fixture
         .store
-        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now())
+        .create_agent(
+            "metrics-agent",
+            "fixture:test",
+            "",
+            Timestamp::now(),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     let (session, _) = fixture

@@ -740,15 +740,15 @@ pub async fn agent_create(
     let store_key = format!("cli:agents:create:{key}");
     super::replay(&state, &key, "cli:agents:create", async move {
         let record = store
-            .create_agent_with_token_replay(
+            .create_agent(
                 &name,
                 &image,
                 body.description.as_deref().unwrap_or(""),
-                &choice,
                 jiff::Timestamp::now(),
-                swarmy_store::AgentCreationReplay {
-                    key: &store_key,
+                swarmy_store::CreateAgentOptions {
+                    settings: Some(&choice),
                     github_token: body.github_token.as_deref(),
+                    replay_key: Some(&store_key),
                 },
             )
             .await

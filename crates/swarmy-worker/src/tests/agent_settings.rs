@@ -144,20 +144,23 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
     let result = std::panic::AssertUnwindSafe(async {
         let agent = f
             .store
-            .create_agent_with_settings(
+            .create_agent(
                 "custom",
                 "fixture:test",
                 "",
-                &AgentSettings {
-                    system_prompt: Some("  Agent prompt.\n".into()),
-                    model: Some("agent-model".into()),
-                    reasoning_effort: Some(ReasoningEffort::High),
-                    provider: None,
-                    memory_mib: None,
-                    gpu: None,
-                    route: None,
-                },
                 Timestamp::now(),
+                CreateAgentOptions {
+                    settings: Some(&AgentSettings {
+                        system_prompt: Some("  Agent prompt.\n".into()),
+                        model: Some("agent-model".into()),
+                        reasoning_effort: Some(ReasoningEffort::High),
+                        provider: None,
+                        memory_mib: None,
+                        gpu: None,
+                        route: None,
+                    }),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -214,15 +217,18 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
 async fn assert_default_settings(f: &Fixture) {
     let partial = f
         .store
-        .create_agent_with_settings(
+        .create_agent(
             "partial",
             "fixture:test",
             "",
-            &AgentSettings {
-                model: Some("partial-model".into()),
+            Timestamp::now(),
+            CreateAgentOptions {
+                settings: Some(&AgentSettings {
+                    model: Some("partial-model".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
-            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -234,7 +240,13 @@ async fn assert_default_settings(f: &Fixture) {
     );
     let defaults = f
         .store
-        .create_agent("defaults", "fixture:test", "", Timestamp::now())
+        .create_agent(
+            "defaults",
+            "fixture:test",
+            "",
+            Timestamp::now(),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     for agent in [None, Some(defaults.agent_id)] {
@@ -284,9 +296,9 @@ async fn session_selection_routes_and_missing_gateway_waits() {
         }
         let fake = f.infer(f.session(None).await).await;
         assert_eq!(fake.provider, "fake");
-        let named = f.store.create_agent_with_settings("selected", "fixture:test", "", &AgentSettings {
+        let named = f.store.create_agent("selected", "fixture:test", "", Timestamp::now(), CreateAgentOptions { settings: Some(&AgentSettings {
             provider: Some("openai".into()), model: Some("gpt-5.5".into()), reasoning_effort: Some(ReasoningEffort::High), ..Default::default()
-        }, Timestamp::now()).await.unwrap();
+        }), ..Default::default() }).await.unwrap();
         let named_job = f.infer(f.session(Some(named.agent_id)).await).await;
         assert_eq!(named_job.provider, "openai");
         assert_eq!(named_job.request.settings.model, "gpt-5.5");

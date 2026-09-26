@@ -145,7 +145,13 @@ impl Fixture {
     async fn named_agent(&mut self) {
         self.agent = self
             .store
-            .create_agent("shared", "routing:test", "", Timestamp::now())
+            .create_agent(
+                "shared",
+                "routing:test",
+                "",
+                Timestamp::now(),
+                CreateAgentOptions::default(),
+            )
             .await
             .unwrap()
             .agent_id;

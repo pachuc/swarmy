@@ -9,7 +9,7 @@ use swarmy_core::{
     CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, ManifestHeader, ManifestId, Message,
     MessageId, MessageRole, Part, SessionId,
 };
-use swarmy_store::{PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
@@ -83,7 +83,13 @@ impl Fixture {
     async fn session(&self, name: &str) -> SessionId {
         let agent = self
             .store
-            .create_agent(name, "fixture:test", "", jiff::Timestamp::now())
+            .create_agent(
+                name,
+                "fixture:test",
+                "",
+                jiff::Timestamp::now(),
+                CreateAgentOptions::default(),
+            )
             .await
             .unwrap();
         let (id, _) = self

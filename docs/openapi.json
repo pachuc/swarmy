@@ -4575,24 +4575,6 @@
           },
           {
             "type": "object",
-            "required": [
-              "id",
-              "kind"
-            ],
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "channel"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
             "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing.",
             "required": [
               "id",
@@ -4612,7 +4594,7 @@
             }
           }
         ],
-        "description": "A log namespace. The tagged representation reserves channels without changing session cursors."
+        "description": "A log namespace."
       },
       "Message": {
         "type": "object",

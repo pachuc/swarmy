@@ -11,7 +11,7 @@ use swarmy_bus::{Bus, Config, LiveFeed};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId, SessionId, SessionState,
 };
-use swarmy_store::{PutImageOptions, Store, blob::MemoryBlobStore};
+use swarmy_store::{CreateAgentOptions, PutImageOptions, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -244,7 +244,13 @@ async fn named_main_and_side_preserve_image_and_selection() {
     };
     let agent = f
         .store
-        .create_agent("named", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "named",
+            "fixture:test",
+            "",
+            jiff::Timestamp::now(),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     let main = f
@@ -632,7 +638,13 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     };
     let agent = f
         .store
-        .create_agent("metric-agent", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "metric-agent",
+            "fixture:test",
+            "",
+            jiff::Timestamp::now(),
+            CreateAgentOptions::default(),
+        )
         .await
         .unwrap();
     let (session, _) = f

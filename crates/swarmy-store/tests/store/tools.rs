@@ -58,6 +58,34 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
         )
         .await
         .unwrap();
+    let (jobs, events) = tool_jobs(id);
+    store
+        .append_events_leased(id, 0, &events, &lease, Timestamp::now())
+        .await
+        .unwrap();
+    let mut wrong = jobs.clone();
+    wrong[0].arguments =
+        swarmy_core::SandboxArguments::parse("bash", serde_json::json!({"command":"different"}))
+            .unwrap();
+    assert!(
+        store
+            .dispatch_placed_tool_jobs(id, &lease, &wrong, &placement)
+            .await
+            .is_err()
+    );
+    store
+        .dispatch_placed_tool_jobs(id, &lease, &jobs, &placement)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+    assert_eq!(store.scan_tool_jobs(None, 64).await.unwrap().len(), 2);
+    (id, image, node, jobs)
+}
+
+fn tool_jobs(id: SessionId) -> (Vec<ToolJob>, Vec<Event>) {
     let jobs: Vec<_> = (1..=2)
         .map(|step| ToolJob {
             session_id: id,
@@ -85,30 +113,7 @@ async fn setup(store: &Store) -> (SessionId, ManifestId, NodeRecord, Vec<ToolJob
             },
         })
         .collect();
-    store
-        .append_events_leased(id, 0, &events, &lease, Timestamp::now())
-        .await
-        .unwrap();
-    let mut wrong = jobs.clone();
-    wrong[0].arguments =
-        swarmy_core::SandboxArguments::parse("bash", serde_json::json!({"command":"different"}))
-            .unwrap();
-    assert!(
-        store
-            .dispatch_placed_tool_jobs(id, &lease, &wrong, &placement)
-            .await
-            .is_err()
-    );
-    store
-        .dispatch_placed_tool_jobs(id, &lease, &jobs, &placement)
-        .await
-        .unwrap();
-    assert_eq!(
-        store.fetch_session(id).await.unwrap().unwrap().state,
-        SessionState::WaitingTools
-    );
-    assert_eq!(store.scan_tool_jobs(None, 64).await.unwrap().len(), 2);
-    (id, image, node, jobs)
+    (jobs, events)
 }
 
 fn node() -> NodeRecord {

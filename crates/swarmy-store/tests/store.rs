@@ -12,8 +12,8 @@ use swarmy_core::{
     VolumeRecord, encode,
 };
 use swarmy_store::{
-    AgentSessionOptions, CredentialKey, InterruptResult, PutImageOptions, Store, StoreError,
-    SubmitInferenceOptions,
+    AgentSessionOptions, CreateAgentOptions, CredentialKey, InterruptResult, PutImageOptions,
+    Store, StoreError, SubmitInferenceOptions,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
     runnable_partition,
 };

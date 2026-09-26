@@ -8,7 +8,7 @@
 //! lives in side rows. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 mod agents;
-pub use agents::{AgentCreationReplay, AgentSessionOptions};
+pub use agents::{AgentSessionOptions, CreateAgentOptions};
 mod api_idempotency;
 pub mod blob;
 mod computers;

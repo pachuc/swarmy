@@ -11,6 +11,8 @@ use swarmy_core::{
 use swarmy_llm::InferenceJob;
 use tokio::time::{sleep, timeout};
 
+use swarmy_store::CreateAgentOptions;
+
 use crate::{Fixture, process::Kind};
 
 const FACT: &str = "Tommy's favorite observatory is Violet Ridge.";
@@ -137,6 +139,7 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
             "chaos:test",
             "Remember durable facts",
             Timestamp::now(),
+            CreateAgentOptions::default(),
         )
         .await?
         .agent_id;
