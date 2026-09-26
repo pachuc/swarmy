@@ -135,6 +135,17 @@ enum BinaryEvent {
         effort_requested: Option<crate::ReasoningEffort>,
         #[serde(default)]
         effort_clamped: bool,
+        /// Auth entry that served the turn, appended as trailing fields so
+        /// readers from before routes still recognize the metered
+        /// discriminant and decode the prefix they understand.
+        #[serde(default, with = "crate::trailing")]
+        entry: Option<String>,
+        /// Named route that selected the entry, if any.
+        #[serde(default, with = "crate::trailing")]
+        route: Option<String>,
+        /// Index into the resolved route, so metering names the exact step.
+        #[serde(default, with = "crate::trailing")]
+        route_step: Option<u32>,
     },
     RetryableInferenceFailed {
         seq: u64,
@@ -142,35 +153,6 @@ enum BinaryEvent {
         error: String,
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
-    },
-    /// A completion that names its auth entry and route step. Appended after
-    /// the retryable failure variant so every earlier discriminant is frozen.
-    /// Completions without route attribution keep the metered shape, so old
-    /// readers still decode the turns they wrote.
-    RoutedInferenceCompleted {
-        seq: u64,
-        request_id: RequestId,
-        message: Message,
-        #[serde(default)]
-        provider: String,
-        #[serde(default)]
-        model: String,
-        #[serde(default)]
-        effort_used: Option<crate::ReasoningEffort>,
-        #[serde(default)]
-        usage: crate::TokenUsage,
-        #[serde(default)]
-        cost_micros: u64,
-        #[serde(default)]
-        effort_requested: Option<crate::ReasoningEffort>,
-        #[serde(default)]
-        effort_clamped: bool,
-        #[serde(default)]
-        entry: Option<String>,
-        #[serde(default)]
-        route: Option<String>,
-        #[serde(default)]
-        route_step: Option<u32>,
     },
 }
 
@@ -192,9 +174,10 @@ impl<'de> Deserialize<'de> for Event {
         }
     }
 }
-/// Encode a completion with the metered shape when it carries no route
-/// attribution, so old readers decode the turns they wrote; attributed
-/// completions use the appended routed shape.
+/// Encode a completion on the metered shape with its route attribution as
+/// trailing fields, so the discriminant never changes when attribution is
+/// added. Readers from before routes decode the prefix they understand;
+/// current readers default missing trailing fields exactly like old rows.
 #[allow(clippy::too_many_arguments)]
 fn completion_to_binary(
     seq: u64,
@@ -211,35 +194,20 @@ fn completion_to_binary(
     route: Option<String>,
     route_step: Option<u32>,
 ) -> BinaryEvent {
-    if entry.is_none() && route.is_none() && route_step.is_none() {
-        BinaryEvent::MeteredInferenceCompleted {
-            seq,
-            request_id,
-            message,
-            provider,
-            model,
-            effort_used,
-            usage,
-            cost_micros,
-            effort_requested,
-            effort_clamped,
-        }
-    } else {
-        BinaryEvent::RoutedInferenceCompleted {
-            seq,
-            request_id,
-            message,
-            provider,
-            model,
-            effort_used,
-            usage,
-            cost_micros,
-            effort_requested,
-            effort_clamped,
-            entry,
-            route,
-            route_step,
-        }
+    BinaryEvent::MeteredInferenceCompleted {
+        seq,
+        request_id,
+        message,
+        provider,
+        model,
+        effort_used,
+        usage,
+        cost_micros,
+        effort_requested,
+        effort_clamped,
+        entry,
+        route,
+        route_step,
     }
 }
 
@@ -279,9 +247,10 @@ fn unmetered_completion(seq: u64, request_id: RequestId, message: Message) -> Ev
     }
 }
 
-/// Decode a routed completion with its entry and route step.
+/// Decode a metered completion, defaulting route attribution that older
+/// rows never stored.
 #[allow(clippy::too_many_arguments)]
-fn routed_completion(
+fn metered_completion(
     seq: u64,
     request_id: RequestId,
     message: Message,
@@ -315,7 +284,7 @@ fn routed_completion(
 
 /// Decode a metered completion without route attribution.
 #[allow(clippy::too_many_arguments)]
-fn metered_completion(
+fn unmetered_attribution(
     seq: u64,
     request_id: RequestId,
     message: Message,
@@ -504,33 +473,10 @@ impl From<BinaryEvent> for Event {
                 cost_micros,
                 effort_requested,
                 effort_clamped,
-            } => metered_completion(
-                seq,
-                request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
-            ),
-            BinaryEvent::RoutedInferenceCompleted {
-                seq,
-                request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
                 entry,
                 route,
                 route_step,
-            } => routed_completion(
+            } => metered_completion(
                 seq,
                 request_id,
                 message,
@@ -554,7 +500,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routed_completions_keep_metered_bytes_when_unattributed() {
+    fn routed_completions_keep_the_metered_discriminant() {
         let request_id = crate::RequestId::for_step(
             crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)),
             2,
@@ -574,8 +520,8 @@ mod tests {
             route: None,
             route_step: None,
         };
-        // Unattributed completions keep the metered discriminant so old
-        // readers decode the turns they wrote.
+        // Attributed and plain completions share the metered discriminant;
+        // only the trailing bytes differ.
         assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 8);
         assert_eq!(
             crate::decode::<Event>(&crate::encode(&plain).unwrap()).unwrap(),
@@ -613,7 +559,7 @@ mod tests {
             route_step: Some(1),
         };
         let bytes = crate::encode(&routed).unwrap();
-        assert_eq!(usize::from(bytes[1]), 10);
+        assert_eq!(usize::from(bytes[1]), 8);
         assert_eq!(crate::decode::<Event>(&bytes).unwrap(), routed);
         let json = serde_json::to_value(&routed).unwrap();
         assert_eq!(json["inference_completed"]["entry"], "backup");
@@ -628,6 +574,142 @@ mod tests {
                 .remove(field);
         }
         assert_eq!(serde_json::from_value::<Event>(old).unwrap(), plain);
+    }
+
+    /// The pre-routes binary schema for the metered variant: the same fields
+    /// in the same order, without the trailing route attribution.
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+    enum PreRoutesBinaryEvent {
+        MessageAppended {
+            seq: u64,
+            message: Message,
+        },
+        InferenceRequested {
+            seq: u64,
+            request_id: RequestId,
+            step: u64,
+        },
+        InferenceCompleted {
+            seq: u64,
+            request_id: RequestId,
+            message: Message,
+        },
+        ToolCallRequested {
+            seq: u64,
+            request_id: RequestId,
+            call: ToolCallRecord,
+        },
+        ToolCallCompleted {
+            seq: u64,
+            request_id: RequestId,
+            call_id: ToolCallId,
+            result: ToolResult,
+        },
+        StateChanged {
+            seq: u64,
+            from: SessionState,
+            to: SessionState,
+        },
+        SnapshotWritten {
+            seq: u64,
+            snapshot: SnapshotRef,
+        },
+        InferenceFailed {
+            seq: u64,
+            request_id: RequestId,
+            error: String,
+        },
+        MeteredInferenceCompleted {
+            seq: u64,
+            request_id: RequestId,
+            message: Message,
+            #[serde(default)]
+            provider: String,
+            #[serde(default)]
+            model: String,
+            #[serde(default)]
+            effort_used: Option<crate::ReasoningEffort>,
+            #[serde(default)]
+            usage: crate::TokenUsage,
+            #[serde(default)]
+            cost_micros: u64,
+            #[serde(default)]
+            effort_requested: Option<crate::ReasoningEffort>,
+            #[serde(default)]
+            effort_clamped: bool,
+        },
+        RetryableInferenceFailed {
+            seq: u64,
+            request_id: RequestId,
+            error: String,
+            retryable: bool,
+            retry_at: Option<jiff::Timestamp>,
+        },
+    }
+
+    #[test]
+    fn pre_routes_decoder_reads_attributed_completions() {
+        let request_id = crate::RequestId::for_step(
+            crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
+            4,
+        );
+        let routed = Event::InferenceCompleted {
+            seq: 9,
+            request_id,
+            message: crate::message::tests::message(),
+            provider: "openai".into(),
+            model: "gpt-5.5".into(),
+            effort_used: None,
+            usage: crate::TokenUsage::default(),
+            cost_micros: 11,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: Some("backup".into()),
+            route: Some("fallback".into()),
+            route_step: Some(1),
+        };
+        let bytes = crate::encode(&routed).unwrap();
+        // The discriminant is unchanged, so the pre-routes schema recognizes
+        // the variant and decodes the prefix it understands, leaving only
+        // the trailing route fields unread.
+        let payload = &bytes[1..];
+        let (old, _remainder): (PreRoutesBinaryEvent, _) =
+            postcard::take_from_bytes(payload).unwrap();
+        assert_eq!(
+            old,
+            PreRoutesBinaryEvent::MeteredInferenceCompleted {
+                seq: 9,
+                request_id,
+                message: crate::message::tests::message(),
+                provider: "openai".into(),
+                model: "gpt-5.5".into(),
+                effort_used: None,
+                usage: crate::TokenUsage::default(),
+                cost_micros: 11,
+                effort_requested: None,
+                effort_clamped: false,
+            }
+        );
+        // Rows written before routes decode with defaulted attribution.
+        let old_bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
+        assert_eq!(
+            crate::decode::<Event>(&old_bytes).unwrap(),
+            Event::InferenceCompleted {
+                seq: 9,
+                request_id,
+                message: crate::message::tests::message(),
+                provider: "openai".into(),
+                model: "gpt-5.5".into(),
+                effort_used: None,
+                usage: crate::TokenUsage::default(),
+                cost_micros: 11,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
+            }
+        );
     }
 
     #[test]

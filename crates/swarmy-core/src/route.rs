@@ -103,7 +103,9 @@ pub fn parse_step(text: &str) -> Result<RouteStep, String> {
 ///
 /// # Errors
 /// Returns a message for a bad name, an empty step list, too many steps, or
-/// an empty provider or label in any step.
+/// a step whose provider id or entry label breaks the `set` syntax: labels
+/// with `/` or `=` cannot be addressed explicitly and stay reachable through
+/// `PROVIDER/*`, so storing them would wedge every turn on a skipped step.
 pub fn validate(name: &str, steps: &[RouteStep]) -> Result<(), String> {
     if !valid_name(name) {
         return Err(
@@ -120,6 +122,19 @@ pub fn validate(name: &str, steps: &[RouteStep]) -> Result<(), String> {
     for step in steps {
         if step.provider.is_empty() || step.entry.is_empty() {
             return Err("route steps need a provider and an entry label".into());
+        }
+        if !step
+            .provider
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(format!("invalid provider id {:?}", step.provider));
+        }
+        if step.entry != ANY_ENTRY && (step.entry.contains('/') || step.entry.contains('=')) {
+            return Err(format!(
+                "entry labels with '/' or '=' use PROVIDER/*, got {:?}",
+                step.entry
+            ));
         }
     }
     Ok(())
@@ -191,6 +206,33 @@ mod tests {
         assert!(validate("", std::slice::from_ref(&step)).is_err());
         assert!(validate("fallback", &[]).is_err());
         assert!(validate("fallback", &vec![step.clone(); MAX_ROUTE_STEPS + 1]).is_err());
+        // Explicit labels must round-trip through the `set` syntax: labels
+        // with '/' or '=' stay reachable through PROVIDER/* only.
+        for entry in ["a/b", "a=b"] {
+            assert!(
+                validate(
+                    "fallback",
+                    std::slice::from_ref(&RouteStep {
+                        provider: "openai".into(),
+                        entry: entry.into(),
+                        model: None,
+                    })
+                )
+                .is_err(),
+                "rejects {entry:?}"
+            );
+        }
+        assert!(
+            validate(
+                "fallback",
+                std::slice::from_ref(&RouteStep {
+                    provider: "open ai".into(),
+                    entry: "default".into(),
+                    model: None,
+                })
+            )
+            .is_err()
+        );
         assert!(
             crate::decode::<RouteRecord>(
                 &crate::encode(&RouteRecord {

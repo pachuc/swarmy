@@ -53,7 +53,7 @@ pub enum RoutesCommand {
     /// Replace a route's steps in `PROVIDER/LABEL[=MODEL]` order
     Set {
         name: String,
-        #[arg(num_args(1..))]
+        #[arg(num_args(1..), required = true)]
         steps: Vec<String>,
     },
     /// Remove a named route; assigned sessions fall back
