@@ -55,7 +55,15 @@ fn failover_reasons(
     error: &str,
 ) -> Vec<String> {
     let mut reasons = vec![error.to_owned()];
-    for skipped in from.saturating_add(1)..target {
+    reasons.extend(snapshot.skipped.iter().cloned());
+    // A wrap to a recovered earlier step skips every open step after the
+    // failure; a forward move skips the open steps between the two.
+    let end = if target > from {
+        usize::try_from(target).unwrap_or(usize::MAX)
+    } else {
+        snapshot.steps.len()
+    };
+    for skipped in from.saturating_add(1)..u32::try_from(end).unwrap_or(u32::MAX) {
         if let Some(reason) = snapshot
             .steps
             .get(usize::try_from(skipped).unwrap_or(usize::MAX))
@@ -65,6 +73,13 @@ fn failover_reasons(
         }
     }
     reasons
+}
+
+/// Failures from `fail_unserved` carry this prefix. The provider may appear
+/// on the next gateway advertisement, so the session waits out the gateway
+/// interval on its current step instead of consuming a route step.
+fn is_unserved_error(error: &str) -> bool {
+    error.starts_with("no gateway serves provider ")
 }
 
 fn warn_on_route_fallback(session: &SessionRecord, snapshot: &swarmy_store::RouteSnapshot) {
@@ -561,9 +576,12 @@ impl Worker {
     }
 
     /// Failover happens only here, at the turn boundary between attempts: a
-    /// retryable failure moves the session to the next step of its route for
-    /// the next attempt. When every step is open the session waits for the
-    /// earliest retry among them.
+    /// retryable failure moves the session to the next usable step of its
+    /// route for the next attempt, wrapping to a recovered earlier step when
+    /// every later step is open. When every step is open the session waits
+    /// for the earliest retry among them. Unserved-provider waits never
+    /// consume a step: the gateway may advertise the provider next, so the
+    /// session waits on its current step instead.
     async fn failover_or_park(
         &self,
         session: &mut SessionRecord,
@@ -576,14 +594,49 @@ impl Worker {
         let snapshot = self.route_snapshot(session).await?;
         let mut token = lease.lock().await;
         let lease_ref = token.as_ref().context("lease released")?;
+        if is_unserved_error(error) {
+            let parked = self
+                .store
+                .park_inference(
+                    session.session_id,
+                    lease_ref,
+                    &swarmy_store::InferenceFailureWait {
+                        seq,
+                        reason: error,
+                        wake_at: retry_at,
+                    },
+                    now,
+                    self.config.max_inference_wait,
+                )
+                .await?;
+            if parked {
+                *token = None;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
         if let Some(target) = snapshot.pick(session.route_step.saturating_add(1)) {
             let target = u32::try_from(target).unwrap_or(u32::MAX);
-            let reasons = failover_reasons(&snapshot, session.route_step, target, error);
-            self.store
-                .set_session_route_step(session.session_id, lease_ref, target, &reasons, now)
-                .await?;
-            session.route_step = target;
-            return Ok(false);
+            if target == session.route_step {
+                // The failed step still reads as closed: the breaker write
+                // has not propagated to this snapshot, so parking until the
+                // failure's retry time is safer than retrying the same step
+                // in a tight loop.
+            } else {
+                let reasons = failover_reasons(&snapshot, session.route_step, target, error);
+                self.store
+                    .set_session_route_step(
+                        session.session_id,
+                        lease_ref,
+                        target,
+                        seq,
+                        &reasons,
+                        now,
+                    )
+                    .await?;
+                session.route_step = target;
+                return Ok(false);
+            }
         }
         let earliest = swarmy_store::Store::earliest_retry(&snapshot.steps, retry_at);
         let parked = self
@@ -673,6 +726,8 @@ impl Worker {
         // Resolve on every inference so existing sessions see later agent updates.
         // A summary request keeps its own prompt; every other request gets the agent's
         // prompt override first and then the memory directory and contents appended.
+        // The agent and its route resolve in one transaction so an inference
+        // costs no more store transactions than before routes.
         let summarizing = request.system_prompt == swarmy_harness::SUMMARY_PROMPT;
         let mut defaults = swarmy_core::ResolvedSelection {
             provider: self.config.provider.clone(),
@@ -682,22 +737,69 @@ impl Worker {
                 .reasoning_effort
                 .unwrap_or(swarmy_core::ReasoningEffort::None),
         };
-        if let swarmy_core::SessionKind::Named { agent_id } = session.kind
-            && let Some(agent) = self.store.get_agent(agent_id).await?
-        {
-            defaults = agent.inference().resolve(&defaults);
-            if let Some(prompt) = agent.system_prompt
-                && !summarizing
-            {
-                request.system_prompt = prompt;
+        if let swarmy_core::SessionKind::Named { agent_id } = session.kind {
+            let (record, snapshot) = self
+                .store
+                .agent_and_route_snapshot(
+                    agent_id,
+                    session.route.as_deref(),
+                    session.inference.provider.as_deref(),
+                    self.config.default_route.as_deref(),
+                    &self.config.provider,
+                    Timestamp::now(),
+                )
+                .await?;
+            if let Some(record) = record.as_ref() {
+                defaults = record.inference().resolve(&defaults);
+                if let Some(prompt) = record.system_prompt.clone()
+                    && !summarizing
+                {
+                    request.system_prompt = prompt;
+                }
             }
+            warn_on_route_fallback(session, &snapshot);
+            let selection = session.inference.resolve(&defaults);
+            return self
+                .finish_prepare(
+                    session,
+                    request,
+                    preceding,
+                    selection,
+                    snapshot,
+                    summarizing,
+                )
+                .await;
         }
+        let snapshot = self.route_snapshot(session).await?;
+        warn_on_route_fallback(session, &snapshot);
+        let selection = session.inference.resolve(&defaults);
+        self.finish_prepare(
+            session,
+            request,
+            preceding,
+            selection,
+            snapshot,
+            summarizing,
+        )
+        .await
+    }
+
+    /// Build the request against the resolved route step: model override,
+    /// reasoning downgrade, and modality handling. Shared by named sessions,
+    /// which resolve the agent and route together, and ephemeral sessions,
+    /// which resolve the implicit chain.
+    async fn finish_prepare(
+        &self,
+        session: &SessionRecord,
+        request: &mut swarmy_llm::Request,
+        preceding: &mut Vec<Event>,
+        selection: swarmy_core::ResolvedSelection,
+        snapshot: swarmy_store::RouteSnapshot,
+        summarizing: bool,
+    ) -> Result<ResolvedAttempt> {
         if !summarizing {
             apply_display_tools(request, self.session_display(session).await?);
         }
-        let selection = session.inference.resolve(&defaults);
-        let snapshot = self.route_snapshot(session).await?;
-        warn_on_route_fallback(session, &snapshot);
         let index = snapshot.pick_or_earliest(session.route_step);
         let step = snapshot.steps.get(index).context("empty route snapshot")?;
         let model_id = step
@@ -840,32 +942,28 @@ impl Worker {
         let attempt = self
             .prepare_request(session, &mut request, &mut preceding)
             .await?;
-        // Persist the picked step so a retryable failure advances from the
-        // attempt that actually ran, not from a stale position.
-        if attempt.route_step != session.route_step {
-            let mut reasons = Vec::new();
-            for skipped in session.route_step..attempt.route_step {
-                if let Some(step) = attempt
-                    .snapshot
-                    .steps
-                    .get(usize::try_from(skipped).unwrap_or(usize::MAX))
-                    && let Some(reason) = &step.reason
-                {
-                    reasons.push(reason.clone());
+        // Persist the picked step with the request so a retryable failure
+        // advances from the attempt that actually ran, not from a stale
+        // position. A wrap to a recovered earlier step carries no range.
+        let route = (attempt.route_step != session.route_step).then(|| {
+            let mut reasons = attempt.snapshot.skipped.clone();
+            if attempt.route_step > session.route_step {
+                for skipped in session.route_step..attempt.route_step {
+                    if let Some(step) = attempt
+                        .snapshot
+                        .steps
+                        .get(usize::try_from(skipped).unwrap_or(usize::MAX))
+                        && let Some(reason) = &step.reason
+                    {
+                        reasons.push(reason.clone());
+                    }
                 }
             }
-            let token = lease.lock().await;
-            self.store
-                .set_session_route_step(
-                    session.session_id,
-                    token.as_ref().context("lease released")?,
-                    attempt.route_step,
-                    &reasons,
-                    Timestamp::now(),
-                )
-                .await?;
-            session.route_step = attempt.route_step;
-        }
+            swarmy_store::SubmitRouteStep {
+                step: attempt.route_step,
+                reasons,
+            }
+        });
         for (event, seq) in preceding.iter_mut().zip(session.head_seq + 1..) {
             event.set_seq(seq);
         }
@@ -890,7 +988,7 @@ impl Worker {
             let mut token = lease.lock().await;
             let event = self
                 .store
-                .submit_inference_after_with_request(
+                .submit_inference_after_with_request_and_route(
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &InflightRecord {
@@ -902,11 +1000,13 @@ impl Worker {
                     &job,
                     &job.request,
                     &preceding,
+                    route,
                 )
                 .await?;
             *token = None;
             event
         };
+        session.route_step = attempt.route_step;
         session.head_seq = event.seq();
         self.publish_events(id, &preceding).await?;
         self.publish_events(id, std::slice::from_ref(&event))

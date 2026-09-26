@@ -282,37 +282,6 @@ fn metered_completion(
     }
 }
 
-/// Decode a metered completion without route attribution.
-#[allow(clippy::too_many_arguments)]
-fn unmetered_attribution(
-    seq: u64,
-    request_id: RequestId,
-    message: Message,
-    provider: String,
-    model: String,
-    effort_used: Option<crate::ReasoningEffort>,
-    usage: crate::TokenUsage,
-    cost_micros: u64,
-    effort_requested: Option<crate::ReasoningEffort>,
-    effort_clamped: bool,
-) -> Event {
-    Event::InferenceCompleted {
-        seq,
-        request_id,
-        message,
-        provider,
-        model,
-        effort_used,
-        usage,
-        cost_micros,
-        effort_requested,
-        effort_clamped,
-        entry: None,
-        route: None,
-        route_step: None,
-    }
-}
-
 impl From<Event> for BinaryEvent {
     fn from(event: Event) -> Self {
         match event {

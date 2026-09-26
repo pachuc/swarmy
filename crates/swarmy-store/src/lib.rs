@@ -35,7 +35,7 @@ pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
 mod routes;
-pub use routes::{RouteSnapshot, RouteStepStatus};
+pub use routes::{ExpandedChain, RouteSnapshot, RouteStepStatus};
 mod nodes;
 mod placed_tools;
 mod placements;
@@ -46,6 +46,7 @@ mod timers;
 mod tool_routing;
 mod tools;
 mod turns;
+pub use turns::SubmitRouteStep;
 mod volumes;
 
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
@@ -62,8 +63,8 @@ use foundationdb::{
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use swarmy_core::{
-    EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId, SessionRecord,
-    SessionState, SnapshotRef, decode, encode,
+    AgentRecord, EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId,
+    SessionRecord, SessionState, SnapshotRef, decode, encode,
 };
 
 use blob::{BlobError, BlobStore};
@@ -354,6 +355,22 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn fetch_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
+        Ok(self
+            .fetch_session_with_agent(id)
+            .await?
+            .map(|(session, _)| session))
+    }
+
+    /// Fetch a session with its agent record in one transaction, so the
+    /// scheduler resolves the agent's route assignment without a second
+    /// transaction per session. The agent is `None` for ephemeral sessions
+    /// and deleted agents.
+    /// # Errors
+    /// Returns storage or decoding errors.
+    pub async fn fetch_session_with_agent(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<(SessionRecord, Option<AgentRecord>)>> {
         let stored = self
             .transaction(|trx| async move {
                 let Some(session) = read::<StoredSession>(&trx, &self.session_key(id)).await?
@@ -370,14 +387,19 @@ impl Store {
                 } else {
                     None
                 };
+                let agent_id = session.agent_id;
                 let session = self.session_metadata(&trx, session).await?;
-                Ok(Some((session, snapshot)))
+                let agent = self.read_agent(&trx, agent_id).await?;
+                Ok(Some((session, snapshot, agent)))
             })
             .await?;
-        let Some((session, snapshot)) = stored else {
+        let Some((session, snapshot, agent)) = stored else {
             return Ok(None);
         };
-        Ok(Some(self.hydrate_session(session, snapshot).await?))
+        Ok(Some((
+            self.hydrate_session(session, snapshot).await?,
+            agent,
+        )))
     }
 
     async fn session_metadata(

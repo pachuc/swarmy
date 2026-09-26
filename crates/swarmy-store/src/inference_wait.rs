@@ -87,6 +87,29 @@ pub struct InferenceFailureWait<'a> {
     pub wake_at: Timestamp,
 }
 
+/// Split a breaker record into its open retry time and stored reason. A
+/// record inside its probe window reads as open for one more second so only
+/// one probe runs at a time. Shared by route snapshots and the scheduler's
+/// tick cache so both see the same open steps.
+pub(crate) fn open_state(
+    breaker: Option<&Breaker>,
+    now: Timestamp,
+) -> (Option<Timestamp>, Option<String>) {
+    let open_until = breaker.and_then(|record| {
+        if record.open_until > now {
+            Some(record.open_until)
+        } else if record.probe_until.is_some_and(|until| until > now) {
+            now.checked_add(std::time::Duration::from_secs(1)).ok()
+        } else {
+            None
+        }
+    });
+    let reason = breaker
+        .filter(|_| open_until.is_some())
+        .map(|record| record.reason.clone());
+    (open_until, reason)
+}
+
 impl Store {
     /// Breaker records live under `(provider, label)`. The previous
     /// provider-only tuple is never read, so open provider-keyed breakers are

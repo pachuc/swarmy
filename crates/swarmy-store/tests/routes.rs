@@ -273,7 +273,11 @@ async fn open_breakers_skip_and_exhaustion_reports_earliest() {
     let snapshot = f.snapshot(agent, Some("fallback"), Some("openai")).await;
     assert_eq!(snapshot.pick(0), Some(1), "open steps are skipped");
     assert_eq!(snapshot.pick(1), Some(1));
-    assert!(snapshot.pick(2).is_none(), "past-the-end has no pick");
+    assert_eq!(
+        snapshot.pick(2),
+        Some(1),
+        "past-the-end wraps to usable steps"
+    );
     let backup = CredentialKey::entry("openai", "backup");
     assert!(
         f.store
@@ -292,6 +296,7 @@ async fn open_breakers_skip_and_exhaustion_reports_earliest() {
         .unwrap();
     let snapshot = f.snapshot(agent, Some("fallback"), Some("openai")).await;
     assert_eq!(snapshot.pick(0), None);
+    assert_eq!(snapshot.pick(2), None, "no usable step anywhere parks");
     let (at, reason) = snapshot.earliest().unwrap();
     assert_eq!(
         at, soon,
@@ -300,6 +305,125 @@ async fn open_breakers_skip_and_exhaustion_reports_earliest() {
     assert!(
         reason.contains("openai/backup"),
         "reasons name the entry: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn failover_wraps_to_a_recovered_earlier_step() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    for label in ["primary", "backup"] {
+        f.entry("openai", label).await;
+    }
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    // The primary trips a short breaker and the session moves to the backup.
+    // While on the backup, the backup trips a long breaker after the primary
+    // recovered: the next pick wraps to the primary instead of parking for
+    // the backup's full retry.
+    let primary = CredentialKey::entry("openai", "primary");
+    let backup = CredentialKey::entry("openai", "backup");
+    let now = Timestamp::now();
+    f.store
+        .entry_failure(
+            &backup,
+            now.checked_add(Duration::from_secs(300)).unwrap(),
+            "openai/backup: quota reached",
+        )
+        .await
+        .unwrap();
+    let snapshot = f.snapshot(agent, Some("fallback"), Some("openai")).await;
+    assert_eq!(snapshot.pick(1), Some(0), "wraps to the usable step");
+    assert!(
+        f.store
+            .entry_open_until(&primary, Timestamp::now())
+            .await
+            .unwrap()
+            .is_none(),
+        "the wrap never touches the recovered entry's breaker"
+    );
+}
+
+#[tokio::test]
+async fn missing_or_unready_steps_are_skipped_with_reasons() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.entry("openai", "primary").await;
+    f.store
+        .put_route(
+            "skips",
+            &[
+                Fixture::step("openai", "ghost"),
+                Fixture::step("openai", "primary"),
+            ],
+        )
+        .await
+        .unwrap();
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let snapshot = f.snapshot(agent, Some("skips"), Some("openai")).await;
+    assert_eq!(snapshot.name.as_deref(), Some("skips"));
+    assert_eq!(
+        snapshot
+            .steps
+            .iter()
+            .map(|step| step.label.clone())
+            .collect::<Vec<_>>(),
+        [Some("primary".to_owned())]
+    );
+    assert!(
+        snapshot
+            .skipped
+            .iter()
+            .any(|reason| reason.contains("openai/ghost")),
+        "skipped steps record their reason: {:?}",
+        snapshot.skipped
+    );
+    // A route that selects nothing usable falls back to the implicit chain.
+    f.store
+        .put_route("all-gone", &[Fixture::step("openai", "ghost")])
+        .await
+        .unwrap();
+    let snapshot = f.snapshot(agent, Some("all-gone"), Some("openai")).await;
+    assert_eq!(snapshot.name, None);
+    assert_eq!(
+        snapshot
+            .steps
+            .iter()
+            .map(|step| step.label.clone())
+            .collect::<Vec<_>>(),
+        [Some("primary".to_owned())]
+    );
+}
+
+#[tokio::test]
+async fn wildcard_after_an_explicit_step_still_covers_keyless_providers() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    // No stored entries: the explicit step is kept for environment keys and
+    // the wildcard still contributes its unlabeled step.
+    f.store
+        .put_route(
+            "keyless",
+            &[Fixture::step("openai", "x"), Fixture::step("openai", "*")],
+        )
+        .await
+        .unwrap();
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let snapshot = f.snapshot(agent, Some("keyless"), Some("openai")).await;
+    assert_eq!(snapshot.name.as_deref(), Some("keyless"));
+    assert_eq!(
+        snapshot
+            .steps
+            .iter()
+            .map(|step| (step.provider.clone(), step.label.clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("openai".to_owned(), Some("x".to_owned())),
+            ("openai".to_owned(), None),
+        ]
     );
 }
 
@@ -422,6 +546,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
             id,
             &lease,
             1,
+            7,
             &["openai/primary: quota reached".into()],
             now,
         )
@@ -429,12 +554,16 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
         .unwrap();
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.route_step, 1);
-    let reasons = f.store.inference_wait(id).await.unwrap().unwrap().reasons;
+    let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+    // The handled failure is recorded so a restarted worker resumes instead
+    // of advancing a second step for the same failure.
+    assert_eq!(wait.last_failure_seq, 7);
     assert!(
-        reasons
+        wait.reasons
             .iter()
             .any(|reason| reason.contains("openai/primary")),
-        "{reasons:?}"
+        "{:?}",
+        wait.reasons
     );
     let retry_at = now.checked_add(Duration::from_secs(60)).unwrap();
     assert!(
@@ -474,7 +603,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     };
     assert!(matches!(
         f.store
-            .set_session_route_step(id, &stale, 1, &[], now)
+            .set_session_route_step(id, &stale, 1, 7, &[], now)
             .await,
         Err(StoreError::LeaseMismatch)
     ));
