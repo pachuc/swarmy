@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+#[cfg(feature = "azure")]
+use std::collections::BTreeMap;
+use std::{sync::Arc, time::Duration};
 
 use futures::TryStreamExt;
 use serde_json::{Value, json};
@@ -138,6 +140,7 @@ async fn openai_text_turn_uses_catalog_options_and_session_affinity() {
 }
 
 #[tokio::test]
+#[cfg(feature = "azure")]
 async fn azure_resource_endpoint_and_deployment_use_api_key() {
     let server = MockServer::start().await;
     let info = Catalog::get().provider("azure").unwrap();
@@ -181,6 +184,7 @@ fn azure_grok_catalog_has_nonzero_prices() {
 }
 
 #[test]
+#[cfg(feature = "azure")]
 fn azure_foundry_endpoint_from_credential_precedes_classic_resource() {
     let info = Catalog::get().provider("azure").unwrap();
     let model = catalog_model("azure", "gpt-5.5");
@@ -241,10 +245,16 @@ async fn reasoning_replay_requires_the_same_provider_and_model() {
         "Think first."
     );
     assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
-    let azure = client(&server, "azure", &catalog_model("azure", "gpt-5.5"));
     replay.settings.model = "gpt-5.5".into();
-    response(azure.as_ref(), replay.clone()).await;
-    assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
+    // The Azure endpoint shares the Responses transport but drops signatures
+    // from other providers. It needs the azure feature, so slim builds skip
+    // this block instead of failing to construct the client.
+    #[cfg(feature = "azure")]
+    {
+        let azure = client(&server, "azure", &catalog_model("azure", "gpt-5.5"));
+        response(azure.as_ref(), replay.clone()).await;
+        assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
+    }
     if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
         let saved = metadata.remove("openai_responses").unwrap();
         metadata.insert("chatgpt".into(), saved);
@@ -511,6 +521,7 @@ async fn codex_dispatch_preserves_auth_headers_and_instructions() {
 }
 
 #[tokio::test]
+#[cfg(feature = "azure")]
 async fn azure_accepts_an_already_resolved_entra_bearer() {
     let server = MockServer::start().await;
     let mut info = Catalog::get().provider("azure").unwrap().clone();
@@ -529,6 +540,7 @@ async fn azure_accepts_an_already_resolved_entra_bearer() {
 }
 
 #[test]
+#[cfg(feature = "azure")]
 fn azure_environment_resource_is_resolved_without_mutating_process_environment() {
     const CHILD: &str = "SWARMY_TEST_AZURE_RESOURCE";
     if std::env::var_os(CHILD).is_some() {
