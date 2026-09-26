@@ -9,6 +9,15 @@ build = "../swarmy-store/build.rs"
 [lints]
 workspace = true
 
+# The model probe route builds clients for every provider, so the API forwards
+# the same cloud features as the gateway and the CLI. A standalone build
+# without a feature refuses those probes with a clear error.
+[features]
+default = ["azure", "bedrock", "gemini"]
+azure = ["swarmy-llm/azure"]
+bedrock = ["swarmy-llm/bedrock"]
+gemini = ["swarmy-llm/gemini"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

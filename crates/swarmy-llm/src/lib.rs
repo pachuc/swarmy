@@ -314,9 +314,36 @@ mod job_tests {
         ));
         for provider in catalog.providers() {
             let model = provider.models.values().next().unwrap_or(model);
+            let api = model.api.unwrap_or(provider.api);
+            // Builds without a cloud feature refuse that provider with
+            // NotCompiledIn instead of reaching the credential check.
+            #[cfg(not(feature = "bedrock"))]
+            if matches!(api, Api::BedrockConverse) {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
+            #[cfg(not(feature = "gemini"))]
+            if matches!(api, Api::GoogleGenerativeAi | Api::GoogleVertex) {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
+            #[cfg(not(feature = "azure"))]
+            if provider.id == "azure" {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
             // Implemented protocols reject missing credentials before building a client.
             if matches!(
-                model.api.unwrap_or(provider.api),
+                api,
                 Api::AnthropicMessages
                     | Api::BedrockConverse
                     | Api::OpenAiCompletions
@@ -345,6 +372,44 @@ mod job_tests {
         assert!(matches!(
             client_for(router, claude, ClientAuth::None),
             Err(Error::Credentials(_))
+        ));
+    }
+
+    // Each gated provider reports NotCompiledIn when its feature is off, so a
+    // slim build fails with a clear error instead of a compile failure.
+    #[test]
+    #[cfg(not(feature = "bedrock"))]
+    fn bedrock_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("amazon-bedrock").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "gemini"))]
+    fn gemini_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("google").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "azure"))]
+    fn azure_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("azure").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
         ));
     }
 

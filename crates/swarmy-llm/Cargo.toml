@@ -48,3 +48,14 @@ rsa.workspace = true
 tempfile.workspace = true
 ulid.workspace = true
 wiremock.workspace = true
+
+# The Gemini and Bedrock suites import their clients unconditionally, so they
+# only build when the matching provider feature is on. The no-default-features
+# CI run skips them instead of failing to compile.
+[[test]]
+name = "gemini"
+required-features = ["gemini"]
+
+[[test]]
+name = "bedrock"
+required-features = ["bedrock"]
