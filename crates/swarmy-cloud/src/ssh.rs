@@ -56,6 +56,10 @@ fn base(node: &RemoteNode) -> Result<Command> {
 }
 
 /// A configured `ssh` command; callers append the public address and remote command.
+///
+/// # Errors
+///
+/// Rejects node records whose public address is not an IP address.
 pub fn command(node: &RemoteNode) -> Result<Command> {
     let _: std::net::IpAddr = node
         .public_ip
@@ -65,6 +69,10 @@ pub fn command(node: &RemoteNode) -> Result<Command> {
 }
 
 /// Same-VPC launchers may be admitted only through the private interface.
+///
+/// # Errors
+///
+/// Rejects malformed instance addresses and reports when neither address answers over SSH.
 pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address.parse().context("invalid instance IP")?;
@@ -81,6 +89,10 @@ pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
 }
 
 /// The interactive login command to print after provisioning.
+///
+/// # Errors
+///
+/// Rejects node records with an invalid SSH user.
 pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
     let mut args = vec!["ssh".to_owned()];
     args.extend(arguments(node)?);
@@ -88,6 +100,11 @@ pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
     Ok(shell_words::join(args))
 }
 
+/// Send one control action (`check` or `exit`) to a running SSH control master.
+///
+/// # Errors
+///
+/// Reports a missing control socket and commands that time out after five seconds.
 pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::process::Output> {
     Ok(timeout(
         Duration::from_secs(5),
@@ -121,6 +138,10 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
 }
 
 /// Create the node's private key file and return its public half.
+///
+/// # Errors
+///
+/// Reports `ssh-keygen` failures.
 pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
     checked(
         Command::new("ssh-keygen")
@@ -138,6 +159,11 @@ pub struct Ssh {
 }
 
 impl Ssh {
+    /// Find the repository checkout holding the provisioning scripts.
+    ///
+    /// # Errors
+    ///
+    /// Reports when the current directory is not inside a swarmy checkout.
     pub fn discover() -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let repo = cwd
@@ -149,6 +175,10 @@ impl Ssh {
     }
 
     /// Resolve before launching so missing recipes cannot leave cloud resources behind.
+    ///
+    /// # Errors
+    ///
+    /// Reports recipes outside the checkout and directories without `recipe.toml`.
     pub fn image_recipe(&self, path: &Path) -> Result<PathBuf> {
         let path = self
             .repo
@@ -174,6 +204,10 @@ impl Ssh {
     }
 
     /// Copy the same filtered checkout used by initial provisioning.
+    ///
+    /// # Errors
+    ///
+    /// Reports SSH, rsync, and remote package installation failures.
     pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<()> {
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (sudo cloud-init status --wait && sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
@@ -207,6 +241,10 @@ impl Ssh {
     }
 
     /// Report uncommitted paths while ignoring Python bytecode caches.
+    ///
+    /// # Errors
+    ///
+    /// Reports git failures and non-UTF-8 free output is lossy-decoded, never an error.
     pub fn checkout_changes(&self) -> Result<Vec<String>> {
         let output = std::process::Command::new("git")
             .arg("-C")
@@ -224,6 +262,11 @@ impl Ssh {
             .collect())
     }
 
+    /// Report whether the node has swarmy service units installed.
+    ///
+    /// # Errors
+    ///
+    /// Reports SSH failures and non-zero `systemctl` exits.
     pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
         let output = base(node)?
             .arg(address)
@@ -238,6 +281,11 @@ impl Ssh {
         Ok(has_control_units(&String::from_utf8(output.stdout)?))
     }
 
+    /// Read the installed `swarmyd` version from a node.
+    ///
+    /// # Errors
+    ///
+    /// Reports SSH failures and non-zero remote exits.
     pub async fn node_version(&self, node: &RemoteNode, address: &str) -> Result<String> {
         let output = base(node)?
             .arg(address)
@@ -252,6 +300,13 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
     }
 
+    /// Rebuild the checkout on a node, install changed binaries, and restart
+    /// service units whose running executables differ.
+    ///
+    /// # Errors
+    ///
+    /// Reports SSH failures, dirty checkouts without `--allow-dirty`, and
+    /// remote build or restart failures.
     pub async fn upgrade(
         &self,
         node: &RemoteNode,
@@ -286,6 +341,10 @@ impl Ssh {
     }
 
     /// Copy the checkout and run the provisioning script; returns the reachable address.
+    ///
+    /// # Errors
+    ///
+    /// Reports unreachable hosts and provisioning script failures.
     pub async fn provision(
         &self,
         node: &RemoteNode,
@@ -380,6 +439,10 @@ fn provisioning_command(
 }
 
 /// Use the node's service environment, including its native `FoundationDB` library.
+///
+/// # Errors
+///
+/// Reports SSH failures and image build failures on the node.
 pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
     checked(
         base(node)?

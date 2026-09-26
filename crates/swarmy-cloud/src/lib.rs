@@ -7,33 +7,54 @@
 //! and IAM. [`Host`] covers the SSH half of provisioning and stays
 //! provider-independent. See `docs/cloud-substrate.md` for the contract a
 //! second provider must implement.
+mod command;
+pub mod ssh;
+pub use command::{Command, select};
+#[cfg(feature = "remote")]
 mod add_node;
 #[cfg(feature = "remote")]
 mod aws;
-pub mod command;
+#[cfg(feature = "remote")]
 mod connect;
+#[cfg(feature = "remote")]
 mod disconnect;
+#[cfg(feature = "remote")]
 mod down;
+#[cfg(feature = "remote")]
 mod logs;
+#[cfg(feature = "remote")]
 mod services;
-pub mod ssh;
+#[cfg(feature = "remote")]
 mod state;
+#[cfg(feature = "remote")]
 mod status;
-#[cfg(test)]
+#[cfg(all(test, feature = "remote"))]
 mod tests;
+#[cfg(feature = "remote")]
 mod up;
+#[cfg(feature = "remote")]
 mod upgrade;
 
-pub use command::{Command, select};
-pub use services::Options as ServiceOptions;
 #[cfg(feature = "remote")]
 pub use aws::Aws;
+#[cfg(feature = "remote")]
+pub use services::Options as ServiceOptions;
 
-use std::{path::PathBuf, time::Duration};
+#[cfg(feature = "remote")]
+use std::future::Future;
+#[cfg(feature = "remote")]
+use std::time::Duration;
 
+#[cfg(feature = "remote")]
 use anyhow::{Result, bail};
-use swarmy_config::{RemoteNode, RemoteSettings, Settings};
+#[cfg(feature = "remote")]
+use std::path::PathBuf;
+#[cfg(feature = "remote")]
+use swarmy_config::Settings;
+#[cfg(feature = "remote")]
+use swarmy_config::{RemoteNode, RemoteSettings};
 
+#[cfg(feature = "remote")]
 use state::State;
 
 /// Provider-neutral description of one machine to create.
@@ -44,6 +65,7 @@ use state::State;
 /// [`MachineSpec::from_settings`] fills them when the type is known and
 /// leaves them zero otherwise.
 #[derive(Clone, Debug)]
+#[cfg(feature = "remote")]
 pub struct MachineSpec {
     /// Human name; AWS also uses it for the `Name` tag and the client token.
     pub name: String,
@@ -76,6 +98,7 @@ pub struct MachineSpec {
     pub bootstrap: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "remote")]
 impl MachineSpec {
     /// Build a launch request from saved remote settings.
     ///
@@ -112,6 +135,7 @@ impl MachineSpec {
 
 /// Provider-neutral view of one machine. Missing machines are `None`.
 #[derive(Clone, Debug)]
+#[cfg(feature = "remote")]
 pub struct Machine {
     /// Provider's machine id (the EC2 instance id on AWS).
     pub id: String,
@@ -126,6 +150,7 @@ pub struct Machine {
 ///
 /// The bucket survives `remote down`; the node credentials guard it.
 #[derive(Clone, Debug)]
+#[cfg(feature = "remote")]
 pub struct ObjectBucket {
     /// Bucket name.
     pub name: String,
@@ -143,45 +168,57 @@ pub struct ObjectBucket {
 /// The cloud boundary. Only the provider implementation knows about provider
 /// APIs; callers use machines, keys, images, and buckets. Missing resources
 /// are represented by `None`.
+#[cfg(feature = "remote")]
 pub trait Cloud {
     /// Create the bucket and the node credentials guarding it, idempotently.
-    async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()>;
+    fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;
     /// Resolve the stock machine image for the configured region.
-    async fn base_image(&self) -> Result<String>;
+    fn base_image(&self) -> impl Future<Output = Result<String>>;
     /// Import an SSH public key under `name` and tag it with `owner`.
-    async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()>;
+    fn import_ssh_key(
+        &self,
+        name: &str,
+        public_key: Vec<u8>,
+        owner: &str,
+    ) -> impl Future<Output = Result<()>>;
     /// Create a machine and return its id. The launch token is the key name,
     /// so a lost response is recoverable with [`Cloud::find_by_tag`].
-    async fn create(&self, spec: &MachineSpec) -> Result<String>;
+    fn create(&self, spec: &MachineSpec) -> impl Future<Output = Result<String>>;
     /// Describe a machine by id, or `None` when it does not exist.
-    async fn get(&self, id: &str) -> Result<Option<Machine>>;
+    fn get(&self, id: &str) -> impl Future<Output = Result<Option<Machine>>>;
     /// Find a machine created under a launch token (the key name).
-    async fn find_by_tag(&self, token: &str) -> Result<Option<String>>;
+    fn find_by_tag(&self, token: &str) -> impl Future<Output = Result<Option<String>>>;
     /// Terminate a machine; already-terminated or missing machines are
     /// success.
-    async fn destroy(&self, id: &str) -> Result<()>;
+    fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
     /// Delete an SSH key; missing keys are success.
-    async fn delete_ssh_key(&self, name: &str) -> Result<()>;
+    fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>>;
 }
 
 /// Key generation and provisioning over SSH, replaceable by a fake in tests.
+#[cfg(feature = "remote")]
 pub trait Host {
-    async fn services(
+    fn services(
         &self,
         node: &RemoteNode,
         address: &str,
         options: &services::Options<'_>,
-    ) -> Result<()>;
-    async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>>;
-    async fn build_image(
+    ) -> impl Future<Output = Result<()>>;
+    fn generate_key(&self, node: &RemoteNode) -> impl Future<Output = Result<Vec<u8>>>;
+    fn build_image(
         &self,
         node: &RemoteNode,
         address: &str,
         recipe: &std::path::Path,
-    ) -> Result<()>;
-    async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String>;
+    ) -> impl Future<Output = Result<()>>;
+    fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> impl Future<Output = Result<String>>;
 }
 
+#[cfg(feature = "remote")]
 impl Host for ssh::Ssh {
     async fn services(
         &self,
@@ -238,78 +275,8 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
     let state = State::open(&state_dir.join("remote"))?;
     match command {
-        Command::Up {
-            name,
-            bucket,
-            sandboxes,
-            instance_type,
-            disk_gb,
-            no_image,
-            image_recipe,
-            services,
-            copy_credential,
-        } => {
-            let _lock = state.lock()?;
-            swarmy_config::validate_remote_name(&name)?;
-            let host = ssh::Ssh::discover()?;
-            let recipe = if no_image {
-                None
-            } else {
-                Some(host.image_recipe(&image_recipe)?)
-            };
-            let mut settings = loaded.settings;
-            if let Some(services) = services {
-                settings.remote.services = services;
-            }
-            if let Some(bucket) = bucket {
-                settings.remote.bucket = Some(bucket);
-            }
-            NodeShape {
-                instance_type,
-                disk_gb,
-            }
-            .apply(&mut settings.remote)?;
-            let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
-            let cloud = for_settings(&settings.remote).await?;
-            tokio::select! {
-                result = Box::pin(up::run(&cloud, &host, &state, &settings.remote, up::NewNode { name: &name, sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes) }, options, Duration::from_secs(5))) => result,
-                result = tokio::signal::ctrl_c() => {
-                    result?;
-                    bail!("interrupted; run swarmy remote down {name} to clean up")
-                }
-            }
-        }
-        Command::AddNode {
-            name,
-            sandboxes,
-            instance_type,
-            disk_gb,
-            copy_credential,
-        } => {
-            let mut settings = loaded.settings;
-            settings.remote.services = swarmy_config::RemoteServices::Node;
-            let options = if copy_credential {
-                Some(services::Options::new(&settings, true, None)?)
-            } else {
-                None
-            };
-            let _lock = state.lock()?;
-            let node = state.require(&name)?;
-            let host = ssh::Ssh::discover()?;
-            let launch = node.launch_settings.clone().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "remote has no saved launch configuration; recreate it with remote up before adding nodes"
-                )
-            })?;
-            let cloud = for_settings(&launch).await?;
-            tokio::select! {
-                result = Box::pin(add_node::run(&cloud, &host, &state, add_node::NewNode { name: &name, sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes), shape: NodeShape { instance_type, disk_gb } }, Duration::from_secs(5), options.as_ref())) => result,
-                result = tokio::signal::ctrl_c() => {
-                    result?;
-                    bail!("interrupted; run swarmy remote down {name} to clean up")
-                }
-            }
-        }
+        Command::Up { .. } => Box::pin(run_up(&state, loaded.settings, command)).await,
+        Command::AddNode { .. } => Box::pin(run_add_node(&state, loaded.settings, command)).await,
         Command::Upgrade {
             name,
             services_only,
@@ -339,12 +306,131 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
     }
 }
 
+/// Launch and provision the first node of a remote.
+#[cfg(feature = "remote")]
+async fn run_up(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+    let Command::Up {
+        name,
+        bucket,
+        sandboxes,
+        instance_type,
+        disk_gb,
+        no_image,
+        image_recipe,
+        services,
+        copy_credential,
+    } = command
+    else {
+        unreachable!("run_up handles remote up");
+    };
+    let _lock = state.lock()?;
+    swarmy_config::validate_remote_name(&name)?;
+    let host = ssh::Ssh::discover()?;
+    let recipe = if no_image {
+        None
+    } else {
+        Some(host.image_recipe(&image_recipe)?)
+    };
+    if let Some(services) = services {
+        settings.remote.services = services;
+    }
+    if let Some(bucket) = bucket {
+        settings.remote.bucket = Some(bucket);
+    }
+    NodeShape {
+        instance_type,
+        disk_gb,
+    }
+    .apply(&mut settings.remote)?;
+    let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
+    let cloud = for_settings(&settings.remote).await?;
+    guard(
+        &name,
+        up::run(
+            &cloud,
+            &host,
+            state,
+            &settings.remote,
+            up::NewNode {
+                name: &name,
+                sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes),
+            },
+            options,
+            Duration::from_secs(5),
+        ),
+    )
+    .await
+}
+
+/// Join another node to an existing remote over its private network.
+#[cfg(feature = "remote")]
+async fn run_add_node(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+    let Command::AddNode {
+        name,
+        sandboxes,
+        instance_type,
+        disk_gb,
+        copy_credential,
+    } = command
+    else {
+        unreachable!("run_add_node handles remote add-node");
+    };
+    settings.remote.services = swarmy_config::RemoteServices::Node;
+    let options = if copy_credential {
+        Some(services::Options::new(&settings, true, None)?)
+    } else {
+        None
+    };
+    let _lock = state.lock()?;
+    let node = state.require(&name)?;
+    let host = ssh::Ssh::discover()?;
+    let launch = node.launch_settings.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "remote has no saved launch configuration; recreate it with remote up before adding nodes"
+        )
+    })?;
+    let cloud = for_settings(&launch).await?;
+    guard(
+        &name,
+        add_node::run(
+            &cloud,
+            &host,
+            state,
+            add_node::NewNode {
+                name: &name,
+                sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes),
+                shape: NodeShape {
+                    instance_type,
+                    disk_gb,
+                },
+            },
+            Duration::from_secs(5),
+            options.as_ref(),
+        ),
+    )
+    .await
+}
+
+/// Run provisioning to completion unless interrupted, keeping state for `down`.
+#[cfg(feature = "remote")]
+async fn guard(name: &str, task: impl Future<Output = Result<()>>) -> Result<()> {
+    tokio::select! {
+        result = Box::pin(task) => result,
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            bail!("interrupted; run swarmy remote down {name} to clean up")
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "remote")]
 pub(crate) struct NodeShape {
     instance_type: Option<String>,
     disk_gb: Option<u32>,
 }
 
+#[cfg(feature = "remote")]
 impl NodeShape {
     pub(crate) fn apply(self, settings: &mut RemoteSettings) -> Result<()> {
         if let Some(instance_type) = self.instance_type {
@@ -365,6 +451,7 @@ impl NodeShape {
 /// Generic shape for known EC2 instance types. Unknown types leave the
 /// generic shape unset; the provider-specific `instance_type` stays
 /// authoritative on AWS.
+#[cfg(feature = "remote")]
 fn instance_shape(instance_type: &str) -> (u32, u32) {
     match instance_type {
         "m6i.large" => (2, 8 * 1024),
@@ -379,6 +466,7 @@ fn instance_shape(instance_type: &str) -> (u32, u32) {
 /// A role or instance profile is visible to the compute API only after the
 /// identity system has propagated it. Launching sooner can bind the machine
 /// to stale identity data whose credentials are then rejected.
+#[cfg(feature = "remote")]
 pub(crate) async fn retry_profile_propagation<T, F, Fut>(
     mut attempt: F,
     profile: bool,
@@ -388,7 +476,6 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    use std::time::Instant;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
         match attempt().await {
@@ -400,7 +487,7 @@ where
             {
                 tracing::info!("waiting for IAM instance profile to propagate to EC2");
                 tokio::time::sleep(
-                    pause.min(deadline.saturating_duration_since(Instant::now())),
+                    pause.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
                 )
                 .await;
             }
@@ -409,11 +496,13 @@ where
     }
 }
 
+#[cfg(feature = "remote")]
 fn profile_not_propagated(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}");
     message.contains("InvalidParameterValue") && message.contains("Invalid IAM Instance Profile")
 }
 
+#[cfg(feature = "remote")]
 pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {
     for _ in 0..120 {
         if let Some(machine) = cloud.get(id).await? {
@@ -431,6 +520,7 @@ pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) 
     bail!("timed out waiting for machine {id} to run with an IP address")
 }
 
+#[cfg(feature = "remote")]
 pub(crate) fn key_name(node: &RemoteNode) -> Result<&str> {
     node.key_path
         .file_name()

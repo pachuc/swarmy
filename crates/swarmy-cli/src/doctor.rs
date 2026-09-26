@@ -1,5 +1,5 @@
-use swarmy_cloud::ssh as remote_ssh;
 use std::{path::Path, process::Stdio, time::Duration};
+use swarmy_cloud::ssh as remote_ssh;
 
 use serde::Serialize;
 use swarmy_config::{Loaded, Settings};

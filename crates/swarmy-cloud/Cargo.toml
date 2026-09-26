@@ -27,13 +27,15 @@ fs2.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shell-words.workspace = true
 swarmy-api-types.workspace = true
 swarmy-client.workspace = true
 swarmy-config.workspace = true
 swarmy-core.workspace = true
+swarmy-version.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 ulid.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
+url.workspace = true

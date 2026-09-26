@@ -30,6 +30,13 @@ impl<'a> From<Option<&'a Path>> for Options<'a> {
 }
 
 impl<'a> Options<'a> {
+    /// Resolve service installation options, loading secrets only when the
+    /// caller explicitly acknowledged copying them to the node.
+    ///
+    /// # Errors
+    ///
+    /// Rejects credential copying without node services, and reports missing
+    /// credential files and unreadable keyrings.
     pub fn new(settings: &Settings, copy: bool, recipe: Option<&'a Path>) -> Result<Self> {
         let keyring = if copy {
             Some(swarmy_config::Keyring::path()?)

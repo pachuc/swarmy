@@ -45,7 +45,8 @@ impl Cloud for FakeCloud {
         if !self
             .bucket_creates
             .borrow()
-            .contains(&bucket.name.to_owned())
+            .iter()
+            .any(|known| known == &bucket.name)
         {
             self.bucket_creates.borrow_mut().push(bucket.name.clone());
         }
@@ -327,7 +328,10 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
         .borrow_mut()
         .push_back(Some(instance("running")));
     let settings = RemoteSettings {
-        image: Some("ami-custom".into()),
+        aws: swarmy_config::AwsSettings {
+            image: Some("ami-custom".into()),
+            ..settings().aws
+        },
         ..settings()
     };
     let host = FakeHost {

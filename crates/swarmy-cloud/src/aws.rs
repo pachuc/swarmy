@@ -237,11 +237,7 @@ fn launch_input(
                 InstanceNetworkInterfaceSpecification::builder()
                     .device_index(0)
                     .set_subnet_id(spec.subnet.clone())
-                    .set_groups(
-                        spec.security_group
-                            .clone()
-                            .map(|group| vec![group]),
-                    )
+                    .set_groups(spec.security_group.clone().map(|group| vec![group]))
                     .associate_public_ip_address(true)
                     .delete_on_termination(true)
                     .build(),
@@ -259,16 +255,8 @@ fn launch_input(
                     )
                     .build(),
             )
-            .tag_specifications(tags(
-                ResourceType::Instance,
-                &spec.name,
-                &spec.managed_by,
-            ))
-            .tag_specifications(tags(
-                ResourceType::Volume,
-                &spec.name,
-                &spec.managed_by,
-            ))
+            .tag_specifications(tags(ResourceType::Instance, &spec.name, &spec.managed_by))
+            .tag_specifications(tags(ResourceType::Volume, &spec.name, &spec.managed_by))
             .build()
             .expect("both instance counts are present"),
     )
@@ -515,7 +503,7 @@ mod tests {
         let with_profile = launch_input(
             &MachineSpec {
                 profile: Some("swarmy-test".into()),
-                ..request.clone()
+                ..request
             },
             "/dev/sda1",
         )
