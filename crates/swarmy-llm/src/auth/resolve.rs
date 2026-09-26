@@ -25,6 +25,22 @@ pub trait AuthStore: Send + Sync {
     ) -> Result<Option<(Option<String>, CredentialRecord)>, Error> {
         Ok(self.get(provider).await?.map(|record| (None, record)))
     }
+    /// The one labelled entry a route step pins, without pool fallback. The
+    /// default filters `get_labelled`; cluster stores read the entry directly.
+    /// # Errors
+    /// Returns database and decryption errors.
+    async fn get_exact(
+        &self,
+        provider: &str,
+        label: &str,
+    ) -> Result<Option<CredentialRecord>, Error> {
+        Ok(self
+            .get_labelled(provider)
+            .await?
+            .and_then(|(entry, record)| {
+                entry.is_some_and(|entry| entry == label).then_some(record)
+            }))
+    }
     /// Implementations must re-read under the lease and refresh only if unchanged.
     /// # Errors
     /// Returns lease, persistence, and provider refresh errors.
@@ -97,6 +113,76 @@ impl Resolver {
             .await
             .ok()?
             .and_then(|(label, _)| label)
+    }
+
+    /// Resolve the one entry a route step pins, without pool fallback. A
+    /// missing entry is an operator error, not a cue to try another key;
+    /// failover already selected this step explicitly.
+    /// # Errors
+    /// Returns missing entries, credential failures, and refresh errors.
+    pub async fn resolve_pinned(&self, provider: &str, label: &str) -> Result<ResolvedAuth, Error> {
+        let record = self
+            .store
+            .get_exact(provider, label)
+            .await?
+            .ok_or_else(|| {
+                Error::Credentials("route step names an entry with no stored credential")
+            })?;
+        let (entry, mut record) = (Some(label.to_owned()), record);
+        if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
+            return Err(Error::NeedsLogin(provider.into()));
+        }
+        if provider == "anthropic" && matches!(record.kind, CredentialKind::OAuth { .. }) {
+            return Err(Error::Credentials("Anthropic requires an API key"));
+        }
+        if provider == "amazon-bedrock"
+            && record.status(jiff::Timestamp::now()) == CredentialStatus::Expired
+        {
+            return Err(Error::Credentials(
+                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
+            ));
+        }
+        if record.needs_refresh(jiff::Timestamp::now()) {
+            let login: Box<dyn Login> = if provider == "chatgpt" {
+                Box::new(self.chatgpt.clone())
+            } else {
+                login_for(provider, None, None)?
+            };
+            record = self
+                .store
+                .refresh(provider, &record, login.as_ref())
+                .await?;
+        }
+        if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
+            return Err(Error::NeedsLogin(provider.into()));
+        }
+        if provider == "chatgpt" {
+            let credentials = Credentials::from_record(&record)?;
+            let account = OnceLock::new();
+            let _ = account.set(credentials.account_id().into());
+            return Ok(ResolvedAuth {
+                auth: ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
+                    resolver: self.clone(),
+                    account,
+                })),
+                version: version(&record)?,
+                entry,
+                entry_kind: Some(entry_kind_for(&record)),
+            });
+        }
+        let version = version(&record)?;
+        let entry_kind = Some(entry_kind_for(&record));
+        let auth = if is_vertex(provider) {
+            vertex_from_record(record.kind)
+        } else {
+            auth_from_kind(record.kind)?
+        };
+        Ok(ResolvedAuth {
+            auth,
+            version,
+            entry,
+            entry_kind,
+        })
     }
 
     async fn resolve_using(

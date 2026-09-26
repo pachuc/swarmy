@@ -641,6 +641,100 @@ impl Client {
     ) -> Result<api::CliSaved, Error> {
         self.send(Method::POST, "cli/credentials", body).await
     }
+    /// List named inference routes in the legacy CLI format.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_routes(&self) -> Result<Vec<api::CliRoute>, Error> {
+        self.get("cli/routes", &[]).await
+    }
+    /// Show one named inference route in the legacy CLI format.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_route(&self, name: &str) -> Result<api::CliRoute, Error> {
+        self.get(&format!("cli/routes/{}", segment(name)), &[])
+            .await
+    }
+    /// Replace a route's steps in order through the API.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_set_route(&self, body: &api::CliRouteInput) -> Result<api::CliSaved, Error> {
+        self.send(Method::POST, "cli/routes", body).await
+    }
+    /// Remove a named inference route through the API.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_remove_route(
+        &self,
+        name: &str,
+        key: &str,
+    ) -> Result<api::CliRouteDeleted, Error> {
+        self.send(
+            Method::DELETE,
+            &format!("cli/routes/{}", segment(name)),
+            &serde_json::json!({"idempotency_key": key}),
+        )
+        .await
+    }
+    /// Assign or clear one session's route override through the API.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn cli_set_session_route(
+        &self,
+        id: &str,
+        body: &api::SetSessionRoute,
+    ) -> Result<api::CliSessionDetail, Error> {
+        self.send(
+            Method::PATCH,
+            &format!("cli/sessions/{}/route", segment(id)),
+            body,
+        )
+        .await
+    }
+    /// Assign or clear one session's route override.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_session_route(
+        &self,
+        id: &str,
+        body: &api::SetSessionRoute,
+    ) -> Result<api::Session, Error> {
+        self.send(
+            Method::PATCH,
+            &format!("sessions/{}/route", segment(id)),
+            body,
+        )
+        .await
+    }
+    /// List named inference routes.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn routes(&self) -> Result<Vec<api::Route>, Error> {
+        self.get("routes", &[]).await
+    }
+    /// Show one named inference route.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn route(&self, name: &str) -> Result<api::Route, Error> {
+        self.get(&format!("routes/{}", segment(name)), &[]).await
+    }
+    /// Replace a route's steps in order.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_route(&self, name: &str, body: &api::SetRoute) -> Result<api::Route, Error> {
+        self.send(Method::POST, &format!("routes/{}", segment(name)), body)
+            .await
+    }
+    /// Remove a named inference route.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn remove_route(&self, name: &str, key: &str) -> Result<api::RouteDeleted, Error> {
+        self.send(
+            Method::DELETE,
+            &format!("routes/{}", segment(name)),
+            &serde_json::json!({"idempotency_key": key}),
+        )
+        .await
+    }
     #[must_use]
     pub fn stream(&self, subscription: api::Subscription) -> EventStream {
         let (changes, _) = watch::channel(subscription.clone());

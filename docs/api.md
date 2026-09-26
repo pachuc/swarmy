@@ -11,14 +11,16 @@ version. IDs are opaque. Timestamps are ISO 8601 strings in UTC.
 **Agents** are named, persistent identities with a description, a selected
 image name and tag, optional provider, model, effort and system prompt, a
 creation time, and an optional main session ID. An agent may have side
-sessions without moving the main-session pointer.
+sessions without moving the main-session pointer. An optional route names
+the inference failover chain for the agent's turns.
 
 **Sessions** are ordered, append-only logs attached to a computer. Their kind
 is ephemeral or named; their state is idle, runnable, leased,
 waiting_inference, waiting_tools, sleeping, or completed. The head sequence is
 zero before the first append. `computer_deleted` reports teardown; an optional
 `waiting` value gives a wake time and human-readable reasons for a parked
-session. A session may reference an agent.
+session. A session may reference an agent. An optional session route
+overrides the agent and swarm default for that conversation only.
 
 **Turns** group inference and tool work within a session. Each has a status,
 start time, and optional finish time.
@@ -39,6 +41,11 @@ but do not create or edit providers.
 label, status, and update time. Setting or replacing a provider credential
 uses a create request with input-only secret material; no read or event
 returns a secret.
+
+**Routes** are named, ordered failover chains over credential entries. Each
+step names a provider and an entry label, or `provider/*` for every entry of
+that provider in creation order, with an optional model override. See
+`docs/providers.md` for assignment order and examples.
 
 **Nodes** report roles, CPU, memory, disk and sandbox capacity, liveness and
 last seen time. They are not client-created or edited.

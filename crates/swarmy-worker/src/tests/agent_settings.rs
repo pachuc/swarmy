@@ -152,6 +152,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     provider: None,
                     memory_mib: None,
                     gpu: None,
+                    route: None,
                 },
                 Timestamp::now(),
             )
@@ -176,6 +177,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     provider: None,
                     memory_mib: None,
                     gpu: None,
+                    route: None,
                 },
             )
             .await

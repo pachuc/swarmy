@@ -33,6 +33,12 @@ pub enum Event {
         cost_micros: u64,
         effort_requested: Option<crate::ReasoningEffort>,
         effort_clamped: bool,
+        /// Stored entry label behind this completion, for metering attribution.
+        entry: Option<String>,
+        /// Route that selected the entry, when a named route resolved it.
+        route: Option<String>,
+        /// Index into the resolved route, so metering names the exact step.
+        route_step: Option<u32>,
     },
     ToolCallRequested {
         seq: u64,
@@ -124,6 +130,9 @@ mod tests {
                 cost_micros: 0,
                 effort_requested: None,
                 effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
                 seq: 3,
                 request_id,
                 message: message(),

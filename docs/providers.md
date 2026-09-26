@@ -72,8 +72,9 @@ adds or replaces one entry; without `--label`, set, login, and import replace
 the provider's `default` entry so a rotation takes over serving. `auth rm
 PROVIDER LABEL` removes only that entry; `auth check PROVIDER --label LABEL`
 checks one, while `auth check` checks all. Old single-provider records are
-migrated to label `default` on first read. Until routes select entries, the
-oldest ready entry for a provider handles turns, falling back to the oldest
+migrated to label `default` on first read. A session's route selects its
+entries in order (see Routes and failover below); without a route the oldest
+ready entry for a provider handles turns, falling back to the oldest
 entry when none is ready. Entry kinds are `api-key`,
 `subscription`, and `cloud`.
 
@@ -98,6 +99,70 @@ ChatGPT file without changing it; without `--file`, it reads `credential_file`
 (normally `~/.swarmy/auth.json`, also overridden by `--auth-file` or
 `SWARMY_CHATGPT_AUTH`). Stop other refresh owners before importing. Gateways do
 not fall back to that file.
+
+## Routes and failover
+
+A route is a named, ordered list of auth entries a session may use, with
+failover along the list at turn boundaries. Each step names a provider and an
+entry label, or `provider/*` for every entry of that provider in creation
+order, with an optional model override for the step. A route with one step
+never fails over, which is how an operator pins an agent to a subscription.
+
+```sh
+swarmy auth routes ls
+swarmy auth routes show fallback
+swarmy auth routes set fallback chatgpt/default openai/work-key
+swarmy auth routes rm fallback
+```
+
+`set` takes the steps in order. Each step is `PROVIDER/LABEL` or
+`PROVIDER/LABEL=MODEL`; the model may itself contain slashes. Labels
+containing `/` or `=` cannot be addressed explicitly and stay reachable
+through `PROVIDER/*`.
+
+Assignment, from most to least specific: a session override (`swarmy run
+--route NAME`, `swarmy chat --route NAME`), the named agent (`swarmy agent
+create --route NAME`, `swarmy agent set --route NAME`, `--route default`
+clears it), the swarm default (`[inference] default_route` in
+`.swarmy/config.toml`, or `SWARMY_INFERENCE_DEFAULT_ROUTE`), and finally an
+implicit route of the selected provider's entries in creation order, so
+configurations without routes keep working exactly as before.
+
+When a step's entry has an open breaker or returns a retryable failure, the
+worker records the reason and moves the session to the next usable step of
+its route for the next attempt, applying that step's model override. When
+every later step is open but an earlier step recovered, the session wraps
+back to the recovered step instead of sleeping through the later retry.
+Failover never happens mid-stream: one request uses one entry, and the next
+attempt starts a new step. When every step is open, the session waits for
+the earliest retry time among them. A step naming an entry with no ready
+credential is skipped with a recorded reason; a route that selects nothing
+usable falls back to the implicit chain. Waits for a provider no gateway
+serves yet never consume a route step: the session retries its current step
+once a gateway advertises the provider. When the provider or model changes
+across a failover, the request builder does not replay reasoning blocks
+from the previous provider: reasoning signatures are provider- and
+model-specific, so the thinking text travels as plain text instead. Every
+completion records the entry and route step used, so metering attributes
+cost to the entry that earned it. Those route fields are trailing bytes on
+the completion row, which older readers reject: when rolling this out,
+upgrade readers (workers, API servers, CLI clients, chaos checkers) before
+gateways.
+
+Three common shapes, from the design discussion:
+
+```sh
+# Subscription only: pin the agent to its ChatGPT login.
+swarmy auth routes set sub-only chatgpt/default
+swarmy agent set coder --route sub-only
+
+# Subscription with key fallback: try the login, then the platform key.
+swarmy auth routes set sub-then-key chatgpt/default openai/work-key
+
+# OpenAI direct falling through to an Azure deployment: the second step
+# overrides the model with the deployment name.
+swarmy auth routes set openai-then-azure openai/work-key azure/prod=gpt-5.5
+```
 
 Resolution uses `swarmy_llm::auth::resolve` with an explicit `Resolver`:
 
@@ -125,6 +190,7 @@ swarmy models ls --reasoning --json
 swarmy models search sonnet
 swarmy models show openrouter/anthropic/claude-sonnet-4.6
 swarmy run --provider openai --model gpt-5.5 --effort high 'Review this repository'
+swarmy run --route fallback 'Review this repository'
 swarmy chat --model openai/gpt-5.5
 swarmy agent create tommy --provider openrouter --model anthropic/claude-sonnet-4.6
 swarmy agent set tommy --effort medium

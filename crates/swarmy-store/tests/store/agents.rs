@@ -299,6 +299,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         provider: None,
         memory_mib: None,
         gpu: None,
+        route: None,
     };
     let mut expected = store
         .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
@@ -800,6 +801,7 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     let settings = AgentSettings {
         memory_mib: Some(2048),
         gpu: Some(swarmy_core::GpuRequirement::Shared),
+        route: None,
         ..Default::default()
     };
     let agent = test

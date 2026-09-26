@@ -94,6 +94,7 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
             None,
             false,
             swarmy_core::InferenceSelection::default(),
+            None,
         )
         .await?;
         let mut timeline = timeline_stream(&client, &conversation.id).await?;

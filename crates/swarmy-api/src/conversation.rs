@@ -89,6 +89,7 @@ pub struct CreateSessionBody {
     provider: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    route: Option<String>,
 }
 
 fn selection(
@@ -115,7 +116,8 @@ pub async fn create(
             && (body.image.is_some()
                 || body.provider.is_some()
                 || body.model.is_some()
-                || body.effort.is_some())
+                || body.effort.is_some()
+                || body.route.is_some())
     {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_session_selection"));
     }
@@ -173,12 +175,13 @@ pub async fn create(
                 .await
                 .map_err(storage)?;
             match store
-                .create_session_with_inference(
+                .create_session_with_route(
                     id,
                     agent,
                     image.as_deref(),
                     Timestamp::now(),
                     &choice,
+                    body.route.as_deref(),
                 )
                 .await
             {
@@ -193,6 +196,35 @@ pub async fn create(
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
         Ok(Json(session_with_next(&store, &record).await?))
     })
+    .await
+}
+
+/// Assign or clear one session's route override without touching its agent.
+/// The override applies to the next attempt; the attempt chain restarts.
+pub async fn set_route(
+    State(state): State<AppState>,
+    Path(text): Path<String>,
+    Json(body): Json<api::SetSessionRoute>,
+) -> ApiResult<api::Session> {
+    let session_id = id(&text, SessionId::from_ulid)?;
+    let store = state.store.clone();
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("sessions:{session_id}:route"),
+        async move {
+            store
+                .set_session_route(session_id, body.route.as_deref())
+                .await
+                .map_err(session_error)?;
+            let record = store
+                .fetch_session(session_id)
+                .await
+                .map_err(storage)?
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+            Ok(Json(session_with_next(&store, &record).await?))
+        },
+    )
     .await
 }
 
