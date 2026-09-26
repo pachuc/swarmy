@@ -45,6 +45,14 @@ The user wants to discuss the approach first (2026-09-26). Items 5 and 6
 are configuration and can happen with the dev2 fleet move; items 1 and 2
 are the ones that change the picture and deserve a decision.
 
+## Baseline
+
+The September 2026 cleanup baseline is recorded in
+[docs/proofs/cleanup-baseline-2026-09.md](../docs/proofs/cleanup-baseline-2026-09.md):
+lines of source and tests per crate, dependency edges, cold and cached
+build/test/clippy times on a 16-vCPU sandbox, and recent CI wall times.
+The final task of the cleanup goal repeats those measurements there.
+
 ## Trigger
 
 The discussion, or the next time a worker or benchmark is blocked on a
