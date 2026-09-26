@@ -115,13 +115,6 @@ impl Store {
             read::<UsageTotals>(trx, &agent_key)
         )?;
         // The completion carries the entry, so the hot path needs no extra reads.
-        let entry_key = self
-            .root
-            .pack(&("inference_entry", attribution.request.as_bytes().as_slice()));
-        let kind_key = self.root.pack(&(
-            "inference_entry_kind",
-            attribution.request.as_bytes().as_slice(),
-        ));
         let (entry, kind) = (
             attribution.entry.map(str::to_owned),
             attribution.entry_kind.map(str::to_owned),
@@ -155,8 +148,6 @@ impl Store {
             )),
             &[],
         );
-        trx.clear(&entry_key);
-        trx.clear(&kind_key);
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {
             let mut totals = totals.unwrap_or_default();
             totals.add(usage, cost_micros);
