@@ -230,9 +230,12 @@ instances with root and the NBD module loaded, so run them there with sudo:
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
 | the worker, scheduler, gateway, store, or bus | `swarmy-chaos --test bash`, `--test continuity`, `--test coding`, and `scripts/chaos-ci.sh` |
 
-The command shape, after `scripts/dev-stack.sh start` and `source .dev/env`
-and with an image registered by `sudo -E ./target/debug/swarmy image build
-images/base-ubuntu --tag dev`:
+`swarmy image build` talks to the API, so register the test image through a
+service started against the dev stack. After `scripts/dev-stack.sh start` and
+`source .dev/env`, start `./target/debug/swarmy-api` with `SWARMY_API_LISTEN`
+set to a loopback address and `SWARMY_API_TOKEN` set to any string, export
+`SWARMY_API_URL` and the same token, then run `sudo -E ./target/debug/swarmy
+image build images/base-ubuntu --tag dev`. The suite command shape is then:
 
 ```sh
 sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked \
