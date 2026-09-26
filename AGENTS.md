@@ -225,7 +225,7 @@ instances with root and the NBD module loaded, so run them there with sudo:
 | If you changed | Run as root |
 |---|---|
 | `swarmy-volume` (chunks, manifests, NBD, snapshots) | `swarmy-volume --test nbd`, `swarmy-volume --test image` |
-| image recipes or `swarmy image` | `swarmy-cli --test image`, `swarmy-volume --test image` |
+| image recipes or `swarmy image` | `swarmy-cli --test image` (starts its own API against the dev stack), `swarmy-volume --test image` |
 | `swarmy vol` or the volume server | `swarmy-cli --test vol` |
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
 | the worker, scheduler, gateway, store, or bus | `swarmy-chaos --test bash`, `--test continuity`, `--test coding`, and `scripts/chaos-ci.sh` |

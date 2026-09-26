@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 #[test]
 fn image_commands_are_advertised_and_validate_arguments() {
@@ -43,11 +43,137 @@ impl Drop for Mount<'_> {
     }
 }
 
-fn image_json(arguments: &[&str]) -> serde_json::Value {
+/// A `swarmy-api` service process serving the dev stack on a loopback port.
+///
+/// `image build` goes through the API, but the root-suite environment only
+/// provides `FoundationDB`, NATS, and the object store from
+/// `scripts/dev-stack.sh`, with no API service. The acceptance tests start
+/// their own service against the dev stack and point the `swarmy` binary at
+/// it, so they need nothing beyond the dev stack and sudo. The service
+/// shares the ambient store directory and object store settings with
+/// `swarmyd vol`, so volumes created from uploaded images resolve.
+struct ApiService {
+    child: Child,
+    url: String,
+    token: String,
+}
+
+impl Drop for ApiService {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Resolve the profile directory holding the test `swarmy` binary, so
+/// `CARGO_TARGET_DIR`, `--target`, and custom `--profile` layouts resolve
+/// without assuming `debug` or `release`.
+fn profile_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_swarmy"))
+        .parent()
+        .expect("profile directory")
+        .to_owned()
+}
+
+/// Run `cargo build -p <package> --bin <binary>` once when the sibling
+/// binary beside the test profile directory is missing. A warm target
+/// directory makes this a no-op, and the profile directory selects the cargo
+/// profile while a `<target>/<triple>/<profile>` layout selects `--target`.
+fn ensure_sibling(package: &str, binary: &str) -> std::path::PathBuf {
+    let profile = profile_dir();
+    let path = profile.join(format!("{binary}{}", std::env::consts::EXE_SUFFIX));
+    if path.exists() {
+        return path;
+    }
+    // `cargo test -p swarmy-cli` builds the `swarmy` binary but not its
+    // siblings, so build the missing one here.
+    let mut build = Command::new("cargo");
+    build
+        .args(["build", "-p", package, "--bin", binary])
+        .current_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("workspace root")
+                .parent()
+                .expect("workspace root"),
+        );
+    // Cargo does not export the triple for a CLI `--target` build, so read
+    // it from the test binary's path instead.
+    if let Some(triple) = profile
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| name.contains('-'))
+    {
+        build.arg("--target").arg(triple);
+    }
+    match profile
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("debug")
+    {
+        "debug" => {}
+        "release" => {
+            build.arg("--release");
+        }
+        name => {
+            build.arg("--profile").arg(name);
+        }
+    }
+    assert!(build.status().unwrap().success());
+    assert!(
+        path.exists(),
+        "build succeeded but {} is missing",
+        path.display()
+    );
+    path
+}
+
+async fn start_api_service() -> ApiService {
+    let api = ensure_sibling("swarmy-api", "swarmy-api");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let token = ulid::Ulid::generate().to_string();
+    let mut child = Command::new(&api)
+        .env("SWARMY_API_LISTEN", format!("127.0.0.1:{port}"))
+        .env("SWARMY_API_TOKEN", &token)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // The service opens the store and bus before binding, so an open port
+    // means it is ready for uploads.
+    let started = std::time::Instant::now();
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!("swarmy-api exited during startup: {status}");
+        }
+        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "swarmy-api did not listen on 127.0.0.1:{port} within 60s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    ApiService {
+        child,
+        url: format!("http://127.0.0.1:{port}"),
+        token,
+    }
+}
+
+fn image_json(api: &ApiService, arguments: &[&str]) -> serde_json::Value {
     let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .arg("--json")
         .arg("image")
         .args(arguments)
+        .env("SWARMY_API_URL", &api.url)
+        .env("SWARMY_API_TOKEN", &api.token)
         .output()
         .unwrap();
     assert!(
@@ -62,48 +188,7 @@ fn image_json(arguments: &[&str]) -> serde_json::Value {
 /// management moved to the node daemon, so the retag property is observed
 /// through `swarmyd vol` rather than the store.
 fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
-    let swarmy = std::path::PathBuf::from(env!("CARGO_BIN_EXE_swarmy"));
-    let profile = swarmy.parent().expect("profile directory");
-    let swarmyd = profile.join(format!("swarmyd{}", std::env::consts::EXE_SUFFIX));
-    if !swarmyd.exists() {
-        // `cargo test -p swarmy-cli` does not build the daemon binary, so
-        // build it once; a warm target directory makes this a no-op. The
-        // profile directory comes from `CARGO_BIN_EXE_swarmy`, so custom
-        // `--profile`, `CARGO_TARGET_DIR`, and `--target` layouts resolve the
-        // same way as the `cli_bin` helper in `swarmy-api`.
-        let mut build = Command::new("cargo");
-        build
-            .args(["build", "-p", "swarmyd", "--bin", "swarmyd"])
-            .current_dir(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("workspace root")
-                    .parent()
-                    .expect("workspace root"),
-            );
-        if let Some(triple) = profile
-            .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|name| name.to_str())
-            .filter(|name| name.contains('-'))
-        {
-            build.arg("--target").arg(triple);
-        }
-        match profile
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("debug")
-        {
-            "debug" => {}
-            "release" => {
-                build.arg("--release");
-            }
-            name => {
-                build.arg("--profile").arg(name);
-            }
-        }
-        assert!(build.status().unwrap().success());
-    }
+    let swarmyd = ensure_sibling("swarmyd", "swarmyd");
     let output = Command::new(&swarmyd)
         .arg("vol")
         .arg("--json")
@@ -118,37 +203,52 @@ fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-#[tokio::test]
-async fn root_base_ubuntu_acceptance() {
+fn needs_backing_services() -> bool {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping Ubuntu acceptance test: not running as root");
-        return;
+        eprintln!("skipping image acceptance test: not running as root");
+        return false;
     }
-    for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
+    for variable in [
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_NATS_URL",
+        "SWARMY_S3_ENDPOINT",
+    ] {
         if std::env::var_os(variable).is_none() {
-            eprintln!("skipping Ubuntu acceptance test: {variable} is unset");
-            return;
+            eprintln!("skipping image acceptance test: {variable} is unset");
+            return false;
         }
     }
+    true
+}
+
+#[tokio::test]
+async fn root_base_ubuntu_acceptance() {
+    if !needs_backing_services() {
+        return;
+    }
+    let api = start_api_service().await;
     let tag = format!("test-{}", ulid::Ulid::generate());
     let recipe = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-ubuntu");
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path().join("base.ext4");
     let started = std::time::Instant::now();
-    let first = image_json(&[
-        "build",
-        recipe.to_str().unwrap(),
-        "--tag",
-        &tag,
-        "--output",
-        raw.to_str().unwrap(),
-    ]);
+    let first = image_json(
+        &api,
+        &[
+            "build",
+            recipe.to_str().unwrap(),
+            "--tag",
+            &tag,
+            "--output",
+            raw.to_str().unwrap(),
+        ],
+    );
     eprintln!("first Ubuntu build ({:?}): {first}", started.elapsed());
     assert_eq!(first["size"], 8_u64 * 1024 * 1024 * 1024);
     assert_eq!(first["chunks_total"], 32768);
     assert!(first["chunks_stored"].as_u64().unwrap() > 0);
     let reference = format!("base-ubuntu:{tag}");
-    check_registration(&reference, &tag, &first);
+    check_registration(&api, &reference, &tag, &first);
     // The server mints a fresh manifest id on every upload, so the retag
     // property is read from the volume record: a volume created on the first
     // manifest keeps that manifest after the rebuild.
@@ -158,14 +258,17 @@ async fn root_base_ubuntu_acceptance() {
     check_chroot(directory.path(), &raw);
     let started = std::time::Instant::now();
     let second_raw = directory.path().join("second.ext4");
-    let second = image_json(&[
-        "build",
-        recipe.to_str().unwrap(),
-        "--tag",
-        &tag,
-        "--output",
-        second_raw.to_str().unwrap(),
-    ]);
+    let second = image_json(
+        &api,
+        &[
+            "build",
+            recipe.to_str().unwrap(),
+            "--tag",
+            &tag,
+            "--output",
+            second_raw.to_str().unwrap(),
+        ],
+    );
     eprintln!("second Ubuntu build ({:?}): {second}", started.elapsed());
     if first["header"]["root_hash"] != second["header"]["root_hash"] {
         eprintln!(
@@ -179,7 +282,7 @@ async fn root_base_ubuntu_acceptance() {
         "identical image uploaded new chunks"
     );
     assert_eq!(
-        image_json(&["show", &reference])["manifest_id"],
+        image_json(&api, &["show", &reference])["manifest_id"],
         second["manifest_id"]
     );
     // Retagging must leave the already-created volume on its original
@@ -191,12 +294,14 @@ async fn root_base_ubuntu_acceptance() {
     );
 }
 
-fn check_registration(reference: &str, tag: &str, first: &serde_json::Value) {
-    let shown = image_json(&["show", reference]);
+fn check_registration(api: &ApiService, reference: &str, tag: &str, first: &serde_json::Value) {
+    let shown = image_json(api, &["show", reference]);
     assert_eq!(shown["header"], first["header"]);
     assert_eq!(shown["manifest_id"], first["manifest_id"]);
     let listed = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .args(["--json", "image", "ls"])
+        .env("SWARMY_API_URL", &api.url)
+        .env("SWARMY_API_TOKEN", &api.token)
         .output()
         .unwrap();
     assert!(listed.status.success());
@@ -245,28 +350,28 @@ fn check_chroot(directory: &std::path::Path, raw: &std::path::Path) {
     }
 }
 
-#[test]
-fn root_custom_recipe_registers_requested_name() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || std::env::var_os("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || std::env::var_os("SWARMY_S3_ENDPOINT").is_none()
-    {
-        eprintln!("skipping image name test: needs root and backing services");
+#[tokio::test]
+async fn root_custom_recipe_registers_requested_name() {
+    if !needs_backing_services() {
         return;
     }
+    let api = start_api_service().await;
     let dir = tempfile::tempdir().unwrap();
     let recipe = dir.path().join("custom-recipe");
     std::fs::create_dir_all(recipe.join("rootfs")).unwrap();
     std::fs::write(recipe.join("recipe.toml"), "disk_size = 16777216\nsource_date_epoch = 1714003200\n[source]\nkind = 'directory'\npath = 'rootfs'\n").unwrap();
     let tag = format!("override-{}", ulid::Ulid::generate());
-    let built = image_json(&[
-        "build",
-        recipe.to_str().unwrap(),
-        "--tag",
-        &tag,
-        "--name",
-        "base-ubuntu",
-    ]);
+    let built = image_json(
+        &api,
+        &[
+            "build",
+            recipe.to_str().unwrap(),
+            "--tag",
+            &tag,
+            "--name",
+            "base-ubuntu",
+        ],
+    );
     assert_eq!(built["name"], "base-ubuntu");
-    check_registration(&format!("base-ubuntu:{tag}"), &tag, &built);
+    check_registration(&api, &format!("base-ubuntu:{tag}"), &tag, &built);
 }
