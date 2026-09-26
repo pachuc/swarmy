@@ -917,6 +917,16 @@ impl Settings {
         self.session_environment(&mut environment);
         self.node_environment(&mut environment);
         self.gc.add_to_environment(&mut environment);
+        self.retention_environment(&mut environment);
+        if let Some(value) = &self.worker_kill_point {
+            environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
+        }
+        environment
+    }
+
+    /// Retention windows for ephemeral sessions, sandboxes, snapshots, and
+    /// metering raw records. Split from `environment` for line-count limits.
+    fn retention_environment(&self, environment: &mut BTreeMap<String, String>) {
         environment.insert(
             "SWARMY_EPHEMERAL_RETENTION_SECONDS".into(),
             self.ephemeral_retention_seconds.to_string(),
@@ -945,10 +955,6 @@ impl Settings {
             "SWARMY_METERING_RAW_RETENTION_DAYS".into(),
             self.metering.raw_retention_days.to_string(),
         );
-        if let Some(value) = &self.worker_kill_point {
-            environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
-        }
-        environment
     }
 
     fn provider_environment(&self, environment: &mut BTreeMap<String, String>) {

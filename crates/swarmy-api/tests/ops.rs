@@ -280,7 +280,11 @@ async fn upload_rejects_bodies_over_the_configured_limit() {
         .unwrap()
         .set_len(u64::from(CHUNK_SIZE))
         .unwrap();
-    let Err(swarmy_client::Error::Api { status, .. }) = fixture
+    // The server rejects an oversized body from the `Content-Length` header
+    // without draining it, so the client still streaming the body may
+    // observe a broken pipe instead of the 413. Both outcomes reject the
+    // upload; the test below proves the server stops reading early.
+    match fixture
         .client
         .upload_image(&swarmy_client::UploadImage {
             name: "ops",
@@ -292,18 +296,22 @@ async fn upload_rejects_bodies_over_the_configured_limit() {
             file: &raw,
         })
         .await
-    else {
-        panic!("oversized upload must fail with an API error");
-    };
-    assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    {
+        Err(swarmy_client::Error::Api { status, .. }) => {
+            assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        Err(swarmy_client::Error::Transport(_)) => {}
+        other => panic!("oversized upload must be rejected, got {other:?}"),
+    }
 }
 
 #[tokio::test]
 async fn upload_with_length_stops_before_streaming_the_body() {
     // The client sends a fixed `Content-Length`, so the server rejects from
     // the header without spooling. A throttled counting stream proves the
-    // server never reads the whole body: the rejection arrives while most
-    // chunks are still unsent.
+    // server never reads the whole body: whichever way the close races with
+    // the upload (a 413 response or a broken pipe), most chunks are never
+    // polled for sending.
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -334,9 +342,13 @@ async fn upload_with_length_stops_before_streaming_the_body() {
         .header(reqwest::header::CONTENT_LENGTH, total.to_string())
         .body(reqwest::Body::wrap_stream(body_stream))
         .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        .await;
+    match response {
+        Ok(response) => assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE),
+        // The server closes the connection without draining the body, so a
+        // client still streaming may see the close instead of the status.
+        Err(_) => {}
+    }
     let pulled = sent.load(Ordering::SeqCst);
     assert!(
         pulled < total,

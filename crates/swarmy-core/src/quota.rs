@@ -2,7 +2,7 @@
 //!
 //! The parser is pure string handling with no store access, so it lives in
 //! the core crate: the client binary parses `--window` without linking the
-//! FoundationDB store.
+//! `FoundationDB` store.
 
 /// Parse windows like `30m`, `5h`, `7d` into seconds. Never panics on
 /// non-`ASCII` input; the unit is the final `ASCII` character.
