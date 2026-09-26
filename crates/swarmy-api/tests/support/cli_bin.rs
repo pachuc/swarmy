@@ -79,7 +79,7 @@ fn build(binary: &std::path::Path, profile: &std::path::Path) {
     // `<target-dir>/<triple>/<profile>/deps`, so the triple is the profile
     // directory's parent basename. Cargo does not export the triple for a CLI
     // `--target` build, so read it from the path instead.
-    if let Some(triple) = target_triple(&profile) {
+    if let Some(triple) = target_triple(profile) {
         command.arg("--target").arg(triple);
     }
     match profile
