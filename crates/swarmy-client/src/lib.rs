@@ -1,4 +1,5 @@
 //! HTTP client for the versioned swarmy API. No control-plane service libraries are linked.
+pub mod api_client;
 use futures_util::{Stream, StreamExt};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};

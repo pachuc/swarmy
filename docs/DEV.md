@@ -251,7 +251,7 @@ make install
 links no database library and needs no `libfdb_c`; the service binaries
 (scheduler, worker, gateway, API) still link it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with the `remote` feature, which compiles the EC2, SSM, S3,
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature compiles the EC2, SSM, S3,
 and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
@@ -328,9 +328,10 @@ The public CLI never opens the database. Conversation commands (`run`,
 client machine needs no database, bus, or object store credentials. The
 developer volume tools live in the node daemon instead: run them as
 `swarmyd vol ...` on a machine with the store and devices (see
-[volume tools](#volume-tools)). Only `auth login`, `auth import`, and `models
-probe` act locally, and they resolve credentials from the login file and the
-environment, never from the cluster store.
+[volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
+provider keys can probe credentials stored in the swarm. Scripted `fake` probes read fixture files on the API host. The separately
+installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
+both save credentials through the API. Node installs omit it.
 
 ## Manual reference
 

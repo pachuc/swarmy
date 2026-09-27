@@ -4,11 +4,13 @@
 use super::{ApiResult, AppState, credential_store, error, storage};
 use axum::{Json, extract::State, http::StatusCode};
 use futures::StreamExt as _;
-use std::{sync::Arc, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use swarmy_api_types as api;
-use swarmy_core::{CredentialScope, Message, MessageId, MessageRole, Part};
+use swarmy_core::{
+    CredentialScope, Message, MessageId, MessageRole, Part, ToolResult, UsageTotals,
+};
 use swarmy_llm::{
-    Delta, GenerationSettings, Request, Response,
+    Delta, GenerationSettings, Request, Response, StopReason, ToolDefinition,
     auth::{AuthStore, Login},
 };
 
@@ -78,9 +80,6 @@ pub async fn probe(
         .catalog
         .provider(&body.provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
-    if provider.api == swarmy_llm::catalog::Api::Fake {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
-    }
     let model = state
         .catalog
         .model(&body.provider, &body.model)
@@ -97,23 +96,37 @@ pub async fn probe(
         .transpose()?
         .unwrap_or(swarmy_core::ReasoningEffort::None);
     let (effort, _) = model.clamp_effort(requested);
-    let auth = resolve_auth(&state, &body).await?;
-    let answer =
-        match tokio::time::timeout(PROBE_TIMEOUT, run_probe(provider, model, auth, effort)).await {
-            Ok(answer) => answer?,
-            Err(_) => return Err(provider_timeout()),
-        };
+    let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
+        let (script, call_log) = state
+            .fake_files
+            .as_ref()
+            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        swarmy_llm::ClientAuth::Scripted(Arc::new(
+            swarmy_llm::fake::FileFake::from_files(script, call_log)
+                .map_err(|failure| provider_failure(failure.to_string()))?,
+        ))
+    } else {
+        resolve_auth(&state, &body).await?
+    };
+    let totals = match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        run_probe(provider, model, auth, effort, body.tools),
+    )
+    .await
+    {
+        Ok(answer) => answer?,
+        Err(_) => return Err(provider_timeout()),
+    };
     let effort_value = serde_json::to_value(effort)
         .ok()
         .and_then(|value| serde_json::from_value(value).ok())
         .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
-    let cost_micros = swarmy_llm::cost::cost_micros(&model.cost, &answer.usage);
     Ok(Json(api::ProbeResult {
         provider: body.provider.clone(),
         model: model.id.clone(),
-        usage: serde_json::to_value(&answer.usage)
+        usage: serde_json::to_value(&totals.usage)
             .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?,
-        cost_micros,
+        cost_micros: totals.cost_micros,
         effort: effort_value,
         elapsed_seconds: started.elapsed().as_secs_f64(),
     }))
@@ -157,35 +170,93 @@ async fn run_probe(
     model: &swarmy_llm::catalog::ModelInfo,
     auth: swarmy_llm::ClientAuth,
     effort: swarmy_core::ReasoningEffort,
-) -> Result<Response, (StatusCode, Json<api::ApiError>)> {
+    tools: bool,
+) -> Result<UsageTotals, (StatusCode, Json<api::ApiError>)> {
     let client = swarmy_llm::client_for(provider, model, auth)
         .map_err(|failure| provider_failure(failure.to_string()))?;
-    let request = Request {
+    let mut request = Request {
         system_prompt: "Follow the user's instructions precisely.".into(),
         messages: vec![Message {
             id: MessageId::from_ulid(ulid::Ulid::generate()),
             role: MessageRole::User,
             parts: vec![Part::Text {
-                text: "Reply with the single word ready.".into(),
+                text: if tools {
+                    "Call get_time exactly once, then reply with the single word ready."
+                } else {
+                    "Reply with the single word ready."
+                }
+                .into(),
             }],
         }],
-        tools: Vec::new(),
+        tools: if tools {
+            vec![ToolDefinition {
+                name: "get_time".into(),
+                description: "Return the current UTC time.".into(),
+                parameters: serde_json::json!({"type":"object","properties":{},"required":[],"additionalProperties":false}),
+            }]
+        } else {
+            Vec::new()
+        },
         settings: GenerationSettings {
             model: model.id.clone(),
             reasoning_effort: Some(effort),
             ..GenerationSettings::default()
         },
     };
-    let mut response = None;
-    let mut stream = client.request(request);
-    while let Some(delta) = stream.next().await {
-        let delta = delta.map_err(|failure| provider_failure(failure.to_string()))?;
-        if let Delta::Completed(completed) = delta {
-            response = Some(completed);
-            break;
+    let first = completion(client.as_ref(), request.clone()).await?;
+    let mut totals = UsageTotals::default();
+    totals.add(
+        &first.usage,
+        swarmy_llm::cost::cost_micros(&model.cost, &first.usage),
+    );
+    let answer = if tools {
+        if first.stop_reason != StopReason::ToolCalls {
+            return Err(provider_failure("provider did not request get_time".into()));
         }
-    }
-    let answer = response.ok_or_else(|| provider_failure("provider stream ended".into()))?;
+        let calls: Vec<_> = first
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::ToolCall {
+                    call_id,
+                    tool,
+                    input,
+                } => Some((call_id, tool, input)),
+                _ => None,
+            })
+            .collect();
+        if calls.len() != 1 || calls[0].1 != "get_time" || calls[0].2 != &serde_json::json!({}) {
+            return Err(provider_failure(
+                "provider must call get_time exactly once".into(),
+            ));
+        }
+        let result = Part::ToolResult {
+            call_id: calls[0].0.clone(),
+            result: ToolResult::Completed {
+                output: jiff::Timestamp::now().to_string(),
+                title: "Current UTC time".into(),
+                metadata: BTreeMap::new(),
+            },
+        };
+        request.messages.push(Message {
+            id: MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: first.parts,
+        });
+        request.messages.push(Message {
+            id: MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::Tool,
+            parts: vec![result],
+        });
+        let second = completion(client.as_ref(), request).await?;
+        totals.add(
+            &second.usage,
+            swarmy_llm::cost::cost_micros(&model.cost, &second.usage),
+        );
+        second
+    } else {
+        first
+    };
     if answer.stop_reason != swarmy_llm::StopReason::EndTurn
         || !answer
             .parts
@@ -194,5 +265,19 @@ async fn run_probe(
     {
         return Err(provider_failure("provider returned no answer".into()));
     }
-    Ok(answer)
+    Ok(totals)
+}
+
+async fn completion(
+    client: &dyn swarmy_llm::Provider,
+    request: Request,
+) -> Result<Response, (StatusCode, Json<api::ApiError>)> {
+    let mut stream = client.request(request);
+    while let Some(delta) = stream.next().await {
+        let delta = delta.map_err(|failure| provider_failure(failure.to_string()))?;
+        if let Delta::Completed(completed) = delta {
+            return Ok(completed);
+        }
+    }
+    Err(provider_failure("provider stream ended".into()))
 }

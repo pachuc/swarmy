@@ -8,7 +8,7 @@ use ulid::Ulid;
 
 use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
 
-use crate::api_client::call as request;
+use swarmy_client::api_client::call as request;
 async fn projection<T: serde::Serialize>(
     endpoint: &str,
     future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
@@ -85,7 +85,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                   --route, --memory, --gpu, --github-token, or --clear-github-token"
         );
     }
-    let (client, endpoint) = crate::api_client::connect()?;
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
     match command {
         Command::Session { command } => session(&client, &endpoint, command, json).await?,
         Command::Agent { command } => agent(&client, &endpoint, command, json).await?,
@@ -956,7 +956,12 @@ async fn delete_agent(
     Ok(())
 }
 
-fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
+async fn key_from_source(
+    client: &Client,
+    endpoint: &str,
+    args: &auth_command::Set,
+    provider: &str,
+) -> Result<String> {
     if let Some(key) = &args.source.api_key {
         return Ok(key.clone());
     }
@@ -966,7 +971,12 @@ fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
             .trim()
             .to_owned());
     }
-    let names = swarmy_llm::auth::provider_env_keys(provider);
+    let providers = swarmy_client::api_client::call(endpoint, client.cli_providers()).await?;
+    let names = providers
+        .iter()
+        .find(|row| row.id == provider)
+        .map(crate::provider_report::credential_env_keys)
+        .unwrap_or_default();
     if names.is_empty() {
         anyhow::bail!("no API key environment mapping for {provider}; use --api-key or --file");
     }
@@ -990,7 +1000,7 @@ async fn set_credential_key(
     provider: &str,
     json: bool,
 ) -> Result<()> {
-    let key = key_from_source(args, provider)?;
+    let key = key_from_source(client, endpoint, args, provider).await?;
     ensure!(!key.trim().is_empty(), "API key must not be empty");
     let mut extra: std::collections::BTreeMap<String, String> =
         args.extra.clone().into_iter().collect();

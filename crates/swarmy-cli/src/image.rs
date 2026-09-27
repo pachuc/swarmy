@@ -43,8 +43,8 @@ async fn build(
     // on the control plane so the client never needs object store credentials.
     let image = tokio::task::spawn_blocking(move || swarmy_image::build_ext4(&recipe, &directory))
         .await??;
-    let (client, endpoint) = crate::api_client::connect()?;
-    let uploaded = crate::api_client::call_upload(
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let uploaded = swarmy_client::api_client::call_upload(
         &endpoint,
         image.path(),
         client.upload_image(&swarmy_client::UploadImage {

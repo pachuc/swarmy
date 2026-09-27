@@ -1,7 +1,11 @@
 //! Resolve one API endpoint for local or selected remote commands.
+use crate::Client;
 use anyhow::{Context, Result};
-use swarmy_client::Client;
 
+/// Load the configured API URL.
+///
+/// # Errors
+/// Fails when configuration is unreadable or its API token is missing.
 pub fn endpoint() -> Result<String> {
     let settings = swarmy_config::Settings::load()?.settings;
     anyhow::ensure!(
@@ -15,6 +19,10 @@ pub fn endpoint() -> Result<String> {
         .unwrap_or_else(|| format!("http://{}", settings.api.listen)))
 }
 
+/// Connect with the configured API token.
+///
+/// # Errors
+/// Fails when configuration or the API endpoint is invalid.
 pub fn connect() -> Result<(Client, String)> {
     let endpoint = endpoint()?;
     let token = swarmy_config::Settings::load()?.settings.api.token;
@@ -23,24 +31,32 @@ pub fn connect() -> Result<(Client, String)> {
     Ok((client, endpoint))
 }
 
-pub fn api_error(error: &swarmy_client::Error, endpoint: &str) -> anyhow::Error {
+/// Include the endpoint in an API failure.
+#[must_use]
+pub fn api_error(error: &crate::Error, endpoint: &str) -> anyhow::Error {
     anyhow::anyhow!("API at {endpoint}: {error}")
 }
 
+/// Apply the standard API request timeout.
+///
+/// # Errors
+/// Fails if the request times out or the API rejects it.
 pub async fn call<T>(
     endpoint: &str,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+    future: impl std::future::Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     call_with_timeout(endpoint, std::time::Duration::from_secs(10), future).await
 }
 
 /// Call the API with an explicit timeout. Image uploads use
-/// [`swarmy_client::upload_timeout`], sized from the body on disk, because
+/// [`crate::upload_timeout`], sized from the body on disk, because
 /// the server chunks and stores the whole image before answering.
+/// # Errors
+/// Fails if the request times out or the API rejects it.
 pub async fn call_with_timeout<T>(
     endpoint: &str,
     timeout: std::time::Duration,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+    future: impl std::future::Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     tokio::time::timeout(timeout, future)
         .await
@@ -49,13 +65,15 @@ pub async fn call_with_timeout<T>(
 }
 
 /// Upload a file with a timeout proportional to its size on disk.
+/// # Errors
+/// Fails if the file cannot be inspected or the request fails.
 pub async fn call_upload<T>(
     endpoint: &str,
     file: &std::path::Path,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+    future: impl std::future::Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     let size = std::fs::metadata(file)
         .with_context(|| format!("reading upload size for {}", file.display()))?
         .len();
-    call_with_timeout(endpoint, swarmy_client::upload_timeout(size), future).await
+    call_with_timeout(endpoint, crate::upload_timeout(size), future).await
 }

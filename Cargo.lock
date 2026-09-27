@@ -4176,6 +4176,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-chat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "futures-util",
+ "ratatui",
+ "reqwest",
+ "serde_json",
+ "swarmy-api-types",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "tokio",
+ "ulid",
+ "unicode-width",
+]
+
+[[package]]
 name = "swarmy-cli"
 version = "0.1.0"
 dependencies = [
@@ -4186,19 +4205,18 @@ dependencies = [
  "fs2",
  "futures-util",
  "jiff",
- "ratatui",
  "reqwest",
  "rustix",
  "serde",
  "serde_json",
  "shell-words",
  "swarmy-api-types",
+ "swarmy-chat",
  "swarmy-client",
  "swarmy-cloud",
  "swarmy-config",
  "swarmy-core",
  "swarmy-image",
- "swarmy-llm",
  "swarmy-version",
  "tempfile",
  "tokio",
@@ -4214,6 +4232,7 @@ dependencies = [
 name = "swarmy-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "bytes",
  "futures-util",
@@ -4222,6 +4241,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-api-types",
+ "swarmy-config",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -4289,6 +4309,26 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "ulid",
+]
+
+[[package]]
+name = "swarmy-devtools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "crossterm",
+ "futures-util",
+ "jiff",
+ "serde_json",
+ "swarmy-api-types",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-llm",
+ "tokio",
  "ulid",
 ]
 

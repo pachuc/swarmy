@@ -4753,6 +4753,9 @@
           },
           "provider": {
             "type": "string"
+          },
+          "tools": {
+            "type": "boolean"
           }
         }
       },

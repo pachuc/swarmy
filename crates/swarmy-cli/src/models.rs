@@ -27,8 +27,6 @@ fn provider_row(row: swarmy_api_types::Provider) -> Result<Value, serde_json::Er
     Ok(value)
 }
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
 #[derive(Subcommand)]
 pub enum Command {
     /// List available models.
@@ -49,13 +47,13 @@ pub enum Command {
 }
 
 pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
-    // Probes verify providers directly from the CLI and need no API.
+    // Probes use the control plane credential resolver, not laptop credentials.
     if let Command::Probe(args) = command {
         return crate::models_probe::run(args, json).await;
     }
-    let (client, endpoint) = crate::api_client::connect()?;
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
     match command {
-        Command::Probe(_) => unreachable!("probes run without the API"),
+        Command::Probe(_) => unreachable!("probes dispatch before listing"),
         Command::Ls {
             provider,
             reasoning,
@@ -63,7 +61,7 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             if let Some(id) = &provider {
                 known_provider(&client, &endpoint, id).await?;
             }
-            let rows = crate::api_client::call(
+            let rows = swarmy_client::api_client::call(
                 &endpoint,
                 client.cli_models(None, provider.as_deref(), reasoning),
             )
@@ -79,7 +77,7 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
         Command::Show { model } => {
             let (provider, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
             known_provider(&client, &endpoint, provider).await?;
-            let rows = crate::api_client::call(
+            let rows = swarmy_client::api_client::call(
                 &endpoint,
                 client.cli_models(Some(id), Some(provider), false),
             )
@@ -99,9 +97,11 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             }
         }
         Command::Search { pattern } => {
-            let rows =
-                crate::api_client::call(&endpoint, client.cli_models(Some(&pattern), None, false))
-                    .await?;
+            let rows = swarmy_client::api_client::call(
+                &endpoint,
+                client.cli_models(Some(&pattern), None, false),
+            )
+            .await?;
             ensure!(!rows.is_empty(), "no models found matching {pattern:?}");
             print_models(
                 &rows
@@ -112,7 +112,7 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             )?;
         }
         Command::Providers => {
-            let rows = crate::api_client::call(&endpoint, client.cli_providers()).await?;
+            let rows = swarmy_client::api_client::call(&endpoint, client.cli_providers()).await?;
             if json {
                 println!(
                     "{}",
@@ -126,9 +126,9 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             } else {
                 for row in rows {
                     let row = provider_row(row)?;
-                    let api: swarmy_llm::catalog::Api = serde_json::from_value(row["api"].clone())?;
+                    let api = text(&row["api"]);
                     line(&format!(
-                        "{}  {:?}  credential: {}",
+                        "{}  {}  credential: {}",
                         text(&row["id"]),
                         api,
                         text(&row["credential"])
@@ -150,7 +150,7 @@ async fn known_provider(
     endpoint: &str,
     id: &str,
 ) -> anyhow::Result<()> {
-    let providers = crate::api_client::call(endpoint, client.cli_providers()).await?;
+    let providers = swarmy_client::api_client::call(endpoint, client.cli_providers()).await?;
     ensure!(
         providers.iter().any(|provider| provider.id == id),
         "unknown provider: {id}"
@@ -194,18 +194,21 @@ fn print_models(rows: &[Value], json: bool) -> anyhow::Result<()> {
 }
 // Keep long catalog ids and environment lists readable on narrow terminals.
 fn line(value: &str) {
+    #[cfg(feature = "chat")]
     let width = crossterm::terminal::size()
         .map_or(80, |(width, _)| usize::from(width))
         .clamp(20, 100);
+    #[cfg(not(feature = "chat"))]
+    let width = 80;
     let mut output = String::new();
     let mut column = 0;
     for word in value.split_inclusive(' ') {
-        if column > 2 && column + word.width() > width {
+        if column > 2 && column + display_width(word) > width {
             output.push_str("\n  ");
             column = 2;
         }
         for ch in word.chars() {
-            let size = ch.width().unwrap_or(0);
+            let size = char_width(ch);
             if column + size > width {
                 output.push_str("\n  ");
                 column = 2;
@@ -215,4 +218,21 @@ fn line(value: &str) {
         }
     }
     println!("{output}");
+}
+
+#[cfg(feature = "chat")]
+fn display_width(value: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(value)
+}
+#[cfg(not(feature = "chat"))]
+fn display_width(value: &str) -> usize {
+    value.chars().count()
+}
+#[cfg(feature = "chat")]
+fn char_width(value: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(value).unwrap_or(0)
+}
+#[cfg(not(feature = "chat"))]
+fn char_width(_value: char) -> usize {
+    1
 }

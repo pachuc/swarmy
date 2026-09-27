@@ -1,7 +1,7 @@
 use clap::Args;
 use swarmy_core::{InferenceSelection, ReasoningEffort};
 
-#[derive(Args, Default)]
+#[derive(Args, Clone, Default)]
 pub struct SelectionArgs {
     /// Provider for a new ephemeral session
     #[arg(long, conflicts_with = "agent")]

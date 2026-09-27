@@ -336,7 +336,7 @@ async fn api_checks(
     checks: &mut Vec<Check>,
     loaded: &Loaded,
 ) -> Vec<crate::provider_report::ProviderRow> {
-    let (client, endpoint) = match crate::api_client::connect() {
+    let (client, endpoint) = match swarmy_client::api_client::connect() {
         Ok(result) => result,
         Err(error) => {
             checks.push(Check::new(
@@ -347,7 +347,7 @@ async fn api_checks(
             return Vec::new();
         }
     };
-    let health = crate::api_client::call(&endpoint, client.health()).await;
+    let health = swarmy_client::api_client::call(&endpoint, client.health()).await;
     let health = match health {
         Ok(health) => health,
         Err(error) => {
@@ -384,11 +384,16 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
-    let snapshot = crate::api_client::call(&endpoint, client.doctor())
+    let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));
     match snapshot {
-        Ok(snapshot) => snapshot_checks(checks, snapshot, &loaded.settings),
+        Ok(snapshot) => {
+            let providers = swarmy_client::api_client::call(&endpoint, client.cli_providers())
+                .await
+                .ok();
+            snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
+        }
         Err(error) => {
             checks.push(Check::new(
                 "API diagnostics",
@@ -508,12 +513,33 @@ fn snapshot_checks(
     checks: &mut Vec<Check>,
     snapshot: Snapshot,
     settings: &Settings,
+    api_providers: Option<&[swarmy_api_types::Provider]>,
 ) -> Vec<crate::provider_report::ProviderRow> {
     service_checks(checks, &snapshot);
-    let mut rows = settings
-        .catalog()
-        .map(|catalog| crate::provider_report::local(&catalog, "absent"))
-        .unwrap_or_default();
+    let mut rows = api_providers.map_or_else(
+        || {
+            settings
+                .catalog()
+                .map(|catalog| {
+                    crate::provider_report::local(
+                        catalog
+                            .providers()
+                            .map(|p| (p.id.clone(), p.env_keys.clone())),
+                        "absent",
+                    )
+                })
+                .unwrap_or_default()
+        },
+        |providers| {
+            crate::provider_report::local(
+                providers.iter().map(|p| {
+                    let keys = crate::provider_report::credential_env_keys(p);
+                    (p.id.clone(), keys)
+                }),
+                "absent",
+            )
+        },
+    );
     let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {
@@ -580,7 +606,7 @@ mod tests {
         }))
         .unwrap();
         let settings = Settings::default();
-        snapshot_checks(&mut checks, snapshot, &settings);
+        snapshot_checks(&mut checks, snapshot, &settings, None);
         assert!(
             checks
                 .iter()

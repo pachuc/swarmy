@@ -364,6 +364,7 @@ async fn probe_rejects_unknown_and_scripted_models_before_credentials() {
     let Err(swarmy_client::Error::Api { status, .. }) = fixture
         .client
         .probe_model(&api::ProbeModel {
+            tools: false,
             provider: "no-such-provider".into(),
             model: "no-such-model".into(),
             label: None,
@@ -391,6 +392,7 @@ async fn probe_rejects_unknown_and_scripted_models_before_credentials() {
     let Err(swarmy_client::Error::Api { status, .. }) = fixture
         .client
         .probe_model(&api::ProbeModel {
+            tools: false,
             provider: scripted.0,
             model: scripted.1,
             label: None,

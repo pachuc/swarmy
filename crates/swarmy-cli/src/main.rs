@@ -1,25 +1,21 @@
 mod agent_command;
-mod api_client;
+use swarmy_client::api_client;
 mod api_commands;
-mod auth;
 mod auth_command;
 mod bench_command;
 mod client_bench;
-mod client_chat;
+use swarmy_chat::client_conversation;
 mod client_commands;
-mod client_conversation;
 mod cost_command;
 mod dev;
 mod doctor;
 mod gc;
 mod image;
 mod image_command;
-mod input;
 mod models;
 mod models_probe;
 mod models_probe_command;
 mod provider_report;
-mod provider_runtime;
 mod selection_command;
 mod session_command;
 mod tools;
@@ -173,7 +169,7 @@ fn main() -> anyhow::Result<()> {
         let Command::Auth { command, auth_file } = cli.command else {
             unreachable!()
         };
-        return tokio::runtime::Runtime::new()?.block_on(auth::run(command, auth_file, cli.json));
+        return run_auth_tool(command, auth_file, cli.json);
     }
     // Every database-backed command runs through the control-plane API, so
     // the client links no database, message bus, or object store library.
@@ -230,7 +226,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 client_commands::chat(client, session_id, image, agent, new, selection, true)
                     .await?;
             } else {
-                client_chat::run(client, session_id, image, agent, new, selection).await?;
+                #[cfg(feature = "chat")]
+                swarmy_chat::client_chat::run(
+                    client,
+                    session_id,
+                    image,
+                    agent,
+                    new,
+                    selection.clone().into(),
+                    selection.route,
+                )
+                .await?;
+                #[cfg(not(feature = "chat"))]
+                anyhow::bail!(
+                    "interactive chat is unavailable in this headless build; use --json or install with --features chat"
+                );
             }
         }
         #[cfg(feature = "remote")]
@@ -260,6 +270,60 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 // `run` and `chat` exist only in this binary: `swarmy-session` shares
 // `auth_command` but serves database commands instead, so the session-route
 // parse test lives here rather than in the shared module.
+fn run_auth_tool(
+    command: auth_command::Command,
+    file: Option<PathBuf>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+    let helper = if sibling.is_file() {
+        sibling.into_os_string()
+    } else {
+        "swarmy-auth".into()
+    };
+    let mut process = std::process::Command::new(helper);
+    if json {
+        process.arg("--json");
+    }
+    if let Some(file) = file {
+        process.arg("--auth-file").arg(file);
+    }
+    match command {
+        auth_command::Command::Import { file, label } => {
+            process.arg("import");
+            if let Some(file) = file {
+                process.arg("--file").arg(file);
+            }
+            if let Some(label) = label {
+                process.arg("--label").arg(label);
+            }
+        }
+        auth_command::Command::Login {
+            provider,
+            label,
+            resource,
+            scope,
+        } => {
+            process.arg("login").arg(provider);
+            if let Some(label) = label {
+                process.arg("--label").arg(label);
+            }
+            if let Some(resource) = resource {
+                process.arg("--resource").arg(resource);
+            }
+            if let Some(scope) = scope {
+                process.arg("--scope").arg(scope);
+            }
+        }
+        _ => unreachable!("only interactive auth commands use the helper"),
+    }
+    let status = process.status().map_err(|error| {
+        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
+    })?;
+    anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod session_route_tests {
     use clap::Parser;

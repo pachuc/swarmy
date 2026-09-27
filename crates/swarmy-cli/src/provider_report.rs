@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use swarmy_llm::catalog::Catalog;
 
 #[derive(Serialize, Deserialize)]
 pub struct ProviderRow {
@@ -11,26 +10,24 @@ pub struct ProviderRow {
     pub gateway_reason: String,
 }
 
-pub fn local(catalog: &Catalog, store: &str) -> Vec<ProviderRow> {
-    catalog
-        .providers()
-        .map(|provider| {
-            let keys = swarmy_llm::auth::provider_env_keys(&provider.id);
-            let credential = if provider.id == "fake" {
+pub fn local(
+    providers: impl IntoIterator<Item = (String, Vec<String>)>,
+    store: &str,
+) -> Vec<ProviderRow> {
+    providers
+        .into_iter()
+        .map(|(id, keys)| {
+            let credential = if id == "fake" {
                 "not required"
-            } else if keys
-                .iter()
-                .filter(|key| provider.env_keys.iter().any(|env| env == **key))
-                .any(|key| present(key))
-            {
+            } else if keys.iter().any(|key| present(key)) {
                 "environment"
-            } else if ambient(&provider.id) {
+            } else if ambient(&id) {
                 "ambient"
             } else {
                 "none"
             };
             ProviderRow {
-                provider: provider.id.clone(),
+                provider: id,
                 credential: credential.into(),
                 status: match credential {
                     "none" => "no credential",
@@ -77,4 +74,16 @@ fn ambient(provider: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Environment keys advertised by the control plane for a provider.
+pub fn credential_env_keys(provider: &swarmy_api_types::Provider) -> Vec<String> {
+    provider
+        .catalog
+        .get("credential_env_keys")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|key| key.as_str().map(str::to_owned))
+        .collect()
 }

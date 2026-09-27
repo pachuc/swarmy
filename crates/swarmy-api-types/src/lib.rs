@@ -500,6 +500,8 @@ pub struct CredentialDeleted {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProbeModel {
     pub provider: String,
+    #[serde(default)]
+    pub tools: bool,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,

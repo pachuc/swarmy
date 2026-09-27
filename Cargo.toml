@@ -52,6 +52,7 @@ axum = "0.8"
 tower = "0.5"
 swarmy-api-types = { path = "crates/swarmy-api-types" }
 swarmy-client = { path = "crates/swarmy-client" }
+swarmy-chat = { path = "crates/swarmy-chat" }
 async-nats = { version = "0.49", features = ["ring"] }
 async-stream = "0.3"
 async-trait = "0.1"

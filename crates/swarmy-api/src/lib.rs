@@ -49,6 +49,8 @@ pub struct AppState {
     /// 413 response after the validated prefix is drained.
     pub upload_max_bytes: u64,
     pub default_image: Option<String>,
+    /// Scripted provider files on the API host, if this stack serves fake.
+    pub fake_files: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub default_selection: swarmy_core::ResolvedSelection,
     stream_connections:
         Arc<std::sync::Mutex<std::collections::HashMap<String, stream::Connection>>>,
@@ -77,6 +79,7 @@ impl AppState {
             upload_dir: std::env::temp_dir().join("swarmy-uploads"),
             upload_max_bytes: 16 * 1024 * 1024 * 1024,
             default_image: None,
+            fake_files: None,
             default_selection: swarmy_core::ResolvedSelection {
                 provider: "fake".into(),
                 model: "scripted".into(),
@@ -805,6 +808,10 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                     ("api".into(), serde_json::json!(p.api)),
                     ("auth_kinds".into(), serde_json::json!(p.auth_kinds)),
                     ("env_keys".into(), serde_json::json!(p.env_keys)),
+                    (
+                        "credential_env_keys".into(),
+                        serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
+                    ),
                     ("credential".into(), serde_json::json!("unknown")),
                 ]
                 .into(),
