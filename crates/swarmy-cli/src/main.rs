@@ -307,7 +307,13 @@ fn run_auth_tool(
     file: Option<PathBuf>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let mut process = std::process::Command::new("swarmy-auth");
+    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+    let helper = if sibling.is_file() {
+        sibling.into_os_string()
+    } else {
+        "swarmy-auth".into()
+    };
+    let mut process = std::process::Command::new(helper);
     if json {
         process.arg("--json");
     }

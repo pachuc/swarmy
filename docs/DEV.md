@@ -251,7 +251,7 @@ make install
 links no database library and needs no `libfdb_c`; the service binaries
 (scheduler, worker, gateway, API) still link it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature, which compiles the EC2, SSM, S3,
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature compiles the EC2, SSM, S3,
 and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
