@@ -668,4 +668,3 @@ fn append_detail(details: &mut Vec<Value>, detail: &Value) {
     }
     details.push(detail.clone());
 }
-
