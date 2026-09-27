@@ -498,7 +498,7 @@ impl Worker {
             && SandboxArguments::parse(&call.tool, call.arguments.clone()).is_ok()
     }
 
-    pub(super) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
+    pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
         let mut cache = self.display_by_session.lock().await;
         if let Some(display) = cache.get(&session.session_id) {
             return Ok(*display);

@@ -11,8 +11,8 @@ pub(super) enum StepFailure<'a> {
 
 /// A resolved route step and its metering identity.
 pub(super) struct ResolvedAttempt {
-    provider: String,
-    entry: Option<String>,
+    pub(crate) provider: String,
+    pub(crate) entry: Option<String>,
     route: Option<String>,
     route_step: u32,
     snapshot: swarmy_store::RouteSnapshot,
@@ -44,7 +44,7 @@ pub(super) fn warn_on_route_fallback(
 }
 
 impl Worker {
-    pub(super) async fn prepare_request(
+    pub(crate) async fn prepare_request(
         &self,
         session: &SessionRecord,
         request: &mut swarmy_llm::Request,
