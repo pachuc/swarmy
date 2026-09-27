@@ -1,5 +1,10 @@
 use super::inference::warn_on_route_fallback;
-use super::*;
+use super::{
+    Action, Arc, BlobStore, Bus, Context, Event, FailoverAction, HeldLease, LiveFeed,
+    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SandboxArguments, SessionId, SessionRecord,
+    SessionState, Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid,
+    Worker, decode, encode,
+};
 
 /// State carried from claim through the final fenced write. The lease remains
 /// owned here while the heartbeat holds a clone of its handle.
@@ -153,7 +158,7 @@ impl Worker {
         let id = session.session_id;
         loop {
             if self
-                .interrupt_if_requested(&mut *session, lease, &snapshot, &mut *events, turn)
+                .interrupt_if_requested(&mut *session, lease, snapshot, &mut *events, turn)
                 .await?
             {
                 return Ok(());
@@ -168,7 +173,7 @@ impl Worker {
             match self
                 .config
                 .harness
-                .step(&session, &snapshot, &events, message_id)
+                .step(session, snapshot, events, message_id)
             {
                 Action::BuildInference(request) => {
                     return self
@@ -176,13 +181,13 @@ impl Worker {
                         .await;
                 }
                 Action::DispatchTools(calls) => {
-                    let display = self.session_display(&session).await?;
+                    let display = self.session_display(session).await?;
                     if self.store.ensure_session_computer(id).await.is_ok()
                         && calls
                             .iter()
                             .all(|call| self.can_dispatch_tool(call, display))
                     {
-                        return self.dispatch_calls(&session, lease, &calls, turn).await;
+                        return self.dispatch_calls(session, lease, &calls, turn).await;
                     }
                     let batch: Vec<_> = calls
                         .into_iter()
@@ -209,17 +214,17 @@ impl Worker {
                 }
                 Action::FoldResults(message) => {
                     return self
-                        .fold_results(&mut *session, lease, &snapshot, &mut *events, message)
+                        .fold_results(&mut *session, lease, snapshot, &mut *events, message)
                         .await;
                 }
                 Action::Wait => {
-                    if let Some(request_id) = pending_inference(&events) {
+                    if let Some(request_id) = pending_inference(events) {
                         let job = self.load_job(request_id).await?;
                         return self.submit(&job, lease).await;
                     }
-                    if pending_tools(&events).is_empty() {
+                    if pending_tools(events).is_empty() {
                         return self
-                            .finish(&mut *session, lease, &snapshot, &mut *events, turn)
+                            .finish(&mut *session, lease, snapshot, &mut *events, turn)
                             .await;
                     }
                     if self
@@ -231,7 +236,7 @@ impl Worker {
                 }
                 Action::EndTurn => {
                     return self
-                        .finish(&mut *session, lease, &snapshot, &mut *events, turn)
+                        .finish(&mut *session, lease, snapshot, &mut *events, turn)
                         .await;
                 }
             }
@@ -393,15 +398,9 @@ impl Worker {
         Ok(false)
     }
 
-    /// Failover happens only here, at the turn boundary between attempts: a
-    /// retryable failure moves the session to the next usable step of its
-    /// route for the next attempt, wrapping to a recovered earlier step when
-    /// every later step is open. When every step is open the session waits
-    /// for the earliest retry among them. The snapshot, the step move, and
-    /// the wait write commit in one store transaction, matching the
-    /// pre-routes park cost; unrouted sessions resolve the implicit chain
-    /// of their provider's entries here even though their first attempt
-    /// skipped the snapshot read.
+    /// Failover happens at attempt boundaries. The store chooses the next
+    /// usable route step (or earliest retry) and commits that decision with
+    /// the wait, so a retried worker cannot select a different step.
     pub(super) async fn failover_or_park(
         &self,
         session: &mut SessionRecord,

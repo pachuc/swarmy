@@ -1,5 +1,9 @@
 use super::inference::StepFailure;
-use super::*;
+use super::{
+    Context, Event, InferenceJob, InferenceJobRef, InflightRecord, MAX_SCAN_LIMIT,
+    MissedTickBehavior, RequestId, Result, SessionState, SubjectToken, WorkQueue, Worker, ensure,
+    interval, runnable_partition,
+};
 
 impl Worker {
     pub(super) async fn fail_unserved(&self, job: &InferenceJob) -> Result<bool> {
@@ -23,30 +27,28 @@ impl Worker {
                 },
             )
             .await?
-        {
-            if let Some(turn) = job
+            && let Some(turn) = job
                 .request
                 .messages
                 .iter()
                 .rev()
                 .find(|message| message.role == swarmy_core::MessageRole::User)
                 .map(|message| message.id)
-            {
+        {
+            self.store.observe_turn_metric(
+                job.session_id,
+                turn,
+                swarmy_store::MetricPatch::Wait {
+                    request_id: job.request_id.to_string(),
+                    kind: swarmy_store::WaitKind::MissingGateway,
+                },
+            );
+            if !retryable && let Event::InferenceFailed { error, .. } = event {
                 self.store.observe_turn_metric(
                     job.session_id,
                     turn,
-                    swarmy_store::MetricPatch::Wait {
-                        request_id: job.request_id.to_string(),
-                        kind: swarmy_store::WaitKind::MissingGateway,
-                    },
+                    swarmy_store::MetricPatch::Error(error),
                 );
-                if !retryable && let Event::InferenceFailed { error, .. } = event {
-                    self.store.observe_turn_metric(
-                        job.session_id,
-                        turn,
-                        swarmy_store::MetricPatch::Error(error),
-                    );
-                }
             }
         }
         Ok(true)

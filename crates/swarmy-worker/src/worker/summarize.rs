@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Context, Event, HeldLease, InferenceJob, MessageId, Nudge, RequestId, Result, SessionId,
+    SessionRecord, Snapshot, Timestamp, Ulid, WorkQueue, Worker, runnable_partition,
+};
 
 impl Worker {
     pub(super) async fn summary_completed(
@@ -315,10 +318,8 @@ impl Worker {
         self.publish_events(session.session_id, &[archived]).await?;
         Ok(true)
     }
-    /// Verbatim tail for a side successor from the replayed history: recent
-    /// tool rounds plus a synthetic continue note for a mid-task rollover
-    /// (tool results still waiting for their next inference). The summary
-    /// output itself is the opening, not tail.
+    /// Retain complete tool rounds and continue a mid-task successor without
+    /// losing tool results awaiting the next inference.
     pub(super) fn side_successor_tail(
         history: &[swarmy_core::Message],
         summary: &swarmy_core::Message,
@@ -336,9 +337,7 @@ impl Worker {
         tail
     }
 
-    /// Wake a fresh successor so a mid-task rollover continues without
-    /// waiting for input. Workers only claim runnable steps, so the session
-    /// is marked runnable first: a bare nudge to an idle session is dropped.
+    /// Mark the successor runnable before nudging: idle nudges are dropped.
     pub(super) async fn wake_successor(&self, previous: SessionId, successor: SessionId) {
         if let Err(error) = self.store.wake_session(successor, Timestamp::now()).await {
             tracing::warn!(
@@ -507,9 +506,7 @@ pub(super) fn pressure_warned(snapshot: &Snapshot, events: &[Event]) -> bool {
         .any(is_pressure_warning)
 }
 
-/// Synthetic user note that ends a mid-task successor so the turn continues
-/// with the same pending intent: replaying it reaches the ready phase and
-/// the worker builds the next inference from the summary plus the tail.
+/// Continue a mid-task successor from its summary and retained tail.
 pub(super) fn continue_message() -> swarmy_core::Message {
     use swarmy_core::{MessageId, MessageRole, Part};
     swarmy_core::Message {

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BlobStore, Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord,
+    LeaseOwnerId, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord,
+    SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
+};
 
 pub(super) enum StepFailure<'a> {
     Publication(&'a swarmy_bus::Error),
@@ -19,10 +23,7 @@ pub(super) fn warn_on_route_fallback(
     resolved: Option<&str>,
     skipped: &[String],
 ) {
-    // A deleted or renamed route falls back to the implicit chain; say so
-    // once per resolution so the operator can fix the assignment. A route
-    // whose named steps are all unready falls back the same way, but the
-    // route itself exists, so name the skipped steps instead.
+    // Distinguish a missing assignment from a route with no usable step.
     let requested = session.route.as_deref();
     if requested.is_some() && resolved != requested {
         if skipped.is_empty() {
