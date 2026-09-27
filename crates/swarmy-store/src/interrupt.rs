@@ -18,7 +18,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<bool> {
-        let Some(bytes) = trx.get(&self.event_space(id).pack(&(seq,)), false).await? else {
+        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
             return Ok(false);
         };
         let event: Event = self.hydrate(&bytes).await?;
@@ -122,7 +122,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<Option<RequestId>> {
-        let Some(bytes) = trx.get(&self.event_space(id).pack(&(seq,)), false).await? else {
+        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
             return Ok(None);
         };
         let event: Event = match decode::<StoredValue>(&bytes)? {
@@ -156,7 +156,7 @@ impl Store {
             retry_at: None,
         };
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
-        trx.set(&self.event_space(session.session_id).pack(&(head,)), &value);
+        trx.set(&self.event_key(session.session_id, head), &value);
         session.head_seq = head;
         session.interrupt_requested = false;
         self.transition(trx, session, SessionState::Idle, now).await

@@ -241,7 +241,7 @@ impl Store {
                 {
                     return Err(StoreError::InvalidState);
                 }
-                trx.set(&self.event_space(job.session_id).pack(&(head,)), event);
+                trx.set(&self.event_key(job.session_id, head), event);
                 trx.clear(
                     &crate::keys::Keys::new(&self.root)
                         .tool_job(&(job.request_id.as_bytes().as_slice(),)),
@@ -261,7 +261,7 @@ impl Store {
                     &true,
                 )?;
                 let pending = self.pending_space(job.session_id);
-                trx.clear(&pending.pack(&(job.request_id.as_bytes().as_slice(),)));
+                trx.clear(&self.session_tool_key(job.session_id, job.request_id));
                 session.head_seq = head;
                 if scan(&trx, pending.range(), 1).await?.is_empty() {
                     self.transition(&trx, session, SessionState::Runnable, self.now())

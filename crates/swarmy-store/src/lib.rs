@@ -963,7 +963,7 @@ impl Store {
                 if session.state != SessionState::Idle {
                     return Err(StoreError::InvalidState);
                 }
-                trx.set(&self.event_space(id).pack(&(head,)), value);
+                trx.set(&self.event_key(id, head), value);
                 write(&trx, &self.turn_key(id), &message.id)?;
                 write(&trx, replay_key, &head)?;
                 session.head_seq = head;
@@ -991,7 +991,7 @@ impl Store {
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
             let mut event = event.clone();
             event.set_seq(seq);
-            let key = self.event_space(id).pack(&(seq,));
+            let key = self.event_key(id, seq);
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
             if size > MAX_BATCH_BYTES {
@@ -1053,7 +1053,7 @@ impl Store {
         let values = self
             .transaction(|trx| async move {
                 let space = self.event_space(id);
-                let mut begin = space.pack(&(after,));
+                let mut begin = self.event_key(id, after);
                 begin.push(0);
                 scan(&trx, (begin, space.range().1), limit).await
             })

@@ -934,3 +934,46 @@ async fn failover_and_park_cost_one_transaction_each() {
     );
     assert_eq!(before + 1, f.store.transaction_count());
 }
+
+#[tokio::test]
+async fn cached_scheduler_pick_matches_transactional_snapshot() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.entry("openai", "primary").await;
+    f.entry("openai", "backup").await;
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let id = routed_session(&f).await;
+    let (session, agent) = f.store.fetch_session_with_agent(id).await.unwrap().unwrap();
+    let now = Timestamp::now();
+    let snapshot = f
+        .store
+        .route_snapshot(
+            session.agent_id,
+            session.route.as_deref(),
+            session.inference.provider.as_deref(),
+            None,
+            "openai",
+            now,
+        )
+        .await
+        .unwrap();
+    let mut cache = swarmy_store::RouteCache::default();
+    let cached = f
+        .store
+        .route_pick_with_cache(&session, agent.as_ref(), None, "openai", now, &mut cache)
+        .await
+        .unwrap();
+    assert_eq!(cached.name, snapshot.name);
+    assert_eq!(
+        cached.pick(session.route_step),
+        snapshot.pick(session.route_step)
+    );
+    assert_eq!(cached.steps.len(), snapshot.steps.len());
+    for (a, b) in cached.steps.iter().zip(snapshot.steps.iter()) {
+        assert_eq!(
+            (&a.provider, &a.label, a.open_until),
+            (&b.provider, &b.label, b.open_until)
+        );
+    }
+}

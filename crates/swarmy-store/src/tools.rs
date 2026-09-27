@@ -5,19 +5,6 @@ use swarmy_core::{Event, Lease, RequestId, SessionId, SessionState, ToolJob};
 type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
-    pub(crate) fn tool_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        {
-            let keys = crate::keys::Keys::new(&self.root);
-            let suffix = &(id.as_bytes().as_slice(),);
-            match kind {
-                "tool_job" => keys.tool_job(suffix),
-                "tool_placement" => keys.tool_placement(suffix),
-                "placed_tool_claim" => keys.placed_tool_claim(suffix),
-                "tool_done" => keys.tool_done(suffix),
-                _ => unreachable!("unknown tool key family"),
-            }
-        }
-    }
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
         crate::keys::Keys::new(&self.root)
             .session_tools_space(&(id.as_ulid().to_bytes().as_slice()))
@@ -119,7 +106,7 @@ impl Store {
                         return Err(StoreError::InvalidState);
                     }
                     let event = trx
-                        .get(&self.event_space(id).pack(&(job.step,)), false)
+                        .get(&self.event_key(id, job.step), false)
                         .await?
                         .ok_or(StoreError::InvalidState)?;
                     match self.hydrate::<Event>(&event).await? {
@@ -147,13 +134,7 @@ impl Store {
                             .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
                         placement,
                     )?;
-                    write(
-                        &trx,
-                        &self
-                            .pending_space(id)
-                            .pack(&(job.request_id.as_bytes().as_slice(),)),
-                        &(),
-                    )?;
+                    write(&trx, &self.session_tool_key(id, job.request_id), &())?;
                 }
                 let session = self.session(&trx, id).await?;
                 self.transition(&trx, session, SessionState::WaitingTools, self.now())
@@ -185,7 +166,7 @@ impl Store {
             else {
                 return Err(StoreError::InvalidState);
             };
-            trx.set(&self.event_space(id).pack(&(*seq,)), value);
+            trx.set(&self.event_key(id, *seq), value);
             if let Some(turn) = turn {
                 write(trx, &self.request_turn_key(*request_id), &turn)?;
             }

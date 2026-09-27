@@ -110,7 +110,7 @@ impl Store {
                     read(&trx, &turn_key),
                 )?;
                 let space = self.event_space(id);
-                let mut begin = space.pack(&(session.snapshot_seq.unwrap_or(0),));
+                let mut begin = self.event_key(id, session.snapshot_seq.unwrap_or(0));
                 begin.push(0);
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),

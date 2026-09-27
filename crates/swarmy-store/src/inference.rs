@@ -39,22 +39,6 @@ struct PreparedCompletion {
 }
 
 impl Store {
-    fn inference_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        {
-            let keys = crate::keys::Keys::new(&self.root);
-            let suffix = &(id.as_bytes().as_slice(),);
-            match kind {
-                "inference_request" => keys.inference_request(suffix),
-                "inference_claim" => keys.inference_claim(suffix),
-                "inference_result" => keys.inference_result(suffix),
-                "inference_input" => keys.inference_input(suffix),
-                "idem" => keys.idem(suffix),
-                "inflight" => keys.inflight(suffix),
-                _ => unreachable!("unknown inference key family"),
-            }
-        }
-    }
-
     pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).inference_request(&(id.as_bytes().as_slice(),))
     }
@@ -315,7 +299,7 @@ impl Store {
                 )
                 .await?;
             }
-            trx.set(&self.event_space(claim.session_id).pack(&(head,)), event);
+            trx.set(&self.event_key(claim.session_id, head), event);
             trx.set(
                 &crate::keys::Keys::new(&self.root)
                     .inference_result(&(claim.request_id.as_bytes().as_slice(),)),
@@ -338,10 +322,7 @@ impl Store {
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {
-                trx.set(
-                    &self.event_space(claim.session_id).pack(&(snapshot.seq,)),
-                    event,
-                );
+                trx.set(&self.event_key(claim.session_id, snapshot.seq), event);
                 trx.set(
                     &self.snapshot_key(claim.session_id, snapshot.seq),
                     reference,
@@ -508,10 +489,12 @@ impl Store {
         for (key, value) in values {
             let record: InflightRecord = self.hydrate(&value).await?;
             if key
-                != self.inference_key(
-                    "inflight",
-                    RequestId::for_step(record.session_id, record.seq),
+                != crate::keys::Keys::new(&self.root).inflight(&(RequestId::for_step(
+                    record.session_id,
+                    record.seq,
                 )
+                .as_bytes()
+                .as_slice(),))
             {
                 return Err(StoreError::Corrupt);
             }

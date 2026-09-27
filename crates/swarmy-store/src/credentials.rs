@@ -355,24 +355,6 @@ pub struct LegacyMigration {
 }
 
 impl CredentialStore {
-    fn entry_key(
-        &self,
-        table: &str,
-        scope: CredentialScope,
-        provider: &str,
-        label: &str,
-    ) -> Vec<u8> {
-        {
-            let keys = crate::keys::Keys::new(&self.store.root);
-            let suffix = &(scope.to_string(), provider, label);
-            match table {
-                "credential_entry" => keys.credential_entry(suffix),
-                "credential_entry_lease" => keys.credential_entry_lease(suffix),
-                _ => unreachable!("unknown credential key family"),
-            }
-        }
-    }
-
     /// Add or replace a labelled entry without changing its creation order.
     /// # Errors
     /// Returns encryption, encoding, or database errors.
@@ -389,7 +371,11 @@ impl CredentialStore {
             &entry_identity(provider, label),
             record,
         )?;
-        let key = self.entry_key("credential_entry", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         let (needs_login, expires_at) = entry_readiness(record, self.store.now());
         self.store
             .transaction(|trx| {
@@ -409,7 +395,13 @@ impl CredentialStore {
                             ciphertext: ciphertext.clone(),
                         },
                     )?;
-                    trx.clear(&self.entry_key("credential_entry_lease", scope, provider, label));
+                    trx.clear(
+                        &crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+                            scope.to_string(),
+                            provider,
+                            label,
+                        )),
+                    );
                     Ok(())
                 }
             })
@@ -425,7 +417,11 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<Option<CredentialRecord>> {
-        let key = self.entry_key("credential_entry", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         let entry: Option<EntryValue> = self
             .store
             .transaction(|trx| {
@@ -454,7 +450,11 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<()> {
-        let key = self.entry_key("credential_entry", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -479,8 +479,20 @@ impl CredentialStore {
     ) -> Result<()> {
         self.store
             .transaction(|trx| async move {
-                trx.clear(&self.entry_key("credential_entry", scope, provider, label));
-                trx.clear(&self.entry_key("credential_entry_lease", scope, provider, label));
+                trx.clear(
+                    &crate::keys::Keys::new(&self.store.root).credential_entry(&(
+                        scope.to_string(),
+                        provider,
+                        label,
+                    )),
+                );
+                trx.clear(
+                    &crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+                        scope.to_string(),
+                        provider,
+                        label,
+                    )),
+                );
                 Ok(())
             })
             .await?;
@@ -540,8 +552,11 @@ impl CredentialStore {
                 ) else {
                     continue;
                 };
-                let entry_key =
-                    self.entry_key("credential_entry", scope, provider.as_str(), "default");
+                let entry_key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+                    scope.to_string(),
+                    provider.as_str(),
+                    "default",
+                ));
                 let legacy_key = crate::keys::Keys::new(&self.store.root)
                     .credential(&(scope.to_string(), provider.as_str()));
                 let lease_key = crate::keys::Keys::new(&self.store.root)
@@ -717,8 +732,16 @@ impl CredentialStore {
         if ttl.is_zero() {
             return Err(StoreError::LeaseMismatch);
         }
-        let key = self.entry_key("credential_entry", scope, provider, label);
-        let lease_key = self.entry_key("credential_entry_lease", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
+        let lease_key = crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         let observed: EntryValue = self
             .store
             .transaction(|trx| {

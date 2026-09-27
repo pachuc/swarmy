@@ -67,6 +67,20 @@ impl Store {
             .await
     }
 
+    pub(crate) fn event_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
+        let id_bytes = id.as_ulid().to_bytes();
+        Keys::new(&self.root).event(&(id_bytes.as_slice(), seq))
+    }
+
+    pub(crate) fn session_tool_key(
+        &self,
+        id: SessionId,
+        request: swarmy_core::RequestId,
+    ) -> Vec<u8> {
+        let id_bytes = id.as_ulid().to_bytes();
+        Keys::new(&self.root).session_tools(&(id_bytes.as_slice(), request.as_bytes().as_slice()))
+    }
+
     pub(crate) fn event_space(&self, id: SessionId) -> Subspace {
         crate::keys::Keys::new(&self.root).event_space(&(id.as_ulid().to_bytes().as_slice()))
     }
@@ -239,6 +253,7 @@ const INFERENCE_RESULT: &str = "inference_result";
 const INFERENCE_WAIT: &str = "inference_wait";
 const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
 const INFLIGHT: &str = "inflight";
+/// Legacy session side row, read and cleared during V1 hydration.
 const INTERRUPT_REQUESTED: &str = "interrupt_requested";
 const LEASE: &str = "lease";
 const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
@@ -266,13 +281,21 @@ const SESSION: &str = "session";
 const SESSION_BY_AGENT: &str = "session_by_agent";
 const SESSION_CHAIN: &str = "session_chain";
 const SESSION_CHUNK: &str = "session_chunk";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_IDLE: &str = "session_idle";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_IMAGE: &str = "session_image";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_INFERENCE: &str = "session_inference";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_KIND: &str = "session_kind";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_PLAN: &str = "session_plan";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_ROUTE: &str = "session_route";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_ROUTE_STEP: &str = "session_route_step";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_STATE_SINCE: &str = "session_state_since";
 const SESSION_TOOLS: &str = "session_tools";
 const SNAPSHOT: &str = "snapshot";
@@ -410,6 +433,9 @@ impl<'a> Keys<'a> {
         self.root
             .subspace(&(ENTRY_QUOTA_OBSERVED,))
             .subspace(suffix)
+    }
+    pub(crate) fn event<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
+        self.event_space(&()).pack(suffix)
     }
     pub(crate) fn event_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root.subspace(&(EVENT,)).subspace(suffix)
@@ -696,6 +722,9 @@ impl<'a> Keys<'a> {
     pub(crate) fn session_state_since_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root.subspace(&(SESSION_STATE_SINCE,)).subspace(suffix)
     }
+    pub(crate) fn session_tools<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
+        self.session_tools_space(&()).pack(suffix)
+    }
     pub(crate) fn session_tools_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root.subspace(&(SESSION_TOOLS,)).subspace(suffix)
     }
@@ -888,7 +917,7 @@ mod registry_tests {
             {
                 let text = std::fs::read_to_string(&path).unwrap();
                 assert!(
-                    !text.contains("pack(&(\""),
+                    !text.contains("pack(&("),
                     "raw key family in {}",
                     path.display()
                 );

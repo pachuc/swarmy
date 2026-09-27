@@ -116,6 +116,24 @@ pub struct RouteCache {
     breakers: HashMap<(String, Option<String>), (Option<Timestamp>, Option<String>)>,
 }
 
+// Keep route and provider precedence identical for transactional worker reads
+// and scheduler reads backed by a per-tick cache.
+fn select_route<'a>(
+    session_route: Option<&'a str>,
+    agent_route: Option<&'a str>,
+    default_route: Option<&'a str>,
+    session_provider: Option<&'a str>,
+    agent_provider: Option<&'a str>,
+    default_provider: &'a str,
+) -> (Option<&'a str>, &'a str) {
+    (
+        session_route.or(agent_route).or(default_route),
+        session_provider
+            .or(agent_provider)
+            .unwrap_or(default_provider),
+    )
+}
+
 fn skipped_step_reason(provider: &str, label: &str) -> String {
     format!("{provider}/{label} names an entry with no ready credential; trying the next step")
 }
@@ -398,17 +416,14 @@ impl Store {
         now: Timestamp,
         cache: &mut RouteCache,
     ) -> Result<RouteSnapshot> {
-        let name = session
-            .route
-            .as_deref()
-            .or_else(|| agent.and_then(|agent| agent.route.as_deref()))
-            .or(default_route);
-        let provider = session
-            .inference
-            .provider
-            .as_deref()
-            .or_else(|| agent.and_then(|agent| agent.provider.as_deref()))
-            .unwrap_or(default_provider);
+        let (name, provider) = select_route(
+            session.route.as_deref(),
+            agent.and_then(|agent| agent.route.as_deref()),
+            default_route,
+            session.inference.provider.as_deref(),
+            agent.and_then(|agent| agent.provider.as_deref()),
+            default_provider,
+        );
         let record = match name {
             Some(name) => {
                 if let Some(cached) = cache.routes.get(name) {
@@ -636,17 +651,19 @@ impl Store {
         default_provider: &str,
         now: Timestamp,
     ) -> Result<RouteSnapshot> {
-        let name = session_route
-            .or(agent_route)
-            .or(default_route)
-            .map(str::to_owned);
+        let (name, provider) = select_route(
+            session_route,
+            agent_route,
+            default_route,
+            session_provider,
+            agent_provider,
+            default_provider,
+        );
+        let name = name.map(str::to_owned);
         let record = match name.as_deref() {
             Some(name) => read::<RouteRecord>(trx, &self.route_key(name)).await?,
             None => None,
         };
-        let provider = session_provider
-            .or(agent_provider)
-            .unwrap_or(default_provider);
         // One pool scan per distinct provider in the same transaction; entry
         // scans dominate snapshot cost, so named routes share them here.
         let mut providers: Vec<&str> = record

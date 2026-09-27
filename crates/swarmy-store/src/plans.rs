@@ -60,7 +60,7 @@ impl Store {
                 if let Ok(arguments) = parsed {
                     session.plan.clone_from(&arguments.plan);
                 }
-                trx.set(&self.event_space(id).pack(&(seq,)), value);
+                trx.set(&self.event_key(id, seq), value);
                 session.head_seq = seq;
                 self.write_session(&trx, &session)
             }

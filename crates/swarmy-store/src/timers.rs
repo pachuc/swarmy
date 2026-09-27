@@ -42,11 +42,10 @@ impl Store {
 
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
         write(trx, &self.timer_key(timer.agent_id, timer.timer_id), timer)?;
-        let active = self.active_timers(timer.agent_id).pack(&(timer
-            .timer_id
-            .as_ulid()
-            .to_bytes()
-            .as_slice(),));
+        let active = crate::keys::Keys::new(&self.root).timer_active(&(
+            timer.agent_id.as_ulid().to_bytes().as_slice(),
+            timer.timer_id.as_ulid().to_bytes().as_slice(),
+        ));
         if timer.status == TimerStatus::Pending {
             write(trx, &active, timer)?;
             write(trx, &self.timer_due_key(timer), timer)?;
@@ -140,7 +139,7 @@ impl Store {
                 result,
             };
             let value = self.prepare(&event).await?;
-            trx.set(&self.event_space(id).pack(&(seq,)), &value);
+            trx.set(&self.event_key(id, seq), &value);
             session.head_seq = seq;
             self.write_session(&trx, &session)?;
             Ok(event)
@@ -345,7 +344,7 @@ impl Store {
             },
         };
         let value = self.prepare(&event).await?;
-        trx.set(&self.event_space(id).pack(&(seq,)), &value);
+        trx.set(&self.event_key(id, seq), &value);
         session.head_seq = seq;
         self.transition(trx, session, SessionState::Runnable, now)
             .await?;

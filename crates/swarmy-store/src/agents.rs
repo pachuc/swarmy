@@ -567,8 +567,8 @@ impl Store {
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = 1;
                 self.write_session(&trx, &created)?;
-                trx.set(&self.event_space(id).pack(&(1_u64,)), opening);
-                trx.set(&self.event_space(old).pack(&(head,)), archived_value);
+                trx.set(&self.event_key(id, 1_u64), opening);
+                trx.set(&self.event_key(old, head), archived_value);
                 previous.head_seq = head;
                 self.transition(&trx, previous, SessionState::Completed, now)
                     .await?;
@@ -717,7 +717,7 @@ impl Store {
                 .ok()
                 .and_then(|i| i.checked_add(1))
                 .ok_or(StoreError::SequenceOverflow)?;
-            trx.set(&self.event_space(id).pack(&(seq,)), value);
+            trx.set(&self.event_key(id, seq), value);
         }
         let head = self
             .session(trx, old)
@@ -725,7 +725,7 @@ impl Store {
             .head_seq
             .checked_add(1)
             .ok_or(StoreError::SequenceOverflow)?;
-        trx.set(&self.event_space(old).pack(&(head,)), archived_value);
+        trx.set(&self.event_key(old, head), archived_value);
         Ok(())
     }
 

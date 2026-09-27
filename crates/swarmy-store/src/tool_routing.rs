@@ -220,20 +220,19 @@ impl Store {
                 result: ToolResult::Error { error: explanation },
             })
             .await?;
-        trx.set(
-            &self.event_space(job.session_id).pack(&(session.head_seq,)),
-            &event,
-        );
-        for kind in ["tool_job", "tool_placement", "placed_tool_claim"] {
-            trx.clear(&self.tool_key(kind, job.request_id));
-        }
+        trx.set(&self.event_key(job.session_id, session.head_seq), &event);
+        let keys = crate::keys::Keys::new(&self.root);
+        let request = job.request_id.as_bytes();
+        trx.clear(&keys.tool_job(&(request.as_slice(),)));
+        trx.clear(&keys.tool_placement(&(request.as_slice(),)));
+        trx.clear(&keys.placed_tool_claim(&(request.as_slice(),)));
         write(
             trx,
             &crate::keys::Keys::new(&self.root).tool_done(&(job.request_id.as_bytes().as_slice(),)),
             &true,
         )?;
         let pending = self.pending_space(job.session_id);
-        trx.clear(&pending.pack(&(job.request_id.as_bytes().as_slice(),)));
+        trx.clear(&self.session_tool_key(job.session_id, job.request_id));
         if session.state != SessionState::Completed
             && scan(trx, pending.range(), 1).await?.is_empty()
         {
@@ -375,7 +374,7 @@ impl Store {
                     message: message.clone(),
                 })
                 .await?;
-            trx.set(&self.event_space(id).pack(&(session.head_seq,)), &event);
+            trx.set(&self.event_key(id, session.head_seq), &event);
             self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;
         }

@@ -153,9 +153,9 @@ impl Store {
                     inflight,
                 );
                 for (seq, value) in preceding {
-                    trx.set(&self.event_space(id).pack(&(*seq,)), value);
+                    trx.set(&self.event_key(id, *seq), value);
                 }
-                trx.set(&self.event_space(id).pack(&(step,)), value);
+                trx.set(&self.event_key(id, step), value);
                 if let Some(turn) = turn {
                     write(&trx, &self.request_turn_key(request_id), &turn)?;
                 }
@@ -253,7 +253,7 @@ impl Store {
                 {
                     return Err(StoreError::InterruptPending);
                 }
-                trx.set(&self.event_space(id).pack(&(head,)), value);
+                trx.set(&self.event_key(id, head), value);
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
