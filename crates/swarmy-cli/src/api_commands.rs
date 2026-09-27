@@ -264,6 +264,27 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
     print_usage(&response, json)
 }
 
+async fn close_session(client: &Client, endpoint: &str, id: &str) -> Result<()> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.close_session(
+            id,
+            &swarmy_api_types::CloseSession {
+                idempotency_key: Ulid::generate().to_string(),
+            },
+        ),
+    )
+    .await
+    .context("session close timed out")?
+    .map_err(|error| match &error {
+        swarmy_client::Error::Api { body, .. } if body.code == "main_session_close" => {
+            anyhow::anyhow!("cannot close an agent main session; use swarmy agent delete")
+        }
+        _ => swarmy_client::api_client::api_error(&error, endpoint),
+    })?;
+    Ok(())
+}
+
 async fn session(
     client: &Client,
     endpoint: &str,
@@ -315,16 +336,7 @@ async fn session(
         }
         session_command::Command::Close { session_id } => {
             let id = session_id.to_string();
-            request(
-                endpoint,
-                client.close_session(
-                    &id,
-                    &swarmy_api_types::CloseSession {
-                        idempotency_key: Ulid::generate().to_string(),
-                    },
-                ),
-            )
-            .await?;
+            close_session(client, endpoint, &id).await?;
             print(
                 &json!({"event":"session_closed","session_id":id}),
                 &format!("Closed session {id}"),
