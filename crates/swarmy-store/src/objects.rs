@@ -3,11 +3,9 @@
 //! Every service using a metadata namespace must use the same object
 //! namespace. This constructor lives next to the store so the client binary
 //! never links an object storage implementation.
-#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(test)]
 use object_store::aws::AmazonS3ConfigKey;
 use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
 use swarmy_config::Settings;
@@ -43,26 +41,11 @@ fn finish(base: AmazonS3Builder, settings: &Settings, bucket: &str) -> AmazonS3B
 }
 
 fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
-    let (_, default_credentials) = regional_mode(settings);
-    if default_credentials {
-        // No static keys in settings: honour the process environment (static
-        // keys, session token, web identity, container credentials) the same
-        // way the AWS default chain does, falling back to the
-        // instance-metadata provider that the nodes use with their role.
-        finish(AmazonS3Builder::from_env(), settings, bucket)
-    } else {
-        // Settings-driven (the dev stack): ignore the shell so an
-        // `AWS_SESSION_TOKEN`, `AWS_ENDPOINT_URL`, or `AWS_ALLOW_HTTP` left
-        // over in the developer's environment cannot leak into the client.
-        finish(AmazonS3Builder::new(), settings, bucket)
-    }
+    builder_with_env(settings, bucket, &std::env::vars().collect())
 }
 
-/// Test constructor: the same client built from an explicit settings value
-/// plus an explicit environment map, so unit tests never depend on the
-/// developer's shell. The production [`builder`] above is the only caller of
-/// [`AmazonS3Builder::from_env`].
-#[cfg(test)]
+/// Use one path for live credentials and isolated test environments. The
+/// underlying S3 builder also reads web identity settings during `build()`.
 fn builder_with_env(
     settings: &Settings,
     bucket: &str,
@@ -151,6 +134,14 @@ mod tests {
 
     #[test]
     fn no_keys_selects_the_instance_metadata_provider() {
+        // object_store reads AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN
+        // directly from the process environment during build(), even with
+        // an explicit map. In that environment the web identity provider wins.
+        if std::env::var_os("AWS_WEB_IDENTITY_TOKEN_FILE").is_some()
+            && std::env::var_os("AWS_ROLE_ARN").is_some()
+        {
+            return;
+        }
         // The nodes carry no static keys: the client must fall back to the
         // instance-metadata provider for the instance role.
         let mut settings = Settings::default();
@@ -191,6 +182,12 @@ mod tests {
 
     #[test]
     fn bucket_profile_uses_settings_region_without_network() {
+        // The S3 builder checks web identity directly in the process shell.
+        if std::env::var_os("AWS_WEB_IDENTITY_TOKEN_FILE").is_some()
+            && std::env::var_os("AWS_ROLE_ARN").is_some()
+        {
+            return;
+        }
         let settings = Settings {
             s3_endpoint: String::new(),
             s3_bucket: "bucket".into(),

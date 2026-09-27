@@ -585,8 +585,8 @@ impl Conversation {
                     session_id,
                 } => {
                     report_summary(quiet, json, &previous_session_id, &session_id);
-                    // The successor still has to pick the turn up; keep the
-                    // pickup deadline armed as if the worker had not started.
+                    // Preserve the existing successor-switch behavior: a summary
+                    // notice marks the turn started and disables the pickup deadline.
                     progress.started = true;
                 }
             }

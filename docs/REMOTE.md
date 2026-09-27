@@ -220,10 +220,9 @@ the dev stack uses static keys from settings. No laptop command opens the
 object store: every volume, image, GC, and doctor command runs through the
 control-plane API. The laptop identity needs bucket permissions only for
 `swarmy remote up` and `remote down`, which create and remove the bucket
-through the provisioning SDK. `swarmy doctor --remote NAME` checks the bucket
-through the API by listing under `chunks/`; an empty bucket is healthy. Image
-listing reads FoundationDB metadata, while image builds and chunk operations
-use S3 through the node services.
+through the provisioning SDK. `swarmy doctor --remote NAME` reads node and service heartbeats, image
+metadata, and credentials through the API; it does not check the bucket. Image
+builds and chunk operations use S3 through the node services.
 
 Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `s3:PutEncryptionConfiguration`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
