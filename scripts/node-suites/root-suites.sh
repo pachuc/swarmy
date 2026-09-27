@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Usage: root-suites.sh BRANCH  — runs the root-only suites for the worker/store/gateway area on this node.
+# SUITES overrides the list (comma-separated), for example
+# SUITES="swarmyd --test node" for the node suite alone. Each suite's full output goes to
+# ~/suite-logs/<branch suffix>-<package>-<test>.log; the console gets the tail.
 set -uo pipefail
 branch=$1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
@@ -33,10 +36,15 @@ fi
 echo "== image build"
 sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -2
 rc=0
-for suite in "swarmyd --test node" "swarmy-chaos --test bash" "swarmy-chaos --test continuity" "swarmy-chaos --test coding"; do
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+mkdir -p ~/suite-logs
+IFS=',' read -r -a suites <<< "${SUITES:-swarmyd --test node,swarmy-chaos --test bash,swarmy-chaos --test continuity,swarmy-chaos --test coding}"
+for suite in "${suites[@]}"; do
   set -- $suite
   echo "== $suite"
-  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tail -4; then :; else rc=1; fi
+  bash "$here/nbd-orphans.sh"
+  full=~/suite-logs/${branch##*/}-$1-$3.log
+  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -12; then :; else rc=1; fi
 done
 echo "== scripts/chaos-ci.sh"
 sudo -E env PATH="$PATH" bash scripts/chaos-ci.sh 2>&1 | tail -3 || rc=1
