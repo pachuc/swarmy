@@ -992,7 +992,7 @@ mod tests {
                 manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
             },
             String::new(),
-            self.now(),
+            Timestamp::now(),
             Some(session),
         ))
         .unwrap();
