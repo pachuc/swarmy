@@ -10,11 +10,14 @@ token=$2
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 id ci >/dev/null 2>&1 || useradd --create-home --shell /bin/bash ci
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar git sudo build-essential pkg-config libssl-dev clang libclang-dev python3 libfuse2t64 linux-modules-extra-"$(uname -r)"
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar git sudo build-essential pkg-config libssl-dev clang libclang-dev python3 libfuse2t64 rsync runc passt iproute2 util-linux e2fsprogs debootstrap
 # NBD device nodes must exist before root acceptance starts after a reboot.
 printf 'nbd\n' > /etc/modules-load.d/swarmy-ci.conf
 printf 'options nbd nbds_max=32 max_part=8\n' > /etc/modprobe.d/swarmy-ci.conf
-modprobe nbd nbds_max=32 max_part=8
+if ! modprobe nbd nbds_max=32 max_part=8; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-modules-extra-$(uname -r)"
+    modprobe nbd nbds_max=32 max_part=8
+fi
 install -d -o ci -g ci /var/lib/swarmy-ci /var/lib/swarmy-ci/target /var/lib/swarmy-ci/runner
 # Install dependencies in the service user's home, never in a transient checkout.
 runuser -u ci -- env HOME=/home/ci bash "$root/scripts/install-dev-tools.sh"
