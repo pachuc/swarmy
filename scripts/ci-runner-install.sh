@@ -84,10 +84,11 @@ Description=Clean swarmy CI Rust build cache
 Type=oneshot
 User=ci
 WorkingDirectory=/var/lib/swarmy-ci
+ConditionPathExists=/var/lib/swarmy-ci/work/swarmy/swarmy/Cargo.toml
 Environment=HOME=/home/ci
 Environment=PATH=/home/ci/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=CARGO_TARGET_DIR=/var/lib/swarmy-ci/target
-ExecStart=/home/ci/.cargo/bin/cargo clean --manifest-path /var/lib/swarmy-ci/work/_work/swarmy/swarmy/Cargo.toml
+ExecStart=/home/ci/.cargo/bin/cargo clean --manifest-path /var/lib/swarmy-ci/work/swarmy/swarmy/Cargo.toml
 UNIT
 cat > /etc/systemd/system/swarmy-ci-clean.timer <<'UNIT'
 [Unit]
