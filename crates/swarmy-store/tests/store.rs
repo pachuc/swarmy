@@ -2147,6 +2147,276 @@ async fn legacy_sessions_without_images_remain_readable() {
     test.cleanup().await;
 }
 
+// A complete legacy fixture needs each independently stored field.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn legacy_side_rows_migrate_to_one_versioned_session() {
+    type V2Fields = (
+        SessionId,
+        AgentId,
+        SessionState,
+        u64,
+        Option<u64>,
+        swarmy_core::SessionKind,
+        bool,
+        Vec<swarmy_core::PlanStep>,
+        swarmy_core::InferenceSelection,
+        bool,
+        Option<String>,
+        u32,
+        Option<swarmy_core::ImageRecord>,
+        Option<Timestamp>,
+        Option<Timestamp>,
+    );
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = SessionId::from_ulid(Ulid::from(0_u128));
+    let agent = AgentId::from_ulid(Ulid::from(0_u128));
+    let mut bytes = vec![1, 26];
+    bytes.extend([b'0'; 26]);
+    bytes.push(26);
+    bytes.extend([b'0'; 26]);
+    bytes.extend([1, 0, 0]); // Runnable, empty log, no snapshot.
+    assert_eq!(
+        bytes,
+        encode(&(id, agent, SessionState::Runnable, 0_u64, None::<u64>)).unwrap()
+    );
+    let header = test
+        .root
+        .pack(&("session", id.as_ulid().to_bytes().as_slice()));
+    let kind = test
+        .root
+        .pack(&("session_kind", id.as_ulid().to_bytes().as_slice()));
+    let step = test
+        .root
+        .pack(&("session_route_step", id.as_ulid().to_bytes().as_slice()));
+    let interrupt = test
+        .root
+        .pack(&("interrupt_requested", id.as_ulid().to_bytes().as_slice()));
+    // The header and these side rows are written with the original envelope.
+    let kind_bytes = encode(&swarmy_core::SessionKind::Named { agent_id: agent }).unwrap();
+    let step_bytes = [1, 3];
+    let interrupt_bytes = [1, 1];
+    let plan = vec![swarmy_core::PlanStep {
+        step: "migrate".into(),
+        status: swarmy_core::PlanStatus::InProgress,
+    }];
+    let selection = swarmy_core::InferenceSelection {
+        provider: Some("openai".into()),
+        model: None,
+        effort: None,
+    };
+    let image = swarmy_core::ImageRecord {
+        name: "base".into(),
+        tag: ImageTag("dev".into()),
+        manifest_id: ManifestId::from_ulid(Ulid::from(1_u128)),
+    };
+    let since = timestamp(123);
+    let rows = [
+        ("session_plan", encode(&plan).unwrap()),
+        ("session_inference", encode(&selection).unwrap()),
+        (
+            "session_route",
+            encode(&Some("primary".to_string())).unwrap(),
+        ),
+        ("session_image", encode(&image).unwrap()),
+        ("session_idle", encode(&since).unwrap()),
+        ("session_state_since", encode(&since).unwrap()),
+    ];
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                test.root.pack(&(name, id.as_ulid().to_bytes().as_slice())),
+                value,
+            )
+        })
+        .collect();
+    let deleted = test
+        .root
+        .pack(&("computer_deleted", agent.as_ulid().to_bytes().as_slice()));
+    test.db
+        .run(|trx, _| {
+            let (header, kind, step, interrupt, bytes, rows, deleted, kind_bytes) = (
+                &header,
+                &kind,
+                &step,
+                &interrupt,
+                &bytes,
+                &rows,
+                &deleted,
+                &kind_bytes,
+            );
+            async move {
+                trx.set(header, bytes);
+                trx.set(kind, kind_bytes);
+                trx.set(step, &step_bytes);
+                trx.set(interrupt, &interrupt_bytes);
+                trx.set(deleted, &encode(&true).unwrap());
+                for (key, value) in rows {
+                    trx.set(key, value);
+                }
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let legacy = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(legacy.route_step, 3);
+    assert!(legacy.interrupt_requested);
+    assert_eq!(
+        legacy.kind,
+        swarmy_core::SessionKind::Named { agent_id: agent }
+    );
+    assert!(legacy.computer_deleted);
+    assert_eq!(legacy.plan, plan);
+    assert_eq!(legacy.inference, selection);
+    assert_eq!(legacy.route.as_deref(), Some("primary"));
+    assert_eq!(test.store.pinned_image(id).await.unwrap(), Some(image));
+    assert_eq!(
+        test.store.session_state_since(id).await.unwrap(),
+        Some(since)
+    );
+    assert_eq!(
+        test.store.migrate_legacy_sessions().await.unwrap().migrated,
+        1
+    );
+    assert_eq!(
+        test.store.migrate_legacy_sessions().await.unwrap().migrated,
+        0
+    );
+    assert_eq!(test.store.fetch_session(id).await.unwrap().unwrap(), legacy);
+    let stored = test
+        .db
+        .run(|trx, _| {
+            let header = &header;
+            async move { Ok(trx.get(header, false).await?.unwrap().to_vec()) }
+        })
+        .await
+        .unwrap();
+    let fields: V2Fields = postcard::from_bytes(&stored[1..]).unwrap();
+    assert_eq!(fields.13, Some(since));
+    assert_eq!(fields.14, Some(since));
+    test.db
+        .run(|trx, _| {
+            let (header, kind, step, interrupt, rows) = (&header, &kind, &step, &interrupt, &rows);
+            async move {
+                assert_eq!(trx.get(header, false).await?.unwrap()[0], 2);
+                for key in [kind, step, interrupt] {
+                    assert!(trx.get(key, false).await?.is_none());
+                }
+                for (key, _) in rows {
+                    assert!(trx.get(key, false).await?.is_none());
+                }
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn malformed_legacy_row_is_skipped_without_stopping_boot_migration() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let bad_id = SessionId::from_ulid(Ulid::from(0_u128));
+    let good_id = SessionId::from_ulid(Ulid::from(1_u128));
+    let bad_key = test
+        .root
+        .pack(&("session", bad_id.as_ulid().to_bytes().as_slice()));
+    let good_key = test
+        .root
+        .pack(&("session", good_id.as_ulid().to_bytes().as_slice()));
+    let good_bytes = encode(&(
+        good_id,
+        AgentId::from_ulid(Ulid::from(1_u128)),
+        SessionState::Idle,
+        0_u64,
+        None::<u64>,
+    ))
+    .unwrap();
+    test.db
+        .run(|trx, _| {
+            let (bad_key, good_key, good_bytes) = (&bad_key, &good_key, &good_bytes);
+            async move {
+                trx.set(bad_key, &[1, 0xff]);
+                trx.set(good_key, good_bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let outcome = test.store.migrate_legacy_sessions().await.unwrap();
+    assert_eq!(outcome.migrated, 1);
+    assert_eq!(outcome.skipped, 1);
+    assert!(test.store.fetch_session(good_id).await.unwrap().is_some());
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn large_legacy_plan_migrates_without_shrinking_its_limit() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = SessionId::from_ulid(Ulid::generate());
+    let agent = AgentId::from_ulid(Ulid::generate());
+    let header = test
+        .root
+        .pack(&("session", id.as_ulid().to_bytes().as_slice()));
+    let plan_key = test
+        .root
+        .pack(&("session_plan", id.as_ulid().to_bytes().as_slice()));
+    let plan = vec![swarmy_core::PlanStep {
+        step: "x".repeat(80 * 1024 - 100),
+        status: swarmy_core::PlanStatus::Pending,
+    }];
+    let header_bytes = encode(&(id, agent, SessionState::Idle, 0_u64, None::<u64>)).unwrap();
+    let plan_bytes = encode(&plan).unwrap();
+    assert!(plan_bytes.len() < 80 * 1024);
+    test.db
+        .run(|trx, _| {
+            let (header, plan_key, header_bytes, plan_bytes) =
+                (&header, &plan_key, &header_bytes, &plan_bytes);
+            async move {
+                trx.set(header, header_bytes);
+                trx.set(plan_key, plan_bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.migrate_legacy_sessions().await.unwrap().migrated,
+        1
+    );
+    assert_eq!(
+        test.store.fetch_session(id).await.unwrap().unwrap().plan,
+        plan
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn fetch_and_claim_each_request_one_session_record() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let before = test.store.session_record_read_count();
+    test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(test.store.session_record_read_count() - before, 1);
+    let before = test.store.session_record_read_count();
+    test.store
+        .claim_step(id, owner(), timestamp(100))
+        .await
+        .unwrap();
+    assert_eq!(test.store.session_record_read_count() - before, 1);
+    test.cleanup().await;
+}
+
 #[path = "store/agents.rs"]
 mod agents;
 

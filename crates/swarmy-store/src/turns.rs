@@ -136,7 +136,8 @@ impl Store {
                     });
                 }
                 if let Some(route) = route {
-                    self.write_submit_route_step(&trx, id, route, now).await?;
+                    self.write_submit_route_step(&trx, id, &mut session, route, now)
+                        .await?;
                 }
                 trx.set(
                     &self
@@ -179,15 +180,15 @@ impl Store {
         &self,
         trx: &foundationdb::Transaction,
         id: SessionId,
+        session: &mut crate::StoredSession,
         route: &SubmitRouteStep,
         now: Timestamp,
     ) -> Result<()> {
-        let key = self.session_route_step_key(id);
-        let current: u32 = read(trx, &key).await?.unwrap_or(0);
+        let current = session.route_step;
         if route.step == current && route.reasons.is_empty() {
             return Ok(());
         }
-        write(trx, &key, &route.step)?;
+        session.route_step = route.step;
         if route.reasons.is_empty() {
             return Ok(());
         }
@@ -247,9 +248,7 @@ impl Store {
                         actual: session.head_seq,
                     });
                 }
-                if read::<bool>(&trx, &self.interrupt_key(id))
-                    .await?
-                    .unwrap_or(false)
+                if session.interrupt_requested
                     && !self
                         .last_event_is_operator_interrupt(&trx, id, expected_head)
                         .await?
@@ -260,9 +259,9 @@ impl Store {
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
-                trx.clear(&self.interrupt_key(id));
+                session.interrupt_requested = false;
                 // Turn end restarts the route chain with the next turn.
-                crate::write(&trx, &self.session_route_step_key(id), &0_u32)?;
+                session.route_step = 0;
                 self.transition(&trx, session, SessionState::Idle, now)
                     .await
             }

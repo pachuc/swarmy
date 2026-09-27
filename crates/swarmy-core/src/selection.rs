@@ -2,6 +2,8 @@ use crate::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 
 /// Unset fields inherit the next layer of inference defaults.
+/// Embedded in a stored session record. Keep this type's serialized shape frozen;
+/// append session fields through `trailing` instead.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceSelection {
     pub provider: Option<String>,

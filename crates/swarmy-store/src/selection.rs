@@ -1,4 +1,4 @@
-//! Inference metadata lives beside session headers to preserve their binary layout.
+//! Provider advertisements and the legacy session inference key.
 use crate::{Result, Store, read, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};

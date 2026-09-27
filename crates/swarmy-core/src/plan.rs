@@ -8,6 +8,8 @@ pub enum PlanStatus {
     Completed,
 }
 
+/// Embedded in a stored session record. Keep this type's serialized shape frozen;
+/// append session fields through `trailing` instead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanStep {

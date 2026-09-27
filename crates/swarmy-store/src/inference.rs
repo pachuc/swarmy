@@ -307,9 +307,7 @@ impl Store {
             trx.clear(&self.inference_key("inference_request", claim.request_id));
             trx.clear(&claim_key);
             session.head_seq = head;
-            let interrupt_requested = read::<bool>(&trx, &self.interrupt_key(claim.session_id))
-                .await?
-                .unwrap_or(false);
+            let interrupt_requested = session.interrupt_requested;
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {

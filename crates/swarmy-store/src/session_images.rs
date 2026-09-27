@@ -1,5 +1,5 @@
-//! Image metadata is stored separately so legacy session headers stay readable.
-use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read};
+//! Session image pins live in V2 records; V1 image rows are read during migration.
+use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError};
 use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
 
 pub(crate) type ImageCache =
@@ -10,15 +10,21 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn pinned_image(&self, id: SessionId) -> Result<Option<ImageRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.session_image_key(id)).await })
-            .await
+        self.transaction(|trx| async move {
+            match self.session(&trx, id).await {
+                Ok(session) => Ok(session.image),
+                Err(StoreError::SessionMissing) => Ok(None),
+                Err(error) => Err(error),
+            }
+        })
+        .await
     }
     pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
         self.root
             .pack(&("session_image", id.as_ulid().to_bytes().as_slice()))
     }
 
-    /// Read a session's pinned image. Only legacy sessions can lack this row.
+    /// Read a session's pinned image. Old sessions may lack a pin.
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn session_image(&self, id: SessionId) -> Result<Option<ManifestId>> {
@@ -27,9 +33,11 @@ impl Store {
         }
         let manifest = self
             .transaction(|trx| async move {
-                Ok(read::<ImageRecord>(&trx, &self.session_image_key(id))
-                    .await?
-                    .map(|image| image.manifest_id))
+                match self.session(&trx, id).await {
+                    Ok(session) => Ok(session.image.map(|image| image.manifest_id)),
+                    Err(StoreError::SessionMissing) => Ok(None),
+                    Err(error) => Err(error),
+                }
             })
             .await?;
         // Only committed, immutable pins are cached. A missing legacy row may

@@ -262,9 +262,7 @@ async fn failed_append_leaves_no_receipt_and_next_tick_retries() {
         .pack(&("session", id.as_ulid().to_bytes().as_slice()));
     let trx = test.db.create_trx().unwrap();
     let original = trx.get(&key, false).await.unwrap().unwrap();
-    let mut header: (SessionId, AgentId, SessionState, u64, Option<u64>) =
-        swarmy_core::decode(&original).unwrap();
-    header.3 = u64::MAX;
+    let header = (id, agent, SessionState::Idle, u64::MAX, None::<u64>);
     trx.set(&key, &encode(&header).unwrap());
     trx.commit().await.unwrap();
     assert!(matches!(

@@ -4,8 +4,7 @@
 //! runtime using `FoundationDB` has stopped. The default directory is `swarmy`.
 //! Event, snapshot, and request payloads above 80 KiB are uploaded before transactions start;
 //! failed transactions can leave unreferenced, content-addressed blobs for later GC.
-//! Session headers retain only small scalar fields; larger session metadata
-//! lives in side rows. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
+//! Session records use a per-record version; legacy side rows are migrated. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 mod agents;
 pub use agents::{AgentSessionOptions, CreateAgentOptions};
@@ -198,32 +197,110 @@ enum StoredValue {
     Blob(String),
 }
 
-// Keep the snapshot sequence in the header so state and head updates never
-// need object storage, even when the snapshot metadata is large.
+const SESSION_RECORD_VERSION: u8 = 2;
+// Postcard encodes a session id with a 26-byte prefix, so this marker cannot
+// collide with an inline V2 record. Oversized V1 side rows need bounded chunks.
+const SESSION_CHUNK_MARKER: u8 = 0xff;
+const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
+
+/// Counts from one bounded-page boot migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionMigration {
+    pub migrated: usize,
+    pub skipped: usize,
+}
+
+// Frozen version-one header. Do not add fields here.
 #[derive(Serialize, Deserialize)]
+struct StoredSessionV1 {
+    session_id: SessionId,
+    agent_id: swarmy_core::AgentId,
+    state: SessionState,
+    head_seq: u64,
+    snapshot_seq: Option<u64>,
+}
+
+/// Version two owns all session-local metadata. Add future fields only with
+/// `swarmy_core::trailing`; never change the shape of existing fields.
+#[derive(Serialize, Deserialize)]
+struct StoredSessionV2 {
+    session_id: SessionId,
+    agent_id: swarmy_core::AgentId,
+    state: SessionState,
+    head_seq: u64,
+    snapshot_seq: Option<u64>,
+    kind: swarmy_core::SessionKind,
+    computer_deleted: bool,
+    plan: Vec<swarmy_core::PlanStep>,
+    inference: swarmy_core::InferenceSelection,
+    interrupt_requested: bool,
+    route: Option<String>,
+    route_step: u32,
+    image: Option<swarmy_core::ImageRecord>,
+    idle_since: Option<jiff::Timestamp>,
+    state_since: Option<jiff::Timestamp>,
+}
+
+// Working copy shared by the state machine; V1 and V2 have different wire layouts.
 struct StoredSession {
     session_id: SessionId,
     agent_id: swarmy_core::AgentId,
     state: SessionState,
     head_seq: u64,
     snapshot_seq: Option<u64>,
-    // Side rows are read with the header but never change its legacy encoding.
-    #[serde(skip)]
     kind: swarmy_core::SessionKind,
-    #[serde(skip)]
     computer_deleted: bool,
-    #[serde(skip)]
     plan: Vec<swarmy_core::PlanStep>,
-    #[serde(skip)]
     inference: swarmy_core::InferenceSelection,
-    #[serde(skip)]
     interrupt_requested: bool,
-    // The route override and attempt position live in side rows so the
-    // header keeps its legacy encoding.
-    #[serde(skip)]
     route: Option<String>,
-    #[serde(skip)]
     route_step: u32,
+    image: Option<swarmy_core::ImageRecord>,
+    idle_since: Option<jiff::Timestamp>,
+    state_since: Option<jiff::Timestamp>,
+}
+
+impl From<StoredSessionV2> for StoredSession {
+    fn from(v: StoredSessionV2) -> Self {
+        Self {
+            session_id: v.session_id,
+            agent_id: v.agent_id,
+            state: v.state,
+            head_seq: v.head_seq,
+            snapshot_seq: v.snapshot_seq,
+            kind: v.kind,
+            computer_deleted: v.computer_deleted,
+            plan: v.plan,
+            inference: v.inference,
+            interrupt_requested: v.interrupt_requested,
+            route: v.route,
+            route_step: v.route_step,
+            image: v.image,
+            idle_since: v.idle_since,
+            state_since: v.state_since,
+        }
+    }
+}
+impl From<&StoredSession> for StoredSessionV2 {
+    fn from(v: &StoredSession) -> Self {
+        Self {
+            session_id: v.session_id,
+            agent_id: v.agent_id,
+            state: v.state,
+            head_seq: v.head_seq,
+            snapshot_seq: v.snapshot_seq,
+            kind: v.kind,
+            computer_deleted: v.computer_deleted,
+            plan: v.plan.clone(),
+            inference: v.inference.clone(),
+            interrupt_requested: v.interrupt_requested,
+            route: v.route.clone(),
+            route_step: v.route_step,
+            image: v.image.clone(),
+            idle_since: v.idle_since,
+            state_since: v.state_since,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -236,6 +313,7 @@ pub struct Store {
     /// Binding-level retries inside one call count once; the counter exists
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
+    session_record_reads: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -267,6 +345,7 @@ impl Store {
             images: Arc::default(),
             blobs,
             transactions: Arc::default(),
+            session_record_reads: Arc::default(),
         })
     }
 
@@ -279,6 +358,7 @@ impl Store {
             blobs,
             images: Arc::default(),
             transactions: Arc::default(),
+            session_record_reads: Arc::default(),
         }
     }
 
@@ -289,6 +369,14 @@ impl Store {
     #[cfg(any(test, feature = "test-support"))]
     pub fn transaction_count(&self) -> u64 {
         self.transactions.load(Ordering::Relaxed)
+    }
+
+    /// Number of session-record key reads made by this store instance.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn session_record_read_count(&self) -> u64 {
+        self.session_record_reads.load(Ordering::Relaxed)
     }
 
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
@@ -360,14 +448,288 @@ impl Store {
         }
     }
 
+    async fn hydrate_legacy_session(
+        &self,
+        trx: &Transaction,
+        header: StoredSessionV1,
+    ) -> Result<StoredSession> {
+        let id = header.session_id;
+        let (
+            kind,
+            computer_deleted,
+            plan,
+            inference,
+            interrupt_requested,
+            route,
+            route_step,
+            image,
+            idle_since,
+            state_since,
+        ) = futures::try_join!(
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_kind_key(id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
+            self.computer_deleted(trx, header.agent_id),
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_plan_key(id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_inference_key(id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(read(trx, &self.interrupt_key(id)).await?.unwrap_or(false))
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read::<Option<String>>(trx, &self.session_route_key(id))
+                        .await?
+                        .flatten(),
+                )
+            },
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_route_step_key(id))
+                        .await?
+                        .unwrap_or(0),
+                )
+            },
+            async { read(trx, &self.session_image_key(id)).await },
+            async { read(trx, &self.session_idle_key(id)).await },
+            async { read(trx, &self.session_state_since_key(id)).await },
+        )?;
+        Ok(StoredSession {
+            session_id: id,
+            agent_id: header.agent_id,
+            state: header.state,
+            head_seq: header.head_seq,
+            snapshot_seq: header.snapshot_seq,
+            kind,
+            computer_deleted,
+            plan,
+            inference,
+            interrupt_requested,
+            route,
+            route_step,
+            image,
+            idle_since,
+            state_since,
+        })
+    }
+
+    fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
+        self.root
+            .pack(&("session_chunk", id.as_ulid().to_bytes().as_slice(), index))
+    }
+
+    async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
+        if bytes.first() == Some(&SESSION_RECORD_VERSION) {
+            let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
+                if bytes.len() != 20 {
+                    return Err(StoreError::Corrupt);
+                }
+                let id = keys::session_id(bytes[2..18].to_vec())?;
+                let count = u16::from_be_bytes([bytes[18], bytes[19]]);
+                if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
+                    return Err(StoreError::Corrupt);
+                }
+                let mut payload = Vec::new();
+                for index in 0..count {
+                    let chunk = trx
+                        .get(&self.session_chunk_key(id, index), false)
+                        .await?
+                        .ok_or(StoreError::Corrupt)?;
+                    payload.extend_from_slice(&chunk);
+                }
+                payload
+            } else {
+                bytes[1..].to_vec()
+            };
+            let v: StoredSessionV2 =
+                postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+            let mut session: StoredSession = v.into();
+            // The agent tombstone is authoritative for every named side session.
+            // Deleting a computer cannot atomically rewrite an unbounded set
+            // of conversations, so keep this one shared fence until queried.
+            session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
+            Ok(session)
+        } else {
+            self.hydrate_legacy_session(trx, decode(bytes)?).await
+        }
+    }
+
+    pub(crate) async fn fetch_session_in(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+    ) -> Result<Option<(StoredSession, Option<Vec<u8>>)>> {
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
+        let Some(bytes) = trx.get(&self.session_key(id), false).await? else {
+            return Ok(None);
+        };
+        let session = self.decode_session_in(trx, &bytes).await?;
+        let snapshot = self.snapshot_for_session_in(trx, &session).await?;
+        Ok(Some((session, snapshot)))
+    }
+
+    pub(crate) async fn snapshot_for_session_in(
+        &self,
+        trx: &Transaction,
+        session: &StoredSession,
+    ) -> Result<Option<Vec<u8>>> {
+        match session.snapshot_seq {
+            Some(seq) => Ok(Some(
+                trx.get(&self.snapshot_key(session.session_id, seq), false)
+                    .await?
+                    .ok_or(StoreError::Corrupt)?
+                    .to_vec(),
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
-        read(trx, &self.session_key(id))
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
+        let bytes = trx
+            .get(&self.session_key(id), false)
             .await?
-            .ok_or(StoreError::SessionMissing)
+            .ok_or(StoreError::SessionMissing)?;
+        self.decode_session_in(trx, &bytes).await
+    }
+
+    // Clear legacy rows with the V2 write, never leaving side data that can
+    // override a newer version if an old process or maintenance job retries.
+    pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
+        let mut bytes = vec![SESSION_RECORD_VERSION];
+        bytes.extend(
+            postcard::to_allocvec(&StoredSessionV2::from(session))
+                .map_err(EncodingError::Payload)?,
+        );
+        if bytes.len() > SESSION_MAX_BYTES {
+            return Err(StoreError::TooLarge);
+        }
+        let (begin, end) = self
+            .root
+            .subspace(&(
+                "session_chunk",
+                session.session_id.as_ulid().to_bytes().as_slice(),
+            ))
+            .range();
+        trx.clear_range(&begin, &end);
+        if bytes.len() > INLINE_LIMIT {
+            let payload = &bytes[1..];
+            let count = u16::try_from(payload.len().div_ceil(INLINE_LIMIT))
+                .map_err(|_| StoreError::TooLarge)?;
+            for (index, chunk) in payload.chunks(INLINE_LIMIT).enumerate() {
+                trx.set(
+                    &self.session_chunk_key(
+                        session.session_id,
+                        u16::try_from(index).map_err(|_| StoreError::TooLarge)?,
+                    ),
+                    chunk,
+                );
+            }
+            bytes.truncate(1);
+            bytes.push(SESSION_CHUNK_MARKER);
+            bytes.extend(session.session_id.as_ulid().to_bytes());
+            bytes.extend(count.to_be_bytes());
+        }
+        trx.set(&self.session_key(session.session_id), &bytes);
+        let id = session.session_id;
+        for key in [
+            self.session_kind_key(id),
+            self.session_plan_key(id),
+            self.session_inference_key(id),
+            self.interrupt_key(id),
+            self.session_route_key(id),
+            self.session_route_step_key(id),
+            self.session_image_key(id),
+            self.session_idle_key(id),
+            self.session_state_since_key(id),
+        ] {
+            trx.clear(&key);
+        }
+        Ok(())
+    }
+
+    /// Rewrite remaining V1 sessions in bounded scan pages. Concurrent writers
+    /// are safe: each rewrite reads the header in its committing transaction.
+    /// # Errors
+    /// Returns scan and transaction errors; malformed individual rows are skipped.
+    pub async fn migrate_legacy_sessions(&self) -> Result<SessionMigration> {
+        let mut after = None;
+        let mut outcome = SessionMigration::default();
+        loop {
+            let page: Vec<(SessionId, bool)> = self
+                .transaction(|trx| async move {
+                    let (mut begin, end) = self.root.subspace(&("session",)).range();
+                    if let Some(id) = after {
+                        begin = self.session_key(id);
+                        begin.push(0);
+                    }
+                    let mut ids = Vec::new();
+                    for (key, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
+                        let (_, bytes): (String, Vec<u8>) =
+                            self.root.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                        ids.push((
+                            keys::session_id(bytes)?,
+                            value.first() != Some(&SESSION_RECORD_VERSION),
+                        ));
+                    }
+                    Ok(ids)
+                })
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().map(|(id, _)| *id);
+            for (id, legacy) in page {
+                if !legacy {
+                    continue;
+                }
+                let result = self
+                    .transaction(|trx| async move {
+                        let Some(value) = trx.get(&self.session_key(id), false).await? else {
+                            return Ok(false);
+                        };
+                        if value.first() == Some(&SESSION_RECORD_VERSION) {
+                            return Ok(false);
+                        }
+                        let session = self.hydrate_legacy_session(&trx, decode(&value)?).await?;
+                        self.write_session(&trx, &session)?;
+                        Ok(true)
+                    })
+                    .await;
+                match result {
+                    Ok(true) => outcome.migrated += 1,
+                    Ok(false) => {}
+                    Err(
+                        error @ (StoreError::Encoding(_)
+                        | StoreError::TooLarge
+                        | StoreError::Corrupt),
+                    ) => {
+                        tracing::warn!(%id, %error, "skipping invalid legacy session");
+                        outcome.skipped += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(outcome)
     }
 
     /// Create an empty session and pin its registered image in the same transaction.
-    /// The separate image row preserves the binary layout of legacy session headers.
     /// Runnable creation also indexes the session.
     /// # Errors
     /// Rejects unknown images, duplicate ids, nonempty logs, and invalid initial state.
@@ -388,21 +750,9 @@ impl Store {
     pub async fn fetch_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
         let stored = self
             .transaction(|trx| async move {
-                let Some(session) = read::<StoredSession>(&trx, &self.session_key(id)).await?
-                else {
+                let Some((session, snapshot)) = self.fetch_session_in(&trx, id).await? else {
                     return Ok(None);
                 };
-                let snapshot = if let Some(seq) = session.snapshot_seq {
-                    Some(
-                        trx.get(&self.snapshot_key(id, seq), false)
-                            .await?
-                            .ok_or(StoreError::Corrupt)?
-                            .to_vec(),
-                    )
-                } else {
-                    None
-                };
-                let session = self.session_metadata(&trx, session).await?;
                 Ok(Some((session, snapshot)))
             })
             .await?;
@@ -424,23 +774,10 @@ impl Store {
     ) -> Result<Option<(SessionRecord, Option<AgentRecord>)>> {
         let stored = self
             .transaction(|trx| async move {
-                let Some(session) = read::<StoredSession>(&trx, &self.session_key(id)).await?
-                else {
+                let Some((session, snapshot)) = self.fetch_session_in(&trx, id).await? else {
                     return Ok(None);
                 };
-                let snapshot = if let Some(seq) = session.snapshot_seq {
-                    Some(
-                        trx.get(&self.snapshot_key(id, seq), false)
-                            .await?
-                            .ok_or(StoreError::Corrupt)?
-                            .to_vec(),
-                    )
-                } else {
-                    None
-                };
-                let agent_id = session.agent_id;
-                let session = self.session_metadata(&trx, session).await?;
-                let agent = self.read_agent(&trx, agent_id).await?;
+                let agent = self.read_agent(&trx, session.agent_id).await?;
                 Ok(Some((session, snapshot, agent)))
             })
             .await?;
@@ -451,61 +788,6 @@ impl Store {
             self.hydrate_session(session, snapshot).await?,
             agent,
         )))
-    }
-
-    async fn session_metadata(
-        &self,
-        trx: &Transaction,
-        mut session: StoredSession,
-    ) -> Result<StoredSession> {
-        (
-            session.kind,
-            session.computer_deleted,
-            session.plan,
-            session.inference,
-            session.interrupt_requested,
-            session.route,
-            session.route_step,
-        ) = futures::try_join!(
-            self.session_kind(trx, session.session_id),
-            self.computer_deleted(trx, session.agent_id),
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_plan_key(session.session_id))
-                        .await?
-                        .unwrap_or_default(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_inference_key(session.session_id))
-                        .await?
-                        .unwrap_or_default(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.interrupt_key(session.session_id))
-                        .await?
-                        .unwrap_or(false),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read::<Option<String>>(trx, &self.session_route_key(session.session_id))
-                        .await?
-                        .flatten(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_route_step_key(session.session_id))
-                        .await?
-                        .unwrap_or(0),
-                )
-            },
-        )?;
-        Ok(session)
     }
 
     async fn hydrate_session(
@@ -553,18 +835,8 @@ impl Store {
                 }
                 let mut sessions = Vec::new();
                 for (_, value) in scan(&trx, (begin, end), limit).await? {
-                    let session: StoredSession = decode(&value)?;
-                    let snapshot = if let Some(seq) = session.snapshot_seq {
-                        Some(
-                            trx.get(&self.snapshot_key(session.session_id, seq), false)
-                                .await?
-                                .ok_or(StoreError::Corrupt)?
-                                .to_vec(),
-                        )
-                    } else {
-                        None
-                    };
-                    let session = self.session_metadata(&trx, session).await?;
+                    let session = self.decode_session_in(&trx, &value).await?;
+                    let snapshot = self.snapshot_for_session_in(&trx, &session).await?;
                     sessions.push((session, snapshot));
                 }
                 Ok(sessions)
@@ -757,7 +1029,7 @@ impl Store {
                     )
                     .await
                 } else {
-                    write(&trx, &self.session_key(id), &session)
+                    self.write_session(&trx, &session)
                 }
             }
         })
@@ -804,7 +1076,7 @@ impl Store {
                 }
                 trx.set(&self.snapshot_key(id, snapshot.seq), value);
                 session.snapshot_seq = Some(snapshot.seq);
-                write(&trx, &self.session_key(id), &session)
+                self.write_session(&trx, &session)
             }
         })
         .await
@@ -931,22 +1203,96 @@ mod compatibility_tests {
     use super::*;
 
     #[test]
+    fn fixed_versioned_session_bytes() {
+        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
+        let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128));
+        let v1 = StoredSessionV1 {
+            session_id: id,
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_seq: None,
+        };
+        let mut v1_bytes = vec![1, 26];
+        v1_bytes.extend([b'0'; 26]);
+        v1_bytes.push(26);
+        v1_bytes.extend([b'0'; 26]);
+        v1_bytes.extend([0, 0, 0]); // Idle, empty head, no snapshot.
+        assert_eq!(encode(&v1).unwrap(), v1_bytes);
+        let v2 = StoredSessionV2 {
+            session_id: id,
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_seq: None,
+            kind: swarmy_core::SessionKind::Ephemeral,
+            computer_deleted: false,
+            plan: Vec::new(),
+            inference: swarmy_core::InferenceSelection::default(),
+            interrupt_requested: false,
+            route: None,
+            route_step: 0,
+            image: None,
+            idle_since: None,
+            state_since: None,
+        };
+        let mut bytes = vec![SESSION_RECORD_VERSION];
+        bytes.extend(postcard::to_allocvec(&v2).unwrap());
+        let mut v2_bytes = v1_bytes;
+        v2_bytes[0] = 2;
+        v2_bytes.extend([0; 12]); // Kind through state-since are empty defaults.
+        assert_eq!(bytes, v2_bytes);
+        let decoded: StoredSessionV2 = postcard::from_bytes(&bytes[1..]).unwrap();
+        assert_eq!(decoded.session_id, id);
+        assert_eq!(decoded.route_step, 0);
+    }
+
+    #[test]
+    fn fixed_nondefault_v2_session_bytes() {
+        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
+        let v2 = StoredSessionV2 {
+            session_id: id,
+            agent_id: swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128)),
+            state: SessionState::Runnable,
+            head_seq: 0,
+            snapshot_seq: None,
+            kind: swarmy_core::SessionKind::Ephemeral,
+            computer_deleted: false,
+            plan: Vec::new(),
+            inference: swarmy_core::InferenceSelection::default(),
+            interrupt_requested: true,
+            route: None,
+            route_step: 3,
+            image: None,
+            idle_since: None,
+            state_since: None,
+        };
+        let mut expected = vec![SESSION_RECORD_VERSION, 26];
+        expected.extend([b'0'; 26]);
+        expected.push(26);
+        expected.extend([b'0'; 26]);
+        expected.extend([1, 0, 0]); // Runnable, empty log and snapshot.
+        expected.extend([0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0]);
+        let mut actual = vec![SESSION_RECORD_VERSION];
+        actual.extend(postcard::to_allocvec(&v2).unwrap());
+        assert_eq!(actual, expected);
+        let decoded: StoredSessionV2 = postcard::from_bytes(&expected[1..]).unwrap();
+        assert!(decoded.interrupt_requested);
+        assert_eq!(decoded.route_step, 3);
+    }
+
+    #[test]
     fn legacy_session_header_is_still_readable_and_writes_the_same_bytes() {
         // A tuple encodes the original five postcard fields without adding metadata.
         let id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 2));
         let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from_parts(1, 3));
         let original = encode(&(id, agent, SessionState::Idle, 42_u64, Some(20_u64))).unwrap();
-        let mut header: StoredSession = decode(&original).unwrap();
+        let header: StoredSessionV1 = decode(&original).unwrap();
         assert_eq!(header.session_id, id);
         assert_eq!(header.agent_id, agent);
         assert_eq!(header.state, SessionState::Idle);
         assert_eq!(header.head_seq, 42);
         assert_eq!(header.snapshot_seq, Some(20));
-        assert_eq!(header.kind, swarmy_core::SessionKind::Ephemeral);
-        assert!(!header.computer_deleted);
-        assert_eq!(header.inference, swarmy_core::InferenceSelection::default());
-        header.kind = swarmy_core::SessionKind::Named { agent_id: agent };
-        header.computer_deleted = true;
         assert_eq!(encode(&header).unwrap(), original);
     }
 }

@@ -41,6 +41,8 @@ pub struct VolumeRecord {
 }
 
 /// A registered name and tag pointing at an immutable manifest.
+/// Embedded in a stored session record. Keep this type's serialized shape frozen;
+/// append session fields through `trailing` instead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageRecord {
     pub name: String,

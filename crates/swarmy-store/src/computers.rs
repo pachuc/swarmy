@@ -2,7 +2,7 @@
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, StoredSession, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
-use swarmy_core::{AgentId, SessionId, SessionKind, SessionState, VolumeId, decode};
+use swarmy_core::{AgentId, SessionId, SessionKind, SessionState, VolumeId};
 
 impl Store {
     /// Whether this computer has been permanently deleted.
@@ -73,7 +73,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         let session = self.session(trx, id).await?;
-        match self.session_kind(trx, id).await? {
+        match session.kind {
             SessionKind::Ephemeral => self.delete_computer_in(trx, session.agent_id).await?,
             SessionKind::Named { agent_id } => {
                 if self
@@ -112,11 +112,11 @@ impl Store {
                         begin = self.session_key(id);
                         begin.push(0);
                     }
-                    scan(&trx, (begin, end), MAX_SCAN_LIMIT)
-                        .await?
-                        .into_iter()
-                        .map(|(_, value)| decode(&value).map_err(Into::into))
-                        .collect()
+                    let mut page = Vec::new();
+                    for (_, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
+                        page.push(self.decode_session_in(&trx, &value).await?);
+                    }
+                    Ok(page)
                 })
                 .await?;
             if page.is_empty() {
@@ -132,14 +132,15 @@ impl Store {
                         let id = candidate.session_id;
                         let session = self.session(&trx, id).await?;
                         if session.state != SessionState::Idle
-                            || self.session_kind(&trx, id).await? != SessionKind::Ephemeral
+                            || session.kind != SessionKind::Ephemeral
                             || self.computer_deleted(&trx, session.agent_id).await?
                         {
                             return Ok(false);
                         }
-                        let key = self.session_idle_key(id);
-                        let Some(idle_since) = read::<Timestamp>(&trx, &key).await? else {
-                            write(&trx, &key, &now)?;
+                        let Some(idle_since) = session.idle_since else {
+                            let mut session = session;
+                            session.idle_since = Some(now);
+                            self.write_session(&trx, &session)?;
                             return Ok(false);
                         };
                         if idle_since >= cutoff {

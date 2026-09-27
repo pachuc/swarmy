@@ -3,7 +3,7 @@ use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{Event, RequestId, SessionId, SessionState, decode, encode};
 
-use crate::{Result, Store, StoreError, StoredSession, StoredValue, read, write};
+use crate::{Result, Store, StoreError, StoredSession, StoredValue, read};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterruptResult {
@@ -65,7 +65,9 @@ impl Store {
                     Ok(InterruptResult::Finished)
                 }
                 _ => {
-                    write(&trx, &self.interrupt_key(id), &true)?;
+                    let mut session = session;
+                    session.interrupt_requested = true;
+                    self.write_session(&trx, &session)?;
                     Ok(InterruptResult::Requested)
                 }
             }
@@ -77,10 +79,8 @@ impl Store {
     /// # Errors
     /// Returns storage failures.
     pub async fn interrupt_requested(&self, id: SessionId) -> Result<bool> {
-        self.transaction(|trx| async move {
-            Ok(read(&trx, &self.interrupt_key(id)).await?.unwrap_or(false))
-        })
-        .await
+        self.transaction(|trx| async move { Ok(self.session(&trx, id).await?.interrupt_requested) })
+            .await
     }
 
     /// Finish a marked runnable session without handing it to a worker.
@@ -89,11 +89,7 @@ impl Store {
     pub async fn finish_runnable_interrupt(&self, id: SessionId) -> Result<bool> {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
-            if session.state != SessionState::Runnable
-                || !read::<bool>(&trx, &self.interrupt_key(id))
-                    .await?
-                    .unwrap_or(false)
-            {
+            if session.state != SessionState::Runnable || !session.interrupt_requested {
                 return Ok(false);
             }
             let request_id = if session.head_seq == 0 {
@@ -115,7 +111,6 @@ impl Store {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
                 trx.clear(&self.wait_key(id));
             }
-            trx.clear(&self.interrupt_key(id));
             Ok(true)
         })
         .await
@@ -163,6 +158,7 @@ impl Store {
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
         trx.set(&self.event_space(session.session_id).pack(&(head,)), &value);
         session.head_seq = head;
+        session.interrupt_requested = false;
         self.transition(trx, session, SessionState::Idle, now).await
     }
 }
