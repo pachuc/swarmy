@@ -3,7 +3,7 @@
 #   make install       install the client plus every service binary into ~/.cargo/bin
 #   make install-client install the chat client, provisioning, and auth helper (needs no libfdb_c)
 #   make install-core   install the service binaries (need libfdb_c)
-#   make install-node  also install swarmyd (only useful on a machine with root)
+#   make install-node  install headless client, services, and swarmyd (requires root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models        regenerate the provider and model catalog
 #   make check         the CI commands: fmt, test, clippy, plus the remote-feature pass
@@ -88,6 +88,6 @@ check:
 	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 
 uninstall:
-	@for bin in swarmy swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
+	@for bin in swarmy swarmy-auth swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done
