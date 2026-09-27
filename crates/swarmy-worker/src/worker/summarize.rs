@@ -367,22 +367,15 @@ impl Worker {
         }
     }
 }
-/// Recent context kept verbatim in a side successor, in tokens. Twenty
-/// thousand covers a few tool-heavy turns; the summary plus this tail plus a
-/// new turn stays far under the 400k default threshold.
+/// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
-/// Summary output cap in tokens. Four thousand fits the structured goals,
-/// state, questions, and facts format with file paths and identifiers.
+/// Summary output cap in tokens.
 const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 
 /// Rough token estimate for one message, chars divided by four like the Pi
 /// and `OpenCode` heuristics. Images count as a fixed 4,800 chars.
-/// Last inference usage from the events the worker already holds, with no
-/// store reads. The gateway records provider, model, and usage on every
-/// `InferenceCompleted` event. The mid-turn hot path uses this so folds below
-/// pressure need no transaction and no read; only folds at or above pressure
-/// touch the store.
+/// Most recent completion usage, read from the in-memory event tail.
 pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
     events.iter().rev().find_map(|event| match event {
         Event::InferenceCompleted {
@@ -415,13 +408,8 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
     chars.div_ceil(4) as u64
 }
 
-/// Recent tail for a side successor: whole tool rounds up to the token
-/// budget, cut only between a completed tool result and the next assistant
-/// message. A tool call never separates from its result, and reasoning parts
-/// stay with their assistant message because messages are never split. At
-/// least the last complete tool round is kept even when it alone exceeds the
-/// budget; when no round boundary fits, only the last assistant message is
-/// kept. The tail never fails: an oversized history still rolls over.
+/// Keep complete tool rounds in the side successor tail, even when the last
+/// round alone exceeds the budget.
 pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Message> {
     use swarmy_core::MessageRole::Assistant;
     // A stale pressure warning belongs to the archived session; the successor
@@ -509,10 +497,8 @@ pub(super) fn is_pressure_warning(message: &swarmy_core::Message) -> bool {
         })
 }
 
-/// Whether the replayed conversation already carries a `context_pressure`
-/// warning. The event tail starts after `snapshot_ref`, which advances every
-/// turn, so scanning only the tail would warn once per turn instead of once
-/// per session (and once more per successor, which starts a fresh session).
+/// Check the replayed snapshot as well as the event tail to avoid warning
+/// again after the snapshot cursor advances.
 pub(super) fn pressure_warned(snapshot: &Snapshot, events: &[Event]) -> bool {
     snapshot
         .replay(events)
