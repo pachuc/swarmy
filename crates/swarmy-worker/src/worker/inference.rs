@@ -10,7 +10,7 @@ pub(super) enum StepFailure<'a> {
 }
 
 /// A resolved route step and its metering identity.
-pub(super) struct ResolvedAttempt {
+pub(crate) struct ResolvedAttempt {
     pub(crate) provider: String,
     pub(crate) entry: Option<String>,
     route: Option<String>,
