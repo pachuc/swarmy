@@ -197,6 +197,8 @@ enum StoredValue {
     Blob(String),
 }
 
+const SESSION_RECORD_VERSION: u8 = 2;
+
 // Frozen version-one header. Do not add fields here.
 #[derive(Serialize, Deserialize)]
 struct StoredSessionV1 {
@@ -516,7 +518,7 @@ impl Store {
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
-        if bytes.first() == Some(&2) {
+        if bytes.first() == Some(&SESSION_RECORD_VERSION) {
             let v: StoredSessionV2 =
                 postcard::from_bytes(&bytes[1..]).map_err(EncodingError::Payload)?;
             let mut session: StoredSession = v.into();
@@ -572,7 +574,7 @@ impl Store {
     // Clear legacy rows with the V2 write, never leaving side data that can
     // override a newer version if an old process or maintenance job retries.
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
-        let mut bytes = vec![2];
+        let mut bytes = vec![SESSION_RECORD_VERSION];
         bytes.extend(
             postcard::to_allocvec(&StoredSessionV2::from(session))
                 .map_err(EncodingError::Payload)?,
@@ -1153,7 +1155,7 @@ mod compatibility_tests {
             idle_since: None,
             state_since: None,
         };
-        let mut bytes = vec![2];
+        let mut bytes = vec![SESSION_RECORD_VERSION];
         bytes.extend(postcard::to_allocvec(&v2).unwrap());
         let mut v2_bytes = v1_bytes;
         v2_bytes[0] = 2;
