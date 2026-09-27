@@ -114,7 +114,10 @@ async fn dispatch_arguments(
 /// Mirrors the placement choice in `hosting.rs` so recovery tests exercise node takeovers.
 async fn dispatch_placement(store: &Store, agent: AgentId, node: NodeId) -> PlacementRecord {
     let now = jiff::Timestamp::now();
-    let expiry = now.checked_add(Duration::from_secs(60)).unwrap();
+    // Match the node's placement lease from `start` (3 s). The node renews to
+    // the later of its lease and this expiry, so a longer grant here would keep
+    // a frozen node's placement alive and block the takeover test.
+    let expiry = now.checked_add(Duration::from_secs(3)).unwrap();
     match store.get_by_agent(agent).await.unwrap() {
         None => store.place(agent, node, expiry).await.unwrap(),
         Some(old) if old.expires_at <= now => store.take_over(&old, node, expiry).await.unwrap(),
