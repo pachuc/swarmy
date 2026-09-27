@@ -185,7 +185,8 @@ impl Worker {
                     message: swarmy_core::Message {
                         id: MessageId::from_ulid(Ulid::generate()),
                         role: swarmy_core::MessageRole::System,
-                        parts: vec![swarmy_core::Part::Text {
+                        parts: vec![swarmy_core::Part::Notice {
+                            kind: swarmy_core::NoticeKind::EffortClamped,
                             text: format!(
                                 "Reasoning effort clamped from {} to {effort} for {}/{}",
                                 selection.effort, step.provider, model_id
@@ -540,7 +541,16 @@ impl Worker {
                 after = event.seq();
                 if let Event::MessageAppended { message, .. } = event
                     && message.role == swarmy_core::MessageRole::System
-                    && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("Reasoning effort clamped from "))) {
+                    && message.parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            swarmy_core::Part::Notice {
+                                kind: swarmy_core::NoticeKind::EffortClamped,
+                                ..
+                            }
+                        )
+                    })
+                {
                     return Ok(true);
                 }
             }

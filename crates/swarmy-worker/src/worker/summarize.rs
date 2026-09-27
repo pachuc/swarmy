@@ -213,7 +213,8 @@ impl Worker {
         let message = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::System,
-            parts: vec![swarmy_core::Part::Text {
+            parts: vec![swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
                 text: format!(
                     "context_pressure: input {input_tokens} tokens at 75 percent of the {threshold} token side-session threshold. Summarization will archive this session soon; push work to keep it safe."
                 ),
@@ -491,7 +492,10 @@ pub(super) fn last_tool_round(messages: &[swarmy_core::Message]) -> Option<usize
 pub(super) fn is_pressure_warning(message: &swarmy_core::Message) -> bool {
     message.role == swarmy_core::MessageRole::System
         && message.parts.iter().any(|part| match part {
-            swarmy_core::Part::Text { text } => text.contains("context_pressure"),
+            swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
+                ..
+            } => true,
             _ => false,
         })
 }

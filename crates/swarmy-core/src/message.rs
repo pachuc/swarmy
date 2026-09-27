@@ -63,6 +63,18 @@ pub enum Part {
         object_key: Option<String>,
         detail: Option<String>,
     },
+    /// Typed system notice; text remains available to the model.
+    Notice {
+        kind: NoticeKind,
+        text: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    EffortClamped,
+    ContextPressure,
 }
 
 /// Tool success and failure remain distinct when replayed into a model prompt.

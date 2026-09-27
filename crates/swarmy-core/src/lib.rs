@@ -22,7 +22,7 @@ pub use id::{
     AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
     SessionId, TimerId, VolumeId,
 };
-pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
+pub use message::{Message, MessageRole, NoticeKind, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
 pub use session::{
     ConversationSummary, Lease, SessionKind, SessionRecord, SessionSettings, SessionState,
