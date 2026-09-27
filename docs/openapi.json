@@ -4176,7 +4176,7 @@
           },
           {
             "type": "object",
-            "description": "Durable session events keep their stored shape; the API carries the\ntyped event instead of an untyped JSON hole.",
+            "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
             "required": [
               "data",
               "type"
@@ -4184,7 +4184,7 @@
             "properties": {
               "data": {
                 "type": "object",
-                "description": "Durable session events keep their stored shape; the API carries the\ntyped event instead of an untyped JSON hole.",
+                "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
                 "required": [
                   "record"
                 ],
@@ -4196,64 +4196,6 @@
                 "type": "string",
                 "enum": [
                   "store_record"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "Live turn-timeline observations, which are never replayed.",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "description": "Live turn-timeline observations, which are never replayed.",
-                "required": [
-                  "event"
-                ],
-                "properties": {
-                  "event": {}
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "timeline_event"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "Client-local notice that a summarized session continues elsewhere.\nThe server never sends this; the CLI synthesizes it when following a\nsuccessor session.",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "description": "Client-local notice that a summarized session continues elsewhere.\nThe server never sends this; the CLI synthesizes it when following a\nsuccessor session.",
-                "required": [
-                  "previous_session_id",
-                  "session_id"
-                ],
-                "properties": {
-                  "previous_session_id": {
-                    "type": "string"
-                  },
-                  "session_id": {
-                    "type": "string"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "session_summarized"
                 ]
               }
             }
