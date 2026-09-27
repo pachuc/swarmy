@@ -133,7 +133,7 @@ impl Store {
             if self.hydrate::<ToolJob>(&value).await? != *job
                 || self.session(&trx, job.session_id).await?.agent_id != placement.agent_id
             {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::ToolJobMismatch);
             }
             let key = crate::keys::Keys::new(&self.root).tool_placement(job.request_id);
             let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
@@ -189,7 +189,7 @@ impl Store {
             session.state,
             SessionState::WaitingTools | SessionState::Completed
         ) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::UnexpectedSessionState);
         }
         session.head_seq = session
             .head_seq
@@ -244,7 +244,7 @@ impl Store {
                 .await?
             {
                 if self.hydrate::<ToolJob>(&value).await? != *job {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::ToolJobMismatch);
                 }
                 self.fail_lost_tool(&trx, job, StoreError::ComputerDeleted.to_string())
                     .await?;

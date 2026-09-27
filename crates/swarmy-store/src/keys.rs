@@ -127,7 +127,7 @@ impl Store {
     pub async fn insert_runnable(&self, entry: &RunnableEntry) -> Result<()> {
         self.transaction(|trx| async move {
             if self.session(&trx, entry.session_id).await?.state != SessionState::Runnable {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::UnexpectedSessionState);
             }
             self.index_runnable(&trx, entry).await
         })
@@ -147,7 +147,7 @@ impl Store {
         if partition >= RUNNABLE_PARTITIONS
             || after.is_some_and(|entry| runnable_partition(entry.session_id) != partition)
         {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidPartition);
         }
         self.transaction(|trx| async move {
             let space = crate::keys::Keys::new(&self.root).runnable_space(partition);

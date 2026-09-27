@@ -320,7 +320,7 @@ impl Store {
             || session.interrupt_requested
             || !matches!(session.state, SessionState::Idle | SessionState::Runnable)
         {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::UnexpectedSessionState);
         }
         if matches!(session.kind, SessionKind::Named { .. }) && image.is_some() {
             return Err(StoreError::NamedAgentImage);
@@ -365,14 +365,14 @@ impl Store {
                     .await?
                     .is_some()
                 {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::SessionComputerExists);
                 }
                 self.resolve_image(trx, image.ok_or(StoreError::SessionImageRequired)?)
                     .await?
             }
             SessionKind::Named { agent_id } => {
                 if agent_id != session.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::SessionAgentMismatch);
                 }
                 self.read_agent(trx, agent_id)
                     .await?
@@ -397,7 +397,7 @@ impl Store {
             plan: session.plan.clone(),
         }
         .validate()
-        .map_err(|_| StoreError::InvalidState)?;
+        .map_err(|_| StoreError::InvalidSessionRecord)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         self.write_session(
             trx,
@@ -519,7 +519,7 @@ impl Store {
         opening: &swarmy_core::Message,
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidMessageRole);
         }
         let id = SessionId::from_ulid(ulid::Ulid::generate());
         let event = swarmy_core::Event::MessageAppended {
@@ -597,7 +597,7 @@ impl Store {
         tail: &[swarmy_core::Message],
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidMessageRole);
         }
         // Keep the successor in the old session's runnable partition so the
         // same scheduler and worker continue the task without rebalancing.
@@ -628,10 +628,10 @@ impl Store {
                     .ok_or(StoreError::AgentMissing)?;
                 let kind = previous.kind;
                 let SessionKind::Named { agent_id } = kind else {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::InvalidSessionRecord);
                 };
                 if agent_id != agent.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::SessionAgentMismatch);
                 }
                 if agent.main_session == Some(old) {
                     return Err(StoreError::InvalidMainSession);

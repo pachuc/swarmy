@@ -45,7 +45,7 @@ fn session_error(failure: swarmy_store::StoreError) -> (StatusCode, Json<api::Ap
                 provider_text: None,
             }),
         ),
-        swarmy_store::StoreError::InvalidState => error(StatusCode::CONFLICT, "session_not_idle"),
+        swarmy_store::StoreError::SessionNotIdle => error(StatusCode::CONFLICT, "session_not_idle"),
         swarmy_store::StoreError::StaleSequence { actual, .. } => (
             StatusCode::CONFLICT,
             Json(api::ApiError {

@@ -59,7 +59,7 @@ impl Store {
                 step,
                 call_id: call.call_id.clone(),
                 arguments: swarmy_core::SandboxArguments::parse(&call.tool, call.arguments.clone())
-                    .map_err(|_| StoreError::InvalidState)?,
+                    .map_err(|_| StoreError::InvalidToolCall)?,
             });
         }
         self.dispatch_jobs(id, lease, &jobs, placement, Some((expected_head, &events)))
@@ -87,14 +87,14 @@ impl Store {
                     self.check_live_placement(&trx, placement),
                 )?;
                 if jobs.is_empty() {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::EmptyToolJobs);
                 }
                 if let Some((expected_head, events)) = append {
                     self.append_tool_requests(&trx, id, expected_head, events)
                         .await?;
                 }
                 if self.session(&trx, id).await?.agent_id != placement.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::PlacementAgentMismatch);
                 }
                 self.deliver_computer_notice(&trx, id, placement).await?;
                 for (job, value) in jobs.iter().zip(values) {
@@ -102,12 +102,12 @@ impl Store {
                         || RequestId::for_step(id, job.step) != job.request_id
                         || !job.arguments.valid()
                     {
-                        return Err(StoreError::InvalidState);
+                        return Err(StoreError::ToolJobMismatch);
                     }
                     let event = trx
                         .get(&self.event_key(id, job.step), false)
                         .await?
-                        .ok_or(StoreError::InvalidState)?;
+                        .ok_or(StoreError::MissingToolRequest)?;
                     match self.hydrate::<Event>(&event).await? {
                         Event::ToolCallRequested {
                             request_id, call, ..
@@ -120,7 +120,7 @@ impl Store {
                             .ok()
                             .as_ref()
                                 == Some(&job.arguments) => {}
-                        _ => return Err(StoreError::InvalidState),
+                        _ => return Err(StoreError::ToolJobMismatch),
                     }
                     trx.set(
                         &crate::keys::Keys::new(&self.root).tool_job(job.request_id),
@@ -161,7 +161,7 @@ impl Store {
                 seq, request_id, ..
             } = event
             else {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::InvalidToolCall);
             };
             trx.set(&self.event_key(id, *seq), value);
             if let Some(turn) = turn {

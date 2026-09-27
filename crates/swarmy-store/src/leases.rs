@@ -138,10 +138,10 @@ impl Store {
         let (mut session, ()) =
             futures::try_join!(self.session(trx, id), self.remove_runnable(trx, id),)?;
         if session.state != SessionState::Runnable {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::UnexpectedSessionState);
         }
         if session.interrupt_requested {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InterruptPending);
         }
         let lease = Lease {
             owner,
@@ -225,7 +225,7 @@ impl Store {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
             if state == SessionState::Leased || !can_transition(session.state, state) {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::InvalidTransition);
             }
             if session.state == SessionState::Leased {
                 let expected = lease.ok_or(StoreError::LeaseMismatch)?;

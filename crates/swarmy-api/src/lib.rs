@@ -119,6 +119,9 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
 fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
     use swarmy_store::StoreError;
     match value {
+        StoreError::ActiveSandboxRequirements => {
+            error(StatusCode::CONFLICT, "agent_computer_placed")
+        }
         StoreError::AgentExists => error(StatusCode::CONFLICT, "agent_exists"),
         StoreError::AgentMissing => error(StatusCode::NOT_FOUND, "agent_not_found"),
         StoreError::ImageMissing { .. } => error(StatusCode::NOT_FOUND, "image_not_found"),

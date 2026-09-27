@@ -178,7 +178,7 @@ impl Store {
         };
         mib.checked_mul(1024 * 1024)
             .filter(|bytes| *bytes > 0)
-            .ok_or(StoreError::InvalidState)
+            .ok_or(StoreError::InvalidMemoryRequirement)
     }
 
     /// Committed sandbox memory in bytes; expired placements remain committed.
@@ -223,7 +223,7 @@ impl Store {
                 }
                 total = total
                     .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
-                    .ok_or(StoreError::InvalidState)?;
+                    .ok_or(StoreError::MemoryCapacityOverflow)?;
                 begin = key;
                 begin.push(0);
             }
@@ -243,7 +243,7 @@ impl Store {
             .await?
             .ok_or(StoreError::NodeMissing)?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::NodeNotSandbox);
         }
         let key = self.placement_count_key(node);
         let count: u32 = read(trx, &key).await?.unwrap_or(0);

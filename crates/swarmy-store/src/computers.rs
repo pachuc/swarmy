@@ -101,7 +101,7 @@ impl Store {
     ) -> Result<usize> {
         let cutoff = now
             .checked_sub(retention)
-            .map_err(|_| StoreError::InvalidState)?;
+            .map_err(|_| StoreError::InvalidRetention)?;
         let mut cursor = None;
         let mut closed = 0;
         loop {

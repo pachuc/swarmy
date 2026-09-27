@@ -43,7 +43,7 @@ impl Store {
                 SessionState::Sleeping => {
                     let wait = read::<crate::InferenceWait>(&trx, &self.wait_key(id))
                         .await?
-                        .ok_or(StoreError::InvalidState)?;
+                        .ok_or(StoreError::MissingInferenceWait)?;
                     let request_id = if wait.last_failure_seq == 0 {
                         RequestId::for_step(
                             id,

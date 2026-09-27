@@ -22,7 +22,7 @@ impl Store {
         call: &ToolCallRecord,
     ) -> Result<Event> {
         if call.tool != "update_plan" {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidToolCall);
         }
         let parsed = UpdatePlanArguments::parse(call.arguments.clone());
         let result = match &parsed {

@@ -115,7 +115,7 @@ impl Store {
     ) -> Result<()> {
         let options = options.unwrap_or_default();
         if options.memory_mib == Some(0) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidMemoryRequirement);
         }
         let key = self.image_key(name, tag);
         if key.len() > 10_000 {

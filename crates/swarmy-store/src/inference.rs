@@ -108,12 +108,12 @@ impl Store {
                     return Ok(false);
                 }
                 if session.state != SessionState::WaitingInference {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::UnexpectedSessionState);
                 }
-                let inflight = inflight.ok_or(StoreError::InvalidState)?;
+                let inflight = inflight.ok_or(StoreError::MissingInflight)?;
                 let inflight: InflightRecord = self.hydrate(&inflight).await?;
                 if inflight.session_id != claim.session_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::InflightMismatch);
                 }
                 write(&trx, &key, claim)?;
                 trx.set(&idem_key, requested);
@@ -174,7 +174,7 @@ impl Store {
             || RequestId::for_step(completion.claim.session_id, completion.expected_head)
                 != completion.claim.request_id
         {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidInferenceCompletion);
         }
         self.complete_inference_inner(completion, response, Some(snapshot))
             .await
@@ -199,7 +199,7 @@ impl Store {
             | Event::InferenceFailed {
                 seq, request_id, ..
             } if *request_id == claim.request_id => *seq = head,
-            _ => return Err(StoreError::InvalidState),
+            _ => return Err(StoreError::InvalidInferenceCompletion),
         }
         let event = self.prepare(&event).await?;
         let response = self.prepare(response).await?;
@@ -279,7 +279,7 @@ impl Store {
                 });
             }
             if session.state != SessionState::WaitingInference {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::UnexpectedSessionState);
             }
             if matches!(&completion.event, Event::InferenceCompleted { .. }) {
                 self.record_completion_metering(
@@ -491,7 +491,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         if RequestId::for_step(record.session_id, record.seq) != id {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidInferenceRequest);
         }
         let value = self.prepare(record).await?;
         self.transaction(|trx| {

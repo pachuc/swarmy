@@ -38,7 +38,7 @@ impl Store {
             self.check_live_placement(&trx, placement).await?;
             let stored = self.session(&trx, session).await?;
             if stored.agent_id != placement.agent_id {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::PlacementAgentMismatch);
             }
             let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
             let key = self.volume_placement_key(id);
@@ -114,10 +114,10 @@ impl Store {
                 || session.state != SessionState::WaitingTools
                 || claim.expires_at <= self.now()
             {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::ToolClaimMismatch);
             }
             if self.hydrate::<ToolJob>(&value).await? != claim.job {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::ToolJobMismatch);
             }
             let key = crate::keys::Keys::new(&self.root).placed_tool_claim(claim.job.request_id);
             if read::<StoredPlacedClaim>(&trx, &key)
@@ -223,7 +223,7 @@ impl Store {
                 if session.state != SessionState::WaitingTools
                     || session.agent_id != claim.placement.agent_id
                 {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::ToolClaimMismatch);
                 }
                 trx.set(&self.event_key(job.session_id, head), event);
                 trx.clear(&crate::keys::Keys::new(&self.root).tool_job(job.request_id));

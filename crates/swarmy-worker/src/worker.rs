@@ -118,7 +118,7 @@ impl Worker {
             .await
         {
             Ok(lease) => lease,
-            Err(StoreError::InvalidState) => {
+            Err(StoreError::UnexpectedSessionState | StoreError::InterruptPending) => {
                 return Ok(message.acknowledge().await?);
             }
             Err(error) => return Err(error.into()),

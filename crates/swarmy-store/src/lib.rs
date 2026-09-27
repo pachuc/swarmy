@@ -160,8 +160,55 @@ pub enum StoreError {
     InterruptPending,
     #[error("expected head {expected}, found {actual}")]
     StaleSequence { expected: u64, actual: u64 },
-    #[error("invalid state transition or initial session record")]
-    InvalidState,
+    #[error("empty tool jobs")]
+    EmptyToolJobs,
+    #[error("inflight mismatch")]
+    InflightMismatch,
+    #[error("invalid inference completion")]
+    InvalidInferenceCompletion,
+    #[error("invalid inference request")]
+    InvalidInferenceRequest,
+    #[error("invalid memory requirement")]
+    InvalidMemoryRequirement,
+    #[error("invalid message role")]
+    InvalidMessageRole,
+    #[error("invalid partition")]
+    InvalidPartition,
+    #[error("invalid retention")]
+    InvalidRetention,
+    #[error("invalid session record")]
+    InvalidSessionRecord,
+    #[error("invalid snapshot")]
+    InvalidSnapshot,
+    #[error("invalid tool call")]
+    InvalidToolCall,
+    #[error("invalid transition")]
+    InvalidTransition,
+    #[error("memory capacity overflow")]
+    MemoryCapacityOverflow,
+    #[error("missing inference wait")]
+    MissingInferenceWait,
+    #[error("missing inflight")]
+    MissingInflight,
+    #[error("missing tool request")]
+    MissingToolRequest,
+    #[error("node not sandbox")]
+    NodeNotSandbox,
+    #[error("placement agent mismatch")]
+    PlacementAgentMismatch,
+    #[error("session agent mismatch")]
+    SessionAgentMismatch,
+    #[error("session computer exists")]
+    SessionComputerExists,
+    #[error("session not idle")]
+    SessionNotIdle,
+    #[error("tool claim mismatch")]
+    ToolClaimMismatch,
+    #[error("tool job mismatch")]
+    ToolJobMismatch,
+    #[error("unexpected session state")]
+    UnexpectedSessionState,
+
     #[error("lease is absent, expired, or no longer matches")]
     LeaseMismatch,
     #[error("sequence number overflow")]
@@ -902,7 +949,7 @@ impl Store {
         message: &swarmy_core::Message,
     ) -> Result<u64> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidMessageRole);
         }
         self.append_events_inner(
             id,
@@ -928,7 +975,7 @@ impl Store {
         key: &str,
     ) -> Result<(u64, bool)> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidMessageRole);
         }
         let head = expected_head
             .checked_add(1)
@@ -957,7 +1004,7 @@ impl Store {
                     });
                 }
                 if session.state != SessionState::Idle {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::SessionNotIdle);
                 }
                 trx.set(&self.event_key(id, head), value);
                 write(&trx, &self.turn_key(id), &message.id)?;
@@ -1009,7 +1056,7 @@ impl Store {
                     });
                 }
                 if wake && session.state != SessionState::Idle {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::SessionNotIdle);
                 }
                 for (key, value) in prepared {
                     trx.set(key, value);

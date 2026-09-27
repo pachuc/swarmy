@@ -284,7 +284,7 @@ async fn placement_capacity_and_index_are_atomic() {
         test.store
             .place(agent, volume_only.node_id, future(60))
             .await,
-        Err(StoreError::InvalidState)
+        Err(StoreError::NodeNotSandbox)
     ));
     test.cleanup().await;
 }

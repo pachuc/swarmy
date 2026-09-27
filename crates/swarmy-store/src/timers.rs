@@ -88,7 +88,7 @@ impl Store {
             call.tool.as_str(),
             "set_timer" | "list_timers" | "cancel_timer"
         ) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidToolCall);
         }
         let timer_id = TimerId::from_ulid(ulid::Ulid::generate());
         let now = self.now();

@@ -173,7 +173,7 @@ async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
     );
     assert!(matches!(
         f.store.claim_lease(id, owner(), timestamp(100)).await,
-        Err(StoreError::InvalidState)
+        Err(StoreError::InterruptPending)
     ));
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
     let session = f.store.fetch_session(id).await.unwrap().unwrap();
@@ -574,7 +574,7 @@ async fn concurrent_claims_have_exactly_one_winner() {
     for task in tasks {
         match task.await.unwrap() {
             Ok(_) => winners += 1,
-            Err(StoreError::InvalidState) => {}
+            Err(StoreError::UnexpectedSessionState) => {}
             other => panic!("unexpected claim: {other:?}"),
         }
     }
@@ -1287,7 +1287,7 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
     };
     assert!(matches!(
         test.store.start_inference(&claim, timestamp(0)).await,
-        Err(StoreError::InvalidState)
+        Err(StoreError::UnexpectedSessionState)
     ));
     let mut inflight = InflightRecord {
         session_id: SessionId::from_ulid(Ulid::generate()),
@@ -1301,7 +1301,7 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
         .unwrap();
     assert!(matches!(
         test.store.start_inference(&claim, timestamp(0)).await,
-        Err(StoreError::InvalidState)
+        Err(StoreError::InflightMismatch)
     ));
     assert!(
         test.store

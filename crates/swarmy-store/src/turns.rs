@@ -88,7 +88,7 @@ impl Store {
             .and_then(|head| head.checked_add(1))
             .ok_or(StoreError::SequenceOverflow)?;
         if record.seq != step {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidInferenceRequest);
         }
         let id = record.session_id;
         let request_id = RequestId::for_step(id, step);
@@ -111,7 +111,7 @@ impl Store {
             if !matches!(event, Event::MessageAppended { message, .. }
                 if matches!(message.role, swarmy_core::MessageRole::Tool | swarmy_core::MessageRole::System))
             {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::InvalidMessageRole);
             }
             let mut event = event.clone();
             event.set_seq(seq);
@@ -223,7 +223,7 @@ impl Store {
             .checked_add(1)
             .ok_or(StoreError::SequenceOverflow)?;
         if snapshot.seq != head {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::InvalidSnapshot);
         }
         let event = Event::StateChanged {
             seq: head,
