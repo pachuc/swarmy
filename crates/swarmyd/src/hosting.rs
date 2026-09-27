@@ -152,8 +152,23 @@ impl Hosting {
     /// Serve one tool call with its durable turn already resolved by the
     /// caller, so the execution path needs no `request_turn_id` lookup.
     pub async fn call(self: &Arc<Self>, job: ToolJob, turn: Option<MessageId>) -> Result<()> {
-        let Some(agent) = self.store.tool_agent(&job, self.node).await? else {
-            return Ok(());
+        let agent = match self.store.tool_agent(&job, self.node).await {
+            Ok(Some(agent)) => agent,
+            Ok(None) => return Ok(()),
+            // The store's fence check is the guard; read placements afterwards
+            // only to explain a refusal for a job fenced to another node.
+            Err(swarmy_store::StoreError::LeaseMismatch) => {
+                if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
+                    let current = self.store.get_by_agent(dispatched.agent_id).await?;
+                    if let Some(refusal) =
+                        crate::tools::placement_refusal(current.as_ref(), &dispatched, self.node)
+                    {
+                        return Err(refusal);
+                    }
+                }
+                return Err(swarmy_store::StoreError::LeaseMismatch.into());
+            }
+            Err(error) => return Err(error.into()),
         };
         let (reply, response) = oneshot::channel();
         let (calls, activity) = {
@@ -414,6 +429,7 @@ impl Hosting {
             result = crate::tools::execute(
                 &self.store,
                 self.runtime.clone(),
+                self.node,
                 placement,
                 call.job,
                 turn,

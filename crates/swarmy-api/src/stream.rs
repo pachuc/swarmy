@@ -51,7 +51,6 @@ pub struct StreamQuery {
 fn key(log: &LogId) -> String {
     match log {
         LogId::Session(id) => format!("session:{id}"),
-        LogId::Channel(id) => format!("channel:{id}"),
         LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }
@@ -84,7 +83,7 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
         }
         let id = match &cursor.log_id {
             LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
-            _ => session_id(&cursor.log_id)?,
+            LogId::Session(_) => session_id(&cursor.log_id)?,
         };
         if state
             .store

@@ -56,8 +56,9 @@ last seen time. Health records are not client-created or edited.
 ## Event stream contract
 
 `Event` has a `log_id`, a `sequence`, and a tagged `payload`. `LogId` is a
-namespace-tagged value (`{"kind":"session","id":"..."}`); `channel` is
-reserved for future channel logs. Sequences start at one, are contiguous
+namespace-tagged value (`{"kind":"session","id":"..."}`); timelines use
+`{"kind":"timeline","id":"..."}` for live-only turn observations. Sequences
+start at one, are contiguous
 within a log, and are independent between logs. The pair `(log_id, sequence)`
 is the durable cursor. There is no global order between logs.
 
@@ -95,12 +96,17 @@ from `/v1`. Changes within `/v1` are additive only:
   event variants so a newer server never breaks an older client.
 - Nothing is removed or reinterpreted: no route or field is deleted, no field
   changes type, and no established behavior changes meaning.
-- A route or field on its way out is first marked `deprecated: true` in the
-  OpenAPI document with an `x-sunset` date at least sixty days out, and
-  announced here. Deprecated shapes keep working for at least two minor
-  versions and until their sunset date, whichever is later. The checker
-  rejects dateless deprecations, short sunsets, and removals before the
-  sunset date; a removal after its sunset date passes.
+- Until an external client exists, a breaking change is allowed when it is
+  recorded in `docs/api-breaks.txt` with the date and reason and every
+  in-repo client is updated in the same pull request. Swarmy is currently its
+  own only client, so a recorded removal like the unimplemented channel log
+  breaks nobody.
+- Once external clients exist, a route or field on its way out is first
+  marked `deprecated: true` in the OpenAPI document with an `x-sunset` date
+  at least sixty days out, and announced here. Deprecated shapes keep working
+  for at least two minor versions and until their sunset date, whichever is
+  later. The checker rejects dateless deprecations, short sunsets, and
+  removals before the sunset date; a removal after its sunset date passes.
 - Breaking changes ship as a new major API version under `/v2`, with the old
   major version kept serving through a migration window.
 

@@ -4,11 +4,11 @@
 //! runtime using `FoundationDB` has stopped. The default directory is `swarmy`.
 //! Event, snapshot, and request payloads above 80 KiB are uploaded before transactions start;
 //! failed transactions can leave unreferenced, content-addressed blobs for later GC.
-//! Session headers retain only the snapshot sequence so lease transactions never
-//! fetch blobs. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
+//! Session headers retain only small scalar fields; larger session metadata
+//! lives in side rows. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 mod agents;
-pub use agents::AgentCreationReplay;
+pub use agents::{AgentSessionOptions, CreateAgentOptions};
 mod api_idempotency;
 pub mod blob;
 mod computers;
@@ -52,8 +52,9 @@ mod timers;
 mod tool_routing;
 mod tools;
 mod turns;
-pub use turns::SubmitRouteStep;
+pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
+pub use volumes::PutImageOptions;
 
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
@@ -283,7 +284,9 @@ impl Store {
 
     /// Logical store transactions started so far. Tests use it to compare
     /// per-operation costs; production code never branches on it.
+    /// Test-only entry point, also available with the `test-support` feature.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn transaction_count(&self) -> u64 {
         self.transactions.load(Ordering::Relaxed)
     }
@@ -821,6 +824,8 @@ impl Store {
 
     /// # Errors
     /// Returns storage or blob upload errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
         self.put_payload(self.root.pack(&("idem", id.as_bytes().as_slice())), record)
             .await

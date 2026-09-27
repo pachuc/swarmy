@@ -83,7 +83,7 @@ impl Fixture {
             .await
             .unwrap();
         self.store
-            .put_image("fixture", &ImageTag("test".into()), manifest)
+            .put_image("fixture", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let agent = self
@@ -93,6 +93,7 @@ impl Fixture {
                 "fixture:test",
                 "",
                 jiff::Timestamp::now(),
+                None,
             )
             .await
             .unwrap();

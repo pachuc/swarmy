@@ -1,8 +1,8 @@
 use super::*;
 use swarmy_bus::{Bus, Config, SubjectToken, WorkQueue};
 use swarmy_core::{
-    BashArguments, Event, LeaseOwnerId, RequestId, SessionId, SessionRecord, SessionState,
-    ToolCallId, ToolCallRecord, ToolJob, ToolResult,
+    BashArguments, Event, LeaseOwnerId, PlacementRecord, RequestId, SessionId, SessionRecord,
+    SessionState, ToolCallId, ToolCallRecord, ToolJob, ToolResult,
 };
 
 async fn dispatch(
@@ -51,7 +51,7 @@ async fn dispatch_arguments(
     let id = session.session_id;
     if store.get_agent(agent).await.unwrap().is_some() {
         store
-            .create_session_for_agent(id, Some(agent), None, jiff::Timestamp::now())
+            .create_agent_session(id, Some(agent), jiff::Timestamp::now(), None)
             .await
             .unwrap();
     } else {
@@ -100,8 +100,9 @@ async fn dispatch_arguments(
         )
         .await
         .unwrap();
+    let placement = dispatch_placement(store, agent, node).await;
     store
-        .dispatch_tool_jobs(id, &lease, std::slice::from_ref(&job))
+        .dispatch_placed_tool_jobs(id, &lease, std::slice::from_ref(&job), &placement)
         .await
         .unwrap();
     bus.publish_work(&WorkQueue::NodeTools(node), &job)
@@ -110,30 +111,31 @@ async fn dispatch_arguments(
     job
 }
 
+/// Mirrors the placement choice in `hosting.rs` so recovery tests exercise node takeovers.
+async fn dispatch_placement(store: &Store, agent: AgentId, node: NodeId) -> PlacementRecord {
+    let now = jiff::Timestamp::now();
+    // Match the node's placement lease from `start` (3 s). The node renews to
+    // the later of its lease and this expiry, so a longer grant here would keep
+    // a frozen node's placement alive and block the takeover test.
+    let expiry = now.checked_add(Duration::from_secs(3)).unwrap();
+    match store.get_by_agent(agent).await.unwrap() {
+        None => store.place(agent, node, expiry).await.unwrap(),
+        Some(old) if old.expires_at <= now => store.take_over(&old, node, expiry).await.unwrap(),
+        Some(old) => old,
+    }
+}
+
 async fn completed(
     store: &Store,
     job: &ToolJob,
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        loop {
-            if store.tool_completed(job.request_id).await.unwrap() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("persistent tool did not complete");
-    let events = store.read_events(job.session_id, 1, 10).await.unwrap();
-    let Event::ToolCallCompleted {
-        result: ToolResult::Completed { metadata, .. },
-        ..
-    } = &events[0]
-    else {
+    // A takeover records the eviction notice before the result, so find the
+    // completion by request id rather than by position.
+    let ToolResult::Completed { metadata, .. } = tool_result(store, job).await else {
         panic!("missing bash output")
     };
     assert_eq!(metadata["exit_code"], 0, "{metadata:?}");
-    metadata.clone()
+    metadata
 }
 
 fn device(node: &Node, agent: AgentId) -> PathBuf {
@@ -206,7 +208,7 @@ pub(super) async fn start(
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();
     store
-        .put_image("persistent", &ImageTag("test".into()), base)
+        .put_image("persistent", &ImageTag("test".into()), base, None)
         .await
         .unwrap();
     (node, bus)
@@ -643,11 +645,16 @@ async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
     })
     .await
     .expect("tool did not complete");
-    let events = store.read_events(job.session_id, 1, 10).await.unwrap();
-    let Event::ToolCallCompleted { result, .. } = &events[0] else {
-        panic!("missing result");
-    };
-    result.clone()
+    let events = store.read_events(job.session_id, 1, 20).await.unwrap();
+    events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolCallCompleted {
+                request_id, result, ..
+            } if *request_id == job.request_id => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing result: {events:?}"))
 }
 
 pub(super) async fn invoke(
@@ -910,6 +917,7 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
             "persistent:test",
             "",
             jiff::Timestamp::now(),
+            None,
         )
         .await
         .unwrap()

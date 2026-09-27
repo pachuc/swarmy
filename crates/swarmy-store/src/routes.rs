@@ -270,44 +270,6 @@ impl Store {
         .await
     }
 
-    /// Entry labels for one provider in creation order, without decrypting.
-    /// # Errors
-    /// Returns database or decoding errors.
-    pub async fn route_entry_labels(&self, provider: &str) -> Result<Vec<String>> {
-        self.transaction(|trx| async move { self.route_entry_labels_in(&trx, provider).await })
-            .await
-    }
-
-    async fn route_entry_labels_in(
-        &self,
-        trx: &foundationdb::Transaction,
-        provider: &str,
-    ) -> Result<Vec<String>> {
-        let space = self.root.subspace(&(
-            "credential_entry",
-            CredentialScope::Cluster.to_string(),
-            provider,
-        ));
-        let (mut begin, end) = space.range();
-        let mut entries = Vec::new();
-        loop {
-            let rows = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-            let complete = rows.len() < crate::MAX_SCAN_LIMIT;
-            for (key, value) in rows {
-                let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-                let entry = decode_entry(&value)?;
-                entries.push((entry.created_at, label));
-                begin = key;
-                begin.push(0);
-            }
-            if complete {
-                break;
-            }
-        }
-        entries.sort();
-        Ok(entries.into_iter().map(|(_, label)| label).collect())
-    }
-
     /// Entry labels with readiness hints, without decrypting. Callers apply
     /// the gateway pool rule themselves: ready entries in creation order,
     /// or every entry when none is ready.

@@ -3,19 +3,22 @@ use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, w
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, RouteRecord, SessionId,
-    SessionKind, SessionRecord, SessionState, decode,
+    AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, InferenceSelection, RouteRecord,
+    SessionId, SessionKind, SessionRecord, SessionState, decode,
 };
 
-/// The replay key and private token are committed with a new agent atomically.
-pub struct AgentCreationReplay<'a> {
-    pub key: &'a str,
+/// Options for creating a named agent. The replay key and private token are
+/// committed with a new agent atomically; a retry after an unknown commit
+/// returns the original record instead of another agent.
+#[derive(Clone, Debug, Default)]
+pub struct CreateAgentOptions<'a> {
+    /// Inference overrides pinned with the agent.
+    pub settings: Option<&'a AgentSettings>,
+    /// Private GitHub token, stored as a side field so records and public
+    /// views never contain it.
     pub github_token: Option<&'a str>,
-}
-
-struct CreationOptions<'a> {
-    github_token: Option<&'a str>,
-    replay_key: Option<&'a str>,
+    /// Idempotency key for the creation.
+    pub replay_key: Option<&'a str>,
 }
 
 impl Store {
@@ -38,150 +41,13 @@ impl Store {
         image: &str,
         description: &str,
         now: Timestamp,
+        options: Option<CreateAgentOptions<'_>>,
     ) -> Result<AgentRecord> {
-        self.create_agent_with(
-            name,
-            image,
-            description,
-            &AgentSettings::default(),
-            None,
-            now,
-        )
-        .await
-    }
-
-    /// Create a named agent with inference overrides, pinning its image atomically.
-    /// # Errors
-    /// Rejects duplicate names or ids, invalid names, unknown images, and storage failures.
-    pub async fn create_agent_with_settings(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with(name, image, description, settings, None, now)
-            .await
-    }
-
-    /// Create an agent and its private GitHub token in one transaction.
-    /// The token is a side field so legacy records and public views never contain it.
-    /// # Errors
-    /// Rejects invalid credentials and the same conditions as `create_agent`.
-    pub async fn create_agent_with_github_token(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        github_token: Option<&str>,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with(
-            name,
-            image,
-            description,
-            &AgentSettings::default(),
-            github_token,
-            now,
-        )
-        .await
-    }
-
-    /// Create a named agent with inference overrides and a private GitHub token,
-    /// writing the public record and the token side field in one transaction.
-    /// # Errors
-    /// Rejects duplicate names or ids, invalid names or credentials, unknown images,
-    /// and storage failures.
-    pub async fn create_agent_with(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        github_token: Option<&str>,
-        now: Timestamp,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            settings,
-            now,
-            CreationOptions {
-                github_token,
-                replay_key: None,
-            },
-        )
-        .await
-    }
-
-    /// Create an agent and its replay marker in the same transaction. A retry
-    /// after an unknown commit returns the original record instead of another agent.
-    /// # Errors
-    /// Returns validation and storage errors.
-    pub async fn create_agent_with_settings_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        key: &str,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            settings,
-            now,
-            CreationOptions {
-                github_token: None,
-                replay_key: Some(key),
-            },
-        )
-        .await
-    }
-
-    /// Create an agent with a private token and a replay marker in one transaction.
-    /// # Errors
-    /// Rejects invalid names, credentials, missing images, and storage failures.
-    pub async fn create_agent_with_token_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        replay: AgentCreationReplay<'_>,
-    ) -> Result<AgentRecord> {
-        self.create_agent_with_replay(
-            name,
-            image,
-            description,
-            settings,
-            now,
-            CreationOptions {
-                github_token: replay.github_token,
-                replay_key: Some(replay.key),
-            },
-        )
-        .await
-    }
-
-    async fn create_agent_with_replay(
-        &self,
-        name: &str,
-        image: &str,
-        description: &str,
-        settings: &AgentSettings,
-        now: Timestamp,
-        options: CreationOptions<'_>,
-    ) -> Result<AgentRecord> {
-        let CreationOptions {
-            github_token,
-            replay_key,
-        } = options;
+        let options = options.unwrap_or_default();
+        let defaults = AgentSettings::default();
+        let settings = options.settings.unwrap_or(&defaults);
+        let github_token = options.github_token;
+        let replay_key = options.replay_key;
         validate_github_token(github_token)?;
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::InvalidAgentName);
@@ -407,56 +273,33 @@ impl Store {
         })
         .await
     }
+}
 
+/// Options for creating a session attached to a named agent or an anonymous one.
+#[derive(Clone, Debug, Default)]
+pub struct AgentSessionOptions<'a> {
+    /// Image for ephemeral sessions; forbidden for named sessions.
+    pub image: Option<&'a str>,
+    /// Immutable inference overrides for the session's first turn.
+    pub inference: Option<&'a InferenceSelection>,
+    /// Named route override; the route must exist.
+    pub route: Option<&'a str>,
+}
+
+impl Store {
     /// Create an idle session, minting an anonymous agent or attaching to a named one.
     /// `image` is required for ephemeral sessions and forbidden for named sessions.
     /// # Errors
-    /// Rejects unknown agents/images, deleted computers, image overrides, and duplicate sessions.
-    pub async fn create_session_for_agent(
+    /// Rejects unknown agents/images, deleted computers, image overrides,
+    /// missing routes, and duplicate sessions.
+    pub async fn create_agent_session(
         &self,
         id: SessionId,
         agent: Option<AgentId>,
-        image: Option<&str>,
         now: Timestamp,
+        options: Option<AgentSessionOptions<'_>>,
     ) -> Result<SessionRecord> {
-        self.create_session_with_inference(
-            id,
-            agent,
-            image,
-            now,
-            &swarmy_core::InferenceSelection::default(),
-        )
-        .await
-    }
-
-    /// Create a session with immutable inference overrides before its first turn.
-    /// # Errors
-    /// Rejects invalid agents/images and duplicate sessions.
-    pub async fn create_session_with_inference(
-        &self,
-        id: SessionId,
-        agent: Option<AgentId>,
-        image: Option<&str>,
-        now: Timestamp,
-        inference: &swarmy_core::InferenceSelection,
-    ) -> Result<SessionRecord> {
-        self.create_session_with_route(id, agent, image, now, inference, None)
-            .await
-    }
-
-    /// Create a session with inference overrides and a route override before
-    /// its first turn. A named route must exist.
-    /// # Errors
-    /// Rejects missing routes, invalid agents/images, and duplicate sessions.
-    pub async fn create_session_with_route(
-        &self,
-        id: SessionId,
-        agent: Option<AgentId>,
-        image: Option<&str>,
-        now: Timestamp,
-        inference: &swarmy_core::InferenceSelection,
-        route: Option<&str>,
-    ) -> Result<SessionRecord> {
+        let options = options.unwrap_or_default();
         let session = SessionRecord {
             interrupt_requested: false,
             session_id: id,
@@ -469,11 +312,12 @@ impl Store {
             state: SessionState::Idle,
             head_seq: 0,
             snapshot_ref: None,
-            inference: inference.clone(),
-            route: route.map(str::to_owned),
+            inference: options.inference.cloned().unwrap_or_default(),
+            route: options.route.map(str::to_owned),
             route_step: 0,
         };
-        self.create_session_record(&session, now, image).await?;
+        self.create_session_record(&session, now, options.image)
+            .await?;
         Ok(session)
     }
 

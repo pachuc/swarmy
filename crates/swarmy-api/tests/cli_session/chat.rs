@@ -1128,7 +1128,12 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
         .unwrap();
     fixture
         .store
-        .put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest)
+        .put_image(
+            "fixture",
+            &swarmy_core::ImageTag("test".into()),
+            manifest,
+            None,
+        )
         .await
         .unwrap();
     let files = tempfile::tempdir().unwrap();

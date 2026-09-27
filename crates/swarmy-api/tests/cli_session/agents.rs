@@ -1,5 +1,6 @@
 use super::*;
 use swarmy_core::{AgentRecord, SessionKind};
+use swarmy_store::AgentSessionOptions;
 
 fn success(output: std::process::Output) -> String {
     assert!(
@@ -16,31 +17,34 @@ async fn agent_commands_and_session_lifetimes() {
         let agent = create_agents(&fixture).await;
         let first = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 Some(agent.agent_id),
-                None,
                 Timestamp::now(),
+                None,
             )
             .await
             .unwrap();
         let second = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 Some(agent.agent_id),
-                None,
                 Timestamp::now(),
+                None,
             )
             .await
             .unwrap();
         let ephemeral = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -301,7 +305,7 @@ async fn named_run_resolves_names_and_ids_without_a_default_image() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .create_agent("tommy", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         let service = serve(&fixture, true).await;
@@ -374,7 +378,7 @@ async fn json_chat_reads_prompts_and_retains_named_sessions_on_eof() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .create_agent("tommy", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         let service = serve(&fixture, true).await;
@@ -535,6 +539,7 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
                         "fixture:test",
                         "",
                         Timestamp::now(),
+                        None,
                     )
                     .await
                     .unwrap(),
@@ -543,11 +548,11 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
         for _ in 0..66 {
             fixture
                 .store
-                .create_session_for_agent(
+                .create_agent_session(
                     SessionId::from_ulid(Ulid::generate()),
                     Some(agents[0].agent_id),
-                    None,
                     Timestamp::now(),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -577,7 +582,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("placed", "fixture:test", "", Timestamp::now())
+            .create_agent("placed", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         let node = NodeId::from_ulid(Ulid::generate());
@@ -665,11 +670,14 @@ async fn new_commands_use_the_selected_remote_profile() {
         .unwrap();
         let ephemeral = fixture
             .store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -888,7 +896,7 @@ async fn named_chat_resumes_main_and_new_preserves_the_pointer() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .create_agent("tommy", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         let mut main = None;

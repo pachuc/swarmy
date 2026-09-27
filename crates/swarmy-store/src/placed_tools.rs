@@ -15,6 +15,10 @@ struct StoredPlacedClaim {
     job_digest: [u8; 32],
 }
 
+fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&swarmy_core::encode(job)?).as_bytes())
+}
+
 impl Store {
     fn volume_placement_key(&self, id: VolumeId) -> Vec<u8> {
         self.root
@@ -50,24 +54,15 @@ impl Store {
                     return Err(StoreError::LeaseMismatch);
                 }
             } else {
-                let legacy_key = self
-                    .root
-                    .pack(&("sandbox", session.as_ulid().to_bytes().as_slice()));
-                let manifest = if let Some(legacy) =
-                    read::<swarmy_core::SandboxRecord>(&trx, &legacy_key).await?
-                {
-                    legacy.manifest_id
-                } else {
-                    read::<ImageRecord>(
-                        &trx,
-                        &self
-                            .root
-                            .pack(&("session_image", session.as_ulid().to_bytes().as_slice())),
-                    )
-                    .await?
-                    .ok_or(StoreError::ManifestMissing)?
-                    .manifest_id
-                };
+                let manifest = read::<ImageRecord>(
+                    &trx,
+                    &self
+                        .root
+                        .pack(&("session_image", session.as_ulid().to_bytes().as_slice())),
+                )
+                .await?
+                .ok_or(StoreError::ManifestMissing)?
+                .manifest_id;
                 write(
                     &trx,
                     &self.volume_key(id),
@@ -139,7 +134,7 @@ impl Store {
                     owner: claim.owner,
                     placement: claim.placement.clone(),
                     expires_at: claim.expires_at,
-                    job_digest: crate::tools::job_digest(&claim.job)?,
+                    job_digest: job_digest(&claim.job)?,
                 },
             )?;
             Ok(true)
@@ -160,7 +155,7 @@ impl Store {
         )?;
         let current = current.ok_or(StoreError::LeaseMismatch)?;
         if current.owner != claim.owner
-            || current.job_digest != crate::tools::job_digest(&claim.job)?
+            || current.job_digest != job_digest(&claim.job)?
             || current.placement != claim.placement
             || current.expires_at <= Timestamp::now()
         {

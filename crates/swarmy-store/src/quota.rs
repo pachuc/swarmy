@@ -98,6 +98,8 @@ impl Store {
     /// Record the latest published remaining-quota values for one entry.
     /// # Errors
     /// Returns encoding or storage errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn observe_entry_quota(
         &self,
         provider: &str,

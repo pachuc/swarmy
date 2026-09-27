@@ -137,6 +137,7 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
             "chaos:test",
             "Remember durable facts",
             Timestamp::now(),
+            None,
         )
         .await?
         .agent_id;

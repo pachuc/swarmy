@@ -359,11 +359,14 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
         .await
         .unwrap();
     store
-        .put_image_with_scratch(
+        .put_image(
             "scratch",
             &ImageTag("test".into()),
             base,
-            &["/home/agent/.cargo-target".into(), "/tmp".into()],
+            Some(swarmy_store::PutImageOptions {
+                scratch: vec!["/home/agent/.cargo-target".into(), "/tmp".into()],
+                ..Default::default()
+            }),
         )
         .await
         .unwrap();
@@ -384,7 +387,13 @@ async fn scratch_mounts(
     base: ManifestId,
 ) -> (AgentId, Sandbox, PathBuf) {
     let agent = store
-        .create_agent("scratch-owner", "scratch:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "scratch-owner",
+            "scratch:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
@@ -540,7 +549,7 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
     for cycle in 0..10 {
         let name = format!("scratch-cycle-{cycle}");
         let agent = store
-            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now())
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
@@ -582,7 +591,7 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
     for age_days in [2_u64, 1] {
         let name = format!("pressure-{age_days}");
         let agent = store
-            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now())
+            .create_agent(&name, "scratch:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         let path = node
@@ -612,7 +621,13 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     let third = store
-        .create_agent("pressure-third", "scratch:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "pressure-third",
+            "scratch:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let third_volume = VolumeId::from_ulid(third.agent_id.as_ulid());
@@ -655,7 +670,13 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
 
 async fn scratch_idle(node: &mut Node, store: &Store) {
     let stale = store
-        .create_agent("idle-scratch", "scratch:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "idle-scratch",
+            "scratch:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let path = node

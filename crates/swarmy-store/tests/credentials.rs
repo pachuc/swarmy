@@ -14,7 +14,9 @@ use swarmy_core::{
     encode,
 };
 use swarmy_store::{
-    CredentialKey, Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore,
+    CredentialKey, Store, StoreError,
+    blob::MemoryBlobStore,
+    credentials::{CredentialStore, LegacyMigration},
 };
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -72,17 +74,17 @@ async fn put_get_list_delete_and_wrong_key() {
         return;
     };
     f.credentials
-        .put_credential(SCOPE, "openai", &oauth("secret"))
+        .put_entry(SCOPE, "openai", "default", &oauth("secret"))
         .await
         .unwrap();
     let actual = f
         .credentials
-        .get_credential(SCOPE, "openai")
+        .get_entry(SCOPE, "openai", "default")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(access(&actual), "secret");
-    let listed = f.credentials.list_credentials(SCOPE).await.unwrap();
+    let listed = f.credentials.list_entries(SCOPE).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].provider, "openai");
     assert_eq!(listed[0].status, CredentialStatus::Expired);
@@ -93,27 +95,21 @@ async fn put_get_list_delete_and_wrong_key() {
     )
     .credentials(Keyring::from_bytes([8; 32]));
     assert!(matches!(
-        wrong.get_credential(SCOPE, "openai").await,
+        wrong.get_entry(SCOPE, "openai", "default").await,
         Err(StoreError::Keyring)
     ));
     f.credentials
-        .delete_credential(SCOPE, "openai")
+        .delete_entry(SCOPE, "openai", "default")
         .await
         .unwrap();
     assert!(
         f.credentials
-            .get_credential(SCOPE, "openai")
+            .get_entry(SCOPE, "openai", "default")
             .await
             .unwrap()
             .is_none()
     );
-    assert!(
-        f.credentials
-            .list_credentials(SCOPE)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(f.credentials.list_entries(SCOPE).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -122,7 +118,7 @@ async fn simultaneous_refresh_invokes_one_function() {
         return;
     };
     f.credentials
-        .put_credential(SCOPE, "chatgpt", &oauth("old"))
+        .put_entry(SCOPE, "chatgpt", "default", &oauth("old"))
         .await
         .unwrap();
     let calls = AtomicUsize::new(0);
@@ -132,10 +128,20 @@ async fn simultaneous_refresh_invokes_one_function() {
         Ok(oauth("new"))
     };
     let (a, b) = tokio::join!(
-        f.credentials
-            .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), refresh),
-        f.credentials
-            .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), refresh),
+        f.credentials.refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_secs(2),
+            refresh
+        ),
+        f.credentials.refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_secs(2),
+            refresh
+        ),
     );
     let a = a.unwrap();
     let b = b.unwrap();
@@ -144,7 +150,7 @@ async fn simultaneous_refresh_invokes_one_function() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
         f.credentials
-            .get_credential(SCOPE, "chatgpt")
+            .get_entry(SCOPE, "chatgpt", "default")
             .await
             .unwrap()
             .unwrap()
@@ -158,7 +164,7 @@ async fn dead_owner_expires_and_stale_write_is_fenced() {
         return;
     };
     f.credentials
-        .put_credential(SCOPE, "chatgpt", &oauth("old"))
+        .put_entry(SCOPE, "chatgpt", "default", &oauth("old"))
         .await
         .unwrap();
     let trx = f.db.create_trx().unwrap();
@@ -170,32 +176,43 @@ async fn dead_owner_expires_and_stale_write_is_fenced() {
         seq: 0,
     };
     trx.set(
-        &f.root.pack(&("credential_lease", "cluster", "chatgpt")),
+        &f.root
+            .pack(&("credential_entry_lease", "cluster", "chatgpt", "default")),
         &encode(&lease).unwrap(),
     );
     trx.commit().await.unwrap();
     let actual = f
         .credentials
-        .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), |_| async {
-            Ok(oauth("recovered"))
-        })
+        .refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_secs(2),
+            |_| async { Ok(oauth("recovered")) },
+        )
         .await
         .unwrap();
     assert_eq!(access(&actual), "recovered");
     let result = f
         .credentials
-        .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), |_| async {
-            f.credentials
-                .put_credential(SCOPE, "chatgpt", &oauth("explicit replacement"))
-                .await?;
-            Ok(oauth("stale"))
-        })
+        .refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_secs(2),
+            |_| async {
+                f.credentials
+                    .put_entry(SCOPE, "chatgpt", "default", &oauth("explicit replacement"))
+                    .await?;
+                Ok(oauth("stale"))
+            },
+        )
         .await;
     assert!(matches!(result, Err(StoreError::LeaseMismatch)));
     assert_eq!(
         access(
             &f.credentials
-                .get_credential(SCOPE, "chatgpt")
+                .get_entry(SCOPE, "chatgpt", "default")
                 .await
                 .unwrap()
                 .unwrap()
@@ -210,20 +227,24 @@ async fn refresh_failure_keeps_tokens_and_requires_login() {
         return;
     };
     f.credentials
-        .put_credential(SCOPE, "chatgpt", &oauth("old"))
+        .put_entry(SCOPE, "chatgpt", "default", &oauth("old"))
         .await
         .unwrap();
     assert!(matches!(
         f.credentials
-            .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), |_| async {
-                Err(StoreError::CredentialRefresh)
-            })
+            .refresh_entry_with_lease(
+                SCOPE,
+                "chatgpt",
+                "default",
+                Duration::from_secs(2),
+                |_| async { Err(StoreError::CredentialRefresh) }
+            )
             .await,
         Err(StoreError::CredentialRefresh)
     ));
     let current = f
         .credentials
-        .get_credential(SCOPE, "chatgpt")
+        .get_entry(SCOPE, "chatgpt", "default")
         .await
         .unwrap()
         .unwrap();
@@ -234,9 +255,13 @@ async fn refresh_failure_keeps_tokens_and_requires_login() {
     );
     assert!(matches!(
         f.credentials
-            .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), |_| async {
-                panic!("must not retry a failed rotation")
-            })
+            .refresh_entry_with_lease(
+                SCOPE,
+                "chatgpt",
+                "default",
+                Duration::from_secs(2),
+                |_| async { panic!("must not retry a failed rotation") }
+            )
             .await,
         Err(StoreError::CredentialRefresh)
     ));
@@ -248,21 +273,27 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
         return;
     };
     f.credentials
-        .put_credential(SCOPE, "chatgpt", &oauth("old"))
+        .put_entry(SCOPE, "chatgpt", "default", &oauth("old"))
         .await
         .unwrap();
     let result = f
         .credentials
-        .refresh_with_lease(SCOPE, "chatgpt", Duration::from_millis(50), |_| async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(oauth("late"))
-        })
+        .refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_millis(50),
+            |_| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(oauth("late"))
+            },
+        )
         .await;
     assert!(matches!(result, Err(StoreError::LeaseMismatch)));
     assert_eq!(
         access(
             &f.credentials
-                .get_credential(SCOPE, "chatgpt")
+                .get_entry(SCOPE, "chatgpt", "default")
                 .await
                 .unwrap()
                 .unwrap()
@@ -271,15 +302,23 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
     );
     let result = f
         .credentials
-        .refresh_with_lease(SCOPE, "chatgpt", Duration::from_secs(2), |_| async {
-            f.credentials.delete_credential(SCOPE, "chatgpt").await?;
-            Ok(oauth("deleted"))
-        })
+        .refresh_entry_with_lease(
+            SCOPE,
+            "chatgpt",
+            "default",
+            Duration::from_secs(2),
+            |_| async {
+                f.credentials
+                    .delete_entry(SCOPE, "chatgpt", "default")
+                    .await?;
+                Ok(oauth("deleted"))
+            },
+        )
         .await;
     assert!(matches!(result, Err(StoreError::LeaseMismatch)));
     assert!(
         f.credentials
-            .get_credential(SCOPE, "chatgpt")
+            .get_entry(SCOPE, "chatgpt", "default")
             .await
             .unwrap()
             .is_none()
@@ -287,10 +326,10 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
 }
 
 #[tokio::test]
-async fn labelled_entries_migrate_refresh_and_remove_independently() {
+async fn labelled_entries_refresh_and_remove_independently() {
     let Some(f) = Fixture::new() else { return };
     f.credentials
-        .put_credential(SCOPE, "openai", &oauth("legacy"))
+        .put_entry(SCOPE, "openai", "default", &oauth("legacy"))
         .await
         .unwrap();
     let first = f.credentials.list_entries(SCOPE).await.unwrap();
@@ -443,7 +482,7 @@ async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
 }
 
 #[tokio::test]
-async fn legacy_api_key_migrates_once_to_default() {
+async fn default_entry_lists_once() {
     let Some(f) = Fixture::new() else { return };
     let record = CredentialRecord {
         kind: CredentialKind::ApiKey {
@@ -453,7 +492,7 @@ async fn legacy_api_key_migrates_once_to_default() {
         updated_at: Timestamp::now(),
     };
     f.credentials
-        .put_credential(SCOPE, "openai", &record)
+        .put_entry(SCOPE, "openai", "default", &record)
         .await
         .unwrap();
     let first = f.credentials.list_entries(SCOPE).await.unwrap();
@@ -474,7 +513,7 @@ async fn legacy_api_key_migrates_once_to_default() {
 }
 
 #[tokio::test]
-async fn entry_labels_list_without_decrypting_and_cover_legacy() {
+async fn entry_labels_list_without_decrypting() {
     let Some(f) = Fixture::new() else {
         return;
     };
@@ -505,9 +544,9 @@ async fn entry_labels_list_without_decrypting_and_cover_legacy() {
             .unwrap(),
         ["backup", "primary"]
     );
-    // An unmigrated single record counts as the default entry.
+    // A default entry lists alongside the other labels.
     f.credentials
-        .put_credential(SCOPE, "anthropic", &oauth("legacy"))
+        .put_entry(SCOPE, "anthropic", "default", &oauth("primary"))
         .await
         .unwrap();
     assert_eq!(
@@ -625,15 +664,150 @@ async fn breaker_snapshot_matches_the_gateway_pool_without_decrypting() {
     labels.sort();
     assert_eq!(labels, ["expired", "login"]);
 
-    // An unmigrated single record counts as the default entry.
+    // A stored default entry is the pool candidate.
     f.credentials
-        .put_credential(SCOPE, "xai", &api_key("legacy"))
+        .put_entry(SCOPE, "xai", "default", &api_key("live"))
         .await
         .unwrap();
-    let legacy = store
+    let pool = store
         .breaker_snapshot(SCOPE, "xai", Timestamp::now())
         .await
         .unwrap();
-    assert_eq!(legacy.len(), 1);
-    assert_eq!(legacy[0].key, CredentialKey::entry("xai", "default"));
+    assert_eq!(pool.len(), 1);
+    assert_eq!(pool[0].key, CredentialKey::entry("xai", "default"));
+}
+
+/// Encrypt a record the way the retired `put_credential` writer on master
+/// did: the plaintext record sealed under the legacy associated data
+/// `encode(&(scope, provider))`, with the provider string (not an entry
+/// identity) as the identity. This pins the wire format independently of
+/// the crate's current entry helpers, so the boot migration stays
+/// compatible with rows written before the old API was retired.
+fn encrypt_legacy_row(
+    keyring: &Keyring,
+    scope: CredentialScope,
+    provider: &str,
+    record: &CredentialRecord,
+) -> Vec<u8> {
+    use chacha20poly1305::{
+        XChaCha20Poly1305, XNonce,
+        aead::{Aead, KeyInit, Payload},
+    };
+    use rand::TryRngCore;
+    let plaintext = encode(record).unwrap();
+    let mut nonce = [0; 24];
+    rand::rngs::OsRng.try_fill_bytes(&mut nonce).unwrap();
+    let associated = encode(&(scope, provider)).unwrap();
+    let ciphertext = XChaCha20Poly1305::new(keyring.key().into())
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &plaintext,
+                aad: &associated,
+            },
+        )
+        .unwrap();
+    let mut bytes = nonce.to_vec();
+    bytes.extend(ciphertext);
+    bytes
+}
+
+async fn write_legacy_row(fixture: &Fixture, provider: &str, record: &CredentialRecord) {
+    let key = fixture
+        .root
+        .pack(&("credential", SCOPE.to_string(), provider));
+    let lease_key = fixture
+        .root
+        .pack(&("credential_lease", SCOPE.to_string(), provider));
+    let bytes = encrypt_legacy_row(&Keyring::from_bytes([7; 32]), SCOPE, provider, record);
+    fixture
+        .db
+        .run(|trx, _| {
+            let key = key.clone();
+            let bytes = bytes.clone();
+            let lease_key = lease_key.clone();
+            async move {
+                trx.set(&key, &bytes);
+                trx.set(&lease_key, b"stale-lease");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+}
+
+async fn raw_row(fixture: &Fixture, table: &str, provider: &str) -> Option<Vec<u8>> {
+    let key = fixture.root.pack(&(table, SCOPE.to_string(), provider));
+    fixture
+        .db
+        .run(|trx, _| {
+            let key = key.clone();
+            async move { Ok(trx.get(&key, false).await?.map(|value| value.to_vec())) }
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn boot_migration_moves_a_legacy_row_to_the_default_entry() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let record = api_key("legacy-secret");
+    write_legacy_row(&fixture, "openai", &record).await;
+    let outcome = fixture
+        .credentials
+        .migrate_legacy_credentials()
+        .await
+        .unwrap();
+    assert_eq!(outcome.written, 1);
+    assert_eq!(outcome.cleared, 0);
+    let entry = fixture
+        .credentials
+        .get_entry(SCOPE, "openai", "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(entry == record);
+    assert!(raw_row(&fixture, "credential", "openai").await.is_none());
+    assert!(
+        raw_row(&fixture, "credential_lease", "openai")
+            .await
+            .is_none()
+    );
+    let again = fixture
+        .credentials
+        .migrate_legacy_credentials()
+        .await
+        .unwrap();
+    assert_eq!(again, LegacyMigration::default());
+}
+
+#[tokio::test]
+async fn boot_migration_clears_but_does_not_overwrite_an_existing_default_entry() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let current = api_key("current-secret");
+    fixture
+        .credentials
+        .put_entry(SCOPE, "anthropic", "default", &current)
+        .await
+        .unwrap();
+    write_legacy_row(&fixture, "anthropic", &api_key("stale-secret")).await;
+    let outcome = fixture
+        .credentials
+        .migrate_legacy_credentials()
+        .await
+        .unwrap();
+    assert_eq!(outcome.written, 0);
+    assert_eq!(outcome.cleared, 1);
+    let entry = fixture
+        .credentials
+        .get_entry(SCOPE, "anthropic", "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(entry == current);
+    assert!(raw_row(&fixture, "credential", "anthropic").await.is_none());
 }

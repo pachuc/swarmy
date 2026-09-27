@@ -1,4 +1,5 @@
-use swarmy_gateway::{config, cost::cost_micros, providers::Providers};
+use swarmy_gateway::{config, providers::Providers};
+use swarmy_llm::cost::cost_micros;
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -194,6 +195,26 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
+    // One-shot boot migration of retired single-record credential rows.
+    // Boot never fails on this; the remainder is reported by `swarmy doctor`.
+    match swarmy_config::Keyring::load() {
+        Ok(keyring) => match store.migrate_legacy_credentials(&keyring).await {
+            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
+            Ok(outcome) => {
+                tracing::info!(
+                    written = outcome.written,
+                    cleared = outcome.cleared,
+                    "migrated retired single-record credential rows to entries"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(%error, "legacy credential migration failed; continuing without it");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
+        }
+    }
     let providers = Providers::discover(store.clone(), &config.settings).await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let mut messages = futures::stream::SelectAll::new();

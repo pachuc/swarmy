@@ -120,7 +120,7 @@ impl Fixture {
             .await
             .unwrap();
         store
-            .put_image("routing", &ImageTag("test".into()), manifest)
+            .put_image("routing", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let worker = Worker::new(store.clone(), bus.clone(), blobs, config);
@@ -140,7 +140,7 @@ impl Fixture {
     async fn named_agent(&mut self) {
         self.agent = self
             .store
-            .create_agent("shared", "routing:test", "", Timestamp::now())
+            .create_agent("shared", "routing:test", "", Timestamp::now(), None)
             .await
             .unwrap()
             .agent_id;
@@ -633,7 +633,7 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     for _ in 0..=swarmy_store::MAX_SCAN_LIMIT {
         let id = SessionId::from_ulid(Ulid::generate());
         f.store
-            .create_session_for_agent(id, Some(f.agent), None, Timestamp::now())
+            .create_agent_session(id, Some(f.agent), Timestamp::now(), None)
             .await
             .unwrap();
         sessions.push(id);

@@ -5,7 +5,7 @@ async fn named_chat_header_and_notices_identify_the_session() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .create_agent("tommy", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
@@ -220,7 +220,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
     run(|fixture| async move {
         let agent = fixture
             .store
-            .create_agent("tommy", "fixture:test", "", Timestamp::now())
+            .create_agent("tommy", "fixture:test", "", Timestamp::now(), None)
             .await
             .unwrap();
         for (answer, deleted) in [("n\r", false), ("yes\r", true)] {
@@ -263,7 +263,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
 #[tokio::test]
 async fn open_chat_follows_a_summarized_main_with_a_notice() {
     run(|fixture| async move {
-        let agent = fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
+        let agent = fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now(), None).await.unwrap();
         let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         // No provider call happens in this test: summarization runs
         // in-process and is instant, so every wait below uses the short
@@ -350,7 +350,7 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
                 "update": {"steps": 2, "tool_steps": [0], "bash_command": "printf 'Remember: the launch code is orange.' > /home/agent/memory/a.txt", "final_answer": "Updated memory"}
             }
         }"#).await;
-        fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now()).await.unwrap();
+        fixture.store.create_agent("tommy", "fixture:test", "", Timestamp::now(), None).await.unwrap();
         let mut chat = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         chat
             .ready(Diagnostics {

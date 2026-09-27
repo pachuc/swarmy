@@ -10,7 +10,7 @@ use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
     InferenceSelection, Message, MessageId, MessageRole, Part, SessionId, SessionState,
 };
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -124,16 +124,19 @@ async fn setup(image: &str) -> BenchFixture {
     let api_id = SessionId::from_ulid(api_session.id.parse().unwrap());
     let direct_id = SessionId::from_ulid(Ulid::generate());
     store
-        .create_session_with_inference(
+        .create_agent_session(
             direct_id,
             None,
-            Some(image),
             jiff::Timestamp::now(),
-            &InferenceSelection {
-                provider: Some("fake".into()),
-                model: Some(settings.model.clone()),
-                effort: None,
-            },
+            Some(AgentSessionOptions {
+                image: Some(image),
+                inference: Some(&InferenceSelection {
+                    provider: Some("fake".into()),
+                    model: Some(settings.model.clone()),
+                    effort: None,
+                }),
+                ..Default::default()
+            }),
         )
         .await
         .unwrap();
@@ -319,6 +322,7 @@ async fn fake_turn_records_first_token_metrics() {
             &image,
             "",
             jiff::Timestamp::now(),
+            None,
         )
         .await
         .unwrap();

@@ -58,6 +58,8 @@ impl Store {
     /// may be in the past so recovery can be tested without reading a local clock.
     /// # Errors
     /// Rejects missing or non-Runnable sessions and transaction failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn claim_lease(
         &self,
         id: SessionId,
@@ -71,6 +73,8 @@ impl Store {
     /// Claim work and read its session and turn from the same database version.
     /// # Errors
     /// Rejects non-runnable sessions and storage or snapshot decoding failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn claim_step(
         &self,
         id: SessionId,
@@ -215,6 +219,8 @@ impl Store {
     /// Release a live lease and return the session to Runnable.
     /// # Errors
     /// Rejects expired or replaced leases and transaction failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn release_lease(
         &self,
         id: SessionId,

@@ -36,7 +36,9 @@ use swarmy_core::{
     SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
+};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -209,7 +211,7 @@ impl Fixture {
         .unwrap();
         let admin = async_nats::connect(&self.url).await.unwrap();
         let context = async_nats::jetstream::new(admin);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             if let Err(error) = context
                 .delete_stream(format!("{}_{stream}", self.prefix))
                 .await
@@ -336,12 +338,15 @@ async fn interrupt_idle_session_exits_with_clear_error() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -360,12 +365,15 @@ async fn session_show_json_includes_pending_interrupt() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -1057,7 +1065,7 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
 async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     let agent = fixture
         .store
-        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now())
+        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now(), None)
         .await
         .unwrap();
     let (session, _) = fixture

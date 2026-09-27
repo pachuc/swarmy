@@ -10,102 +10,62 @@ use crate::{InferenceWait, Result, Store, StoreError, read, write};
 /// the picked step commits with the request event instead of in a separate
 /// transaction. Skipped-step reasons join the wait history; the failure
 /// sequence is untouched because no failure is handled here.
+#[derive(Clone, Debug)]
 pub struct SubmitRouteStep {
     pub step: u32,
     pub reasons: Vec<String>,
 }
 
+/// Commit extras for the inference handoff. Worker-generated conversation
+/// events commit with the request so retries cannot repeat them; the gateway
+/// request commits alongside them, and the picked route step lands in the
+/// same transaction so a retryable failure advances from the attempt that
+/// actually ran.
+#[derive(Clone, Debug)]
+pub struct SubmitInferenceOptions<'a, R = ()> {
+    /// Gateway request payload; a failed transaction leaves only an uploaded
+    /// blob, which the collector can reclaim.
+    pub request: Option<&'a R>,
+    /// Conversation events to commit before the request event.
+    pub before: &'a [Event],
+    /// Route position to persist with the handoff.
+    pub route: Option<SubmitRouteStep>,
+}
+
+impl<R> Default for SubmitInferenceOptions<'_, R> {
+    fn default() -> Self {
+        Self {
+            request: None,
+            before: &[],
+            route: None,
+        }
+    }
+}
+
 impl Store {
     /// Persist the input, request event and inflight outbox, then release the lease.
     /// A crash before publication is recovered from the durable inflight outbox.
+    /// The handoff commits input, request, outbox, events, and route step
+    /// atomically; splitting the parameters would separate that one write.
     /// # Errors
     /// Rejects a stale head, expired or replaced lease, and invalid request identity.
-    pub async fn submit_inference<T: Serialize>(
+    pub async fn submit_inference<T: Serialize, R: Serialize>(
         &self,
         expected_head: u64,
         lease: &Lease,
         record: &InflightRecord,
         input: &T,
+        options: Option<SubmitInferenceOptions<'_, R>>,
     ) -> Result<Event> {
-        self.submit_inference_after(expected_head, lease, record, input, &[])
-            .await
-    }
-
-    /// Include worker-generated conversation events in the inference handoff.
-    /// Tool results and system notices commit with the request so retries cannot repeat them.
-    /// # Errors
-    /// Rejects stale heads, expired or replaced leases, and invalid request identity.
-    pub async fn submit_inference_after<T: Serialize>(
-        &self,
-        expected_head: u64,
-        lease: &Lease,
-        record: &InflightRecord,
-        input: &T,
-        before: &[Event],
-    ) -> Result<Event> {
+        let options = options.unwrap_or_default();
         self.submit_inference_after_inner(
             expected_head,
             lease,
             record,
             input,
-            None::<&T>,
-            before,
-            None,
-        )
-        .await
-    }
-
-    /// Commit the gateway request with the event and inflight outbox. A failed
-    /// transaction leaves only an uploaded blob, which the collector can reclaim.
-    /// # Errors
-    /// Rejects stale heads, expired or replaced leases, and invalid work.
-    pub async fn submit_inference_after_with_request<T: Serialize, R: Serialize>(
-        &self,
-        expected_head: u64,
-        lease: &Lease,
-        record: &InflightRecord,
-        input: &T,
-        request: &R,
-        before: &[Event],
-    ) -> Result<Event> {
-        self.submit_inference_after_inner(
-            expected_head,
-            lease,
-            record,
-            input,
-            Some(request),
-            before,
-            None,
-        )
-        .await
-    }
-
-    /// Commit the gateway request with the event, inflight outbox, and route
-    /// position. The picked step lands in the same transaction as the request
-    /// so a retryable failure advances from the attempt that actually ran.
-    /// # Errors
-    /// Rejects stale heads, expired or replaced leases, and invalid work.
-    // The handoff commits input, request, outbox, events, and route step
-    // atomically; splitting the parameters would separate that one write.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn submit_inference_after_with_request_and_route<T: Serialize, R: Serialize>(
-        &self,
-        expected_head: u64,
-        lease: &Lease,
-        record: &InflightRecord,
-        input: &T,
-        request: &R,
-        before: &[Event],
-        route: Option<SubmitRouteStep>,
-    ) -> Result<Event> {
-        self.submit_inference_after_inner(
-            expected_head,
-            lease,
-            record,
-            input,
-            Some(request),
-            before,
-            route,
+            options.request,
+            options.before,
+            options.route,
         )
         .await
     }

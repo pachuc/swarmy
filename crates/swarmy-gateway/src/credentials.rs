@@ -577,26 +577,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_record_reads_and_refreshes_through_default() {
+    async fn default_entry_reads_and_refreshes() {
         let Some(store) = test_store() else {
             return;
         };
         let credentials = store.credentials(Keyring::from_bytes([10; 32]));
-        let legacy = api_key("legacy-key");
+        let initial = api_key("initial-key");
         credentials
-            .put_credential(CredentialScope::Cluster, "openai", &legacy)
+            .put_entry(CredentialScope::Cluster, "openai", "default", &initial)
             .await
             .unwrap();
         let auth = ClusterCredentials::with_credentials(&store, credentials);
-        // The first read migrates the legacy record; an old gateway sharing
-        // the store would no longer see it, so gateways upgrade together.
-        assert!(auth.get("openai").await.unwrap().unwrap() == legacy);
+        assert!(auth.get("openai").await.unwrap().unwrap() == initial);
         let login = StubLogin {
             calls: AtomicUsize::new(0),
             key: "rotated-key".into(),
             delay: Duration::ZERO,
         };
-        let rotated = auth.refresh("openai", &legacy, &login).await.unwrap();
+        let rotated = auth.refresh("openai", &initial, &login).await.unwrap();
         assert_eq!(api_key_of(&rotated), "rotated-key");
         assert_eq!(login.calls.load(Ordering::SeqCst), 1);
         assert!(auth.get("openai").await.unwrap().unwrap() == rotated);

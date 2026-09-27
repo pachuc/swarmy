@@ -7,7 +7,7 @@ case-sensitive name and pins the registered `NAME:TAG` manifest. Lookup uses
 a name creates a different id. The collector protects named agents' image pins
 even after the image tag changes.
 
-`create_session_for_agent(id, agent, image, now)` creates an idle session.
+`create_agent_session(id, agent, now, options)` creates an idle session.
 With no agent it mints an anonymous agent id and requires an image. With an
 agent id it requires an existing named agent, uses that agent's pinned image,
 and rejects any explicit image with:

@@ -54,7 +54,7 @@ impl Fixture {
             .await
             .unwrap();
         store
-            .put_image("fixture", &ImageTag("test".into()), manifest)
+            .put_image("fixture", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let bus = Bus::connect(&nats, Config::default()).await.unwrap();
@@ -239,7 +239,7 @@ async fn named_main_and_side_preserve_image_and_selection() {
     };
     let agent = f
         .store
-        .create_agent("named", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent("named", "fixture:test", "", jiff::Timestamp::now(), None)
         .await
         .unwrap();
     let main = f
@@ -627,7 +627,13 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     };
     let agent = f
         .store
-        .create_agent("metric-agent", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "metric-agent",
+            "fixture:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let (session, _) = f
