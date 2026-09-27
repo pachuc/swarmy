@@ -62,9 +62,13 @@ jobs:
       # workspace test and clippy runs never compile the provisioning client.
       # Build it once here and run its unit and integration tests and clippy
       # with the feature on.
+      - name: Test the cloud provisioning implementation
+        run: cargo test --locked -p swarmy-cloud --features remote
       - name: Test the provisioning client
         run: cargo test --locked -p swarmy-cli --features remote
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Lint the cloud provisioning implementation
+        run: cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
       - name: Lint the provisioning client
         run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
       # The cloud provider gates must not rot: this build refuses Bedrock,

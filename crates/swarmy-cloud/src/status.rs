@@ -121,7 +121,7 @@ pub async fn run(json: bool) -> Result<()> {
                 instance_type: child
                     .launch_settings
                     .as_ref()
-                    .map(|settings| settings.instance_type.clone()),
+                    .map(|settings| settings.aws.instance_type.clone()),
                 private_ip: child.private_ip.clone(),
                 sandboxes: child.sandboxes,
                 instance_state: instance_state(reachable(child).await),
@@ -213,7 +213,7 @@ where
         instance_type: node
             .launch_settings
             .as_ref()
-            .map(|settings| settings.instance_type.clone()),
+            .map(|settings| settings.aws.instance_type.clone()),
         nodes: Vec::new(),
         images: Vec::new(),
         services: Vec::new(),
@@ -425,8 +425,11 @@ mod tests {
         };
         let mut node = node;
         node.launch_settings = Some(swarmy_config::RemoteSettings {
-            instance_type: "m6i.large".into(),
             disk_gb: 40,
+            aws: swarmy_config::AwsSettings {
+                instance_type: "m6i.large".into(),
+                ..Default::default()
+            },
             ..Default::default()
         });
         let status = inspect(&node, true, true, || async {
