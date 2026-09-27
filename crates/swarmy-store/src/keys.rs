@@ -909,6 +909,7 @@ impl<'a> Keys<'a> {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn no_raw_family_packing_outside_registry() {
@@ -1130,7 +1131,6 @@ mod registry_tests {
             ),
         ];
         let expected = include_str!("../tests/key-layout.hex");
-        use std::fmt::Write as _;
         let mut rendered = String::new();
         for (name, bytes) in actual {
             write!(&mut rendered, "{name} ").unwrap();
