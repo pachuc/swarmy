@@ -1,8 +1,5 @@
-#[cfg(feature = "remote")]
-use crate::remote::ssh as remote_ssh;
-#[cfg(not(feature = "remote"))]
-use crate::remote_ssh;
 use std::{path::Path, process::Stdio, time::Duration};
+use swarmy_cloud::ssh as remote_ssh;
 
 use serde::Serialize;
 use swarmy_config::{Loaded, Settings};
@@ -489,6 +486,21 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         )
     } else {
         Check::new("gateway providers", Ok(gateway_providers.join(", ")), "")
+    });
+    // Boot migrates retired single-record credential rows to entries; the
+    // count states how many rows remain. A nonzero count means those rows
+    // failed to decrypt with the service keyring.
+    checks.push(if snapshot.legacy_credential_rows == 0 {
+        Check::new("legacy credentials", Ok("none".into()), "")
+    } else {
+        Check::warn(
+            "legacy credentials",
+            format!(
+                "{} retired single-record credential rows remain",
+                snapshot.legacy_credential_rows
+            ),
+            "Install the cluster keyring on the service host and restart it; entries migrate at boot.",
+        )
     });
 }
 

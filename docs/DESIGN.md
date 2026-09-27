@@ -324,9 +324,9 @@ is a FoundationDB transaction plus a NATS nudge.
    is one wasted partial call, never a lost session.
 5. **Parse.** Worker claims again. If the response ends the turn, go to 8.
    Otherwise, transaction: append one `ToolCallRequested` per call, set
-   `WaitingTools`. Publish remote tool calls on `tool.remote`. Publish sandbox
-   tool calls on `tool.node.{node_id}` if the agent has a placed sandbox,
-   otherwise on `sched.place` for the scheduler to place first.
+   `WaitingTools`. The worker resolves the agent's computer placement and
+   dispatches the calls with its epoch, then publishes the jobs on
+   `tool.node.{node_id}` for the hosting node.
 6. **Execute.** A step worker or `swarmyd` claims each tool call under its own
    lease. Sandbox jobs also carry the agent id, node id, and placement epoch.
    The node checks its unexpired placement before execution; the completion
@@ -559,15 +559,12 @@ sessions hash to a partition. Scheduler instances own partition ranges.
 
 ```
 sched.runnable.{partition}     nudge: work available
-sched.place                    sandbox placement requests
 infer.req.{provider_class}     inference requests (JetStream, ack wait = lease)
 infer.live.{session_id}        streamed deltas for observers (core NATS)
-tool.remote                    remote tool calls (JetStream)
 tool.node.{node_id}            sandbox tool calls for one node (JetStream)
 node.heartbeat                 node liveness
 session.events.{session_id}    event fan-out for UIs
 session.timeline.{session_id}  ephemeral timestamped turn stages
-channel.msg.{channel_id}       live channel delivery
 ```
 
 JetStream is used where at-least-once delivery matters. Correctness never
@@ -1051,13 +1048,17 @@ auth commands, model configuration, terms decisions, and live verification.
 `scripts/models/generate.py` combines models.dev and OpenRouter's live list,
 filters to tool-capable models from the provider allowlist, and applies protocol
 compatibility flags. JSON snapshots and source hashes are committed under
-`crates/swarmy-llm/catalog`; builds never fetch metadata. `Settings::catalog()`
+`crates/swarmy-catalog/catalog`; builds never fetch metadata. `Settings::catalog()`
 merges custom provider and model definitions over the snapshot. Metadata includes
 context/output limits, prices and context tiers, modalities, and reasoning.
 
 `client_for(provider, model, auth)` dispatches Anthropic Messages, OpenAI
 Responses (including ChatGPT and Azure), OpenAI Chat Completions, Gemini on the
 public API and Vertex, and Bedrock Converse through the official AWS Rust SDK.
+Bedrock, Gemini/Vertex, and Azure are Cargo features (`bedrock`, `gemini`,
+`azure`); a build without one refuses those providers with a `NotCompiledIn`
+error. The gateway and the CLI enable all three by default, and no other crate
+enables any, so node-side services never compile the cloud SDKs.
 OpenRouter's Anthropic model ids use Messages. Fake clients use configured
 scripts. Protocol clients translate core messages and streamed deltas, preserve
 same-model reasoning signatures, normalize tool ids, repair orphan calls, and
@@ -1243,7 +1244,8 @@ swarmy/
     swarmy-core              ids, events, parts, session and agent records, traits, errors
     swarmy-store             FoundationDB layer: key layout, all transactions
     swarmy-bus               NATS subjects, publish and consume helpers
-    swarmy-llm               unified LLM types, provider adapters, auth flows, catalog
+    swarmy-llm               unified LLM types, provider adapters, auth flows
+    swarmy-catalog           embedded model catalog (serde types plus JSON snapshots)
     swarmy-volume            chunk store, manifests, NBD and ublk servers, flush and clone
     swarmy-sandbox           SandboxRuntime trait and runc, gVisor, Firecracker impls
     swarmy-harness           the agent loop as pure step functions, prompt assembly, compaction

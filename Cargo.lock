@@ -4078,7 +4078,6 @@ name = "swarmy-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "async-stream",
  "async-trait",
  "axum",
@@ -4086,10 +4085,8 @@ dependencies = [
  "blake3",
  "foundationdb",
  "futures",
- "futures-util",
  "jiff",
  "object_store",
- "portable-pty",
  "reqwest",
  "serde",
  "serde_json",
@@ -4112,7 +4109,6 @@ dependencies = [
  "unicode-width",
  "utoipa",
  "utoipa-swagger-ui",
- "vt100",
 ]
 
 [[package]]
@@ -4121,6 +4117,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "swarmy-core",
  "utoipa",
 ]
 
@@ -4138,6 +4135,15 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "swarmy-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swarmy-core",
 ]
 
 [[package]]
@@ -4175,11 +4181,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "aws-config",
- "aws-sdk-ec2",
- "aws-sdk-iam",
- "aws-sdk-s3",
- "aws-sdk-ssm",
  "clap",
  "crossterm",
  "fs2",
@@ -4193,6 +4194,7 @@ dependencies = [
  "shell-words",
  "swarmy-api-types",
  "swarmy-client",
+ "swarmy-cloud",
  "swarmy-config",
  "swarmy-core",
  "swarmy-image",
@@ -4228,6 +4230,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-cloud"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-ec2",
+ "aws-sdk-iam",
+ "aws-sdk-s3",
+ "aws-sdk-ssm",
+ "clap",
+ "fs2",
+ "jiff",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "swarmy-api-types",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-version",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "ulid",
+ "url",
+]
+
+[[package]]
 name = "swarmy-config"
 version = "0.1.0"
 dependencies = [
@@ -4238,8 +4269,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "swarmy-catalog",
  "swarmy-core",
- "swarmy-llm",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4262,11 +4293,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-e2e"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "axum",
+ "blake3",
+ "foundationdb",
+ "futures",
+ "futures-util",
+ "jiff",
+ "object_store",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "swarmy-api",
+ "swarmy-api-types",
+ "swarmy-bus",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-harness",
+ "swarmy-llm",
+ "swarmy-store",
+ "swarmy-volume",
+ "tempfile",
+ "tokio",
+ "ulid",
+ "vt100",
+ "wiremock",
+]
+
+[[package]]
 name = "swarmy-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "async-stream",
  "async-trait",
  "blake3",
@@ -4276,7 +4338,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
@@ -4332,7 +4393,6 @@ dependencies = [
  "base64",
  "blake3",
  "futures",
- "httpdate",
  "jiff",
  "jsonwebtoken",
  "rand 0.9.5",
@@ -4341,6 +4401,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "swarmy-catalog",
  "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",
@@ -4374,12 +4435,8 @@ name = "swarmy-scheduler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
- "foundationdb",
- "futures-util",
  "jiff",
  "object_store",
- "serde_json",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
@@ -4397,8 +4454,6 @@ name = "swarmy-store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "aws-config",
- "aws-credential-types",
  "blake3",
  "bytes",
  "chacha20poly1305",
@@ -4409,9 +4464,9 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
- "swarmy-api-types",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-store",
  "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",
@@ -4471,14 +4526,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
- "axum",
  "blake3",
  "foundationdb",
  "futures",
  "jiff",
  "serde",
  "serde_json",
- "swarmy-api",
  "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
@@ -4488,7 +4541,6 @@ dependencies = [
  "swarmy-store",
  "swarmy-tools",
  "swarmy-version",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

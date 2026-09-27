@@ -8,7 +8,9 @@ use swarmy_core::{
     AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
     SessionId,
 };
-use swarmy_store::{MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore,
+};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -96,7 +98,7 @@ async fn complete(store: &Store, id: SessionId, seed: &CompletionSeed<'_>) {
     let head = store.fetch_session(id).await.unwrap().unwrap().head_seq;
     let step = head + 1;
     store
-        .submit_inference(
+        .submit_inference::<_, ()>(
             head,
             &lease,
             &InflightRecord {
@@ -106,6 +108,7 @@ async fn complete(store: &Store, id: SessionId, seed: &CompletionSeed<'_>) {
                 key_id: String::new(),
             },
             &"input",
+            None,
         )
         .await
         .unwrap();
@@ -179,19 +182,22 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let first = SessionId::from_ulid(Ulid::generate());
     let second = SessionId::from_ulid(Ulid::generate());
     for id in [first, second] {
         store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();

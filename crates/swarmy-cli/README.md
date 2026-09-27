@@ -190,7 +190,8 @@ screens deterministically.
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo test -p swarmy-cli --test session --locked
+cargo build --workspace --locked
+cargo test -p swarmy-e2e --test cli_session --locked
 ```
 
 These tests skip when `SWARMY_FDB_CLUSTER_FILE` or `SWARMY_NATS_URL` is absent.
@@ -222,8 +223,8 @@ agent. Build as the ordinary user, then run the built test as root:
 cargo build --workspace --locked
 source .dev/env
 sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
-cargo test -p swarmy-cli --test session --locked --no-run
-sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(cargo test -p swarmy-cli --test session --locked --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.name == "session") | .executable')" root_named_chats_share_a_background_process_and_delete --nocapture
+cargo test -p swarmy-e2e --test cli_session --locked --no-run
+sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(cargo test -p swarmy-e2e --test cli_session --locked --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.name == "cli_session") | .executable')" root_named_chats_share_a_background_process_and_delete --nocapture
 ```
 
 It skips without root or `SWARMY_TEST_IMAGE`. Drop guards stop the node, destroy

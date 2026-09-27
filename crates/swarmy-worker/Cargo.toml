@@ -31,8 +31,7 @@ tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+swarmy-store = { workspace = true, features = ["test-support"] }
+
 async-nats.workspace = true
-axum.workspace = true
 foundationdb.workspace = true
-swarmy-api.workspace = true
-tempfile.workspace = true

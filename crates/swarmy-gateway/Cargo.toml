@@ -9,6 +9,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+# The gateway serves every provider by default. Each cloud client forwards to
+# the matching swarmy-llm feature so --no-default-features builds refuse those
+# providers with a clear error instead of failing to compile.
+[features]
+default = ["azure", "bedrock", "gemini"]
+azure = ["swarmy-llm/azure"]
+bedrock = ["swarmy-llm/bedrock"]
+gemini = ["swarmy-llm/gemini"]
+
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true
@@ -27,14 +36,14 @@ swarmy-llm.workspace = true
 swarmy-harness.workspace = true
 blake3.workspace = true
 swarmy-store.workspace = true
-swarmy-api-types.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+swarmy-store = { workspace = true, features = ["test-support"] }
+
 wiremock.workspace = true
-async-nats.workspace = true
 foundationdb.workspace = true
 tempfile.workspace = true

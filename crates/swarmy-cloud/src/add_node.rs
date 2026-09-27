@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use swarmy_config::RemoteNode;
 
-use super::{Cloud, Host, Launch, NodeShape, key_name, state::State, wait_running};
+use super::{Cloud, Host, MachineSpec, NodeShape, key_name, state::State, wait_running};
 
 pub struct NewNode<'a> {
     pub name: &'a str,
@@ -42,6 +42,7 @@ pub async fn run(
         "saved launch region differs from remote region"
     );
     let image = settings
+        .aws
         .image
         .clone()
         .context("saved launch image is missing")?;
@@ -69,30 +70,28 @@ pub async fn run(
     let result = async {
         let mut node = node;
         let key = key_name(&node)?.to_owned();
+        let public_key = host.generate_key(&node).await?;
         cloud
-            .import_key(
-                &key,
-                host.generate_key(&node).await?,
-                &settings.managed_by_tag,
-            )
+            .import_ssh_key(&key, public_key.clone(), &settings.managed_by_tag)
             .await?;
         node.launch_attempted = true;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
         node.instance_id = cloud
-            .launch(&Launch {
-                settings: settings.clone(),
-                image,
-                name: node.name.clone(),
-                key_name: key,
-                profile: settings.bucket.as_ref().map(|_| format!("swarmy-{name}")),
-            })
+            .create(&MachineSpec::from_settings(
+                &node.name,
+                &image,
+                &key,
+                public_key,
+                &settings,
+                settings.instance_profile(name),
+            ))
             .await?;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
-        let instance = wait_running(cloud, &node.instance_id, delay).await?;
-        node.public_ip = instance.public_ip;
-        node.private_ip = instance.private_ip;
+        let machine = wait_running(cloud, &node.instance_id, delay).await?;
+        node.public_ip = machine.public_ip;
+        node.private_ip = machine.private_ip;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
         let address = host.provision(&node, Some(&primary)).await?;

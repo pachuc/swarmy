@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercise scripts/check-openapi-compat.sh against fixture revisions in a
 # throwaway git repository, so the assertions run the same flags as CI.
+# The throwaway repo carries the real docs/api-breaks.txt, proving the
+# checker tolerates the recorded-breaks file and its comment lines.
 set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 fixtures="$repo_dir/scripts/fixtures/openapi-compat"
@@ -9,6 +11,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/scripts" "$work/docs"
 cp "$repo_dir/scripts/check-openapi-compat.sh" "$work/scripts/"
+cp "$repo_dir/docs/api-breaks.txt" "$work/docs/api-breaks.txt"
 cp "$fixtures/base.json" "$work/docs/openapi.json"
 git -C "$work" init -q
 git -C "$work" -c user.email=compat@test -c user.name=compat add docs/openapi.json
@@ -34,4 +37,7 @@ check removed-field.json 1
 check renamed-route.json 1
 check added-optional-field.json 0
 check added-enum-value.json 0
+# Recording a break in docs/api-breaks.txt accepts it.
+printf '%s\n' "GET /v1/widgets removed the optional property \`label\` from the response with the \`200\` status" >>"$work/docs/api-breaks.txt"
+check removed-field.json 0
 printf 'check-openapi-compat: ok\n'

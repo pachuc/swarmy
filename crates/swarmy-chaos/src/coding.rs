@@ -170,6 +170,7 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
             "chaos:test",
             "Coding proof",
             jiff::Timestamp::now(),
+            None,
         )
         .await?;
     let (session, _) = f

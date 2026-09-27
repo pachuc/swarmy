@@ -1,6 +1,9 @@
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
+mod cli_bin;
+
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
@@ -24,7 +27,7 @@ use swarmy_llm::{
     TokenUsage,
 };
 use swarmy_store::{
-    CredentialKey, Store,
+    CredentialKey, Store, SubmitInferenceOptions,
     blob::{BlobStore, ObjectBlobStore},
 };
 use tempfile::TempDir;
@@ -145,7 +148,7 @@ impl Fixture {
         models: &[swarmy_config::CustomModel],
     ) {
         self.children.push(
-            Command::new(env!("CARGO_BIN_EXE_swarmy-gateway"))
+            Command::new(cli_bin::bin("swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
                 .env(
@@ -272,7 +275,7 @@ impl Fixture {
             request,
         };
         self.store
-            .submit_inference_after_with_request(
+            .submit_inference(
                 0,
                 &lease,
                 &InflightRecord {
@@ -282,8 +285,10 @@ impl Fixture {
                     key_id: "fake".into(),
                 },
                 &job,
-                &job.request,
-                &[],
+                Some(SubmitInferenceOptions {
+                    request: Some(&job.request),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -414,7 +419,7 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{name}", self.prefix))
                 .await

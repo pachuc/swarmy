@@ -1,6 +1,3 @@
-#[path = "cli_session/agent_settings.rs"]
-mod agent_settings;
-
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
@@ -13,7 +10,7 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-#[path = "support/cli_bin.rs"]
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
 mod cli_bin;
 
 use std::{
@@ -36,7 +33,9 @@ use swarmy_core::{
     SessionId, SessionState, ToolCallId, ToolCallRecord, ToolResult, WakeReply, decode,
 };
 use swarmy_llm::Delta;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    AgentSessionOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
+};
 use tokio::{
     process::Command,
     time::{Instant, sleep, timeout},
@@ -46,13 +45,13 @@ use ulid::Ulid;
 const WAIT: Duration = Duration::from_secs(15);
 
 /// Numbers below mirror the chat fixture in `cli_session/chat.rs`: the fake
-/// provider sleeps 600 ms per emitted delta, each provider call emits two
+/// provider sleeps 100 ms per emitted delta, each provider call emits two
 /// deltas (part done plus completion), and a chat turn needs two calls (a
 /// tool call followed by the final answer). The worker lease is 600 ms and
 /// starting the scheduler, worker, and gateway processes takes up to ten
 /// seconds on a loaded runner. Budgets multiply the sum by a slack factor so
 /// a slow CI runner waits longer instead of failing.
-const CHAT_PROVIDER_LATENCY: Duration = Duration::from_millis(600);
+const CHAT_PROVIDER_LATENCY: Duration = Duration::from_millis(100);
 const CHAT_DELTAS_PER_CALL: u32 = 2;
 const CHAT_CALLS_PER_TURN: u32 = 2;
 const CHAT_WORKER_LEASE: Duration = Duration::from_millis(600);
@@ -160,7 +159,7 @@ struct Fixture {
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::swarmy());
+        let mut command = Command::new(cli_bin::bin("swarmy"));
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
@@ -209,7 +208,7 @@ impl Fixture {
         .unwrap();
         let admin = async_nats::connect(&self.url).await.unwrap();
         let context = async_nats::jetstream::new(admin);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             if let Err(error) = context
                 .delete_stream(format!("{}_{stream}", self.prefix))
                 .await
@@ -336,12 +335,15 @@ async fn interrupt_idle_session_exits_with_clear_error() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -360,12 +362,15 @@ async fn session_show_json_includes_pending_interrupt() {
         let id = SessionId::from_ulid(Ulid::generate());
         fixture
             .store
-            .create_session_with_inference(
+            .create_agent_session(
                 id,
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &swarmy_core::InferenceSelection::default(),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&swarmy_core::InferenceSelection::default()),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -1057,7 +1062,7 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
 async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     let agent = fixture
         .store
-        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now())
+        .create_agent("metrics-agent", "fixture:test", "", Timestamp::now(), None)
         .await
         .unwrap();
     let (session, _) = fixture
@@ -1109,7 +1114,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         fixture.store.record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
                 request_id: request.to_string(),
                 provider: "fake".into(),
                 model: "scripted".into(),

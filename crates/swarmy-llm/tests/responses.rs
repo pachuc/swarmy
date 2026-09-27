@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use futures::TryStreamExt;
 use serde_json::{Value, json};
@@ -138,6 +138,7 @@ async fn openai_text_turn_uses_catalog_options_and_session_affinity() {
 }
 
 #[tokio::test]
+#[cfg(feature = "azure")]
 async fn azure_resource_endpoint_and_deployment_use_api_key() {
     let server = MockServer::start().await;
     let info = Catalog::get().provider("azure").unwrap();
@@ -145,7 +146,10 @@ async fn azure_resource_endpoint_and_deployment_use_api_key() {
     model.id = "my-deployment".into();
     let auth = ClientAuth::ApiKeyWithExtra {
         key: "azure-key".into(),
-        extra: BTreeMap::from([("resource_name".into(), "test-resource".into())]),
+        extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+            resource_name: Some("test-resource".into()),
+            base_url: None,
+        }),
     };
     let endpoint = ResponsesEndpoint::from_catalog(info, &model, auth.clone()).unwrap();
     assert_eq!(
@@ -181,26 +185,24 @@ fn azure_grok_catalog_has_nonzero_prices() {
 }
 
 #[test]
+#[cfg(feature = "azure")]
 fn azure_foundry_endpoint_from_credential_precedes_classic_resource() {
     let info = Catalog::get().provider("azure").unwrap();
     let model = catalog_model("azure", "gpt-5.5");
     for auth in [
         ClientAuth::ApiKeyWithExtra {
             key: "key".into(),
-            extra: BTreeMap::from([
-                ("resource_name".into(), "classic".into()),
-                (
-                    "base_url".into(),
-                    "https://foundry.services.ai.azure.com".into(),
-                ),
-            ]),
+            extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+                resource_name: Some("classic".into()),
+                base_url: Some("https://foundry.services.ai.azure.com".into()),
+            }),
         },
         ClientAuth::BearerWithExtra {
             token: "token".into(),
-            extra: BTreeMap::from([(
-                "base_url".into(),
-                "https://foundry.services.ai.azure.com".into(),
-            )]),
+            extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+                base_url: Some("https://foundry.services.ai.azure.com".into()),
+                resource_name: None,
+            }),
         },
     ] {
         let endpoint = ResponsesEndpoint::from_catalog(info, &model, auth).unwrap();
@@ -241,10 +243,16 @@ async fn reasoning_replay_requires_the_same_provider_and_model() {
         "Think first."
     );
     assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
-    let azure = client(&server, "azure", &catalog_model("azure", "gpt-5.5"));
     replay.settings.model = "gpt-5.5".into();
-    response(azure.as_ref(), replay.clone()).await;
-    assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
+    // The Azure endpoint shares the Responses transport but drops signatures
+    // from other providers. It needs the azure feature, so slim builds skip
+    // this block instead of failing to construct the client.
+    #[cfg(feature = "azure")]
+    {
+        let azure = client(&server, "azure", &catalog_model("azure", "gpt-5.5"));
+        response(azure.as_ref(), replay.clone()).await;
+        assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
+    }
     if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
         let saved = metadata.remove("openai_responses").unwrap();
         metadata.insert("chatgpt".into(), saved);
@@ -505,12 +513,16 @@ async fn codex_dispatch_preserves_auth_headers_and_instructions() {
         .await;
     response(client.as_ref(), request("gpt-5.5")).await;
     let body = body(&server).await;
+    // The request is capped (the worker caps its context summary); the Codex
+    // backend rejects the parameter, so it must not be sent.
+    assert!(body.get("max_output_tokens").is_none(), "{body}");
     assert_eq!(body["instructions"], "Be helpful.");
     assert_eq!(body["input"][0]["role"], "user");
     assert_eq!(body["tools"][0]["strict"], false);
 }
 
 #[tokio::test]
+#[cfg(feature = "azure")]
 async fn azure_accepts_an_already_resolved_entra_bearer() {
     let server = MockServer::start().await;
     let mut info = Catalog::get().provider("azure").unwrap().clone();
@@ -529,6 +541,7 @@ async fn azure_accepts_an_already_resolved_entra_bearer() {
 }
 
 #[test]
+#[cfg(feature = "azure")]
 fn azure_environment_resource_is_resolved_without_mutating_process_environment() {
     const CHILD: &str = "SWARMY_TEST_AZURE_RESOURCE";
     if std::env::var_os(CHILD).is_some() {

@@ -83,7 +83,7 @@ impl Fixture {
             .await
             .unwrap();
         self.store
-            .put_image("fixture", &ImageTag("test".into()), manifest)
+            .put_image("fixture", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let agent = self
@@ -93,6 +93,7 @@ impl Fixture {
                 "fixture:test",
                 "",
                 jiff::Timestamp::now(),
+                None,
             )
             .await
             .unwrap();
@@ -483,9 +484,11 @@ async fn timeline_stream_delivers_turn_observations() {
         .unwrap();
     assert_eq!(event.sequence, 1);
     let api::EventPayload::StoreRecord { record } = event.payload else {
-        panic!("timeline observations keep their stored shape");
+        panic!("timeline observations keep the store_record tag");
     };
-    let observation: swarmy_core::TurnEvent = serde_json::from_value(record).unwrap();
+    let api::RecordBody::Timeline(observation) = record else {
+        panic!("timeline observations arrive typed");
+    };
     assert_eq!(observation.turn_id.to_string(), turn);
     assert_eq!(observation.stage, TurnStage::Submitted);
 }

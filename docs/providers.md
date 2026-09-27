@@ -56,8 +56,8 @@ swarmy auth import --file /private/chatgpt-auth.json
 
 Prefer `--file` or `--from-env` to keep keys out of shell history and process
 arguments. `--extra name=value` is repeatable; its values are encrypted too.
-`--from-env` follows the table's API key names, except Google key entry accepts
-`GEMINI_API_KEY` and `GOOGLE_API_KEY` only. Vertex key entry reads
+`--from-env` follows the table's API key names, including
+`GOOGLE_GENERATIVE_AI_API_KEY` for Google. Vertex key entry reads
 `GOOGLE_CLOUD_API_KEY`; this does not replace configuring ADC and project/location
 for inference. Stored Vertex extras accept `project`, `location`,
 `service_account_json`, or `access_token`. For Azure, stored credentials need
@@ -389,7 +389,7 @@ python3 -m unittest discover -s scripts/models -v
 
 The Python standard-library generator fetches models.dev and OpenRouter's live
 list, retains tool-capable models from the provider allowlist, applies protocol
-quirks, and writes `crates/swarmy-llm/catalog/<provider>.json`. OpenRouter uses its
+quirks, and writes `crates/swarmy-catalog/catalog/<provider>.json`. OpenRouter uses its
 live list; Azure also inherits OpenAI model metadata. The checked-in
 `scripts/models/overrides.json` drops Gemini 2.5 models from Google catalogs
 because new keys cannot use them and prices Azure's Grok 4.6 at its published

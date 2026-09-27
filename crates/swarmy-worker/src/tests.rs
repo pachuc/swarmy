@@ -261,7 +261,7 @@ async fn cleanup(cluster: &str, url: &str, prefix: &str) {
     .await
     .unwrap();
     let context = async_nats::jetstream::new(async_nats::connect(url).await.unwrap());
-    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
         context
             .delete_stream(format!("{prefix}_{stream}"))
             .await

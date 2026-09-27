@@ -3730,6 +3730,12 @@
               "type": "string"
             }
           },
+          "legacy_credential_rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Retired single-record credential rows still stored. Boot migrates\nthem to entries; any remainder failed to decrypt. Older servers omit\nthis; clients must treat a missing count as unknown, not zero.",
+            "minimum": 0
+          },
           "nodes": {
             "type": "array",
             "items": {
@@ -4176,7 +4182,7 @@
           },
           {
             "type": "object",
-            "description": "Stored events without a dedicated public projection retain their original data.",
+            "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
             "required": [
               "data",
               "type"
@@ -4184,7 +4190,7 @@
             "properties": {
               "data": {
                 "type": "object",
-                "description": "Stored events without a dedicated public projection retain their original data.",
+                "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
                 "required": [
                   "record"
                 ],
@@ -4575,24 +4581,6 @@
           },
           {
             "type": "object",
-            "required": [
-              "id",
-              "kind"
-            ],
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "channel"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
             "description": "Ephemeral turn timeline observations. Live-only: cursors are ignored\nand events are numbered per connection, so reconnects replay nothing.",
             "required": [
               "id",
@@ -4612,7 +4600,7 @@
             }
           }
         ],
-        "description": "A log namespace. The tagged representation reserves channels without changing session cursors."
+        "description": "A log namespace."
       },
       "Message": {
         "type": "object",

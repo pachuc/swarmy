@@ -54,7 +54,7 @@ pub async fn run(
         }
         let key = key_name(current)?;
         stop_instance(cloud, current, key, delay, &mut report).await;
-        if let Err(error) = cloud.delete_key(key).await {
+        if let Err(error) = cloud.delete_ssh_key(key).await {
             report.failed(
                 &format!("key pair {key}"),
                 permission(&error, "ec2:DescribeKeyPairs", "ec2:DeleteKeyPair"),
@@ -95,7 +95,7 @@ async fn stop_instance(
     report: &mut Report,
 ) {
     let id = if node.instance_id.is_empty() {
-        match cloud.find_launch(key).await {
+        match cloud.find_by_tag(key).await {
             Ok(id) => id,
             Err(error) => {
                 report.failed(
@@ -115,7 +115,7 @@ async fn stop_instance(
         return;
     };
     println!("Terminating {id}");
-    if let Err(error) = cloud.terminate(&id).await {
+    if let Err(error) = cloud.destroy(&id).await {
         report.failed(
             &format!("instance {id}"),
             permission(&error, "ec2:TerminateInstances", "ec2:DescribeInstances"),
@@ -135,9 +135,9 @@ async fn stop_instance(
 
 async fn wait_terminated(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<()> {
     for _ in 0..120 {
-        match cloud.instance(id).await? {
+        match cloud.get(id).await? {
             None => return Ok(()),
-            Some(instance) if instance.status == "terminated" => return Ok(()),
+            Some(machine) if machine.state == "terminated" => return Ok(()),
             Some(_) => tokio::time::sleep(delay).await,
         }
     }

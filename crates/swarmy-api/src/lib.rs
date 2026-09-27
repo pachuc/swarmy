@@ -17,12 +17,13 @@ mod gc;
 pub mod images;
 mod models;
 mod stream;
+pub mod views;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
 use swarmy_core::{AgentId, AgentSettings, CredentialScope, ImageTag, SessionId};
 use swarmy_llm::catalog::Catalog;
-use swarmy_store::{MAX_SCAN_LIMIT, Store};
+use swarmy_store::{CreateAgentOptions, MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
 use ulid::Ulid;
 use utoipa::OpenApi;
@@ -439,13 +440,16 @@ async fn create_agent(
     }
     let record = state
         .store
-        .create_agent_with_settings_replay(
+        .create_agent(
             &body.name,
             &image_ref(&body.image),
             &body.description,
-            &settings,
             Timestamp::now(),
-            &format!("agents:create:{}", body.idempotency_key),
+            Some(CreateAgentOptions {
+                settings: Some(&settings),
+                replay_key: Some(&format!("agents:create:{}", body.idempotency_key)),
+                ..Default::default()
+            }),
         )
         .await
         .map_err(storage)?;
@@ -574,7 +578,10 @@ async fn session_metrics(
                 page.tools_limit,
             )
             .await
-            .map_err(storage)?,
+            .map_err(storage)?
+            .into_iter()
+            .map(crate::views::into_api_turn)
+            .collect(),
     ))
 }
 
@@ -600,13 +607,13 @@ async fn agent_metrics(
         .as_deref()
         .map(|value| id(value, swarmy_core::MessageId::from_ulid))
         .transpose()?;
-    Ok(Json(
+    Ok(Json(crate::views::into_api_agent(
         state
             .store
             .agent_turn_metrics(record.agent_id, page.limit.unwrap_or(200), since)
             .await
             .map_err(storage)?,
-    ))
+    )))
 }
 
 #[derive(Deserialize)]
@@ -639,8 +646,7 @@ async fn events(
         .map(|record| {
             let sequence = record.seq();
             let payload = api::EventPayload::StoreRecord {
-                record: serde_json::to_value(record)
-                    .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?,
+                record: api::RecordBody::Event(record),
             };
             Ok(api::Event {
                 log_id: api::LogId::Session(text.clone()),

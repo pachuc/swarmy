@@ -60,7 +60,6 @@ base64 = "0.22"
 sha2 = "0.10"
 fs2 = "0.4"
 futures = "0.3"
-httpdate = "1"
 rand = "0.9"
 rand_chacha = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -96,11 +95,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = { version = "3", features = ["serde"] }
 swarmy-api = { path = "crates/swarmy-api" }
+swarmy-catalog = { path = "crates/swarmy-catalog" }
 swarmy-config = { path = "crates/swarmy-config" }
 swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
-swarmy-llm = { path = "crates/swarmy-llm" }
+swarmy-cloud = { path = "crates/swarmy-cloud" }
+# Dependents get no swarmy-llm default features: the gateway and the CLI opt
+# into the cloud providers through their own forwarding features, and nothing
+# else enables any, so node-side services never compile the cloud SDKs.
+swarmy-llm = { path = "crates/swarmy-llm", default-features = false }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }
 swarmy-store = { path = "crates/swarmy-store" }

@@ -966,20 +966,10 @@ fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
             .trim()
             .to_owned());
     }
-    let names: &[&str] = match provider {
-        "anthropic" => &["ANTHROPIC_API_KEY"],
-        "openai" => &["OPENAI_API_KEY"],
-        "xai" => &["XAI_API_KEY"],
-        "meta" => &["META_MODEL_API_KEY"],
-        "openrouter" => &["OPENROUTER_API_KEY"],
-        "azure" => &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
-        "amazon-bedrock" => &["AWS_BEARER_TOKEN_BEDROCK"],
-        "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "google-vertex" | "google-vertex-anthropic" => &["GOOGLE_CLOUD_API_KEY"],
-        provider => {
-            anyhow::bail!("no API key environment mapping for {provider}; use --api-key or --file")
-        }
-    };
+    let names = swarmy_llm::auth::provider_env_keys(provider);
+    if names.is_empty() {
+        anyhow::bail!("no API key environment mapping for {provider}; use --api-key or --file");
+    }
     names
         .iter()
         .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))

@@ -1,6 +1,9 @@
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
+mod cli_bin;
+
 use std::{
     collections::HashSet,
     future::Future,
@@ -57,7 +60,7 @@ impl Fixture {
     }
 
     async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
-        let child = Command::new(env!("CARGO_BIN_EXE_swarmy-scheduler"))
+        let child = Command::new(cli_bin::bin("swarmy-scheduler"))
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
             .env("SWARMY_NATS_URL", &self.url)
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
@@ -199,7 +202,7 @@ impl Fixture {
         let context = async_nats::jetstream::new(self.admin.clone());
         let prefixes: HashSet<_> = self.prefixes.lock().unwrap().drain(..).collect();
         for prefix in prefixes {
-            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_REMOTE", "TOOL_NODE"] {
+            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
                 if let Err(error) = context.delete_stream(format!("{prefix}_{stream}")).await {
                     assert!(
                         matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref e) if e.code() == 404),
@@ -569,12 +572,12 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
         let active = f.create(7, SessionState::Runnable, old).await;
         let agent = f
             .store
-            .create_agent("named", image_fixture::image(&f.store).await, "", old)
+            .create_agent("named", image_fixture::image(&f.store).await, "", old, None)
             .await
             .unwrap();
         let named = f
             .store
-            .create_session_for_agent(id(), Some(agent.agent_id), None, old)
+            .create_agent_session(id(), Some(agent.agent_id), old, None)
             .await
             .unwrap();
         f.start_with_retention("7", &f.prefix, 1).await;
@@ -630,6 +633,7 @@ async fn due_side_timer_nudges_its_idle_session() {
                 image_fixture::image(&f.store).await,
                 "",
                 Timestamp::now(),
+                None,
             )
             .await
             .unwrap()
@@ -643,7 +647,7 @@ async fn due_side_timer_nudges_its_idle_session() {
             .find(|&session| runnable_partition(session) == 7)
             .unwrap();
         f.store
-            .create_session_for_agent(side, Some(agent), None, Timestamp::now())
+            .create_agent_session(side, Some(agent), Timestamp::now(), None)
             .await
             .unwrap();
         f.store.wake_session(side, Timestamp::now()).await.unwrap();

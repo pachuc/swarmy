@@ -32,5 +32,7 @@ object_store.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+swarmy-store = { workspace = true, features = ["test-support"] }
+
 foundationdb.workspace = true
 tempfile.workspace = true

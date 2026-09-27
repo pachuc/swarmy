@@ -71,6 +71,10 @@ pub enum Command {
 }
 
 /// Re-exec before starting threads instead of mutating the process environment.
+///
+/// # Errors
+///
+/// Rejects invalid remote names and reports failures to re-exec the process.
 pub fn select(name: Option<&str>) -> anyhow::Result<()> {
     if let Some(name) = name {
         swarmy_config::validate_remote_name(name)?;

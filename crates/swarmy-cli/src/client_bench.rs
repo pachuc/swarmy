@@ -175,8 +175,9 @@ async fn measure(
                     let api::EventPayload::StoreRecord { record } = event.payload else {
                         continue;
                     };
-                    let observation: TurnEvent =
-                        serde_json::from_value(record).context("timeline event decoding")?;
+                    let api::RecordBody::Timeline(observation) = record else {
+                        continue;
+                    };
                     if observation.turn_id == turn_id { events.push(observation); }
                 }
                 stage = stages.recv() => {

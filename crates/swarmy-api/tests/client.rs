@@ -45,7 +45,7 @@ impl Fixture {
     async fn session(&self, name: &str) -> SessionId {
         let agent = self
             .store
-            .create_agent(name, "fixture:test", "", jiff::Timestamp::now())
+            .create_agent(name, "fixture:test", "", jiff::Timestamp::now(), None)
             .await
             .unwrap();
         self.store
@@ -107,7 +107,7 @@ async fn fixture() -> Option<Fixture> {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();

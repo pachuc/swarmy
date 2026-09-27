@@ -8,11 +8,21 @@ license.workspace = true
 [lints]
 workspace = true
 
+# Cloud provider clients are optional so services that only need model
+# metadata or offline protocols can build without the cloud SDKs. The default
+# keeps every provider enabled; the gateway and the CLI forward their own
+# features to these, and nothing else enables any.
+[features]
+default = ["azure", "bedrock", "gemini"]
+azure = []
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
+gemini = []
+
 [dependencies]
 async-trait.workspace = true
-aws-config.workspace = true
-aws-sdk-bedrockruntime.workspace = true
-aws-smithy-types.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-sdk-bedrockruntime = { workspace = true, optional = true }
+aws-smithy-types = { workspace = true, optional = true }
 rand.workspace = true
 sha2.workspace = true
 url.workspace = true
@@ -20,12 +30,12 @@ async-stream.workspace = true
 base64.workspace = true
 blake3.workspace = true
 futures.workspace = true
-httpdate.workspace = true
 jsonwebtoken.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+swarmy-catalog.workspace = true
 swarmy-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -37,3 +47,14 @@ rsa.workspace = true
 tempfile.workspace = true
 ulid.workspace = true
 wiremock.workspace = true
+
+# The Gemini and Bedrock suites import their clients unconditionally, so they
+# only build when the matching provider feature is on. The no-default-features
+# CI run skips them instead of failing to compile.
+[[test]]
+name = "gemini"
+required-features = ["gemini"]
+
+[[test]]
+name = "bedrock"
+required-features = ["bedrock"]

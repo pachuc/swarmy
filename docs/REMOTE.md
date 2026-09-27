@@ -29,14 +29,32 @@ Add this to the discovered `.swarmy/config.toml` (or user configuration file):
 
 ```toml
 [remote]
+provider = "aws"
 region = "us-east-1"
+disk_gb = 100
+managed_by_tag = "swarmy"
+# bucket = "NAME"
+
+[remote.aws]
 subnet = "subnet-..."
 security_group = "sg-..."
 instance_type = "m6id.xlarge"
-disk_gb = 100
-managed_by_tag = "swarmy"
 # image = "ami-..."
+# iam_role = "custom-role"
 ```
+
+`provider` selects the cloud substrate (`swarmy-cloud` implements only
+`aws` today; see `docs/cloud-substrate.md` for the provider
+interface). The EC2-only settings live under `[remote.aws]`:
+placement, the instance type, the AMI override, and an optional IAM
+role override. Without `iam_role`, bucket-backed remotes use
+`swarmy-NAME` for the role and instance profile. The older flat
+`[remote]` keys (`subnet`, `security_group`, `instance_type`,
+`image`, `iam_role`) still parse and fill the sub-table when it
+leaves them unset, so existing configuration files keep working; the
+sub-table wins when both spellings are present. `region`, `disk_gb`,
+`bucket`, ownership, and tunnel selection stay top-level because every
+provider needs them.
 
 The image defaults to Canonical's current Ubuntu 24.04 amd64 image, resolved
 through SSM in the configured region. Custom images must be compatible with
@@ -215,19 +233,18 @@ provider teardown queries with the run. Remove the rule even after a failure.
 Pass `--bucket NAME` to `swarmy remote up` (or set `[remote] bucket = "NAME"`).
 The bucket is retained after `remote down`; remove it separately only when its
 objects are no longer needed. The instance profile grants access only to that
-bucket. The laptop identity needs `s3:ListBucket` and `s3:GetBucketLocation` on
-the bucket, plus `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on
-its objects to use volume, image, GC, and doctor commands directly against S3.
-For a bucket-backed remote, these laptop commands use the laptop's default AWS
-credential chain and the region saved in the remote profile, not the node's
-instance role. `swarmy doctor --remote NAME` checks `s3:ListBucket` by listing
-under `chunks/`; an empty bucket is healthy. Image listing reads
-FoundationDB metadata, while image builds and chunk operations use S3.
+bucket. Only the services on the nodes talk to S3, using the instance role;
+the dev stack uses static keys from settings. No laptop command opens the
+object store: every volume, image, GC, and doctor command runs through the
+control-plane API. The laptop identity needs bucket permissions only for
+`swarmy remote up` and `remote down`, which create and remove the bucket
+through the provisioning SDK. `swarmy doctor --remote NAME` reads node and service heartbeats, image
+metadata, and credentials through the API; it does not check the bucket. Image
+builds and chunk operations use S3 through the node services.
 
 Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `s3:PutEncryptionConfiguration`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
 `iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
-`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role, plus the object
-permissions above. Existing remotes without a bucket continue using SeaweedFS.
+`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.

@@ -1,4 +1,5 @@
 //! Responses request normalization and incremental stream parsing.
+use crate::sse::{Frame, SseParser};
 use crate::{Delta, Error, Request, Response, StopReason, TokenUsage};
 use crate::{
     ReasoningEffort,
@@ -164,7 +165,11 @@ fn build_request(request: &Request, context: Option<&RequestContext<'_>>) -> Res
     }) {
         value["text"] = json!({"verbosity": "low"});
     }
-    if let Some(maximum) = request.settings.max_output_tokens {
+    // The ChatGPT Codex backend rejects `max_output_tokens` with a 400, so
+    // a capped request (the worker's context summary) is sent uncapped there.
+    if let Some(maximum) = request.settings.max_output_tokens
+        && !context.is_some_and(|ctx| ctx.codex)
+    {
         value["max_output_tokens"] = json!(maximum);
     }
     if let Some(temperature) = request.settings.temperature {
@@ -308,10 +313,8 @@ fn normalize_calls(input: &mut Vec<Value>) {
 /// Incremental SSE parser, including CRLF, multiline data, comments, and UTF-8
 /// split across arbitrary network chunks. Unknown event types are ignored.
 #[derive(Default)]
-pub struct SseParser {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
+pub struct ResponsesStream {
+    framing: SseParser,
     output: BTreeMap<usize, Vec<Part>>,
     text_content: BTreeMap<usize, BTreeMap<usize, String>>,
     saw_tool_arguments: bool,
@@ -321,7 +324,7 @@ pub struct SseParser {
     quota_resets: BTreeMap<String, u64>,
 }
 
-impl SseParser {
+impl ResponsesStream {
     /// Record provenance for safe reasoning replay. The default parser retains
     /// the legacy metadata shape for callers of the original standalone codec.
     #[must_use]
@@ -366,43 +369,23 @@ impl SseParser {
     /// Rejects malformed events, provider errors, and events over 8 MiB.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Delta>, Error> {
         let mut deltas = Vec::new();
-        for &byte in bytes {
+        for frame in self.framing.push(bytes)? {
             if self.completed {
                 break;
             }
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\n' | b'\r') {
-                self.end_line(&mut deltas)?;
-            } else {
-                self.line.push(byte);
-                if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                    return Err(Error::Protocol("SSE event exceeds 8 MiB".into()));
-                }
-            }
+            self.frame(frame, &mut deltas)?;
         }
         Ok(deltas)
     }
 
-    fn end_line(&mut self, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if !self.data.is_empty() {
-                let data = std::mem::take(&mut self.data);
-                if data == b"[DONE]\n" {
-                    return Err(Error::Protocol(
-                        "stream ended without response.completed".into(),
-                    ));
-                }
-                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+    fn frame(&mut self, frame: Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame {
+            if data == b"[DONE]\n" {
+                return Err(Error::Protocol(
+                    "stream ended without response.completed".into(),
+                ));
             }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
+            self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
         }
         Ok(())
     }
@@ -496,8 +479,16 @@ impl SseParser {
             "response.completed" | "response.incomplete" => {
                 self.complete_event(event, deltas)?;
             }
-            "response.failed" => return Err(provider_error(&event["response"]["error"])),
-            "error" => return Err(provider_error(event.get("error").unwrap_or(event))),
+            "response.failed" => {
+                return Err(crate::error::response_event_error(
+                    &event["response"]["error"],
+                ));
+            }
+            "error" => {
+                return Err(crate::error::response_event_error(
+                    event.get("error").unwrap_or(event),
+                ));
+            }
             _ => (),
         }
         Ok(())
@@ -509,7 +500,7 @@ impl SseParser {
             return Err(Error::Protocol("missing completed response".into()));
         }
         if response["status"] == "failed" {
-            return Err(provider_error(&response["error"]));
+            return Err(crate::error::response_event_error(&response["error"]));
         }
         // The Codex backend sends an empty output array in the terminal
         // event; the items already collected from output_item.done are
@@ -586,22 +577,6 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     value[key]
         .as_str()
         .ok_or_else(|| Error::Protocol(format!("missing string field {key}")))
-}
-
-fn provider_error(value: &Value) -> Error {
-    let message = format!(
-        "provider error ({}): {}",
-        value["code"]
-            .as_str()
-            .or_else(|| value["type"].as_str())
-            .unwrap_or("unknown"),
-        value["message"].as_str().unwrap_or("request failed")
-    );
-    if is_context_overflow(&message) {
-        Error::ContextOverflow(message)
-    } else {
-        Error::Protocol(message)
-    }
 }
 
 /// Vendor error codes and phrases used for context-window failures.

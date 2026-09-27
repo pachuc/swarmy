@@ -101,7 +101,7 @@ impl Fixture {
         let id = ManifestId::from_ulid(ulid::Ulid::generate());
         self.store.put_manifest(id, &image.header).await.unwrap();
         self.store
-            .put_image("test", &ImageTag("base".into()), id)
+            .put_image("test", &ImageTag("base".into()), id, None)
             .await
             .unwrap();
     }

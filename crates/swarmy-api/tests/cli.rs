@@ -38,7 +38,7 @@ async fn fixture() -> Option<(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     let bus = Bus::connect(&nats, Config::default()).await.unwrap();
@@ -70,6 +70,7 @@ async fn projections_match_store_records_and_catalog() {
             "fixture:test",
             "test",
             jiff::Timestamp::now(),
+            None,
         )
         .await
         .unwrap();
@@ -244,7 +245,13 @@ async fn agent_update_rejects_invalid_merged_model() {
         return;
     };
     let agent = store
-        .create_agent("selection-test", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "selection-test",
+            "fixture:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let request = serde_json::from_value(serde_json::json!({

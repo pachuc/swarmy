@@ -51,7 +51,6 @@ pub struct StreamQuery {
 fn key(log: &LogId) -> String {
     match log {
         LogId::Session(id) => format!("session:{id}"),
-        LogId::Channel(id) => format!("channel:{id}"),
         LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }
@@ -84,7 +83,7 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
         }
         let id = match &cursor.log_id {
             LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
-            _ => session_id(&cursor.log_id)?,
+            LogId::Session(_) => session_id(&cursor.log_id)?,
         };
         if state
             .store
@@ -354,16 +353,12 @@ async fn catch_up(
             if record.seq() <= sub.cursors[index].sequence {
                 continue;
             }
-            let payload = match serde_json::to_value(&record) {
-                Ok(record) => api::EventPayload::StoreRecord { record },
-                Err(error) => {
-                    tracing::warn!(%error, "SSE event encoding failed");
-                    return Replay::Failed;
-                }
-            };
             // A cursor only advances when the corresponding event has entered
             // the bounded output queue. The client can replay after a disconnect.
             let next = record.seq();
+            let payload = api::EventPayload::StoreRecord {
+                record: api::RecordBody::Event(record),
+            };
             let mut upcoming = sub.clone();
             upcoming.cursors[index].sequence = next;
             let Ok(id_field) = encode_cursor(&upcoming) else {
@@ -506,11 +501,15 @@ async fn produce(
                             if !deliver(&sender, Event::default().event("token_delta").data(data), Duration::from_secs(2)).await { return; }
                         }
                         Some(FeedItem::Timeline(log, sequence, observation)) => {
-                            let Ok(record) = serde_json::to_value(&observation) else { return };
                             let Ok(data) = serde_json::to_string(&api::Event {
                                 log_id: log,
                                 sequence,
-                                payload: api::EventPayload::StoreRecord { record },
+                                // Timeline observations ride the `store_record`
+                                // tag so older clients, which decode the
+                                // record as a value, keep working.
+                                payload: api::EventPayload::StoreRecord {
+                                    record: api::RecordBody::Timeline(observation),
+                                },
                             }) else { return };
                             if !deliver(&sender, Event::default().event("event").data(data), Duration::from_secs(2)).await { return; }
                         }

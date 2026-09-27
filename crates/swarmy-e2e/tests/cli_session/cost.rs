@@ -35,7 +35,7 @@ async fn complete(
     let head = store.fetch_session(id).await.unwrap().unwrap().head_seq;
     let step = head + 1;
     store
-        .submit_inference(
+        .submit_inference::<_, ()>(
             head,
             &lease,
             &swarmy_core::InflightRecord {
@@ -45,6 +45,7 @@ async fn complete(
                 key_id: String::new(),
             },
             &"input",
+            None,
         )
         .await
         .unwrap();
@@ -112,7 +113,15 @@ async fn session_for(fixture: &Fixture, agent: Option<swarmy_core::AgentId>) -> 
     };
     fixture
         .store
-        .create_session_for_agent(id, agent, image, Timestamp::now())
+        .create_agent_session(
+            id,
+            agent,
+            Timestamp::now(),
+            Some(AgentSessionOptions {
+                image,
+                ..Default::default()
+            }),
+        )
         .await
         .unwrap();
     fixture

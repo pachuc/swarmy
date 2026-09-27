@@ -46,6 +46,8 @@ impl Store {
     /// Read the entry and route step attributed to a completed inference request.
     /// # Errors
     /// Returns database or decoding errors.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn inference_usage_record(&self, request: RequestId) -> Result<Option<UsageRecord>> {
         self.transaction(|trx| async move {
             read(
@@ -55,42 +57,6 @@ impl Store {
                     .pack(&("usage_record", request.as_bytes().as_slice())),
             )
             .await
-        })
-        .await
-    }
-
-    /// Gateway records the chosen entry before its completion transaction.
-    /// # Errors
-    /// Returns database or encoding errors.
-    pub async fn set_inference_entry(&self, request: RequestId, entry: Option<&str>) -> Result<()> {
-        self.transaction(|trx| async move {
-            crate::write(
-                &trx,
-                &self
-                    .root
-                    .pack(&("inference_entry", request.as_bytes().as_slice())),
-                &entry.map(str::to_owned),
-            )
-        })
-        .await
-    }
-
-    /// Gateway records the entry kind beside the label for rollup dimensions.
-    /// # Errors
-    /// Returns database or encoding errors.
-    pub async fn set_inference_entry_kind(
-        &self,
-        request: RequestId,
-        kind: Option<&str>,
-    ) -> Result<()> {
-        self.transaction(|trx| async move {
-            crate::write(
-                &trx,
-                &self
-                    .root
-                    .pack(&("inference_entry_kind", request.as_bytes().as_slice())),
-                &kind.map(str::to_owned),
-            )
         })
         .await
     }
@@ -150,26 +116,11 @@ impl Store {
             read::<UsageTotals>(trx, &session_key),
             read::<UsageTotals>(trx, &agent_key)
         )?;
-        // The completion carries the entry when the gateway resolved one, so
-        // the hot path needs no extra reads. Fall back to the staged keys for
-        // older callers that still write them before committing.
-        let entry_key = self
-            .root
-            .pack(&("inference_entry", attribution.request.as_bytes().as_slice()));
-        let kind_key = self.root.pack(&(
-            "inference_entry_kind",
-            attribution.request.as_bytes().as_slice(),
-        ));
-        let (entry, kind) = if attribution.entry.is_some() || attribution.entry_kind.is_some() {
-            (
-                attribution.entry.map(str::to_owned),
-                attribution.entry_kind.map(str::to_owned),
-            )
-        } else {
-            let (entry, kind): (Option<Option<String>>, Option<Option<String>>) =
-                futures::try_join!(read(trx, &entry_key), read(trx, &kind_key))?;
-            (entry.flatten(), kind.flatten())
-        };
+        // The completion carries the entry, so the hot path needs no extra reads.
+        let (entry, kind) = (
+            attribution.entry.map(str::to_owned),
+            attribution.entry_kind.map(str::to_owned),
+        );
         crate::write(
             trx,
             &self
@@ -199,8 +150,6 @@ impl Store {
             )),
             &[],
         );
-        trx.clear(&entry_key);
-        trx.clear(&kind_key);
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {
             let mut totals = totals.unwrap_or_default();
             totals.add(usage, cost_micros);

@@ -1,11 +1,8 @@
 //! Anthropic Messages on Anthropic direct, Vertex, and `OpenRouter`.
 
+use crate::sse::{Frame, SseParser};
 use base64::Engine as _;
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -147,21 +144,7 @@ impl AnthropicProvider {
         if status.is_success() {
             return Ok(response);
         }
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|header| header.to_str().ok())
-            .and_then(|value| {
-                value
-                    .parse::<u64>()
-                    .ok()
-                    .map(Duration::from_secs)
-                    .or_else(|| {
-                        httpdate::parse_http_date(value)
-                            .ok()
-                            .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
-                    })
-            });
+        let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
         if context_overflow(&body) {
             return Err(Error::ContextOverflow(body));
@@ -173,20 +156,7 @@ impl AnthropicProvider {
                 retry_after,
             });
         }
-        Err(provider_error(status, &body))
-    }
-}
-
-/// Keep the provider's own explanation; a bare status hides schema mistakes.
-fn provider_error(status: reqwest::StatusCode, body: &str) -> Error {
-    let message = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| body.trim().chars().take(600).collect());
-    if message.is_empty() {
-        Error::Status(status)
-    } else {
-        Error::Protocol(format!("provider error ({status}): {message}"))
+        Err(crate::error::provider_error(status, &body))
     }
 }
 
@@ -199,7 +169,7 @@ impl Provider for AnthropicProvider {
             let quota = crate::quota::anthropic_remaining(response.headers());
             let resets = crate::quota::anthropic_resets(response.headers());
             let mut bytes = response.bytes_stream();
-            let mut parser = SseParser::new(&provider.model.id, provider.endpoint.provider());
+            let mut parser = AnthropicStream::new(&provider.model.id, provider.endpoint.provider());
             parser.set_quota(quota);
             parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {
@@ -452,7 +422,7 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
             messages.push(json!({"role": role, "content": blocks}));
         }
     }
-    repair_tool_results(&mut messages);
+    crate::protocol::repair_tool_results(&mut messages, crate::protocol::ToolWire::Anthropic);
     if let Some(last) = messages
         .iter_mut()
         .rev()
@@ -465,41 +435,6 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
         );
     }
     Ok(messages)
-}
-
-fn repair_tool_results(messages: &mut Vec<Value>) {
-    let mut index = 0;
-    while index < messages.len() {
-        let calls: Vec<_> = messages[index]["content"]
-            .as_array()
-            .expect("constructed content array")
-            .iter()
-            .filter(|block| block["type"] == "tool_use")
-            .map(|block| block["id"].clone())
-            .collect();
-        if !calls.is_empty() {
-            if messages
-                .get(index + 1)
-                .is_none_or(|message| message["role"] != "user")
-            {
-                messages.insert(index + 1, json!({"role": "user", "content": []}));
-            }
-            let blocks = messages[index + 1]["content"]
-                .as_array_mut()
-                .expect("constructed content array");
-            for id in calls {
-                if !blocks
-                    .iter()
-                    .any(|block| block["type"] == "tool_result" && block["tool_use_id"] == id)
-                {
-                    blocks.push(json!({"type": "tool_result", "tool_use_id": id, "content": "No result provided", "is_error": true}));
-                }
-            }
-            // Tool results must precede ordinary user text, including rebuild notices.
-            blocks.sort_by_key(|block| block["type"] != "tool_result");
-        }
-        index += 1;
-    }
 }
 
 fn context_overflow(body: &str) -> bool {
@@ -527,12 +462,10 @@ struct Block {
 
 /// Incremental SSE framing and Anthropic block assembly. No completion is
 /// emitted until `message_stop` confirms that every block has finished.
-pub struct SseParser {
+pub struct AnthropicStream {
     model: String,
     provider: String,
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
+    framing: SseParser,
     started: bool,
     completed: bool,
     blocks: BTreeMap<usize, Block>,
@@ -543,15 +476,13 @@ pub struct SseParser {
     quota_resets: BTreeMap<String, u64>,
 }
 
-impl SseParser {
+impl AnthropicStream {
     #[must_use]
     pub fn new(model: &str, provider: &str) -> Self {
         Self {
             model: model.into(),
             provider: provider.into(),
-            line: Vec::new(),
-            data: Vec::new(),
-            previous_cr: false,
+            framing: SseParser::default(),
             started: false,
             completed: false,
             blocks: BTreeMap::new(),
@@ -577,38 +508,18 @@ impl SseParser {
     /// Rejects malformed events, provider errors, and events larger than 8 MiB.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Delta>, Error> {
         let mut deltas = Vec::new();
-        for &byte in bytes {
+        for frame in self.framing.push(bytes)? {
             if self.completed {
                 break;
             }
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\r' | b'\n') {
-                self.end_line(&mut deltas)?;
-            } else {
-                self.line.push(byte);
-                if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                    return Err(Error::Protocol("SSE event exceeds 8 MiB".into()));
-                }
-            }
+            self.frame(frame, &mut deltas)?;
         }
         Ok(deltas)
     }
 
-    fn end_line(&mut self, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if !self.data.is_empty() {
-                let data = std::mem::take(&mut self.data);
-                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
-            }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
+    fn frame(&mut self, frame: Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame {
+            self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
         }
         Ok(())
     }
@@ -861,13 +772,13 @@ mod tests {
 
     #[test]
     fn provider_errors_keep_the_message() {
-        let error = provider_error(
+        let error = crate::error::provider_error(
             reqwest::StatusCode::BAD_REQUEST,
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"tools.14: bad schema"}}"#,
         );
         assert!(error.to_string().contains("tools.14: bad schema"));
         assert!(matches!(
-            provider_error(reqwest::StatusCode::FORBIDDEN, ""),
+            crate::error::provider_error(reqwest::StatusCode::FORBIDDEN, ""),
             Error::Status(reqwest::StatusCode::FORBIDDEN)
         ));
     }

@@ -198,19 +198,24 @@ agents, model selection flags.
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
-Every pull request must pass the same three commands that CI runs:
+Every pull request must pass the following checks. Build the workspace before
+running its tests so end-to-end tests can find sibling binaries:
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace --locked
+cargo build --workspace --locked
+cargo test --workspace --locked --exclude swarmy-e2e
+cargo test --locked -p swarmy-e2e -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked -p swarmy-cloud --features remote
 cargo test --locked -p swarmy-cli --features remote
+cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 ```
 
-The last two run only when a change touches `crates/swarmy-cli/src/remote/`;
-the provisioning client is an opt-in feature that the workspace commands
-leave off.
+The feature-enabled commands run when a change touches `crates/swarmy-cloud/`
+or the CLI remote dispatch file; the provisioning client is an opt-in feature
+that the workspace commands leave off.
 
 Clippy runs with the `pedantic` group denied, so write code that satisfies it
 rather than silencing it. If a lint is genuinely wrong for a piece of code,
@@ -232,7 +237,7 @@ instances with root and the NBD module loaded, so run them there with sudo:
 |---|---|
 | `swarmy-volume` (chunks, manifests, NBD, snapshots) | `swarmy-volume --test nbd`, `swarmy-volume --test image` |
 | image recipes or `swarmy image` | `swarmy-cli --test image` (starts its own API against the dev stack), `swarmy-volume --test image` |
-| `swarmy vol` or the volume server | `swarmy-cli --test vol` |
+| `swarmy vol` or the volume server | `swarmyd --test vol` |
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
 | the worker, scheduler, gateway, store, or bus | `swarmy-chaos --test bash`, `--test continuity`, `--test coding`, and `scripts/chaos-ci.sh` |
 

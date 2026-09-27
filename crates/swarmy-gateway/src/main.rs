@@ -1,4 +1,5 @@
-use swarmy_gateway::{config, cost::cost_micros, providers::Providers};
+use swarmy_gateway::{config, providers::Providers};
+use swarmy_llm::cost::cost_micros;
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -194,6 +195,26 @@ async fn run(config: config::Config) -> Result<()> {
         blobs.clone(),
     )
     .await?;
+    // One-shot boot migration of retired single-record credential rows.
+    // Boot never fails on this; the remainder is reported by `swarmy doctor`.
+    match swarmy_config::Keyring::load() {
+        Ok(keyring) => match store.migrate_legacy_credentials(&keyring).await {
+            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
+            Ok(outcome) => {
+                tracing::info!(
+                    written = outcome.written,
+                    cleared = outcome.cleared,
+                    "migrated retired single-record credential rows to entries"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(%error, "legacy credential migration failed; continuing without it");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
+        }
+    }
     let providers = Providers::discover(store.clone(), &config.settings).await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let mut messages = futures::stream::SelectAll::new();
@@ -600,7 +621,7 @@ impl Gateway {
             Event::InferenceCompleted {
                 usage, cost_micros, ..
             } => Some(swarmy_store::MetricPatch::Inference(
-                swarmy_api_types::InferenceMetric {
+                swarmy_store::InferenceMetric {
                     request_id: job.request_id.to_string(),
                     provider: provider.to_owned(),
                     model: job.request.settings.model.clone(),
@@ -618,7 +639,7 @@ impl Gateway {
                 retryable: false,
                 ..
             } => Some(swarmy_store::MetricPatch::Inference(
-                swarmy_api_types::InferenceMetric {
+                swarmy_store::InferenceMetric {
                     request_id: job.request_id.to_string(),
                     provider: provider.to_owned(),
                     model: job.request.settings.model.clone(),
@@ -1395,8 +1416,8 @@ mod retry_tests {
         // Throughput divides by the whole request (first byte to completion):
         // 363 tokens over a 1001 ms request reports about 363 tokens per
         // second instead of dividing by the 1 ms streaming tail.
-        let mut turn = swarmy_api_types::TurnMetrics::default();
-        let row = |stage: &str, ns: u64, request: Option<&str>| swarmy_api_types::StageTiming {
+        let mut turn = swarmy_store::TurnMetrics::default();
+        let row = |stage: &str, ns: u64, request: Option<&str>| swarmy_store::StageTiming {
             stage: stage.into(),
             request_id: request.map(str::to_owned),
             clock_id: "boot".into(),
@@ -1410,7 +1431,7 @@ mod retry_tests {
             .push(row("first_token", 3_000_000_000, Some("r")));
         turn.stages
             .push(row("inference_finished", 3_001_000_000, Some("r")));
-        turn.inference.push(swarmy_api_types::InferenceMetric {
+        turn.inference.push(swarmy_store::InferenceMetric {
             request_id: "r".into(),
             output_tokens: 363,
             streamed: Some(false),

@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use futures::{TryStreamExt, future::BoxFuture};
@@ -14,7 +14,7 @@ use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult}
 use swarmy_llm::{
     BearerSource, ClientAuth, Delta, Error, GenerationSettings, Provider, ReasoningEffort, Request,
     Response, StopReason, TokenUsage, ToolDefinition,
-    api::anthropic::{AnthropicProvider, Endpoint, SseParser, request_json},
+    api::anthropic::{AnthropicProvider, AnthropicStream as SseParser, Endpoint, request_json},
     catalog::{Catalog, ModelInfo},
     client_for,
     retry::{RetryPolicy, with_retry},
@@ -472,7 +472,7 @@ async fn transient_statuses_retry_and_stop_after_three_attempts() {
 #[tokio::test]
 async fn retry_after_http_date_is_parsed() {
     let server = MockServer::start().await;
-    let date = httpdate::fmt_http_date(SystemTime::UNIX_EPOCH);
+    let date = "Thu, 01 Jan 1970 00:00:00 GMT".to_owned();
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(529).insert_header("retry-after", date.as_str()))
         .expect(3)

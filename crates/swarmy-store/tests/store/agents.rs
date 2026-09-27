@@ -1,5 +1,6 @@
 use super::*;
 use swarmy_core::{AgentRecord, AgentSettings, ReasoningEffort, SessionKind};
+use swarmy_store::{AgentSessionOptions, CreateAgentOptions};
 
 #[tokio::test]
 async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
@@ -9,8 +10,8 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let (a, b) = tokio::join!(
-        store.create_agent("tommy", image, "coding", timestamp(0)),
-        store.create_agent("tommy", image, "coding", timestamp(0))
+        store.create_agent("tommy", image, "coding", timestamp(0), None),
+        store.create_agent("tommy", image, "coding", timestamp(0), None)
     );
     let agent = match (a, b) {
         (Ok(agent), Err(StoreError::AgentExists)) | (Err(StoreError::AgentExists), Ok(agent)) => {
@@ -38,7 +39,7 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
             .is_empty()
     );
     assert!(matches!(
-        store.create_agent("", image, "", timestamp(0)).await,
+        store.create_agent("", image, "", timestamp(0), None).await,
         Err(StoreError::InvalidAgentName)
     ));
     let id = assert_named_session_pin(store, &agent, image).await;
@@ -65,7 +66,7 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     ));
     assert_ne!(
         store
-            .create_agent("tommy", image, "", timestamp(1))
+            .create_agent("tommy", image, "", timestamp(1), None)
             .await
             .unwrap()
             .agent_id,
@@ -82,7 +83,15 @@ async fn assert_named_session_pin(
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
-            .create_session_for_agent(id, Some(agent.agent_id), Some(image), timestamp(0))
+            .create_agent_session(
+                id,
+                Some(agent.agent_id),
+                timestamp(0),
+                Some(AgentSessionOptions {
+                    image: Some(image),
+                    ..Default::default()
+                })
+            )
             .await,
         Err(StoreError::NamedAgentImage)
     ));
@@ -100,11 +109,11 @@ async fn assert_named_session_pin(
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), replacement)
+        .put_image("fixture", &ImageTag("test".into()), replacement, None)
         .await
         .unwrap();
     let session = store
-        .create_session_for_agent(id, Some(agent.agent_id), None, timestamp(0))
+        .create_agent_session(id, Some(agent.agent_id), timestamp(0), None)
         .await
         .unwrap();
     assert_eq!(
@@ -156,12 +165,20 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
-            .create_session_for_agent(id, None, None, timestamp(0))
+            .create_agent_session(id, None, timestamp(0), None)
             .await,
         Err(StoreError::SessionImageRequired)
     ));
     let session = store
-        .create_session_for_agent(id, None, Some(image), timestamp(0))
+        .create_agent_session(
+            id,
+            None,
+            timestamp(0),
+            Some(AgentSessionOptions {
+                image: Some(image),
+                ..Default::default()
+            }),
+        )
         .await
         .unwrap();
     assert_eq!(session.kind, SessionKind::Ephemeral);
@@ -213,11 +230,14 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
     for _ in 0..3 {
         sessions.push(
             store
-                .create_session_for_agent(
+                .create_agent_session(
                     SessionId::from_ulid(Ulid::generate()),
                     None,
-                    Some(image),
                     timestamp(0),
+                    Some(AgentSessionOptions {
+                        image: Some(image),
+                        ..Default::default()
+                    }),
                 )
                 .await
                 .unwrap(),
@@ -245,15 +265,15 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
         .await
         .unwrap();
     let agent = store
-        .create_agent("named", image, "", timestamp(0))
+        .create_agent("named", image, "", timestamp(0), None)
         .await
         .unwrap();
     let named = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            None,
         )
         .await
         .unwrap();
@@ -302,7 +322,16 @@ async fn agent_inference_settings_create_and_independent_updates() {
         route: None,
     };
     let mut expected = store
-        .create_agent_with_settings("custom", image, "reviewer", &settings, timestamp(0))
+        .create_agent(
+            "custom",
+            image,
+            "reviewer",
+            timestamp(0),
+            Some(CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            }),
+        )
         .await
         .unwrap();
     assert_eq!(expected.system_prompt, settings.system_prompt);
@@ -392,7 +421,16 @@ async fn concurrent_settings_and_rejected_updates(
     );
     assert!(matches!(
         store
-            .create_agent_with_settings("oversized", image, "", &oversized, timestamp(0))
+            .create_agent(
+                "oversized",
+                image,
+                "",
+                timestamp(0),
+                Some(CreateAgentOptions {
+                    settings: Some(&oversized),
+                    ..Default::default()
+                })
+            )
             .await,
         Err(StoreError::TooLarge)
     ));
@@ -420,7 +458,7 @@ async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let mut expected = store
-        .create_agent("legacy", image, "old record", timestamp(0))
+        .create_agent("legacy", image, "old record", timestamp(0), None)
         .await
         .unwrap();
     // This tuple has exactly the five fields of the original Postcard record.
@@ -470,11 +508,11 @@ async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
             .contains(&expected.image.manifest_id)
     );
     store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(expected.agent_id),
-            None,
             timestamp(1),
+            None,
         )
         .await
         .unwrap();
@@ -515,16 +553,16 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("main", image, "", timestamp(0))
+        .create_agent("main", image, "", timestamp(0), None)
         .await
         .unwrap();
     assert_eq!(agent.main_session, None);
     let side = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            None,
         )
         .await
         .unwrap();
@@ -610,7 +648,7 @@ async fn legacy_agents_acquire_a_main_session_without_losing_their_image() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("legacy", image, "description", timestamp(0))
+        .create_agent("legacy", image, "description", timestamp(0), None)
         .await
         .unwrap();
     // Tuples have the same postcard representation as the old five-field record.
@@ -680,20 +718,23 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
     let store = &test.store;
     let image = image_fixture::image(store).await;
     let agent = store
-        .create_agent("main", image, "", timestamp(0))
+        .create_agent("main", image, "", timestamp(0), None)
         .await
         .unwrap();
     let other = store
-        .create_agent("other", image, "", timestamp(0))
+        .create_agent("other", image, "", timestamp(0), None)
         .await
         .unwrap();
     for owner in [None, Some(other.agent_id)] {
         let foreign = store
-            .create_session_for_agent(
+            .create_agent_session(
                 SessionId::from_ulid(Ulid::generate()),
                 owner,
-                owner.is_none().then_some(image),
                 timestamp(0),
+                Some(AgentSessionOptions {
+                    image: owner.is_none().then_some(image),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -705,11 +746,11 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         ));
     }
     let side = store
-        .create_session_for_agent(
+        .create_agent_session(
             SessionId::from_ulid(Ulid::generate()),
             Some(agent.agent_id),
-            None,
             timestamp(0),
+            None,
         )
         .await
         .unwrap();
@@ -806,7 +847,16 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     };
     let agent = test
         .store
-        .create_agent_with_settings("memory", image, "", &settings, timestamp(0))
+        .create_agent(
+            "memory",
+            image,
+            "",
+            timestamp(0),
+            Some(CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            }),
+        )
         .await
         .unwrap();
     assert_eq!(agent.requirements.memory_mib, 2048);

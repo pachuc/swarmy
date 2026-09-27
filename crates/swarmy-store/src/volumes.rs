@@ -89,41 +89,32 @@ impl Store {
         self.transaction(|trx| async move { read(&trx, &self.volume_key(id)).await })
             .await
     }
+}
 
-    /// Map an image name and tag to an existing immutable manifest.
-    /// # Errors
-    /// Rejects missing manifests, oversized keys, and transaction failures.
-    pub async fn put_image(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Result<()> {
-        self.put_image_with_scratch(name, tag, manifest, &[]).await
-    }
+/// Options for registering an image name and tag against an immutable manifest.
+#[derive(Clone, Debug, Default)]
+pub struct PutImageOptions {
+    /// Node-local scratch mount paths declared by the image recipe.
+    pub scratch: Vec<String>,
+    /// Required sandbox memory in MiB; rejects zero.
+    pub memory_mib: Option<u64>,
+    /// Whether the image ships a display server for browser and screen tools.
+    pub display: bool,
+}
 
-    /// Register an immutable image and its node-local scratch mount paths.
-    /// # Errors
-    /// Rejects missing manifests, oversized keys, and transaction failures.
-    pub async fn put_image_with_scratch(
-        &self,
-        name: &str,
-        tag: &ImageTag,
-        manifest: ManifestId,
-        scratch: &[String],
-    ) -> Result<()> {
-        self.put_image_with_requirements(name, tag, manifest, scratch, None, false)
-            .await
-    }
-
+impl Store {
     /// Register image defaults atomically with the immutable image manifest.
     /// # Errors
     /// Rejects missing manifests, oversized keys, and database failures.
-    pub async fn put_image_with_requirements(
+    pub async fn put_image(
         &self,
         name: &str,
         tag: &ImageTag,
         manifest: ManifestId,
-        scratch: &[String],
-        memory_mib: Option<u64>,
-        display: bool,
+        options: Option<PutImageOptions>,
     ) -> Result<()> {
-        if memory_mib == Some(0) {
+        let options = options.unwrap_or_default();
+        if options.memory_mib == Some(0) {
             return Err(StoreError::InvalidState);
         }
         let key = self.image_key(name, tag);
@@ -132,20 +123,19 @@ impl Store {
         }
         self.transaction(|trx| {
             let key = &key;
+            let scratch = &options.scratch;
+            let memory_mib = &options.memory_mib;
+            let display = &options.display;
             async move {
                 self.require_manifest(&trx, manifest).await?;
                 write(&trx, key, &manifest)?;
-                write(
-                    &trx,
-                    &self.image_scratch_key(name, tag, manifest),
-                    &scratch.to_vec(),
-                )?;
+                write(&trx, &self.image_scratch_key(name, tag, manifest), scratch)?;
                 write(
                     &trx,
                     &self.image_memory_key(name, tag, manifest),
-                    &memory_mib,
+                    memory_mib,
                 )?;
-                write(&trx, &self.image_display_key(name, tag, manifest), &display)
+                write(&trx, &self.image_display_key(name, tag, manifest), display)
             }
         })
         .await
@@ -364,6 +354,8 @@ impl Store {
     /// a writer's authority beyond its expiry. The id makes commit retries safe.
     /// # Errors
     /// Rejects stale heads, invalid headers, reused ids, and absent or stale leases.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn advance_volume(
         &self,
         id: VolumeId,

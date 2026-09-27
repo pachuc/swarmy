@@ -54,7 +54,7 @@ impl Fixture {
             .await
             .unwrap();
         store
-            .put_image("fixture", &ImageTag("test".into()), manifest)
+            .put_image("fixture", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
         let bus = Bus::connect(&nats, Config::default()).await.unwrap();
@@ -239,7 +239,7 @@ async fn named_main_and_side_preserve_image_and_selection() {
     };
     let agent = f
         .store
-        .create_agent("named", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent("named", "fixture:test", "", jiff::Timestamp::now(), None)
         .await
         .unwrap();
     let main = f
@@ -590,7 +590,7 @@ async fn emit_observed_turn(
         .record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_api_types::InferenceMetric {
+            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
                 request_id: request.to_string(),
                 provider: "fake".into(),
                 model: "scripted".into(),
@@ -607,7 +607,7 @@ async fn emit_observed_turn(
         .record_turn_metric(
             session,
             turn,
-            swarmy_store::MetricPatch::Tool(swarmy_api_types::ToolMetric {
+            swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
                 request_id: request.to_string(),
                 name: "bash".into(),
                 exit_status: Some(0),
@@ -627,7 +627,13 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     };
     let agent = f
         .store
-        .create_agent("metric-agent", "fixture:test", "", jiff::Timestamp::now())
+        .create_agent(
+            "metric-agent",
+            "fixture:test",
+            "",
+            jiff::Timestamp::now(),
+            None,
+        )
         .await
         .unwrap();
     let (session, _) = f
@@ -697,6 +703,9 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
             .await
             .unwrap(),
         direct
+            .into_iter()
+            .map(swarmy_api::views::into_api_turn)
+            .collect::<Vec<_>>()
     );
     let rollup = client
         .agent_metrics("metric-agent", 200, None)

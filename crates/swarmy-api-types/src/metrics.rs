@@ -1,4 +1,6 @@
-//! Durable per-turn measurements assembled from unbounded detail rows.
+//! API response shapes for per-turn measurements. These carry the values the
+//! store derives; the only duration and throughput derivation lives on the
+//! store's mirror shapes in `swarmy-store/src/metrics.rs`.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -48,17 +50,6 @@ pub struct InferenceMetric {
     pub gateway_waits: u32,
     pub provider_failures: u32,
     pub error: Option<String>,
-}
-
-impl InferenceMetric {
-    /// A zero interval cannot yield a meaningful throughput.
-    #[must_use]
-    // Throughput is an approximate rate; sub-token precision is not meaningful.
-    #[allow(clippy::cast_precision_loss)]
-    pub fn tokens_per_second(tokens: u64, duration_ms: f64) -> Option<f64> {
-        (tokens > 0 && duration_ms > 0.0 && duration_ms.is_finite())
-            .then_some(tokens as f64 * 1_000.0 / duration_ms)
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -135,72 +126,6 @@ pub struct TurnMetrics {
     /// dropped by the legacy capped layout when the turn was migrated.
     #[serde(default)]
     pub dropped_tools: u64,
-}
-
-impl TurnMetrics {
-    /// Compare monotonic times only within a boot; otherwise use wall time.
-    #[must_use]
-    // Millisecond display precision is lower than the nanosecond source precision.
-    #[allow(clippy::cast_precision_loss)]
-    pub fn duration_ms(first: &StageTiming, last: &StageTiming) -> Option<f64> {
-        if first.clock_id == last.clock_id {
-            last.monotonic_ns
-                .checked_sub(first.monotonic_ns)
-                .map(|ns| ns as f64 / 1_000_000.0)
-        } else {
-            last.unix_ns
-                .checked_sub(first.unix_ns)
-                .filter(|ns| *ns >= 0)
-                .map(|ns| ns as f64 / 1_000_000.0)
-        }
-    }
-
-    // Queue durations are approximate millisecond measurements.
-    #[allow(clippy::cast_precision_loss)]
-    pub fn derive(&mut self) {
-        let first = |stage: &str| self.stages.iter().find(|row| row.stage == stage);
-        self.append_to_first_token_ms = first("appended")
-            .zip(first("first_token"))
-            .and_then(|(a, b)| Self::duration_ms(a, b));
-        self.inference_duration_ms = first("inference_started")
-            .zip(first("inference_finished"))
-            .and_then(|(a, b)| Self::duration_ms(a, b));
-        self.append_to_idle_ms = first("appended")
-            .zip(first("idle"))
-            .and_then(|(a, b)| Self::duration_ms(a, b));
-        for tool in &mut self.tools {
-            tool.queue_ms = tool
-                .dispatched_ns
-                .zip(tool.started_ns)
-                .and_then(|(a, b)| b.checked_sub(a).filter(|ns| *ns >= 0))
-                .map(|ns| ns as f64 / 1_000_000.0);
-        }
-        for request in &mut self.inference {
-            let stages = &self.stages;
-            let stage = |name: &str| {
-                stages.iter().find(|row| {
-                    row.stage == name && row.request_id.as_deref() == Some(&request.request_id)
-                })
-            };
-            request.time_to_first_token_ms = stage("inference_started")
-                .zip(stage("first_token"))
-                .and_then(|(a, b)| Self::duration_ms(a, b));
-            request.streaming_duration_ms = stage("first_token")
-                .zip(stage("inference_finished"))
-                .and_then(|(a, b)| Self::duration_ms(a, b));
-            // Throughput covers the whole request, not just the streaming
-            // interval, so a provider that delivers the response in one
-            // chunk reports a realistic rate instead of tens of thousands
-            // of tokens per second.
-            request.request_duration_ms = stage("inference_started")
-                .zip(stage("inference_finished"))
-                .and_then(|(a, b)| Self::duration_ms(a, b));
-            request.output_tokens_per_second = request
-                .request_duration_ms
-                .or(request.streaming_duration_ms)
-                .and_then(|ms| InferenceMetric::tokens_per_second(request.output_tokens, ms));
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]

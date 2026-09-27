@@ -1,0 +1,7 @@
+# Accepted breaking changes within /v1, enforced by
+# scripts/check-openapi-compat.sh through oasdiff --err-ignore.
+# One accepted change per non-comment line, in the endpoint-plus-description
+# form oasdiff matches; every entry carries a comment with the date it was
+# accepted and the reason it is safe.
+# 2026-09-27: LogId channel one-of member removed: reserved variant never implemented; swarmy is currently its own only client.
+PUT /v1/events/{connection_id}/subscription removed `subschema #2` from the `cursors/items/log_id` request property `oneOf` list

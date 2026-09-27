@@ -12,7 +12,7 @@ use swarmy_core::{
     AgentId, AgentSettings, CredentialKind, CredentialRecord, CredentialScope, InferenceSelection,
     Lease, LeaseOwnerId, RouteStep, SessionId,
 };
-use swarmy_store::{CredentialKey, Store, StoreError, blob::MemoryBlobStore};
+use swarmy_store::{AgentSessionOptions, CredentialKey, Store, StoreError, blob::MemoryBlobStore};
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
@@ -449,18 +449,25 @@ async fn routed_session(f: &Fixture) -> SessionId {
         .await
         .unwrap();
     f.store
-        .put_image("fixture", &swarmy_core::ImageTag("test".into()), manifest)
+        .put_image(
+            "fixture",
+            &swarmy_core::ImageTag("test".into()),
+            manifest,
+            None,
+        )
         .await
         .unwrap();
     let id = SessionId::from_ulid(ulid::Ulid::generate());
     f.store
-        .create_session_with_route(
+        .create_agent_session(
             id,
             None,
-            Some("fixture:test"),
             Timestamp::now(),
-            &InferenceSelection::default(),
-            Some("fallback"),
+            Some(AgentSessionOptions {
+                image: Some("fixture:test"),
+                inference: Some(&InferenceSelection::default()),
+                route: Some("fallback"),
+            }),
         )
         .await
         .unwrap();
@@ -545,13 +552,15 @@ async fn session_route_assignment_validates_and_round_trips() {
     // create the session on the real route and check the missing name on update.
     assert!(matches!(
         f.store
-            .create_session_with_route(
+            .create_agent_session(
                 SessionId::from_ulid(ulid::Ulid::generate()),
                 None,
-                Some("fixture:test"),
                 Timestamp::now(),
-                &InferenceSelection::default(),
-                Some("missing"),
+                Some(AgentSessionOptions {
+                    image: Some("fixture:test"),
+                    inference: Some(&InferenceSelection::default()),
+                    route: Some("missing")
+                })
             )
             .await,
         Err(StoreError::RouteMissing)

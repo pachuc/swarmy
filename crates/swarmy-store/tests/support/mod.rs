@@ -16,7 +16,7 @@ pub async fn image(store: &Store) -> &'static str {
         .await
         .unwrap();
     store
-        .put_image("fixture", &ImageTag("test".into()), manifest)
+        .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
         .unwrap();
     "fixture:test"

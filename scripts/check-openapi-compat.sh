@@ -9,7 +9,9 @@
 # field type. Additive changes pass: new paths, new optional fields, new
 # response enum values, and new event variants, which clients must ignore.
 # Deprecations carry an x-sunset date at least sixty days out; removals pass
-# only after their sunset date.
+# only after their sunset date. Accepted breaks recorded in
+# docs/api-breaks.txt (date and reason per entry, allowed only until an
+# external client exists) are passed to oasdiff with --err-ignore.
 # Usage: scripts/check-openapi-compat.sh [base-ref] (default: origin/master).
 set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -77,7 +79,13 @@ if [ -z "$oasdiff_bin" ]; then
     oasdiff_bin="$work/oasdiff"
 fi
 
+err_ignore=""
+if [ -f "$repo_dir/docs/api-breaks.txt" ]; then
+    err_ignore="$repo_dir/docs/api-breaks.txt"
+fi
+
 if "$oasdiff_bin" breaking --severity-levels "$work/severity-levels.txt" \
+    ${err_ignore:+--err-ignore "$err_ignore"} \
     --fail-on ERR --deprecation-days-stable 60 "$work/base.json" "$new_spec"; then
     echo "check-openapi-compat: no breaking changes against $base_tree"
 else
