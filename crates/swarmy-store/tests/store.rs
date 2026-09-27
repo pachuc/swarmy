@@ -2147,8 +2147,27 @@ async fn legacy_sessions_without_images_remain_readable() {
     test.cleanup().await;
 }
 
+// A complete legacy fixture needs each independently stored field.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn legacy_side_rows_migrate_to_one_versioned_session() {
+    type V2Fields = (
+        SessionId,
+        AgentId,
+        SessionState,
+        u64,
+        Option<u64>,
+        swarmy_core::SessionKind,
+        bool,
+        Vec<swarmy_core::PlanStep>,
+        swarmy_core::InferenceSelection,
+        bool,
+        Option<String>,
+        u32,
+        Option<swarmy_core::ImageRecord>,
+        Option<Timestamp>,
+        Option<Timestamp>,
+    );
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -2219,11 +2238,19 @@ async fn legacy_side_rows_migrate_to_one_versioned_session() {
         .pack(&("computer_deleted", agent.as_ulid().to_bytes().as_slice()));
     test.db
         .run(|trx, _| {
-            let (header, kind, step, interrupt, bytes, rows, deleted) =
-                (&header, &kind, &step, &interrupt, &bytes, &rows, &deleted);
+            let (header, kind, step, interrupt, bytes, rows, deleted, kind_bytes) = (
+                &header,
+                &kind,
+                &step,
+                &interrupt,
+                &bytes,
+                &rows,
+                &deleted,
+                &kind_bytes,
+            );
             async move {
                 trx.set(header, bytes);
-                trx.set(kind, &kind_bytes);
+                trx.set(kind, kind_bytes);
                 trx.set(step, &step_bytes);
                 trx.set(interrupt, &interrupt_bytes);
                 trx.set(deleted, &encode(&true).unwrap());
@@ -2248,10 +2275,6 @@ async fn legacy_side_rows_migrate_to_one_versioned_session() {
     assert_eq!(legacy.route.as_deref(), Some("primary"));
     assert_eq!(test.store.pinned_image(id).await.unwrap(), Some(image));
     assert_eq!(
-        test.store.session_idle_since(id).await.unwrap(),
-        Some(since)
-    );
-    assert_eq!(
         test.store.session_state_since(id).await.unwrap(),
         Some(since)
     );
@@ -2264,6 +2287,17 @@ async fn legacy_side_rows_migrate_to_one_versioned_session() {
         0
     );
     assert_eq!(test.store.fetch_session(id).await.unwrap().unwrap(), legacy);
+    let stored = test
+        .db
+        .run(|trx, _| {
+            let header = &header;
+            async move { Ok(trx.get(header, false).await?.unwrap().to_vec()) }
+        })
+        .await
+        .unwrap();
+    let fields: V2Fields = postcard::from_bytes(&stored[1..]).unwrap();
+    assert_eq!(fields.13, Some(since));
+    assert_eq!(fields.14, Some(since));
     test.db
         .run(|trx, _| {
             let (header, kind, step, interrupt) = (&header, &kind, &step, &interrupt);

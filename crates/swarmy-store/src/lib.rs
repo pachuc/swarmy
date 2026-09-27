@@ -1248,6 +1248,40 @@ mod compatibility_tests {
     }
 
     #[test]
+    fn fixed_nondefault_v2_session_bytes() {
+        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
+        let v2 = StoredSessionV2 {
+            session_id: id,
+            agent_id: swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128)),
+            state: SessionState::Runnable,
+            head_seq: 0,
+            snapshot_seq: None,
+            kind: swarmy_core::SessionKind::Ephemeral,
+            computer_deleted: false,
+            plan: Vec::new(),
+            inference: swarmy_core::InferenceSelection::default(),
+            interrupt_requested: true,
+            route: None,
+            route_step: 3,
+            image: None,
+            idle_since: None,
+            state_since: None,
+        };
+        let mut expected = vec![SESSION_RECORD_VERSION, 26];
+        expected.extend([b'0'; 26]);
+        expected.push(26);
+        expected.extend([b'0'; 26]);
+        expected.extend([1, 0, 0]); // Runnable, empty log and snapshot.
+        expected.extend([0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0]);
+        let mut actual = vec![SESSION_RECORD_VERSION];
+        actual.extend(postcard::to_allocvec(&v2).unwrap());
+        assert_eq!(actual, expected);
+        let decoded: StoredSessionV2 = postcard::from_bytes(&expected[1..]).unwrap();
+        assert!(decoded.interrupt_requested);
+        assert_eq!(decoded.route_step, 3);
+    }
+
+    #[test]
     fn legacy_session_header_is_still_readable_and_writes_the_same_bytes() {
         // A tuple encodes the original five postcard fields without adding metadata.
         let id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 2));
