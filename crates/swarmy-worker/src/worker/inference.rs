@@ -541,14 +541,15 @@ impl Worker {
                 after = event.seq();
                 if let Event::MessageAppended { message, .. } = event
                     && message.role == swarmy_core::MessageRole::System
-                    && message.parts.iter().any(|part| {
-                        matches!(
-                            part,
-                            swarmy_core::Part::Notice {
-                                kind: swarmy_core::NoticeKind::EffortClamped,
-                                ..
-                            }
-                        )
+                    && message.parts.iter().any(|part| match part {
+                        swarmy_core::Part::Notice {
+                            kind: swarmy_core::NoticeKind::EffortClamped,
+                            ..
+                        } => true,
+                        swarmy_core::Part::Text { text } => {
+                            text.starts_with("Reasoning effort clamped from ")
+                        }
+                        _ => false,
                     })
                 {
                     return Ok(true);

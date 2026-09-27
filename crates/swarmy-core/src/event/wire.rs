@@ -233,6 +233,10 @@ fn failed_completion(
     let failure_kind = if failure_kind == FailureKind::Unknown && error == "interrupted by operator"
     {
         FailureKind::OperatorInterrupted
+    } else if failure_kind == FailureKind::Unknown
+        && error.starts_with("no gateway serves provider ")
+    {
+        FailureKind::GatewayUnserved
     } else {
         failure_kind
     };
@@ -665,6 +669,19 @@ mod tests {
                 failure_kind: FailureKind::Unknown,
             }
         );
+        let unserved = PreRoutesBinaryEvent::InferenceFailed {
+            seq: 9,
+            request_id,
+            error: "no gateway serves provider openai".into(),
+        };
+        let bytes = postcard::to_extend(&unserved, vec![crate::STORAGE_VERSION]).unwrap();
+        assert!(matches!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                failure_kind: FailureKind::GatewayUnserved,
+                ..
+            }
+        ));
         let interrupt = PreRoutesBinaryEvent::InferenceFailed {
             seq: 8,
             request_id,

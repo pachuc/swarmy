@@ -26,3 +26,7 @@ GET /v1/sessions/{id}/events adds notice part kind to message parts
 
 # 2026-09-27: Encrypted credential storage records append typed bookkeeping; existing rows decode and boot migration clears legacy string flags. The CLI credential endpoint accepts old JSON records without this optional field.
 POST /v1/cli/credentials adds optional record/bookkeeping to the request payload
+
+# 2026-09-27: InferenceFailed failure_kind, Part::Notice in events and snapshots, and typed credential bookkeeping fields are one-way stored format changes. Older binaries cannot read rows written after this upgrade. Upgrade the entire swarm together; do not roll back.
+# 2026-09-27: MissingInferenceWait is not a session-not-idle error. Interrupt now reports the storage fallback instead of an unrelated conflict code.
+POST /v1/sessions/{id}/interrupt changes MissingInferenceWait error code from session_not_idle (409) to storage_error (500)

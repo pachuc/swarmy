@@ -630,7 +630,11 @@ class FleetTests(unittest.TestCase):
                        "parts": [{"tool_result": {"result": {"completed": {"output": "docs say context_pressure"}}}}]}}}
         user_text = {"message_appended": {"message": {"role": "user",
                      "parts": [{"text": {"text": "context_pressure in a prompt"}}]}}}
+        typed_warning = {"message_appended": {"message": {"role": "system",
+                         "parts": [{"notice": {"kind": "context_pressure",
+                                                "text": "Context is nearly full"}}]}}}
         self.assertTrue(mod.has_pressure([warning]))
+        self.assertTrue(mod.has_pressure([typed_warning]))
         self.assertFalse(mod.has_pressure([tool_output, user_text]))
         self.assertFalse(mod.has_pressure([{"message_appended": {"text": "hello"}}]))
 

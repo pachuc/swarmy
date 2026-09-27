@@ -411,7 +411,12 @@ def has_pressure(events):
         if not isinstance(message, dict) or message.get("role") != "system":
             continue
         for part in message.get("parts") or []:
-            text = (part.get("text") or {}).get("text") if isinstance(part, dict) else None
+            if not isinstance(part, dict):
+                continue
+            notice = part.get("notice") or {}
+            if isinstance(notice, dict) and notice.get("kind") == "context_pressure":
+                return True
+            text = (part.get("text") or {}).get("text")
             if isinstance(text, str) and "context_pressure" in text:
                 return True
     return False

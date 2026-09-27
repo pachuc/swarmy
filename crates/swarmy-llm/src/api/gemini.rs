@@ -116,9 +116,7 @@ impl GeminiProvider {
                 "Gemini input token count exceeds the maximum".into(),
             ));
         }
-        if retryable(status)
-            || crate::classify_provider_failure(&body) == crate::ProviderFailureReason::Quota
-        {
+        if retryable(status) {
             return Err(Error::ProviderResponse {
                 status,
                 reason: crate::classify_provider_failure(&body),

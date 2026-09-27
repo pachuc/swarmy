@@ -12,7 +12,9 @@ With no agent it mints an anonymous agent id and requires an image. With an
 agent id it requires an existing named agent, uses that agent's pinned image,
 and rejects any explicit image with:
 
-> --image cannot be used with a named agent; its pinned image is used
+> named agent has a pinned image
+
+The CLI explains that `--image` cannot be used with a named agent.
 
 `list_sessions_by_agent` pages the secondary index by session id. New sessions
 are indexed at creation. Legacy sessions without index rows remain available
@@ -37,7 +39,7 @@ window. Identity deletion and computer deletion are idempotent.
 
 Workers and nodes refuse tools with this message:
 
-> This session's computer has been deleted. Create a new session to run tools.
+> this session's computer has been deleted; create a new session to run tools
 
 Worker recovery records this error for pending sandbox calls. A session whose
 computer alone was deleted can still retain and read conversation history.

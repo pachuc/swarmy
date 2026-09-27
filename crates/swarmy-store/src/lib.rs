@@ -163,7 +163,7 @@ pub enum DomainError {
     NamedAgentImage,
     #[error("an ephemeral session requires an image")]
     SessionImageRequired,
-    #[error("session computer has been deleted")]
+    #[error("this session's computer has been deleted; create a new session to run tools")]
     ComputerDeleted,
     #[error("cannot close an agent main session")]
     MainSessionClose,

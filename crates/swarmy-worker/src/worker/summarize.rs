@@ -491,14 +491,13 @@ pub(super) fn last_tool_round(messages: &[swarmy_core::Message]) -> Option<usize
 /// Whether a message is a `context_pressure` warning.
 pub(super) fn is_pressure_warning(message: &swarmy_core::Message) -> bool {
     message.role == swarmy_core::MessageRole::System
-        && message.parts.iter().any(|part| {
-            matches!(
-                part,
-                swarmy_core::Part::Notice {
-                    kind: swarmy_core::NoticeKind::ContextPressure,
-                    ..
-                }
-            )
+        && message.parts.iter().any(|part| match part {
+            swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
+                ..
+            } => true,
+            swarmy_core::Part::Text { text } => text.starts_with("context_pressure"),
+            _ => false,
         })
 }
 
