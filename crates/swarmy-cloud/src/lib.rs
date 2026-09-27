@@ -444,7 +444,6 @@ impl NodeShape {
 /// Generic shape for known EC2 instance types. Unknown types leave the
 /// generic shape unset; the provider-specific `instance_type` stays
 /// authoritative on AWS.
-#[cfg(feature = "remote")]
 fn instance_shape(instance_type: &str) -> (u32, u32) {
     match instance_type {
         "m6i.large" => (2, 8 * 1024),
