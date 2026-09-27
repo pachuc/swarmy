@@ -11,6 +11,129 @@ pub(super) struct StepContext {
 }
 
 impl Worker {
+    pub(super) async fn tail(&self, id: SessionId, after: u64, through: u64) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        let mut cursor = after;
+        loop {
+            let page = self.store.read_events(id, cursor, MAX_SCAN_LIMIT).await?;
+            let Some(last) = page.last() else {
+                return Ok(events);
+            };
+            cursor = last.seq();
+            events.extend(page.into_iter().filter(|event| event.seq() <= through));
+            if cursor >= through {
+                return Ok(events);
+            }
+        }
+    }
+
+    pub(super) async fn publish_events(&self, id: SessionId, events: &[Event]) -> Result<()> {
+        for event in events {
+            if let Err(error) = self
+                .bus
+                .publish_live(LiveFeed::SessionEvents(id), event)
+                .await
+            {
+                if matches!(error, swarmy_bus::Error::PayloadTooLarge { .. }) {
+                    // The event is already durable. Live observers can read it by cursor.
+                    tracing::warn!(%id, seq = event.seq(), %error, "live event exceeds bus limit");
+                } else {
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn publish_tail(&self, id: SessionId, events: &[Event]) -> Result<()> {
+        for event in events {
+            // This session is leased. Historical idle events, including ones
+            // written before the atomic finish API, cannot announce readiness.
+            if !matches!(
+                event,
+                Event::StateChanged {
+                    to: SessionState::Idle,
+                    ..
+                }
+            ) {
+                self.publish_events(id, std::slice::from_ref(event)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn append(
+        &self,
+        session: &mut SessionRecord,
+        lease: &ActiveLease,
+        events: &mut Vec<Event>,
+        batch: &[Event],
+    ) -> Result<()> {
+        let before = session.head_seq;
+        {
+            let token = lease.lock().await;
+            session.head_seq = self
+                .store
+                .append_events_leased(
+                    session.session_id,
+                    before,
+                    batch,
+                    token.as_ref().context("lease released")?,
+                    Timestamp::now(),
+                )
+                .await?;
+        }
+        let appended: Vec<_> = batch
+            .iter()
+            .cloned()
+            .zip(before + 1..)
+            .map(|(mut event, seq)| {
+                event.set_seq(seq);
+                event
+            })
+            .collect();
+        self.publish_events(session.session_id, &appended).await?;
+        events.extend(appended);
+        Ok(())
+    }
+
+    pub(super) async fn snapshot(&self, key: &str) -> Result<Snapshot> {
+        if let Some(snapshot) = self.snapshots.lock().await.get(key) {
+            return Ok(snapshot.clone());
+        }
+        let bytes = self.blobs.get(key).await?;
+        let snapshot: Snapshot = decode(&bytes)?;
+        // Content-addressed snapshots are immutable. Bound retained data while
+        // avoiding repeat downloads for the claim, dispatch, and fold of a turn.
+        if bytes.len() <= 1024 * 1024 {
+            let mut cache = self.snapshots.lock().await;
+            if cache.len() >= 16 {
+                cache.clear();
+            }
+            cache.insert(key.to_owned(), snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
+    pub(super) async fn load_history(
+        &self,
+        session: &SessionRecord,
+        events: &mut Vec<Event>,
+    ) -> Result<Snapshot> {
+        let (snapshot, after) = if let Some(reference) = &session.snapshot_ref {
+            (self.snapshot(&reference.object_key).await?, reference.seq)
+        } else {
+            (Snapshot::default(), 0)
+        };
+        let cursor = events.last().map_or(after, Event::seq);
+        if cursor < session.head_seq {
+            events.extend(
+                self.tail(session.session_id, cursor, session.head_seq)
+                    .await?,
+            );
+        }
+        Ok(snapshot)
+    }
     pub(super) async fn step(&self, ctx: &mut StepContext) -> Result<()> {
         let Some(snapshot) = self.prepare_step(ctx).await? else {
             return Ok(());
