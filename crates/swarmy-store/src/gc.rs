@@ -19,7 +19,7 @@ impl Store {
                     .await?
                     .is_some_and(|lease| lease.expires_at > now)
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             let sequence_key = crate::keys::Keys::new(&self.root).gc_sequence();
             let seq = read::<u64>(&trx, &sequence_key)
@@ -50,7 +50,7 @@ impl Store {
                 || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             let lease = Lease {
                 expires_at,
@@ -72,7 +72,7 @@ impl Store {
                 || expected.expires_at <= self.now()
                 || expected.owner != run.owner
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             write(&trx, &self.gc_run_key(run.owner), run)?;
             trx.clear(&key);
@@ -88,7 +88,7 @@ impl Store {
     /// Rejects a mismatched run id and transaction failures.
     pub async fn fail_gc_run(&self, owner: LeaseOwnerId, run: &GcRun) -> Result<()> {
         if run.owner != owner {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
         }
         let mut failed = run.clone();
         failed.finished = true;
@@ -131,7 +131,7 @@ impl Store {
                     .await?
                     .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             trx.clear(&deleting);
             write(
@@ -160,7 +160,7 @@ impl Store {
                 .await?
                 .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             let reuse = try_join_all(hashes.iter().map(|hash| async {
                 let key = crate::keys::Keys::new(&self.root).chunk_reused(*hash);
@@ -202,7 +202,7 @@ impl Store {
             .await?;
             for (&hash, reservation) in hashes.iter().zip(reservations) {
                 if reservation != Some(owner) {
-                    return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                    return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
                 }
                 let key = crate::keys::Keys::new(&self.root).gc_deleting(hash);
                 trx.clear(&key);

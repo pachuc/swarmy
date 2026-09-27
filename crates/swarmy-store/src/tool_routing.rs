@@ -19,9 +19,9 @@ impl Store {
                 &crate::keys::Keys::new(&self.root).placement(status.agent_id),
             )
             .await?
-            .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
+            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
             if placement.node_id != status.node_id || placement.epoch != status.epoch {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.check_live_placement(&trx, &placement).await?;
             let key = crate::keys::Keys::new(&self.root).agent_call_status(status.agent_id);
@@ -107,7 +107,7 @@ impl Store {
             .await?
             {
                 if placement.node_id != node {
-                    return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
                 }
                 self.check_live_placement(&trx, &placement).await?;
             }
@@ -173,7 +173,7 @@ impl Store {
                 || dispatched.node_id != placement.node_id
                 || dispatched.epoch != placement.epoch)
         {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(())
     }

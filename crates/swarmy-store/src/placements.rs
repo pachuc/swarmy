@@ -47,7 +47,7 @@ impl Store {
                 .await?
                 .is_some_and(|placement| placement.node_id != record.node_id)
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             write(&trx, &self.scratch_key(agent), record)
         })
@@ -315,9 +315,9 @@ impl Store {
             &crate::keys::Keys::new(&self.root).placement(expected.agent_id),
         )
         .await?
-        .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
+        .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
         if current.node_id != expected.node_id || current.epoch != expected.epoch {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(current)
     }
@@ -328,7 +328,7 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<()> {
         if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(())
     }
@@ -360,7 +360,7 @@ impl Store {
             self.check_computer(&trx, agent).await?;
             let now = self.now();
             if expires_at <= now {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             if read::<PlacementRecord>(&trx, &crate::keys::Keys::new(&self.root).placement(agent))
                 .await?
@@ -414,7 +414,7 @@ impl Store {
             let mut current = self.checked_placement(&trx, expected).await?;
             let now = self.now();
             if current.expires_at <= now || expires_at <= current.expires_at {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             let mut hosting = self
                 .read_placement_hosting(&trx, &current)
@@ -445,7 +445,7 @@ impl Store {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
             if current.expires_at <= self.now() {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
@@ -474,7 +474,7 @@ impl Store {
             let current = self.checked_placement(&trx, expected).await?;
             let now = self.now();
             if current.expires_at > now || expires_at <= now {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;

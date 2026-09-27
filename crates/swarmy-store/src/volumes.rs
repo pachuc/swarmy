@@ -256,7 +256,7 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<Lease> {
         if expires_at <= now {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
         }
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
@@ -266,7 +266,7 @@ impl Store {
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at > now)
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let seq_key = self.volume_lease_seq_key(id);
             let seq = read::<u64>(&trx, &seq_key)
@@ -299,7 +299,7 @@ impl Store {
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= now {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             volume.writer_lease = None;
             write(&trx, &self.volume_key(id), &volume)
@@ -324,7 +324,7 @@ impl Store {
                 || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let lease = Lease {
                 expires_at,
@@ -381,7 +381,7 @@ impl Store {
                 .await?;
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let parent_key = self.manifest_parent_key(next);
             if volume.head_manifest == next

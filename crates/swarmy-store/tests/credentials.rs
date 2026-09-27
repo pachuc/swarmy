@@ -52,6 +52,7 @@ impl Fixture {
 }
 fn oauth(access: &str) -> CredentialRecord {
     CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: CredentialKind::OAuth {
             access: access.into(),
             refresh: "refresh".into(),
@@ -210,7 +211,9 @@ async fn dead_owner_expires_and_stale_write_is_fenced() {
         .await;
     assert!(matches!(
         result,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::CredentialRefreshMismatch
+        ))
     ));
     assert_eq!(
         access(
@@ -302,7 +305,9 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
         .await;
     assert!(matches!(
         result,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::CredentialRefreshMismatch
+        ))
     ));
     assert_eq!(
         access(
@@ -331,7 +336,9 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
         .await;
     assert!(matches!(
         result,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::CredentialRefreshMismatch
+        ))
     ));
     assert!(
         f.credentials
@@ -478,7 +485,9 @@ async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
     let (result, ()) = tokio::join!(refresh, replace);
     assert!(matches!(
         result,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::CredentialRefreshMismatch
+        ))
     ));
     assert_eq!(
         access(
@@ -582,6 +591,7 @@ async fn entry_labels_list_without_decrypting() {
 
 fn api_key(key: &str) -> CredentialRecord {
     CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: CredentialKind::ApiKey {
             key: key.into(),
             extra: std::collections::BTreeMap::default(),
@@ -832,4 +842,98 @@ async fn boot_migration_clears_but_does_not_overwrite_an_existing_default_entry(
         .unwrap();
     assert!(entry == current);
     assert!(raw_row(&fixture, "credential", "anthropic").await.is_none());
+}
+
+#[tokio::test]
+async fn boot_migration_rewrites_entry_flags_without_discarding_the_row() {
+    use serde::Serialize;
+    #[derive(Serialize)]
+    struct Entry {
+        created_at: Timestamp,
+        last_used_at: Option<Timestamp>,
+        ciphertext: Vec<u8>,
+        needs_login: bool,
+        expires_at: Option<Timestamp>,
+    }
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let provider = "legacy-flags";
+    let label = "primary";
+    let key = fixture
+        .root
+        .pack(&("credential_entry", SCOPE.to_string(), provider, label));
+    let mut record = api_key("secret");
+    let CredentialKind::ApiKey { extra, .. } = &mut record.kind else {
+        unreachable!()
+    };
+    extra.insert("auth_kind".into(), "cloud".into());
+    extra.insert("needs_login".into(), "true".into());
+    extra.insert("label".into(), label.into());
+    let ciphertext = encrypt_legacy_row(
+        &Keyring::from_bytes([7; 32]),
+        SCOPE,
+        &format!("{provider}\0{label}"),
+        &record,
+    );
+    let original = encode(&Entry {
+        created_at: record.updated_at,
+        last_used_at: None,
+        ciphertext,
+        needs_login: false,
+        expires_at: None,
+    })
+    .unwrap();
+    fixture
+        .db
+        .run(|trx, _| {
+            let key = key.clone();
+            let original = original.clone();
+            async move {
+                trx.set(&key, &original);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    fixture
+        .credentials
+        .migrate_legacy_credentials()
+        .await
+        .unwrap();
+    let migrated = fixture
+        .db
+        .run(|trx, _| {
+            let key = key.clone();
+            async move { Ok(trx.get(&key, false).await?.unwrap().to_vec()) }
+        })
+        .await
+        .unwrap();
+    assert_ne!(original, migrated);
+    let record = fixture
+        .credentials
+        .get_entry(SCOPE, provider, label)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.bookkeeping.needs_login && record.bookkeeping.cloud);
+    assert_eq!(record.bookkeeping.label.as_deref(), Some(label));
+    let CredentialKind::ApiKey { extra, .. } = record.kind else {
+        unreachable!()
+    };
+    assert!(extra.is_empty());
+    fixture
+        .credentials
+        .migrate_legacy_credentials()
+        .await
+        .unwrap();
+    let again = fixture
+        .db
+        .run(|trx, _| {
+            let key = key.clone();
+            async move { Ok(trx.get(&key, false).await?.unwrap().to_vec()) }
+        })
+        .await
+        .unwrap();
+    assert_eq!(migrated, again);
 }

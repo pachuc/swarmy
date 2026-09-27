@@ -397,6 +397,7 @@ async fn pinned_resolution_selects_the_named_entry() {
 
     fn api_key(key: &str) -> swarmy_core::CredentialRecord {
         swarmy_core::CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: swarmy_core::CredentialKind::ApiKey {
                 key: key.into(),
                 extra: BTreeMap::new(),

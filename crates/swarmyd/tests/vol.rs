@@ -324,7 +324,9 @@ async fn reject_wrong_writer(fixture: &Fixture, volume: &str, snapshot: &Value) 
             .store
             .advance_volume(id, &wrong, before.head_manifest, next, &header)
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     let rejected = fixture
         .command(&fixture.node_a, &["flush", volume])

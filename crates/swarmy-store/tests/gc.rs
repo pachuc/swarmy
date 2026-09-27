@@ -430,7 +430,7 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
     assert!(matches!(
         collect(&test.store, test.objects.clone(), policy(), false).await,
         Err(VolumeError::Store(StoreError::Fence(
-            swarmy_store::FenceError::LeaseMismatch
+            swarmy_store::FenceError::GcLeaseMismatch
         )))
     ));
     *clock.lock().unwrap() = expires.checked_add(Duration::from_millis(100)).unwrap();
@@ -450,11 +450,11 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
         test.store
             .renew_gc_lease(&lease, replacement.expires_at)
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))
     ));
     assert!(matches!(
         test.store.finish_gc_run(&lease, &first).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))
     ));
     let renewed = test
         .store
@@ -564,7 +564,7 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
     );
     assert!(matches!(
         test.store.protect_reused_chunk(old.hash).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))
     ));
     let uploading = chunks.put_chunk(&data);
     tokio::pin!(uploading);

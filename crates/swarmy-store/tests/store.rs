@@ -1731,7 +1731,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
     };
     assert!(matches!(
         loser,
-        StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)
+        StoreError::Fence(swarmy_store::FenceError::VolumeLeaseMismatch)
     ));
     let mut wrong = winner.clone();
     wrong.owner = owner();
@@ -1739,7 +1739,9 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &wrong, timestamp(2))
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     test.store
         .release_writer_lease(volume, &winner, timestamp(2))
@@ -1765,13 +1767,17 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &winner, timestamp(3))
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     assert!(matches!(
         test.store
             .release_writer_lease(volume, &next, timestamp(10))
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     let replacement = test
         .store
@@ -1783,7 +1789,9 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &next, timestamp(11))
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     test.store
         .release_writer_lease(volume, &replacement, timestamp(11))
@@ -1793,7 +1801,9 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .acquire_writer_lease(volume, owner(), timestamp(12), timestamp(12))
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     assert!(matches!(
         test.store
@@ -1895,7 +1905,9 @@ async fn volume_publication_fences_writers_and_preserves_history() {
     };
     assert!(matches!(
         store.advance_volume(id, &wrong, base, next, &header).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     assert_eq!(store.get_volume(id).await.unwrap(), before);
     assert_eq!(store.get_manifest(next).await.unwrap(), None);
@@ -1913,7 +1925,9 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         .unwrap();
     assert!(matches!(
         store.advance_volume(id, &lease, base, next, &header).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     store
         .advance_volume(id, &renewed, base, next, &header)
@@ -1951,7 +1965,9 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         store
             .advance_volume(id, &renewed, next, stale, &header)
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     test.cleanup().await;
 }

@@ -778,7 +778,7 @@ impl CredentialStore {
         Fut: Future<Output = Result<CredentialRecord>>,
     {
         if ttl.is_zero() {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Domain(crate::DomainError::InvalidLeaseTtl));
         }
         let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
         let lease_key =
@@ -833,7 +833,11 @@ impl CredentialStore {
                 record.bookkeeping.needs_login = true;
                 (record, true)
             }
-            Err(_) => return Err(StoreError::Fence(crate::FenceError::LeaseMismatch)),
+            Err(_) => {
+                return Err(StoreError::Fence(
+                    crate::FenceError::CredentialRefreshMismatch,
+                ));
+            }
         };
         let bytes = if replacement == current {
             observed.ciphertext.clone()
@@ -896,9 +900,9 @@ impl CredentialStore {
                 let lease = Lease {
                     owner,
                     seq: 0,
-                    expires_at: now
-                        .checked_add(ttl)
-                        .map_err(|_| StoreError::Fence(crate::FenceError::LeaseMismatch))?,
+                    expires_at: now.checked_add(ttl).map_err(|_| {
+                        StoreError::Fence(crate::FenceError::CredentialRefreshMismatch)
+                    })?,
                 };
                 write(&trx, lease_key, &lease)?;
                 Ok(Claim::Acquired(lease, record))
@@ -924,17 +928,21 @@ impl CredentialStore {
                 let lease_key = &lease_key;
                 let observed = &observed;
                 async move {
-                    let held: Lease = read(&trx, lease_key)
-                        .await?
-                        .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
+                    let held: Lease = read(&trx, lease_key).await?.ok_or(StoreError::Fence(
+                        crate::FenceError::CredentialRefreshMismatch,
+                    ))?;
                     if held != *lease || held.expires_at <= self.store.now() {
-                        return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                        return Err(StoreError::Fence(
+                            crate::FenceError::CredentialRefreshMismatch,
+                        ));
                     }
                     let entry: EntryValue = read_entry(&trx, key)
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::CredentialMissing))?;
                     if entry.ciphertext != observed.ciphertext {
-                        return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                        return Err(StoreError::Fence(
+                            crate::FenceError::CredentialRefreshMismatch,
+                        ));
                     }
                     if bytes != observed.ciphertext {
                         write(

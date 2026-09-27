@@ -51,7 +51,7 @@ impl Store {
                         old.node_id == placement.node_id && old.epoch == placement.epoch
                     })
                 {
-                    return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
                 }
             } else {
                 let manifest = stored
@@ -85,7 +85,7 @@ impl Store {
             read::<PlacementRecord>(trx, &self.volume_placement_key(id)).await?
         {
             if owner.as_ulid() != placement.node_id.as_ulid() {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.check_live_placement(trx, &placement).await?;
         }
@@ -152,13 +152,17 @@ impl Store {
             self.check_tool_dispatch(trx, &claim.job, &claim.placement),
             read::<StoredPlacedClaim>(trx, &key),
         )?;
-        let current = current.ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
+        let current = current.ok_or(StoreError::Fence(
+            crate::FenceError::PlacedToolClaimMismatch,
+        ))?;
         if current.owner != claim.owner
             || current.job_digest != job_digest(&claim.job)?
             || current.placement != claim.placement
             || current.expires_at <= self.now()
         {
-            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            return Err(StoreError::Fence(
+                crate::FenceError::PlacedToolClaimMismatch,
+            ));
         }
         Ok(current)
     }
@@ -173,7 +177,9 @@ impl Store {
         self.transaction(|trx| async move {
             let mut current = self.check_placed_tool(&trx, claim).await?;
             if expires_at <= current.expires_at {
-                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+                return Err(StoreError::Fence(
+                    crate::FenceError::PlacedToolClaimMismatch,
+                ));
             }
             current.expires_at = expires_at;
             write(

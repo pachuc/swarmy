@@ -513,6 +513,7 @@ mod tests {
 
     fn api_key(key: &str) -> CredentialRecord {
         CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: key.into(),
                 extra: BTreeMap::new(),

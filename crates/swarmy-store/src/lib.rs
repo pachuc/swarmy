@@ -129,6 +129,16 @@ pub enum FenceError {
     ToolJobMismatch,
     #[error("lease is absent, expired, or no longer matches")]
     LeaseMismatch,
+    #[error("placement lease or epoch no longer matches")]
+    PlacementMismatch,
+    #[error("placed tool claim no longer matches")]
+    PlacedToolClaimMismatch,
+    #[error("gc run lease no longer matches")]
+    GcLeaseMismatch,
+    #[error("credential refresh claim no longer matches")]
+    CredentialRefreshMismatch,
+    #[error("volume writer lease no longer matches")]
+    VolumeLeaseMismatch,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -225,6 +235,8 @@ pub enum DomainError {
     SessionNotIdle,
     #[error("unexpected session state")]
     UnexpectedSessionState,
+    #[error("lease TTL must be greater than zero")]
+    InvalidLeaseTtl,
     #[error("scan limit must be between 1 and 64")]
     InvalidLimit,
 }

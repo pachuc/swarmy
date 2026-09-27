@@ -974,7 +974,7 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
     assert!(matches!(
         store.put_agent_call_status(&observation).await,
         Err(swarmy_store::StoreError::Fence(
-            swarmy_store::FenceError::LeaseMismatch
+            swarmy_store::FenceError::PlacementMismatch
         ))
     ));
     eprintln!(

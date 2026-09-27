@@ -87,7 +87,9 @@ async fn placement_lifecycle_fences_holders() {
     assert_eq!(renewed.last_change_reason, first.last_change_reason);
     assert!(matches!(
         test.store.renew(&renewed, renewed.expires_at).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let impostor = PlacementRecord {
         node_id: b,
@@ -95,24 +97,34 @@ async fn placement_lifecycle_fences_holders() {
     };
     assert!(matches!(
         test.store.renew(&impostor, future(180)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.release(&impostor).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.take_over(&first, b, future(60)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let expired = expire(&test, &renewed).await;
     assert!(matches!(
         test.store.renew(&expired, future(60)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.release(&expired).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let next = test.store.take_over(&expired, b, future(60)).await.unwrap();
     assert_eq!(next.epoch, 2);
@@ -131,15 +143,21 @@ async fn placement_lifecycle_fences_holders() {
     );
     assert!(matches!(
         test.store.renew(&first, future(180)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.release(&first).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.take_over(&expired, a, future(60)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     test.cleanup().await;
 }
@@ -176,7 +194,9 @@ async fn placement_address_follows_its_epoch() {
     assert_eq!(test.store.placement_address(&next).await.unwrap(), None);
     assert!(matches!(
         test.store.set_placement_address(&first, address).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     test.store
         .set_placement_address(&next, address)
@@ -209,11 +229,15 @@ async fn placement_release_preserves_epoch_and_rejects_old_tokens() {
     assert_eq!(rebuilt.last_change_reason, PlacementChangeReason::Eviction);
     assert!(matches!(
         test.store.renew(&next, future(180)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     assert!(matches!(
         test.store.release(&next).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     test.cleanup().await;
 }
@@ -240,7 +264,9 @@ async fn placement_capacity_and_index_are_atomic() {
     ));
     assert!(matches!(
         test.store.place(agent, a.node_id, timestamp(0)).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let first = test
         .store
@@ -331,7 +357,7 @@ async fn placement_takeover_race_has_exactly_one_winner() {
             Ok(record) => winners.push(record),
             Err(error) => assert!(matches!(
                 error,
-                StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)
+                StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)
             )),
         }
     }
@@ -427,7 +453,9 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
     let expired = expire(&test, &first).await;
     assert!(matches!(
         test.store.claim_placement(&expired).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let unstarted = test.store.take_over(&expired, b, future(60)).await.unwrap();
     assert_eq!(
@@ -443,7 +471,9 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
     );
     assert!(matches!(
         test.store.claim_placement(&first).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     let impostor = PlacementRecord {
         node_id: a,
@@ -451,7 +481,9 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
     };
     assert!(matches!(
         test.store.claim_placement(&impostor).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     test.store.claim_placement(&unstarted).await.unwrap();
     let before_renewal = Timestamp::now();
