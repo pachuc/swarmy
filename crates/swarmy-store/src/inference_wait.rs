@@ -282,10 +282,7 @@ impl Store {
             if session.state != SessionState::Runnable {
                 return Ok(false);
             }
-            if read::<bool>(&trx, &self.interrupt_key(id))
-                .await?
-                .unwrap_or(false)
-            {
+            if session.interrupt_requested {
                 return Ok(false);
             }
             let key = self.wait_key(id);
@@ -454,7 +451,9 @@ impl Store {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
                 trx.clear(&self.wait_key(id));
             }
-            write(&trx, &self.session_route_step_key(id), &0_u32)?;
+            let mut session = self.session(&trx, id).await?;
+            session.route_step = 0;
+            self.write_session(&trx, &session)?;
             Ok(())
         })
         .await

@@ -1,5 +1,5 @@
 //! Image metadata is stored separately so legacy session headers stay readable.
-use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read};
+use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError};
 use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
 
 pub(crate) type ImageCache =
@@ -10,7 +10,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn pinned_image(&self, id: SessionId) -> Result<Option<ImageRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.session_image_key(id)).await })
+        self.transaction(|trx| async move { Ok(self.session(&trx, id).await?.image) })
             .await
     }
     pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
@@ -27,8 +27,10 @@ impl Store {
         }
         let manifest = self
             .transaction(|trx| async move {
-                Ok(read::<ImageRecord>(&trx, &self.session_image_key(id))
+                Ok(self
+                    .session(&trx, id)
                     .await?
+                    .image
                     .map(|image| image.manifest_id))
             })
             .await?;

@@ -273,8 +273,10 @@ impl Store {
             {
                 // Timers are lease-fenced to their agent, so a mismatched origin
                 // only means stale state: fall through to the main conversation.
-                if let Some(session) =
-                    read::<crate::StoredSession>(&trx, &self.session_key(origin)).await?
+                if let Some(session) = self
+                    .fetch_session_in(&trx, origin)
+                    .await?
+                    .map(|(session, _)| session)
                     && session.agent_id == agent.agent_id
                     && session.state == SessionState::Idle
                 {
@@ -292,22 +294,14 @@ impl Store {
                 id
             } else {
                 let id = SessionId::from_ulid(ulid::Ulid::generate());
-                let session = swarmy_core::SessionRecord {
-                    interrupt_requested: false,
-                    session_id: id,
-                    agent_id: agent.agent_id,
-                    kind: swarmy_core::SessionKind::Named {
+                let session = swarmy_core::SessionRecord::new(
+                    swarmy_core::SessionKind::Named {
                         agent_id: agent.agent_id,
                     },
-                    computer_deleted: false,
-                    state: SessionState::Idle,
-                    head_seq: 0,
-                    snapshot_ref: None,
-                    inference: swarmy_core::InferenceSelection::default(),
-                    plan: Vec::new(),
-                    route: None,
-                    route_step: 0,
-                };
+                    agent.agent_id,
+                    swarmy_core::SessionSettings::new(id),
+                    now,
+                );
                 self.create_session_in(&trx, &session, now, None).await?;
                 agent.main_session = Some(id);
                 write(&trx, &self.agent_key(agent.agent_id), &agent)?;

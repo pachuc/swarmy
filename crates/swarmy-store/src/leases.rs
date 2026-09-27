@@ -129,7 +129,6 @@ impl Store {
                     },
                     scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
                 )?;
-                let session = self.session_metadata(&trx, session).await?;
                 Ok((lease, session, snapshot, turn, values))
             })
             .await?;
@@ -157,10 +156,7 @@ impl Store {
         if session.state != SessionState::Runnable {
             return Err(StoreError::InvalidState);
         }
-        if read::<bool>(trx, &self.interrupt_key(id))
-            .await?
-            .unwrap_or(false)
-        {
+        if session.interrupt_requested {
             return Err(StoreError::InvalidState);
         }
         let lease = Lease {
@@ -173,7 +169,7 @@ impl Store {
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
-        write(trx, &self.session_state_since_key(id), &Timestamp::now())?;
+        session.state_since = Some(Timestamp::now());
         self.write_session(trx, &session)?;
         Ok((lease, session))
     }
@@ -275,10 +271,10 @@ impl Store {
             _ => {}
         }
         if state == SessionState::Idle {
-            write(trx, &self.session_idle_key(session.session_id), &now)?;
+            session.idle_since = Some(now);
         }
         session.state = state;
-        write(trx, &self.session_state_since_key(session.session_id), &now)?;
+        session.state_since = Some(now);
         if state == SessionState::Runnable {
             self.write_runnable(
                 trx,

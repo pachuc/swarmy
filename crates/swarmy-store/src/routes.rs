@@ -599,9 +599,10 @@ impl Store {
             return Err(StoreError::RouteMissing);
         }
         self.transaction(|trx| async move {
-            self.session(&trx, id).await?;
-            write(&trx, &self.session_route_key(id), &route.map(str::to_owned))?;
-            write(&trx, &self.session_route_step_key(id), &0_u32)?;
+            let mut session = self.session(&trx, id).await?;
+            session.route = route.map(str::to_owned);
+            session.route_step = 0;
+            self.write_session(&trx, &session)?;
             Ok(())
         })
         .await
@@ -618,7 +619,9 @@ impl Store {
         reasons: &[String],
         now: Timestamp,
     ) -> Result<()> {
-        write(trx, &self.session_route_step_key(id), &step)?;
+        let mut session = self.session(trx, id).await?;
+        session.route_step = step;
+        self.write_session(trx, &session)?;
         if !reasons.is_empty() {
             let wait_key = self.wait_key(id);
             let mut wait = read::<InferenceWait>(trx, &wait_key)
@@ -694,10 +697,8 @@ impl Store {
             }
             // Ephemeral sessions carry no agent record, so only named
             // sessions read one here; the snapshot covers both either way.
-            let (agent_route, agent_provider) = if matches!(
-                self.session_kind(&trx, id).await?,
-                SessionKind::Named { .. }
-            ) {
+            let (agent_route, agent_provider) = if matches!(stored.kind, SessionKind::Named { .. })
+            {
                 self.read_agent(&trx, stored.agent_id)
                     .await?
                     .map_or((None, None), |record| (record.route, record.provider))
@@ -768,7 +769,9 @@ impl Store {
                 max_wait,
             )
             .await?;
-            write(&trx, &self.session_route_step_key(id), &0_u32)?;
+            let mut session = self.session(&trx, id).await?;
+            session.route_step = 0;
+            self.write_session(&trx, &session)?;
             Ok(FailoverOutcome {
                 action: FailoverAction::Park,
                 route,

@@ -95,7 +95,54 @@ pub struct SessionRecord {
     pub route_step: u32,
 }
 
+/// Inputs for a fresh session; the durable log always starts empty.
+pub struct SessionSettings {
+    pub session_id: SessionId,
+    pub inference: crate::InferenceSelection,
+    pub plan: Vec<crate::PlanStep>,
+    pub route: Option<String>,
+    pub route_step: u32,
+}
+
+impl SessionSettings {
+    #[must_use]
+    pub fn new(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            inference: crate::InferenceSelection::default(),
+            plan: Vec::new(),
+            route: None,
+            route_step: 0,
+        }
+    }
+}
+
 impl SessionRecord {
+    /// Build a fresh idle session. The creation timestamp belongs to the
+    /// store's state-since field, not to the public session record.
+    #[must_use]
+    pub fn new(
+        kind: SessionKind,
+        agent: AgentId,
+        settings: SessionSettings,
+        _now: Timestamp,
+    ) -> Self {
+        Self {
+            interrupt_requested: false,
+            kind,
+            computer_deleted: false,
+            plan: settings.plan,
+            session_id: settings.session_id,
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_ref: None,
+            inference: settings.inference,
+            route: settings.route,
+            route_step: settings.route_step,
+        }
+    }
+
     /// Whether resolving this session's route needs a store read. Named
     /// sessions always resolve, since the agent's assignment, provider, and
     /// model may have changed. Ephemeral sessions resolve when a route is

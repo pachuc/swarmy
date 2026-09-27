@@ -68,7 +68,7 @@ impl Store {
     /// # Errors
     /// Returns database or decoding errors.
     pub async fn session_state_since(&self, id: SessionId) -> Result<Option<Timestamp>> {
-        self.transaction(|trx| async move { read(&trx, &self.session_state_since_key(id)).await })
+        self.transaction(|trx| async move { Ok(self.session(&trx, id).await?.state_since) })
             .await
     }
 

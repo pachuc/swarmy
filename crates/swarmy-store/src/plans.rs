@@ -1,4 +1,4 @@
-use crate::{Result, Store, StoreError, write};
+use crate::{Result, Store, StoreError};
 use swarmy_core::{
     Event, Lease, RequestId, SessionId, ToolCallRecord, ToolResult, UpdatePlanArguments,
 };
@@ -60,7 +60,7 @@ impl Store {
                     });
                 }
                 if let Ok(arguments) = parsed {
-                    write(&trx, &self.session_plan_key(id), &arguments.plan)?;
+                    session.plan = arguments.plan.clone();
                 }
                 trx.set(&self.event_space(id).pack(&(seq,)), value);
                 session.head_seq = seq;

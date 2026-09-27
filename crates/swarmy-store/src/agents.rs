@@ -4,7 +4,7 @@ use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
     AgentId, AgentRecord, AgentSettings, ImageRecord, ImageTag, InferenceSelection, RouteRecord,
-    SessionId, SessionKind, SessionRecord, SessionState, decode,
+    SessionId, SessionKind, SessionRecord, SessionSettings, SessionState, decode,
 };
 
 /// Options for creating a named agent. The replay key and private token are
@@ -27,9 +27,7 @@ impl Store {
         trx: &Transaction,
         id: SessionId,
     ) -> Result<SessionKind> {
-        Ok(read(trx, &self.session_kind_key(id))
-            .await?
-            .unwrap_or_default())
+        Ok(self.session(trx, id).await?.kind)
     }
 
     /// Create a named agent, resolving and pinning the registered image atomically.
@@ -300,22 +298,17 @@ impl Store {
         options: Option<AgentSessionOptions<'_>>,
     ) -> Result<SessionRecord> {
         let options = options.unwrap_or_default();
-        let session = SessionRecord {
-            interrupt_requested: false,
-            session_id: id,
-            agent_id: agent.unwrap_or_else(|| AgentId::from_ulid(ulid::Ulid::generate())),
-            kind: agent.map_or(SessionKind::Ephemeral, |agent_id| SessionKind::Named {
+        let mut settings = SessionSettings::new(id);
+        settings.inference = options.inference.cloned().unwrap_or_default();
+        settings.route = options.route.map(str::to_owned);
+        let session = SessionRecord::new(
+            agent.map_or(SessionKind::Ephemeral, |agent_id| SessionKind::Named {
                 agent_id,
             }),
-            computer_deleted: false,
-            plan: Vec::new(),
-            state: SessionState::Idle,
-            head_seq: 0,
-            snapshot_ref: None,
-            inference: options.inference.cloned().unwrap_or_default(),
-            route: options.route.map(str::to_owned),
-            route_step: 0,
-        };
+            agent.unwrap_or_else(|| AgentId::from_ulid(ulid::Ulid::generate())),
+            settings,
+            now,
+        );
         self.create_session_record(&session, now, options.image)
             .await?;
         Ok(session)
@@ -406,23 +399,14 @@ impl Store {
                 &memory.unwrap_or(768),
             )?;
         }
-        write(trx, &self.session_image_key(id), &selected)?;
         swarmy_core::UpdatePlanArguments {
             plan: session.plan.clone(),
         }
         .validate()
         .map_err(|_| StoreError::InvalidState)?;
-        write(trx, &self.session_plan_key(id), &session.plan)?;
-        write(trx, &self.session_inference_key(id), &session.inference)?;
-        write(trx, &self.session_kind_key(id), &session.kind)?;
-        write(trx, &self.session_route_key(id), &session.route)?;
-        write(trx, &self.session_route_step_key(id), &session.route_step)?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
-        write(trx, &self.session_idle_key(id), &now)?;
-        write(trx, &self.session_state_since_key(id), &now)?;
-        write(
+        self.write_session(
             trx,
-            &key,
             &StoredSession {
                 session_id: id,
                 agent_id: session.agent_id,
@@ -432,10 +416,13 @@ impl Store {
                 inference: session.inference.clone(),
                 kind: session.kind,
                 computer_deleted: false,
-                plan: Vec::new(),
+                plan: session.plan.clone(),
                 interrupt_requested: false,
                 route: session.route.clone(),
                 route_step: session.route_step,
+                image: Some(selected),
+                idle_since: (session.state == SessionState::Idle).then_some(now),
+                state_since: Some(now),
             },
         )?;
         if session.state == SessionState::Runnable {
@@ -490,20 +477,12 @@ impl Store {
             if let Some(main) = record.main_session {
                 return Ok((main, false));
             }
-            let session = SessionRecord {
-                interrupt_requested: false,
-                session_id: id,
-                agent_id: agent,
-                kind: SessionKind::Named { agent_id: agent },
-                computer_deleted: false,
-                state: SessionState::Idle,
-                head_seq: 0,
-                snapshot_ref: None,
-                inference: swarmy_core::InferenceSelection::default(),
-                plan: Vec::new(),
-                route: None,
-                route_step: 0,
-            };
+            let session = SessionRecord::new(
+                SessionKind::Named { agent_id: agent },
+                agent,
+                SessionSettings::new(id),
+                now,
+            );
             self.create_session_in(&trx, &session, now, None).await?;
             record.main_session = Some(id);
             write(&trx, &self.agent_key(agent), &record)?;
@@ -583,22 +562,14 @@ impl Store {
                 if agent.main_session != Some(old) {
                     return Err(StoreError::InvalidMainSession);
                 }
-                let session = SessionRecord {
-                    interrupt_requested: false,
-                    session_id: id,
-                    agent_id: agent.agent_id,
-                    kind: SessionKind::Named {
+                let session = SessionRecord::new(
+                    SessionKind::Named {
                         agent_id: agent.agent_id,
                     },
-                    computer_deleted: false,
-                    state: SessionState::Idle,
-                    head_seq: 0,
-                    snapshot_ref: None,
-                    inference: swarmy_core::InferenceSelection::default(),
-                    plan: Vec::new(),
-                    route: None,
-                    route_step: 0,
-                };
+                    agent.agent_id,
+                    SessionSettings::new(id),
+                    now,
+                );
                 self.create_session_in(&trx, &session, now, None).await?;
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = 1;
@@ -663,7 +634,7 @@ impl Store {
                     .read_agent(&trx, previous.agent_id)
                     .await?
                     .ok_or(StoreError::AgentMissing)?;
-                let kind = self.session_kind(&trx, old).await?;
+                let kind = previous.kind;
                 let SessionKind::Named { agent_id } = kind else {
                     return Err(StoreError::InvalidState);
                 };
@@ -673,36 +644,23 @@ impl Store {
                 if agent.main_session == Some(old) {
                     return Err(StoreError::InvalidMainSession);
                 }
-                let inference: swarmy_core::InferenceSelection =
-                    read(&trx, &self.session_inference_key(old))
-                        .await?
-                        .unwrap_or_default();
-                let plan: Vec<swarmy_core::PlanStep> = read(&trx, &self.session_plan_key(old))
-                    .await?
-                    .unwrap_or_default();
-                let route: Option<String> =
-                    read::<Option<String>>(&trx, &self.session_route_key(old))
-                        .await?
-                        .flatten();
-                let route_step: u32 = read(&trx, &self.session_route_step_key(old))
-                    .await?
-                    .unwrap_or(0);
-                let session = SessionRecord {
-                    interrupt_requested: false,
-                    session_id: id,
-                    agent_id: agent.agent_id,
-                    kind: SessionKind::Named {
+                let inference = previous.inference.clone();
+                let plan = previous.plan.clone();
+                let route = previous.route.clone();
+                let route_step = previous.route_step;
+                let mut settings = SessionSettings::new(id);
+                settings.inference = inference;
+                settings.plan = plan;
+                settings.route = route;
+                settings.route_step = route_step;
+                let session = SessionRecord::new(
+                    SessionKind::Named {
                         agent_id: agent.agent_id,
                     },
-                    computer_deleted: false,
-                    state: SessionState::Idle,
-                    head_seq: 0,
-                    snapshot_ref: None,
-                    inference,
-                    plan,
-                    route,
-                    route_step,
-                };
+                    agent.agent_id,
+                    settings,
+                    now,
+                );
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
                     .await?;

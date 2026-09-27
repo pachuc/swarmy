@@ -63,6 +63,12 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
         }
     }
+    match store.migrate_legacy_sessions().await {
+        Ok(migrated) => tracing::info!(migrated, "session V1 migration finished"),
+        Err(error) => {
+            tracing::warn!(%error, "session migration incomplete; continuing with legacy reads")
+        }
+    }
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;

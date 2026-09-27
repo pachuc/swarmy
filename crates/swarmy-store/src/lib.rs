@@ -442,7 +442,13 @@ impl Store {
             idle_since,
             state_since,
         ) = futures::try_join!(
-            self.session_kind(trx, id),
+            async {
+                Ok::<_, StoreError>(
+                    read(trx, &self.session_kind_key(id))
+                        .await?
+                        .unwrap_or_default(),
+                )
+            },
             self.computer_deleted(trx, header.agent_id),
             async {
                 Ok::<_, StoreError>(
@@ -475,9 +481,9 @@ impl Store {
                         .unwrap_or(0),
                 )
             },
-            read(trx, &self.session_image_key(id)),
-            read(trx, &self.session_idle_key(id)),
-            read(trx, &self.session_state_since_key(id)),
+            async { read(trx, &self.session_image_key(id)).await },
+            async { read(trx, &self.session_idle_key(id)).await },
+            async { read(trx, &self.session_state_since_key(id)).await },
         )?;
         Ok(StoredSession {
             session_id: id,
@@ -562,6 +568,54 @@ impl Store {
             trx.clear(&key);
         }
         Ok(())
+    }
+
+    /// Rewrite remaining V1 sessions in bounded scan pages. Concurrent writers
+    /// are safe: each rewrite reads the header in its committing transaction.
+    /// # Errors
+    /// Returns storage or decoding errors; callers may retry from the start.
+    pub async fn migrate_legacy_sessions(&self) -> Result<usize> {
+        let mut after = None;
+        let mut migrated = 0;
+        loop {
+            let page: Vec<SessionId> = self
+                .transaction(|trx| async move {
+                    let (mut begin, end) = self.root.subspace(&("session",)).range();
+                    if let Some(id) = after {
+                        begin = self.session_key(id);
+                        begin.push(0);
+                    }
+                    let mut ids = Vec::new();
+                    for (key, _) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
+                        let (_, bytes): (String, Vec<u8>) =
+                            self.root.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                        ids.push(keys::session_id(bytes)?);
+                    }
+                    Ok(ids)
+                })
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().copied();
+            for id in page {
+                migrated += usize::from(
+                    self.transaction(|trx| async move {
+                        let Some(value) = trx.get(&self.session_key(id), false).await? else {
+                            return Ok(false);
+                        };
+                        if value.first() == Some(&2) {
+                            return Ok(false);
+                        }
+                        let session = self.hydrate_legacy_session(&trx, decode(&value)?).await?;
+                        self.write_session(&trx, &session)?;
+                        Ok(true)
+                    })
+                    .await?,
+                );
+            }
+        }
+        Ok(migrated)
     }
 
     /// Create an empty session and pin its registered image in the same transaction.
