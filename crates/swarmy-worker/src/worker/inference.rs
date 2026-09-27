@@ -1,7 +1,7 @@
 use super::{
-    BlobStore, Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord,
-    LeaseOwnerId, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord,
-    SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
+    Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord, LeaseOwnerId,
+    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord, SessionState,
+    SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
 pub(super) enum StepFailure<'a> {

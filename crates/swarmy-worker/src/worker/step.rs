@@ -1,9 +1,9 @@
 use super::inference::warn_on_route_fallback;
 use super::{
-    Action, Arc, BlobStore, Bus, Context, Event, FailoverAction, HeldLease, LiveFeed,
-    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SandboxArguments, SessionId, SessionRecord,
-    SessionState, Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid,
-    Worker, decode, encode,
+    Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, LiveFeed, MAX_SCAN_LIMIT,
+    MessageId, RequestId, Result, SandboxArguments, SessionId, SessionRecord, SessionState,
+    Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
+    encode,
 };
 
 /// State carried from claim through the final fenced write. The lease remains
@@ -153,9 +153,7 @@ impl Worker {
             turn,
         } = ctx;
         let snapshot = snapshot.as_ref().context("step snapshot missing")?;
-        let lease = lease.as_ref();
-        let turn = *turn;
-        let id = session.session_id;
+        let (lease, turn, id) = (lease.as_ref(), *turn, session.session_id);
         loop {
             if self
                 .interrupt_if_requested(&mut *session, lease, snapshot, &mut *events, turn)
