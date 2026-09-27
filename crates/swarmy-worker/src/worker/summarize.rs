@@ -588,7 +588,20 @@ pub(super) fn summary_request(
     settings: swarmy_llm::GenerationSettings,
 ) -> swarmy_llm::Request {
     let mut settings = settings;
-    settings.reasoning_effort = Some(swarmy_llm::ReasoningEffort::Low);
+    // Keep reasoning from eating the summary's output cap, but only lower an
+    // effort the session already asked for: a model without reasoning must
+    // not start receiving an effort parameter.
+    if matches!(
+        settings.reasoning_effort,
+        Some(
+            swarmy_llm::ReasoningEffort::Medium
+                | swarmy_llm::ReasoningEffort::High
+                | swarmy_llm::ReasoningEffort::Xhigh
+                | swarmy_llm::ReasoningEffort::Max
+        )
+    ) {
+        settings.reasoning_effort = Some(swarmy_llm::ReasoningEffort::Low);
+    }
     let cap = config
         .catalog
         .model(provider, &settings.model)
