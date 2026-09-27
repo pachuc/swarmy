@@ -1,8 +1,8 @@
 use super::*;
 use swarmy_bus::{Bus, Config, SubjectToken, WorkQueue};
 use swarmy_core::{
-    BashArguments, Event, LeaseOwnerId, RequestId, SessionId, SessionRecord, SessionState,
-    ToolCallId, ToolCallRecord, ToolJob, ToolResult,
+    BashArguments, Event, LeaseOwnerId, PlacementRecord, RequestId, SessionId, SessionRecord,
+    SessionState, ToolCallId, ToolCallRecord, ToolJob, ToolResult,
 };
 
 async fn dispatch(
@@ -100,20 +100,7 @@ async fn dispatch_arguments(
         )
         .await
         .unwrap();
-    let placement = if let Some(placement) = store.get_by_agent(agent).await.unwrap() {
-        placement
-    } else {
-        store
-            .place(
-                agent,
-                node,
-                jiff::Timestamp::now()
-                    .checked_add(Duration::from_secs(60))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-    };
+    let placement = dispatch_placement(store, agent, node).await;
     store
         .dispatch_placed_tool_jobs(id, &lease, std::slice::from_ref(&job), &placement)
         .await
@@ -122,6 +109,17 @@ async fn dispatch_arguments(
         .await
         .unwrap();
     job
+}
+
+/// Mirrors the placement choice in `hosting.rs` so recovery tests exercise node takeovers.
+async fn dispatch_placement(store: &Store, agent: AgentId, node: NodeId) -> PlacementRecord {
+    let now = jiff::Timestamp::now();
+    let expiry = now.checked_add(Duration::from_secs(60)).unwrap();
+    match store.get_by_agent(agent).await.unwrap() {
+        None => store.place(agent, node, expiry).await.unwrap(),
+        Some(old) if old.expires_at <= now => store.take_over(&old, node, expiry).await.unwrap(),
+        Some(old) => old,
+    }
 }
 
 async fn completed(
@@ -659,7 +657,7 @@ async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
     .expect("tool did not complete");
     let events = store.read_events(job.session_id, 1, 10).await.unwrap();
     let Event::ToolCallCompleted { result, .. } = &events[0] else {
-        panic!("missing result");
+        panic!("missing result: {events:?}");
     };
     result.clone()
 }
