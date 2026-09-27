@@ -10,7 +10,7 @@ impl Worker {
     pub(super) async fn execute_pending(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<bool> {
@@ -111,7 +111,7 @@ impl Worker {
     pub(super) async fn complete_store_tool(
         &self,
         session: &SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         request_id: RequestId,
         call: &ToolCallRecord,
     ) -> Result<Event> {
@@ -144,7 +144,7 @@ impl Worker {
     pub(super) async fn dispatch_calls(
         &self,
         session: &SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         calls: &[ToolCallRecord],
         turn: Option<MessageId>,
     ) -> Result<()> {
@@ -155,7 +155,7 @@ impl Worker {
     pub(super) async fn dispatch_pending(
         &self,
         session: &SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         jobs: Vec<ToolJob>,
         turn: Option<MessageId>,
     ) -> Result<()> {
@@ -166,7 +166,7 @@ impl Worker {
     async fn dispatch(
         &self,
         session: &SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         dispatch: Dispatch<'_>,
         turn: Option<MessageId>,
     ) -> Result<()> {

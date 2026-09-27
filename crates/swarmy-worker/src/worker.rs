@@ -80,8 +80,6 @@ impl HeldLeaseGuard<'_> {
     }
 }
 
-type ActiveLease = HeldLease;
-
 /// A resolved route step and its metering identity.
 struct ResolvedAttempt {
     provider: String,
@@ -209,7 +207,7 @@ impl Worker {
     async fn heartbeat(
         &self,
         id: SessionId,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         message: &WorkMessage<Nudge>,
     ) -> Result<()> {
         let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);

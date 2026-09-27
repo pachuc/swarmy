@@ -223,7 +223,7 @@ impl Worker {
     pub(super) async fn build_inference(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         preceding: &[Event],
         mut request: swarmy_llm::Request,
     ) -> Result<()> {
@@ -310,7 +310,7 @@ impl Worker {
         self.publish_inference(&job).await
     }
 
-    pub(super) async fn submit(&self, job: &InferenceJob, lease: &ActiveLease) -> Result<()> {
+    pub(super) async fn submit(&self, job: &InferenceJob, lease: &HeldLease) -> Result<()> {
         {
             let token = lease.lock().await;
             self.store

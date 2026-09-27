@@ -65,7 +65,7 @@ impl Worker {
     pub(super) async fn append(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         events: &mut Vec<Event>,
         batch: &[Event],
     ) -> Result<()> {
@@ -270,7 +270,7 @@ impl Worker {
     pub(super) async fn interrupt_if_requested(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
@@ -310,7 +310,7 @@ impl Worker {
         &self,
         session: &mut SessionRecord,
         turn: Option<MessageId>,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
     ) -> Result<bool> {
@@ -404,7 +404,7 @@ impl Worker {
     pub(super) async fn failover_or_park(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         seq: u64,
         error: &str,
         retry_at: Timestamp,
@@ -453,7 +453,7 @@ impl Worker {
     pub(super) async fn fold_results(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         message: swarmy_core::Message,
@@ -519,7 +519,7 @@ impl Worker {
     pub(super) async fn transition(
         &self,
         id: SessionId,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         state: SessionState,
     ) -> Result<()> {
         let mut token = lease.lock().await;
@@ -538,7 +538,7 @@ impl Worker {
     pub(super) async fn finish(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,

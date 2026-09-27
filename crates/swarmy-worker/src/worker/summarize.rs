@@ -31,7 +31,7 @@ impl Worker {
     pub(super) async fn summarize(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         mid_turn: Option<&Event>,
@@ -165,7 +165,7 @@ impl Worker {
     pub(super) async fn issue_summary(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         events: &[Event],
         job: &InferenceJob,
@@ -202,7 +202,7 @@ impl Worker {
     pub(super) async fn emit_pressure(
         &self,
         session: &mut SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         events: &mut Vec<Event>,
         input_tokens: u64,
         threshold: u64,
@@ -238,7 +238,7 @@ impl Worker {
     pub(super) async fn archive_summary(
         &self,
         session: &SessionRecord,
-        lease: &ActiveLease,
+        lease: &HeldLease,
         snapshot: &Snapshot,
         message: Option<&swarmy_core::Message>,
         events: &[Event],
@@ -371,7 +371,6 @@ impl Worker {
 /// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
-/// Summary output cap in tokens.
 const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 
 /// Rough token estimate for one message, chars divided by four like the Pi
