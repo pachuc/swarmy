@@ -217,7 +217,7 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
     assert!(matches!(
         store.renew_writer_lease(volume, &writer, expiry()).await,
         Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
+            swarmy_store::FenceError::PlacementMismatch
         ))
     ));
     check_stale_publication(store, volume, &writer, image).await;
@@ -269,7 +269,7 @@ async fn check_stale_publication(
             )
             .await,
         Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
+            swarmy_store::FenceError::PlacementMismatch
         ))
     ));
 }
