@@ -1,3 +1,4 @@
+use super::step::pending_tools;
 use super::*;
 
 impl Worker {
@@ -168,7 +169,7 @@ impl Worker {
                     }
                     result => result?,
                 };
-                *token = None;
+                token.release();
                 dispatched
             };
             self.kill("after_release");
@@ -211,7 +212,7 @@ impl Worker {
                     }
                     result => result?,
                 }
-                *token = None;
+                token.release();
             }
             self.kill("after_release");
             return self

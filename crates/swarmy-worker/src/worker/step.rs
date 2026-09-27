@@ -1,23 +1,35 @@
 use super::*;
 
+/// State carried from claim through the final fenced write. The lease remains
+/// owned here while the heartbeat holds a clone of its handle.
+pub(super) struct StepContext {
+    pub session: SessionRecord,
+    pub lease: Arc<HeldLease>,
+    pub snapshot: Option<Snapshot>,
+    pub events: Vec<Event>,
+    pub turn: Option<MessageId>,
+}
+
 impl Worker {
-    pub(super) async fn step(
-        &self,
-        mut session: SessionRecord,
-        turn: Option<MessageId>,
-        lease: &ActiveLease,
-        mut events: Vec<Event>,
-    ) -> Result<()> {
-        let id = session.session_id;
-        let Some(snapshot) = self
-            .prepare_step(&mut session, turn, lease, &mut events)
-            .await?
-        else {
+    pub(super) async fn step(&self, ctx: &mut StepContext) -> Result<()> {
+        let Some(snapshot) = self.prepare_step(ctx).await? else {
             return Ok(());
         };
+        ctx.snapshot = Some(snapshot);
+        let StepContext {
+            session,
+            lease,
+            snapshot,
+            events,
+            turn,
+        } = ctx;
+        let snapshot = snapshot.as_ref().context("step snapshot missing")?;
+        let lease = lease.as_ref();
+        let turn = *turn;
+        let id = session.session_id;
         loop {
             if self
-                .interrupt_if_requested(&mut session, lease, &snapshot, &mut events, turn)
+                .interrupt_if_requested(&mut *session, lease, &snapshot, &mut *events, turn)
                 .await?
             {
                 return Ok(());
@@ -36,7 +48,7 @@ impl Worker {
             {
                 Action::BuildInference(request) => {
                     return self
-                        .build_inference(&mut session, lease, &[], request)
+                        .build_inference(&mut *session, lease, &[], request)
                         .await;
                 }
                 Action::DispatchTools(calls) => {
@@ -62,10 +74,10 @@ impl Worker {
                             call,
                         })
                         .collect();
-                    self.append(&mut session, lease, &mut events, &batch)
+                    self.append(&mut *session, lease, &mut *events, &batch)
                         .await?;
                     if self
-                        .execute_pending(&mut session, lease, &mut events, turn)
+                        .execute_pending(&mut *session, lease, &mut *events, turn)
                         .await?
                     {
                         return Ok(());
@@ -73,7 +85,7 @@ impl Worker {
                 }
                 Action::FoldResults(message) => {
                     return self
-                        .fold_results(&mut session, lease, &snapshot, &mut events, message)
+                        .fold_results(&mut *session, lease, &snapshot, &mut *events, message)
                         .await;
                 }
                 Action::Wait => {
@@ -83,11 +95,11 @@ impl Worker {
                     }
                     if pending_tools(&events).is_empty() {
                         return self
-                            .finish(&mut session, lease, &snapshot, &mut events, turn)
+                            .finish(&mut *session, lease, &snapshot, &mut *events, turn)
                             .await;
                     }
                     if self
-                        .execute_pending(&mut session, lease, &mut events, turn)
+                        .execute_pending(&mut *session, lease, &mut *events, turn)
                         .await?
                     {
                         return Ok(());
@@ -95,20 +107,23 @@ impl Worker {
                 }
                 Action::EndTurn => {
                     return self
-                        .finish(&mut session, lease, &snapshot, &mut events, turn)
+                        .finish(&mut *session, lease, &snapshot, &mut *events, turn)
                         .await;
                 }
             }
         }
     }
 
-    pub(super) async fn prepare_step(
-        &self,
-        session: &mut SessionRecord,
-        turn: Option<MessageId>,
-        lease: &ActiveLease,
-        events: &mut Vec<Event>,
-    ) -> Result<Option<Snapshot>> {
+    pub(super) async fn prepare_step(&self, ctx: &mut StepContext) -> Result<Option<Snapshot>> {
+        let StepContext {
+            session,
+            lease,
+            events,
+            turn,
+            ..
+        } = ctx;
+        let lease = lease.as_ref();
+        let turn = *turn;
         let snapshot = self.load_history(session, events).await?;
         // Replaying the tail also fans out events written by the gateway or a caller,
         // and retries a publication interrupted by the previous worker's death.
@@ -159,13 +174,7 @@ impl Worker {
             session,
             lease,
             events,
-            &[Event::InferenceFailed {
-                seq: 0,
-                request_id,
-                error: "interrupted by operator".into(),
-                retryable: false,
-                retry_at: None,
-            }],
+            &[swarmy_core::interrupted_event(0, request_id)],
         )
         .await?;
         session.interrupt_requested = true;
@@ -308,7 +317,7 @@ impl Worker {
             FailoverAction::Park => {
                 warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = 0;
-                *lease.lock().await = None;
+                lease.release().await;
                 Ok(true)
             }
             // The failure was already handled before a restart or lease
@@ -399,7 +408,7 @@ impl Worker {
                 Timestamp::now(),
             )
             .await?;
-        *token = None;
+        token.release();
         Ok(())
     }
 
@@ -443,7 +452,7 @@ impl Worker {
                     )
                     .await;
                 if result.is_ok() {
-                    *token = None;
+                    token.release();
                 }
                 result
             };
@@ -464,13 +473,7 @@ impl Worker {
                         session,
                         lease,
                         events,
-                        &[Event::InferenceFailed {
-                            seq: 0,
-                            request_id,
-                            error: "interrupted by operator".into(),
-                            retryable: false,
-                            retry_at: None,
-                        }],
+                        &[swarmy_core::interrupted_event(0, request_id)],
                     )
                     .await?;
                     session.interrupt_requested = true;
@@ -499,19 +502,6 @@ pub(super) fn fold_id(id: SessionId, step: u64) -> MessageId {
     bytes.copy_from_slice(&request.as_bytes()[..16]);
     MessageId::from_ulid(Ulid::from_bytes(bytes))
 }
-impl Worker {}
-pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
-    events.iter().rev().find_map(|event| match event {
-        Event::InferenceCompleted {
-            provider,
-            model,
-            usage,
-            ..
-        } => Some((provider.clone(), model.clone(), usage.input_tokens)),
-        _ => None,
-    })
-}
-
 pub(super) fn pending_inference(events: &[Event]) -> Option<RequestId> {
     events
         .iter()
@@ -533,4 +523,3 @@ pub(super) fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)
         None
     }).collect()
 }
-impl Worker {}

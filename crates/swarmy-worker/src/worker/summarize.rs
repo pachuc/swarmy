@@ -352,7 +352,7 @@ impl Worker {
                     &tail,
                 )
                 .await?;
-            *token = None;
+            token.release();
             self.publish_events(session.session_id, &[archived_event])
                 .await?;
             // The successor shares the old session's runnable partition; wake
@@ -361,7 +361,7 @@ impl Worker {
             self.wake_successor(session.session_id, successor).await;
             return Ok(true);
         };
-        *token = None;
+        token.release();
         self.publish_events(session.session_id, &[archived]).await?;
         Ok(true)
     }
@@ -429,6 +429,23 @@ const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 
 /// Rough token estimate for one message, chars divided by four like the Pi
 /// and `OpenCode` heuristics. Images count as a fixed 4,800 chars.
+/// Last inference usage from the events the worker already holds, with no
+/// store reads. The gateway records provider, model, and usage on every
+/// `InferenceCompleted` event. The mid-turn hot path uses this so folds below
+/// pressure need no transaction and no read; only folds at or above pressure
+/// touch the store.
+pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
+    events.iter().rev().find_map(|event| match event {
+        Event::InferenceCompleted {
+            provider,
+            model,
+            usage,
+            ..
+        } => Some((provider.clone(), model.clone(), usage.input_tokens)),
+        _ => None,
+    })
+}
+
 pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
     let mut chars = 0;
     for part in &message.parts {
@@ -621,10 +638,3 @@ pub(super) fn summary_fits(
     let estimated = chars.div_ceil(4);
     estimated.saturating_add(output) <= context
 }
-
-/// Last inference usage from the events the worker already holds, with no
-/// store reads. The gateway records provider, model, and usage on every
-/// `InferenceCompleted` event. The mid-turn hot path uses this so folds below
-/// pressure need no transaction and no read; only folds at or above pressure
-/// touch the store.
-impl Worker {}

@@ -22,7 +22,65 @@ use ulid::Ulid;
 
 use crate::config::Config;
 
-type ActiveLease = Mutex<Option<Lease>>;
+/// A step lease shared with its heartbeat. Release is explicit only after a
+/// successful fenced store transition.
+struct HeldLease(Mutex<Option<Lease>>);
+
+impl HeldLease {
+    fn new(lease: Lease) -> Self {
+        Self(Mutex::new(Some(lease)))
+    }
+
+    async fn lock(&self) -> HeldLeaseGuard<'_> {
+        HeldLeaseGuard(self.0.lock().await)
+    }
+
+    async fn is_held(&self) -> bool {
+        self.0.lock().await.is_some()
+    }
+
+    async fn release(&self) {
+        self.0.lock().await.take();
+    }
+
+    async fn renew(
+        &self,
+        store: &Store,
+        id: SessionId,
+        duration: std::time::Duration,
+    ) -> Result<()> {
+        let mut token = self.0.lock().await;
+        if let Some(current) = token.as_ref() {
+            let now = Timestamp::now();
+            *token = Some(
+                store
+                    .renew_lease(id, current, now, now.checked_add(duration)?)
+                    .await?,
+            );
+        }
+        Ok(())
+    }
+}
+
+struct HeldLeaseGuard<'a>(tokio::sync::MutexGuard<'a, Option<Lease>>);
+impl std::ops::Deref for HeldLeaseGuard<'_> {
+    type Target = Option<Lease>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for HeldLeaseGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl HeldLeaseGuard<'_> {
+    fn release(&mut self) {
+        self.0.take();
+    }
+}
+
+type ActiveLease = HeldLease;
 
 /// One inference attempt on a resolved route step: the provider and entry
 /// the gateway must use, the route that selected them, and the step index
@@ -131,13 +189,20 @@ impl Worker {
             self.store.observe_turn_stage(event);
         }
         self.kill("after_claim");
-        let lease = Mutex::new(Some(lease));
+        let mut ctx = step::StepContext {
+            session: session.clone(),
+            lease: Arc::new(HeldLease::new(lease)),
+            snapshot: None,
+            events,
+            turn,
+        };
+        let heartbeat_lease = ctx.lease.clone();
         tokio::select! {
-            result = self.step(session.clone(), turn, &lease, events) => {
+            result = self.step(&mut ctx) => {
                 if result.is_err() { self.placements.invalidate(session.agent_id).await; }
                 result?;
             },
-            result = self.heartbeat(id, &lease, message) => result?,
+            result = self.heartbeat(id, &heartbeat_lease, message) => result?,
         }
         message.acknowledge().await?;
         Ok(())
@@ -155,19 +220,10 @@ impl Worker {
         loop {
             ticks.tick().await;
             message.extend_deadline().await?;
-            let mut token = lease.lock().await;
-            if let Some(current) = token.as_ref() {
-                let now = Timestamp::now();
-                *token = Some(
-                    self.store
-                        .renew_lease(
-                            id,
-                            current,
-                            now,
-                            now.checked_add(self.config.lease_duration)?,
-                        )
-                        .await?,
-                );
+            if lease.is_held().await {
+                lease
+                    .renew(&self.store, id, self.config.lease_duration)
+                    .await?;
             }
         }
     }
@@ -302,7 +358,11 @@ mod recovery;
 mod step;
 mod summarize;
 mod tools;
-use self::{inference::*, recovery::*, step::*, summarize::*, tools::*};
+#[cfg(test)]
+use self::{
+    inference::{apply_display_tools, omit_unsupported_images},
+    summarize::{estimate_message_tokens, select_side_tail},
+};
 
 #[cfg(test)]
 mod image_tests {

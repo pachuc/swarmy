@@ -1,5 +1,10 @@
 use super::*;
 
+pub(super) enum StepFailure<'a> {
+    Publication(&'a swarmy_bus::Error),
+    Unserved { provider: &'a str, retryable: bool },
+}
+
 impl Worker {
     pub(super) async fn prepare_request(
         &self,
@@ -55,28 +60,8 @@ impl Worker {
                 .await;
         }
         let selection = session.inference.resolve(&defaults);
-        // A first attempt without any route assignment uses the implicit
-        // single-step chain and the gateway pool picks the entry, so it
-        // skips the snapshot read entirely. Later attempts resolve: a
-        // failover may have moved the chain, and only the snapshot knows
-        // which step serves next.
-        let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
-            let snapshot = self.route_snapshot(session).await?;
-            warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
-            snapshot
-        } else {
-            swarmy_store::RouteSnapshot {
-                name: None,
-                steps: vec![swarmy_store::RouteStepStatus {
-                    provider: selection.provider.clone(),
-                    label: None,
-                    model: None,
-                    open_until: None,
-                    reason: None,
-                }],
-                skipped: Vec::new(),
-            }
-        };
+        let snapshot = self.route_snapshot(session).await?;
+        warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
         self.finish_prepare(
             session,
             request,
@@ -309,7 +294,7 @@ impl Worker {
                     }),
                 )
                 .await?;
-            *token = None;
+            token.release();
             event
         };
         session.route_step = attempt.route_step;
@@ -362,7 +347,8 @@ impl Worker {
             .await;
         if let Err(error) = published {
             if error.permanent_publish_failure() {
-                self.fail_publication(job, &error).await?;
+                self.fail_step(job, StepFailure::Publication(&error))
+                    .await?;
             } else {
                 return Err(error.into());
             }
@@ -370,11 +356,11 @@ impl Worker {
         Ok(())
     }
 
-    pub(super) async fn fail_publication(
+    pub(super) async fn fail_step(
         &self,
         job: &InferenceJob,
-        error: &swarmy_bus::Error,
-    ) -> Result<()> {
+        kind: StepFailure,
+    ) -> Result<Option<Event>> {
         let now = Timestamp::now();
         let claim = swarmy_store::InferenceClaim {
             session_id: job.session_id,
@@ -382,43 +368,62 @@ impl Worker {
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             expires_at: now.checked_add(std::time::Duration::from_secs(30))?,
         };
-        if self.store.start_inference(&claim, now).await? {
-            let session = self
-                .store
-                .fetch_session(job.session_id)
-                .await?
-                .context("session missing")?;
-            let event = Event::InferenceFailed {
-                seq: session
-                    .head_seq
-                    .checked_add(1)
-                    .context("sequence overflow")?,
-                request_id: job.request_id,
-                error: error.to_string(),
-                retryable: false,
-                retry_at: None,
-            };
-            if self
-                .store
-                .complete_inference(
-                    &swarmy_store::InferenceCompletion {
-                        claim,
-                        expected_head: session.head_seq,
-                        event: event.clone(),
-                        now,
-                        entry: None,
-                        entry_kind: None,
-                        quota_remaining: std::collections::BTreeMap::new(),
-                        quota_resets: std::collections::BTreeMap::new(),
-                    },
-                    &(),
-                )
-                .await?
-            {
-                self.publish_events(job.session_id, &[event]).await?;
-            }
+        if !self.store.start_inference(&claim, now).await? {
+            return Ok(None);
         }
-        Ok(())
+        let session = self
+            .store
+            .fetch_session(job.session_id)
+            .await?
+            .context("session missing")?;
+        let (error, retryable, retry_at) = match kind {
+            StepFailure::Publication(error) => (error.to_string(), false, None),
+            StepFailure::Unserved {
+                provider,
+                retryable,
+            } => (
+                format!(
+                    "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
+                ),
+                retryable,
+                retryable
+                    .then(|| now.checked_add(self.config.gateway_wait))
+                    .transpose()?,
+            ),
+        };
+        let event = Event::InferenceFailed {
+            seq: session
+                .head_seq
+                .checked_add(1)
+                .context("sequence overflow")?,
+            request_id: job.request_id,
+            error,
+            retryable,
+            retry_at,
+        };
+        let committed = self
+            .store
+            .complete_inference(
+                &swarmy_store::InferenceCompletion {
+                    claim,
+                    expected_head: session.head_seq,
+                    event: event.clone(),
+                    now,
+                    entry: None,
+                    entry_kind: None,
+                    quota_remaining: std::collections::BTreeMap::new(),
+                    quota_resets: std::collections::BTreeMap::new(),
+                },
+                &(),
+            )
+            .await?;
+        if committed {
+            self.publish_events(job.session_id, std::slice::from_ref(&event))
+                .await?;
+            Ok(Some(event))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(super) async fn prompt_context(
@@ -520,4 +525,3 @@ pub(super) fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
         }
     }
 }
-impl Worker {}

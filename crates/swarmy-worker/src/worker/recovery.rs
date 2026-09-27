@@ -1,3 +1,4 @@
+use super::inference::StepFailure;
 use super::*;
 
 impl Worker {
@@ -13,75 +14,38 @@ impl Worker {
         if retryable && (provider == "fake" || self.store.gateway_serves(provider).await?) {
             return Ok(false);
         }
-        let now = Timestamp::now();
-        let claim = swarmy_store::InferenceClaim {
-            session_id: job.session_id,
-            request_id: job.request_id,
-            owner: LeaseOwnerId::from_ulid(Ulid::generate()),
-            expires_at: now.checked_add(std::time::Duration::from_secs(30))?,
-        };
-        if self.store.start_inference(&claim, now).await? {
-            let session = self
-                .store
-                .fetch_session(job.session_id)
-                .await?
-                .context("session missing")?;
-            let event = Event::InferenceFailed {
-                seq: session
-                    .head_seq
-                    .checked_add(1)
-                    .context("sequence overflow")?,
-                request_id: job.request_id,
-                error: format!(
-                    "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
-                ),
-                retryable,
-                retry_at: retryable
-                    .then(|| now.checked_add(self.config.gateway_wait))
-                    .transpose()?,
-            };
-            let committed = self
-                .store
-                .complete_inference(
-                    &swarmy_store::InferenceCompletion {
-                        claim,
-                        expected_head: session.head_seq,
-                        event: event.clone(),
-                        now,
-                        entry: None,
-                        entry_kind: None,
-                        quota_remaining: std::collections::BTreeMap::new(),
-                        quota_resets: std::collections::BTreeMap::new(),
+        if let Some(event) = self
+            .fail_step(
+                job,
+                StepFailure::Unserved {
+                    provider,
+                    retryable,
+                },
+            )
+            .await?
+        {
+            if let Some(turn) = job
+                .request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == swarmy_core::MessageRole::User)
+                .map(|message| message.id)
+            {
+                self.store.observe_turn_metric(
+                    job.session_id,
+                    turn,
+                    swarmy_store::MetricPatch::Wait {
+                        request_id: job.request_id.to_string(),
+                        kind: swarmy_store::WaitKind::MissingGateway,
                     },
-                    &(),
-                )
-                .await?;
-            if committed {
-                self.publish_events(job.session_id, std::slice::from_ref(&event))
-                    .await?;
-                if let Some(turn) = job
-                    .request
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|message| message.role == swarmy_core::MessageRole::User)
-                    .map(|message| message.id)
-                {
+                );
+                if !retryable && let Event::InferenceFailed { error, .. } = event {
                     self.store.observe_turn_metric(
                         job.session_id,
                         turn,
-                        swarmy_store::MetricPatch::Wait {
-                            request_id: job.request_id.to_string(),
-                            kind: swarmy_store::WaitKind::MissingGateway,
-                        },
+                        swarmy_store::MetricPatch::Error(error),
                     );
-                    if !retryable && let Event::InferenceFailed { error, .. } = event {
-                        self.store.observe_turn_metric(
-                            job.session_id,
-                            turn,
-                            swarmy_store::MetricPatch::Error(error),
-                        );
-                    }
                 }
             }
         }
@@ -162,7 +126,8 @@ impl Worker {
                 .await;
             if let Err(error) = published {
                 if error.permanent_publish_failure() {
-                    self.fail_publication(&job, &error).await?;
+                    self.fail_step(&job, StepFailure::Publication(&error))
+                        .await?;
                 } else {
                     return Err(error.into());
                 }
