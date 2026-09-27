@@ -6,6 +6,32 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         .model
         .split_once('/')
         .context("expected PROVIDER/MODEL")?;
+    // Scripted probes read a local fixture; keep them in the separately installed
+    // provider helper. Real providers always resolve credentials on the API host.
+    if provider == "fake" {
+        let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+        let helper = if sibling.is_file() {
+            sibling.into_os_string()
+        } else {
+            "swarmy-auth".into()
+        };
+        let mut process = std::process::Command::new(helper);
+        if json {
+            process.arg("--json");
+        }
+        process.arg("probe").arg(&args.model);
+        if let Some(effort) = args.effort {
+            process.arg("--effort").arg(effort.to_string());
+        }
+        if args.tools {
+            process.arg("--tools");
+        }
+        let status = process
+            .status()
+            .context("swarmy-auth helper unavailable; install swarmy-devtools")?;
+        anyhow::ensure!(status.success(), "scripted probe failed: {status}");
+        return Ok(());
+    }
     let (client, endpoint) = crate::api_client::connect()?;
     server_probe(
         &client,

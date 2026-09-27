@@ -4316,6 +4316,7 @@ dependencies = [
  "async-trait",
  "clap",
  "crossterm",
+ "futures-util",
  "jiff",
  "serde_json",
  "swarmy-api-types",
