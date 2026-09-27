@@ -669,7 +669,3 @@ fn append_detail(details: &mut Vec<Value>, detail: &Value) {
     details.push(detail.clone());
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
