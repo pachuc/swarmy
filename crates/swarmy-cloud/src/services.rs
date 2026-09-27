@@ -123,7 +123,7 @@ impl<'a> Options<'a> {
     }
 
     /// The TOML uploaded to the node's `.swarmy/config.toml`.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "remote"))]
     pub(crate) fn config_toml(&self) -> &str {
         &self.config
     }
