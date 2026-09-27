@@ -510,8 +510,18 @@ async fn scratch_restart_and_delete(
     scratch_root: &Path,
 ) {
     node.stop().await;
+    // Make the first sweep after restart enter its pressure path even on an
+    // otherwise empty test filesystem. Fresh scratch must still be retained.
+    node.settings.sandbox.scratch_high_water = 1;
+    node.settings.sandbox.scratch_low_water = 0;
+    std::fs::write(
+        node.root.path().join(".swarmy/config.toml"),
+        node.settings.to_toml().unwrap(),
+    )
+    .unwrap();
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         std::fs::read_to_string(scratch_root.join("0/cache")).unwrap(),
         "cargo\nmore\n"
