@@ -17,8 +17,7 @@ pub struct GatewayProvider {
 
 impl Store {
     pub(crate) fn session_inference_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("session_inference", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_inference(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Advertise provider availability; expired advertisements are ignored.
@@ -32,7 +31,7 @@ impl Store {
         self.transaction(|trx| async move {
             write(
                 &trx,
-                &self.root.pack(&("gateway_provider", provider)),
+                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
                 record,
             )
         })
@@ -51,7 +50,7 @@ impl Store {
         self.transaction(|trx| async move {
             write(
                 &trx,
-                &self.root.pack(&("gateway_provider_entry", provider, label)),
+                &crate::keys::Keys::new(&self.root).gateway_provider_entry(&(provider, label)),
                 record,
             )
         })
@@ -68,7 +67,7 @@ impl Store {
         self.transaction(|trx| async move {
             read(
                 &trx,
-                &self.root.pack(&("gateway_provider_entry", provider, label)),
+                &crate::keys::Keys::new(&self.root).gateway_provider_entry(&(provider, label)),
             )
             .await
         })
@@ -82,7 +81,11 @@ impl Store {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn gateway_provider(&self, provider: &str) -> Result<Option<GatewayProvider>> {
         self.transaction(|trx| async move {
-            read(&trx, &self.root.pack(&("gateway_provider", provider))).await
+            read(
+                &trx,
+                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
+            )
+            .await
         })
         .await
     }
@@ -92,11 +95,12 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn gateway_serves(&self, provider: &str) -> Result<bool> {
         self.transaction(|trx| async move {
-            Ok(
-                read::<GatewayProvider>(&trx, &self.root.pack(&("gateway_provider", provider)))
-                    .await?
-                    .is_some_and(|record| record.expires_at > Timestamp::now()),
+            Ok(read::<GatewayProvider>(
+                &trx,
+                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
             )
+            .await?
+            .is_some_and(|record| record.expires_at > self.now()))
         })
         .await
     }

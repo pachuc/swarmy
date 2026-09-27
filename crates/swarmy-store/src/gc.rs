@@ -12,8 +12,8 @@ impl Store {
     /// Rejects a live collector, invalid expiry, and transaction failures.
     pub async fn acquire_gc_lease(&self, run: &GcRun, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let now = Timestamp::now();
-            let key = self.root.pack(&("gc_lease",));
+            let now = self.now();
+            let key = crate::keys::Keys::new(&self.root).gc_lease(&());
             if expires_at <= now
                 || read::<Lease>(&trx, &key)
                     .await?
@@ -21,7 +21,7 @@ impl Store {
             {
                 return Err(StoreError::LeaseMismatch);
             }
-            let sequence_key = self.root.pack(&("gc_sequence",));
+            let sequence_key = crate::keys::Keys::new(&self.root).gc_sequence(&());
             let seq = read::<u64>(&trx, &sequence_key)
                 .await?
                 .unwrap_or(0)
@@ -45,9 +45,9 @@ impl Store {
     /// Rejects expired or replaced leases and transaction failures.
     pub async fn renew_gc_lease(&self, expected: &Lease, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let key = self.root.pack(&("gc_lease",));
+            let key = crate::keys::Keys::new(&self.root).gc_lease(&());
             if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
+                || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
                 return Err(StoreError::LeaseMismatch);
@@ -67,9 +67,9 @@ impl Store {
     /// Rejects expired or replaced tokens, mismatched run ids, and transaction failures.
     pub async fn finish_gc_run(&self, expected: &Lease, run: &GcRun) -> Result<()> {
         self.transaction(|trx| async move {
-            let key = self.root.pack(&("gc_lease",));
+            let key = crate::keys::Keys::new(&self.root).gc_lease(&());
             if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
+                || expected.expires_at <= self.now()
                 || expected.owner != run.owner
             {
                 return Err(StoreError::LeaseMismatch);
@@ -113,8 +113,7 @@ impl Store {
     }
 
     fn gc_run_key(&self, owner: LeaseOwnerId) -> Vec<u8> {
-        self.root
-            .pack(&("gc_run", owner.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).gc_run(&(owner.as_ulid().to_bytes().as_slice()))
     }
 }
 
@@ -126,21 +125,19 @@ impl Store {
     /// or a storage error. The uploader can retry after the deletion finishes.
     pub async fn protect_reused_chunk(&self, hash: swarmy_core::ContentHash) -> Result<()> {
         self.transaction(|trx| async move {
-            let deleting = self.root.pack(&("gc_deleting", hash.0.as_slice()));
+            let deleting = crate::keys::Keys::new(&self.root).gc_deleting(&(hash.0.as_slice()));
             if let Some(owner) = read::<LeaseOwnerId>(&trx, &deleting).await?
-                && read::<Lease>(&trx, &self.root.pack(&("gc_lease",)))
+                && read::<Lease>(&trx, &crate::keys::Keys::new(&self.root).gc_lease(&()))
                     .await?
-                    .is_some_and(|lease| {
-                        lease.owner == owner && lease.expires_at > Timestamp::now()
-                    })
+                    .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
                 return Err(StoreError::LeaseMismatch);
             }
             trx.clear(&deleting);
             write(
                 &trx,
-                &self.root.pack(&("chunk_reused", hash.0.as_slice())),
-                &Timestamp::now(),
+                &crate::keys::Keys::new(&self.root).chunk_reused(&(hash.0.as_slice())),
+                &self.now(),
             )
         })
         .await
@@ -159,14 +156,14 @@ impl Store {
         dry_run: bool,
     ) -> Result<Vec<ContentHash>> {
         self.transaction(|trx| async move {
-            if !read::<Lease>(&trx, &self.root.pack(&("gc_lease",)))
+            if !read::<Lease>(&trx, &crate::keys::Keys::new(&self.root).gc_lease(&()))
                 .await?
-                .is_some_and(|lease| lease.owner == owner && lease.expires_at > Timestamp::now())
+                .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
                 return Err(StoreError::LeaseMismatch);
             }
             let reuse = try_join_all(hashes.iter().map(|hash| async {
-                let key = self.root.pack(&("chunk_reused", hash.0.as_slice()));
+                let key = crate::keys::Keys::new(&self.root).chunk_reused(&(hash.0.as_slice()));
                 read::<Timestamp>(&trx, &key).await
             }))
             .await?;
@@ -178,7 +175,7 @@ impl Store {
                 if !dry_run {
                     write(
                         &trx,
-                        &self.root.pack(&("gc_deleting", hash.0.as_slice())),
+                        &crate::keys::Keys::new(&self.root).gc_deleting(&(hash.0.as_slice())),
                         &owner,
                     )?;
                 }
@@ -199,7 +196,7 @@ impl Store {
     ) -> Result<()> {
         self.transaction(|trx| async move {
             let reservations = try_join_all(hashes.iter().map(|hash| async {
-                let key = self.root.pack(&("gc_deleting", hash.0.as_slice()));
+                let key = crate::keys::Keys::new(&self.root).gc_deleting(&(hash.0.as_slice()));
                 read::<LeaseOwnerId>(&trx, &key).await
             }))
             .await?;
@@ -207,9 +204,9 @@ impl Store {
                 if reservation != Some(owner) {
                     return Err(StoreError::LeaseMismatch);
                 }
-                let key = self.root.pack(&("gc_deleting", hash.0.as_slice()));
+                let key = crate::keys::Keys::new(&self.root).gc_deleting(&(hash.0.as_slice()));
                 trx.clear(&key);
-                trx.clear(&self.root.pack(&("chunk_reused", hash.0.as_slice())));
+                trx.clear(&crate::keys::Keys::new(&self.root).chunk_reused(&(hash.0.as_slice())));
             }
             Ok(())
         })

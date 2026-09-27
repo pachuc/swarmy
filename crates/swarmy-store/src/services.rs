@@ -48,8 +48,7 @@ pub struct ServiceHealth {
 
 impl Store {
     fn service_key(&self, role: &ServiceRole, id: &str) -> Vec<u8> {
-        self.root
-            .pack(&("service_heartbeat", format!("{role:?}"), id))
+        crate::keys::Keys::new(&self.root).service_heartbeat(&(format!("{role:?}"), id))
     }
 
     /// Refresh an instance's health. Older delayed writes cannot replace newer health.
@@ -77,7 +76,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn list_services(&self) -> Result<Vec<ServiceHealth>> {
-        self.list_services_at(Timestamp::now()).await
+        self.list_services_at(self.now()).await
     }
 
     /// Evaluate health at a supplied time, useful for deterministic monitoring tests.
@@ -88,7 +87,13 @@ impl Store {
             .transaction(|trx| async move {
                 let mut result = Vec::new();
                 for (space, node) in [("service_heartbeat", false), ("node", true)] {
-                    let range = self.root.subspace(&(space,)).range();
+                    let range = match space {
+                        "service_heartbeat" => crate::keys::Keys::new(&self.root)
+                            .service_heartbeat_space(&())
+                            .range(),
+                        "node" => crate::keys::Keys::new(&self.root).node_space(&()).range(),
+                        _ => unreachable!("unknown service key family"),
+                    };
                     let values: Vec<_> = trx
                         .get_ranges_keyvalues(RangeOption::from(range), false)
                         .map_ok(|kv| kv.value().to_vec())
@@ -132,7 +137,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn expire_services(&self) -> Result<usize> {
-        self.expire_services_at(Timestamp::now()).await
+        self.expire_services_at(self.now()).await
     }
 
     /// Expire at a supplied time for deterministic tests.
@@ -143,7 +148,9 @@ impl Store {
             .checked_sub(jiff::Span::new().seconds(SERVICE_EXPIRE_SECONDS))
             .unwrap_or(Timestamp::MIN);
         self.transaction(|trx| async move {
-            let range = self.root.subspace(&("service_heartbeat",)).range();
+            let range = crate::keys::Keys::new(&self.root)
+                .service_heartbeat_space(&())
+                .range();
             let values: Vec<_> = trx
                 .get_ranges_keyvalues(RangeOption::from(range), false)
                 .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))

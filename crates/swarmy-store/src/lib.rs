@@ -38,7 +38,8 @@ mod gc;
 mod leases;
 mod routes;
 pub use routes::{
-    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
+    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteSnapshot,
+    RouteStepStatus,
 };
 mod nodes;
 pub mod objects;
@@ -307,6 +308,7 @@ impl From<&StoredSession> for StoredSessionV2 {
 pub struct Store {
     db: Arc<Database>,
     root: Subspace,
+    clock: Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>,
     blobs: Arc<dyn BlobStore>,
     images: session_images::ImageCache,
     /// Logical store transactions started through [`Store::transaction`].
@@ -342,6 +344,7 @@ impl Store {
         Ok(Self {
             db,
             root: Subspace::from_bytes(prefix),
+            clock: Arc::new(jiff::Timestamp::now),
             images: Arc::default(),
             blobs,
             transactions: Arc::default(),
@@ -355,11 +358,26 @@ impl Store {
         Self {
             db,
             root,
+            clock: Arc::new(jiff::Timestamp::now),
             blobs,
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
         }
+    }
+
+    /// Use a deterministic clock for lease and expiry tests.
+    #[must_use]
+    pub fn with_clock(
+        mut self,
+        clock: impl Fn() -> jiff::Timestamp + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = Arc::new(clock);
+        self
+    }
+
+    pub(crate) fn now(&self) -> jiff::Timestamp {
+        (self.clock)()
     }
 
     /// Logical store transactions started so far. Tests use it to compare
@@ -529,8 +547,8 @@ impl Store {
     }
 
     fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
-        self.root
-            .pack(&("session_chunk", id.as_ulid().to_bytes().as_slice(), index))
+        crate::keys::Keys::new(&self.root)
+            .session_chunk(&(id.as_ulid().to_bytes().as_slice(), index))
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
@@ -619,12 +637,8 @@ impl Store {
         if bytes.len() > SESSION_MAX_BYTES {
             return Err(StoreError::TooLarge);
         }
-        let (begin, end) = self
-            .root
-            .subspace(&(
-                "session_chunk",
-                session.session_id.as_ulid().to_bytes().as_slice(),
-            ))
+        let (begin, end) = crate::keys::Keys::new(&self.root)
+            .session_chunk_space(&(session.session_id.as_ulid().to_bytes().as_slice(),))
             .range();
         trx.clear_range(&begin, &end);
         if bytes.len() > INLINE_LIMIT {
@@ -673,7 +687,9 @@ impl Store {
         loop {
             let page: Vec<(SessionId, bool)> = self
                 .transaction(|trx| async move {
-                    let (mut begin, end) = self.root.subspace(&("session",)).range();
+                    let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                        .session_space(&())
+                        .range();
                     if let Some(id) = after {
                         begin = self.session_key(id);
                         begin.push(0);
@@ -828,7 +844,9 @@ impl Store {
         check_limit(limit)?;
         let stored = self
             .transaction(|trx| async move {
-                let (mut begin, end) = self.root.subspace(&("session",)).range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                    .session_space(&())
+                    .range();
                 if let Some(id) = after {
                     begin = self.session_key(id);
                     begin.push(0);
@@ -927,7 +945,7 @@ impl Store {
         if value.len() > MAX_BATCH_BYTES {
             return Err(StoreError::TooLarge);
         }
-        let replay_key = self.root.pack(&("api_append", key));
+        let replay_key = crate::keys::Keys::new(&self.root).api_append(&(key));
         self.transaction(|trx| {
             let replay_key = &replay_key;
             let value = &value;
@@ -945,17 +963,12 @@ impl Store {
                 if session.state != SessionState::Idle {
                     return Err(StoreError::InvalidState);
                 }
-                trx.set(&self.event_space(id).pack(&(head,)), value);
+                trx.set(&self.event_key(id, head), value);
                 write(&trx, &self.turn_key(id), &message.id)?;
                 write(&trx, replay_key, &head)?;
                 session.head_seq = head;
-                self.transition(
-                    &trx,
-                    session,
-                    SessionState::Runnable,
-                    jiff::Timestamp::now(),
-                )
-                .await?;
+                self.transition(&trx, session, SessionState::Runnable, self.now())
+                    .await?;
                 Ok((head, true))
             }
         })
@@ -978,7 +991,7 @@ impl Store {
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
             let mut event = event.clone();
             event.set_seq(seq);
-            let key = self.event_space(id).pack(&(seq,));
+            let key = self.event_key(id, seq);
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
             if size > MAX_BATCH_BYTES {
@@ -1021,13 +1034,8 @@ impl Store {
                 }
                 session.head_seq = head;
                 if wake {
-                    self.transition(
-                        &trx,
-                        session,
-                        SessionState::Runnable,
-                        jiff::Timestamp::now(),
-                    )
-                    .await
+                    self.transition(&trx, session, SessionState::Runnable, self.now())
+                        .await
                 } else {
                     self.write_session(&trx, &session)
                 }
@@ -1045,7 +1053,7 @@ impl Store {
         let values = self
             .transaction(|trx| async move {
                 let space = self.event_space(id);
-                let mut begin = space.pack(&(after,));
+                let mut begin = self.event_key(id, after);
                 begin.push(0);
                 scan(&trx, (begin, space.range().1), limit).await
             })
@@ -1083,14 +1091,13 @@ impl Store {
     }
 
     fn snapshot_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        self.root
-            .pack(&("snapshot", id.as_ulid().to_bytes().as_slice(), seq))
+        crate::keys::Keys::new(&self.root).snapshot(&(id.as_ulid().to_bytes().as_slice(), seq))
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_idempotency(&self, id: RequestId) -> Result<Option<IdempotencyRecord>> {
-        self.get_payload(self.root.pack(&("idem", id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())))
             .await
     }
 
@@ -1099,15 +1106,18 @@ impl Store {
     /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
-        self.put_payload(self.root.pack(&("idem", id.as_bytes().as_slice())), record)
-            .await
+        self.put_payload(
+            crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())),
+            record,
+        )
+        .await
     }
 
     /// # Errors
     /// Returns storage or blob upload errors.
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
         self.put_payload(
-            self.root.pack(&("inflight", id.as_bytes().as_slice())),
+            crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())),
             record,
         )
         .await
@@ -1116,7 +1126,7 @@ impl Store {
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
-        self.get_payload(self.root.pack(&("inflight", id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())))
             .await
     }
 
@@ -1124,7 +1134,7 @@ impl Store {
     /// Returns transaction errors.
     pub async fn clear_inflight(&self, id: RequestId) -> Result<()> {
         self.transaction(|trx| async move {
-            trx.clear(&self.root.pack(&("inflight", id.as_bytes().as_slice())));
+            trx.clear(&crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())));
             Ok(())
         })
         .await

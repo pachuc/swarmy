@@ -18,7 +18,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<bool> {
-        let Some(bytes) = trx.get(&self.event_space(id).pack(&(seq,)), false).await? else {
+        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
             return Ok(false);
         };
         let event: Event = self.hydrate(&bytes).await?;
@@ -29,8 +29,8 @@ impl Store {
     }
 
     pub(crate) fn interrupt_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("interrupt_requested", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root)
+            .interrupt_requested(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Request the current turn to end, or finish a parked inference atomically.
@@ -58,7 +58,7 @@ impl Store {
                             .await?
                             .ok_or(StoreError::Corrupt)?
                     };
-                    self.append_interrupted(&trx, session, request_id, Timestamp::now())
+                    self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
                     trx.clear(&self.wait_due_key(id, wait.wake_at));
                     trx.clear(&self.wait_key(id));
@@ -105,7 +105,7 @@ impl Store {
                             .ok_or(StoreError::SequenceOverflow)?,
                     ))
             };
-            self.append_interrupted(&trx, session, request_id, Timestamp::now())
+            self.append_interrupted(&trx, session, request_id, self.now())
                 .await?;
             if let Some(wait) = read::<crate::InferenceWait>(&trx, &self.wait_key(id)).await? {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
@@ -122,7 +122,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<Option<RequestId>> {
-        let Some(bytes) = trx.get(&self.event_space(id).pack(&(seq,)), false).await? else {
+        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
             return Ok(None);
         };
         let event: Event = match decode::<StoredValue>(&bytes)? {
@@ -156,7 +156,7 @@ impl Store {
             retry_at: None,
         };
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
-        trx.set(&self.event_space(session.session_id).pack(&(head,)), &value);
+        trx.set(&self.event_key(session.session_id, head), &value);
         session.head_seq = head;
         session.interrupt_requested = false;
         self.transition(trx, session, SessionState::Idle, now).await

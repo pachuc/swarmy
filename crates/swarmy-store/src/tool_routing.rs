@@ -16,9 +16,8 @@ impl Store {
         self.transaction(|trx| async move {
             let placement: PlacementRecord = read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("placement", status.agent_id.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(status.agent_id.as_ulid().to_bytes().as_slice())),
             )
             .await?
             .ok_or(StoreError::LeaseMismatch)?;
@@ -26,10 +25,11 @@ impl Store {
                 return Err(StoreError::LeaseMismatch);
             }
             self.check_live_placement(&trx, &placement).await?;
-            let key = self.root.pack(&(
-                "agent_call_status",
-                status.agent_id.as_ulid().to_bytes().as_slice(),
-            ));
+            let key = crate::keys::Keys::new(&self.root).agent_call_status(&(status
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),));
             if read::<swarmy_core::AgentCallStatus>(&trx, &key)
                 .await?
                 .is_some_and(|old| {
@@ -52,20 +52,18 @@ impl Store {
         agent: swarmy_core::AgentId,
     ) -> Result<Option<swarmy_core::AgentCallStatus>> {
         self.transaction(|trx| async move {
-            let key = self
-                .root
-                .pack(&("agent_call_status", agent.as_ulid().to_bytes().as_slice()));
+            let key = crate::keys::Keys::new(&self.root)
+                .agent_call_status(&(agent.as_ulid().to_bytes().as_slice()));
             let Some(status) = read::<swarmy_core::AgentCallStatus>(&trx, &key).await? else {
                 return Ok(None);
             };
             let placement: Option<PlacementRecord> = read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("placement", agent.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice())),
             )
             .await?;
-            let now = Timestamp::now();
+            let now = self.now();
             Ok(placement
                 .filter(|placement| {
                     placement.node_id == status.node_id
@@ -85,9 +83,13 @@ impl Store {
         &self,
         id: swarmy_core::RequestId,
     ) -> Result<Option<PlacementRecord>> {
-        self.transaction(
-            |trx| async move { read(&trx, &self.tool_key("tool_placement", id)).await },
-        )
+        self.transaction(|trx| async move {
+            read(
+                &trx,
+                &crate::keys::Keys::new(&self.root).tool_placement(&(id.as_bytes().as_slice(),)),
+            )
+            .await
+        })
         .await
     }
 
@@ -101,17 +103,24 @@ impl Store {
         node: swarmy_core::NodeId,
     ) -> Result<Option<swarmy_core::AgentId>> {
         self.transaction(|trx| async move {
-            if read::<bool>(&trx, &self.tool_key("tool_done", job.request_id))
-                .await?
-                .unwrap_or(false)
+            if read::<bool>(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .tool_done(&(job.request_id.as_bytes().as_slice(),)),
+            )
+            .await?
+            .unwrap_or(false)
             {
                 return Ok(None);
             }
             let session = self.session(&trx, job.session_id).await?;
             self.check_computer(&trx, session.agent_id).await?;
-            if let Some(placement) =
-                read::<PlacementRecord>(&trx, &self.tool_key("tool_placement", job.request_id))
-                    .await?
+            if let Some(placement) = read::<PlacementRecord>(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
+            )
+            .await?
             {
                 if placement.node_id != node {
                     return Err(StoreError::LeaseMismatch);
@@ -132,7 +141,7 @@ impl Store {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, placement).await?;
             let Some(value) = trx
-                .get(&self.tool_key("tool_job", job.request_id), false)
+                .get(&crate::keys::Keys::new(&self.root).tool_job(&(job.request_id.as_bytes().as_slice(),)), false)
                 .await?
             else {
                 return Ok(false);
@@ -142,7 +151,7 @@ impl Store {
             {
                 return Err(StoreError::InvalidState);
             }
-            let key = self.tool_key("tool_placement", job.request_id);
+            let key = crate::keys::Keys::new(&self.root).tool_placement(&(job.request_id.as_bytes().as_slice(),));
             let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
             let notice = self
                 .deliver_computer_notice(&trx, job.session_id, placement)
@@ -171,8 +180,12 @@ impl Store {
         job: &ToolJob,
         placement: &PlacementRecord,
     ) -> Result<()> {
-        if let Some(dispatched) =
-            read::<PlacementRecord>(trx, &self.tool_key("tool_placement", job.request_id)).await?
+        if let Some(dispatched) = read::<PlacementRecord>(
+            trx,
+            &crate::keys::Keys::new(&self.root)
+                .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
+        )
+        .await?
             && (dispatched.agent_id != placement.agent_id
                 || dispatched.node_id != placement.node_id
                 || dispatched.epoch != placement.epoch)
@@ -207,20 +220,23 @@ impl Store {
                 result: ToolResult::Error { error: explanation },
             })
             .await?;
-        trx.set(
-            &self.event_space(job.session_id).pack(&(session.head_seq,)),
-            &event,
-        );
-        for kind in ["tool_job", "tool_placement", "placed_tool_claim"] {
-            trx.clear(&self.tool_key(kind, job.request_id));
-        }
-        write(trx, &self.tool_key("tool_done", job.request_id), &true)?;
+        trx.set(&self.event_key(job.session_id, session.head_seq), &event);
+        let keys = crate::keys::Keys::new(&self.root);
+        let request = job.request_id.as_bytes();
+        trx.clear(&keys.tool_job(&(request.as_slice(),)));
+        trx.clear(&keys.tool_placement(&(request.as_slice(),)));
+        trx.clear(&keys.placed_tool_claim(&(request.as_slice(),)));
+        write(
+            trx,
+            &crate::keys::Keys::new(&self.root).tool_done(&(job.request_id.as_bytes().as_slice(),)),
+            &true,
+        )?;
         let pending = self.pending_space(job.session_id);
-        trx.clear(&pending.pack(&(job.request_id.as_bytes().as_slice(),)));
+        trx.clear(&self.session_tool_key(job.session_id, job.request_id));
         if session.state != SessionState::Completed
             && scan(trx, pending.range(), 1).await?.is_empty()
         {
-            self.transition(trx, session, SessionState::Runnable, Timestamp::now())
+            self.transition(trx, session, SessionState::Runnable, self.now())
                 .await
         } else {
             self.write_session(trx, &session)
@@ -238,7 +254,11 @@ impl Store {
                 return Ok(false);
             }
             if let Some(value) = trx
-                .get(&self.tool_key("tool_job", job.request_id), false)
+                .get(
+                    &crate::keys::Keys::new(&self.root)
+                        .tool_job(&(job.request_id.as_bytes().as_slice(),)),
+                    false,
+                )
                 .await?
             {
                 if self.hydrate::<ToolJob>(&value).await? != *job {
@@ -266,8 +286,7 @@ impl Store {
         }
         // Retain each observed epoch's explanation, even after later snapshots or
         // placement changes. Sessions have independent delivery cursors.
-        let key = self.root.pack(&(
-            "computer_notice",
+        let key = crate::keys::Keys::new(&self.root).computer_notice(&(
             placement.agent_id.as_ulid().to_bytes().as_slice(),
             placement.epoch,
         ));
@@ -313,12 +332,8 @@ impl Store {
         // The index read conflicts with concurrent session creation, so every
         // session present at delivery receives the same epoch atomically. Include
         // the caller for legacy sessions created before the index existed.
-        let (mut begin, end) = self
-            .root
-            .subspace(&(
-                "session_by_agent",
-                placement.agent_id.as_ulid().to_bytes().as_slice(),
-            ))
+        let (mut begin, end) = crate::keys::Keys::new(&self.root)
+            .session_by_agent_space(&(placement.agent_id.as_ulid().to_bytes().as_slice(),))
             .range();
         self.append_computer_notice(trx, id, placement.epoch, &message)
             .await?;
@@ -345,11 +360,8 @@ impl Store {
         epoch: u64,
         message: &Message,
     ) -> Result<()> {
-        let delivered = self.root.pack(&(
-            "computer_notice_delivered",
-            id.as_ulid().to_bytes().as_slice(),
-            epoch,
-        ));
+        let delivered = crate::keys::Keys::new(&self.root)
+            .computer_notice_delivered(&(id.as_ulid().to_bytes().as_slice(), epoch));
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
             session.head_seq = session
@@ -362,7 +374,7 @@ impl Store {
                     message: message.clone(),
                 })
                 .await?;
-            trx.set(&self.event_space(id).pack(&(session.head_seq,)), &event);
+            trx.set(&self.event_key(id, session.head_seq), &event);
             self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;
         }

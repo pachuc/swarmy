@@ -5,8 +5,7 @@ use swarmy_core::{
 
 impl Store {
     pub(crate) fn session_plan_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("session_plan", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_plan(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Replace a session plan and append its tool result in one leased transaction.
@@ -50,8 +49,7 @@ impl Store {
             let value = &value;
             let parsed = &parsed;
             async move {
-                self.check_worker_lease(&trx, id, lease, jiff::Timestamp::now())
-                    .await?;
+                self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
                     return Err(StoreError::StaleSequence {
@@ -62,7 +60,7 @@ impl Store {
                 if let Ok(arguments) = parsed {
                     session.plan.clone_from(&arguments.plan);
                 }
-                trx.set(&self.event_space(id).pack(&(seq,)), value);
+                trx.set(&self.event_key(id, seq), value);
                 session.head_seq = seq;
                 self.write_session(&trx, &session)
             }

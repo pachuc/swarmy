@@ -111,8 +111,8 @@ async fn read_entry(trx: &RetryableTransaction, key: &[u8]) -> Result<Option<Ent
 /// expiry, so the scheduler can reconstruct readiness without decrypting.
 /// The reconstruction matches `CredentialRecord::status`: the login arms of
 /// that check never consult the clock, and only OAuth records expire.
-fn entry_readiness(record: &CredentialRecord) -> (bool, Option<Timestamp>) {
-    let needs_login = record.status(Timestamp::now()) == CredentialStatus::NeedsLogin;
+fn entry_readiness(record: &CredentialRecord, now: Timestamp) -> (bool, Option<Timestamp>) {
+    let needs_login = record.status(now) == CredentialStatus::NeedsLogin;
     let expires_at = match record.kind {
         CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
         CredentialKind::ApiKey { .. } => None,
@@ -164,9 +164,8 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<String>> {
-        let space = self
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (begin, end) = space.range();
         let rows = self
             .transaction(|trx| {
@@ -200,9 +199,8 @@ impl Store {
         now: Timestamp,
     ) -> Result<Vec<BreakerCandidate>> {
         self.transaction(|trx| async move {
-            let space = self
-                .root
-                .subspace(&("credential_entry", scope.to_string(), provider));
+            let space = crate::keys::Keys::new(&self.root)
+                .credential_entry_space(&(scope.to_string(), provider));
             let (mut begin, end) = space.range();
             let mut entries: Vec<(String, bool)> = Vec::new();
             loop {
@@ -266,9 +264,8 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Option<[u8; 32]>> {
-        let space = self
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (mut begin, end) = space.range();
         let mut hash = blake3::Hasher::new();
         let mut found = false;
@@ -303,7 +300,7 @@ impl Store {
     /// # Errors
     /// Returns database errors.
     pub async fn legacy_credential_count(&self) -> Result<u64> {
-        let space = self.root.subspace(&("credential",));
+        let space = crate::keys::Keys::new(&self.root).credential_space(&());
         let (mut begin, end) = space.range();
         let mut count: u64 = 0;
         loop {
@@ -358,18 +355,6 @@ pub struct LegacyMigration {
 }
 
 impl CredentialStore {
-    fn entry_key(
-        &self,
-        table: &str,
-        scope: CredentialScope,
-        provider: &str,
-        label: &str,
-    ) -> Vec<u8> {
-        self.store
-            .root
-            .pack(&(table, scope.to_string(), provider, label))
-    }
-
     /// Add or replace a labelled entry without changing its creation order.
     /// # Errors
     /// Returns encryption, encoding, or database errors.
@@ -386,8 +371,12 @@ impl CredentialStore {
             &entry_identity(provider, label),
             record,
         )?;
-        let key = self.entry_key("credential_entry", scope, provider, label);
-        let (needs_login, expires_at) = entry_readiness(record);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
+        let (needs_login, expires_at) = entry_readiness(record, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -399,14 +388,20 @@ impl CredentialStore {
                         key,
                         &EntryValue {
                             created_at: previous
-                                .map_or_else(Timestamp::now, |entry| entry.created_at),
+                                .map_or_else(|| self.store.now(), |entry| entry.created_at),
                             last_used_at: None,
                             needs_login,
                             expires_at,
                             ciphertext: ciphertext.clone(),
                         },
                     )?;
-                    trx.clear(&self.entry_key("credential_entry_lease", scope, provider, label));
+                    trx.clear(
+                        &crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+                            scope.to_string(),
+                            provider,
+                            label,
+                        )),
+                    );
                     Ok(())
                 }
             })
@@ -422,7 +417,11 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<Option<CredentialRecord>> {
-        let key = self.entry_key("credential_entry", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         let entry: Option<EntryValue> = self
             .store
             .transaction(|trx| {
@@ -451,7 +450,11 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<()> {
-        let key = self.entry_key("credential_entry", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -459,7 +462,7 @@ impl CredentialStore {
                     let mut entry: EntryValue = read_entry(&trx, key)
                         .await?
                         .ok_or(StoreError::CredentialMissing)?;
-                    entry.last_used_at = Some(Timestamp::now());
+                    entry.last_used_at = Some(self.store.now());
                     write(&trx, key, &entry)
                 }
             })
@@ -476,8 +479,20 @@ impl CredentialStore {
     ) -> Result<()> {
         self.store
             .transaction(|trx| async move {
-                trx.clear(&self.entry_key("credential_entry", scope, provider, label));
-                trx.clear(&self.entry_key("credential_entry_lease", scope, provider, label));
+                trx.clear(
+                    &crate::keys::Keys::new(&self.store.root).credential_entry(&(
+                        scope.to_string(),
+                        provider,
+                        label,
+                    )),
+                );
+                trx.clear(
+                    &crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+                        scope.to_string(),
+                        provider,
+                        label,
+                    )),
+                );
                 Ok(())
             })
             .await?;
@@ -501,7 +516,7 @@ impl CredentialStore {
     pub async fn migrate_legacy_credentials(&self) -> Result<LegacyMigration> {
         // Bounded batches; `scan` rejects limits above `MAX_SCAN_LIMIT`.
         const BATCH: usize = crate::MAX_SCAN_LIMIT;
-        let space = self.store.root.subspace(&("credential",));
+        let space = crate::keys::Keys::new(&self.store.root).credential_space(&());
         let (mut begin, end) = space.range();
         let mut outcome = LegacyMigration::default();
         loop {
@@ -528,7 +543,7 @@ impl CredentialStore {
                     tracing::warn!(provider = %provider, "legacy credential row did not decrypt; leaving it for a later boot");
                     continue;
                 };
-                let (needs_login, expires_at) = entry_readiness(&record);
+                let (needs_login, expires_at) = entry_readiness(&record, self.store.now());
                 let Ok(ciphertext) = encrypt(
                     &self.keyring,
                     scope,
@@ -537,17 +552,15 @@ impl CredentialStore {
                 ) else {
                     continue;
                 };
-                let entry_key =
-                    self.entry_key("credential_entry", scope, provider.as_str(), "default");
-                let legacy_key =
-                    self.store
-                        .root
-                        .pack(&("credential", scope.to_string(), provider.as_str()));
-                let lease_key = self.store.root.pack(&(
-                    "credential_lease",
+                let entry_key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
                     scope.to_string(),
                     provider.as_str(),
+                    "default",
                 ));
+                let legacy_key = crate::keys::Keys::new(&self.store.root)
+                    .credential(&(scope.to_string(), provider.as_str()));
+                let lease_key = crate::keys::Keys::new(&self.store.root)
+                    .credential_lease(&(scope.to_string(), provider.as_str()));
                 let created_at = record.updated_at;
                 let wrote = self
                     .store
@@ -599,10 +612,8 @@ impl CredentialStore {
     /// # Errors
     /// Returns decryption, encoding, or database errors.
     pub async fn list_entries(&self, scope: CredentialScope) -> Result<Vec<CredentialSummary>> {
-        let space = self
-            .store
-            .root
-            .subspace(&("credential_entry", scope.to_string()));
+        let space =
+            crate::keys::Keys::new(&self.store.root).credential_entry_space(&(scope.to_string()));
         let (mut begin, end) = space.range();
         let mut result = Vec::new();
         loop {
@@ -626,7 +637,7 @@ impl CredentialStore {
                     &entry_identity(&provider, &label),
                     &entry.ciphertext,
                 )?;
-                let mut summary = CredentialSummary::new(provider, &record, Timestamp::now());
+                let mut summary = CredentialSummary::new(provider, &record, self.store.now());
                 summary.label = label;
                 summary.created_at = entry.created_at;
                 summary.last_used_at = entry.last_used_at;
@@ -654,10 +665,8 @@ impl CredentialStore {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<(String, CredentialRecord)>> {
-        let space = self
-            .store
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.store.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (begin, end) = space.range();
         let rows = self
             .store
@@ -695,7 +704,7 @@ impl CredentialStore {
         provider: &str,
     ) -> Result<Option<(String, CredentialRecord)>> {
         let entries = self.provider_entries(scope, provider).await?;
-        let now = Timestamp::now();
+        let now = self.store.now();
         if let Some((label, record)) = entries
             .iter()
             .find(|(_, record)| record.status(now) == CredentialStatus::Ready)
@@ -723,8 +732,16 @@ impl CredentialStore {
         if ttl.is_zero() {
             return Err(StoreError::LeaseMismatch);
         }
-        let key = self.entry_key("credential_entry", scope, provider, label);
-        let lease_key = self.entry_key("credential_entry_lease", scope, provider, label);
+        let key = crate::keys::Keys::new(&self.store.root).credential_entry(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
+        let lease_key = crate::keys::Keys::new(&self.store.root).credential_entry_lease(&(
+            scope.to_string(),
+            provider,
+            label,
+        ));
         let observed: EntryValue = self
             .store
             .transaction(|trx| {
@@ -764,7 +781,7 @@ impl CredentialStore {
         };
         let remaining = lease
             .expires_at
-            .duration_since(Timestamp::now())
+            .duration_since(self.store.now())
             .try_into()
             .unwrap_or(Duration::ZERO);
         let refreshed = tokio::time::timeout(remaining, f(current.clone())).await;
@@ -785,7 +802,7 @@ impl CredentialStore {
         let bytes = if replacement == current {
             observed.ciphertext.clone()
         } else {
-            replacement.updated_at = Timestamp::now();
+            replacement.updated_at = self.store.now();
             encrypt(
                 &self.keyring,
                 scope,
@@ -824,7 +841,7 @@ impl CredentialStore {
                 if entry.ciphertext != observed.ciphertext {
                     return Ok(Claim::Changed(entry.ciphertext));
                 }
-                let now = Timestamp::now();
+                let now = self.store.now();
                 if read::<Lease>(&trx, lease_key)
                     .await?
                     .is_some_and(|lease| lease.expires_at > now)
@@ -864,7 +881,7 @@ impl CredentialStore {
     ) -> Result<()> {
         // A failed refresh marks the replacement as needing login; record its
         // hints alongside the new ciphertext so the scheduler pool stays exact.
-        let (needs_login, expires_at) = entry_readiness(replacement);
+        let (needs_login, expires_at) = entry_readiness(replacement, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -874,7 +891,7 @@ impl CredentialStore {
                     let held: Lease = read(&trx, lease_key)
                         .await?
                         .ok_or(StoreError::LeaseMismatch)?;
-                    if held != *lease || held.expires_at <= Timestamp::now() {
+                    if held != *lease || held.expires_at <= self.store.now() {
                         return Err(StoreError::LeaseMismatch);
                     }
                     let entry: EntryValue = read_entry(&trx, key)

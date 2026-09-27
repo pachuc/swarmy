@@ -115,21 +115,16 @@ impl Store {
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
     pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
-        self.root.pack(&(
-            "inference_breaker",
-            key.provider.as_str(),
-            key.label.as_deref().unwrap_or(""),
-        ))
+        crate::keys::Keys::new(&self.root)
+            .inference_breaker(&(key.provider.as_str(), key.label.as_deref().unwrap_or("")))
     }
 
     pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("inference_wait", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).inference_wait(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
-        self.root.pack(&(
-            "inference_wait_due",
+        crate::keys::Keys::new(&self.root).inference_wait_due(&(
             (at.as_second(), at.subsec_nanosecond()),
             id.as_ulid().to_bytes().as_slice(),
         ))
@@ -393,9 +388,9 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scan_due_inference_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
-        let space = self.root.subspace(&("inference_wait_due",));
-        let end = space
-            .subspace(&((now.as_second(), now.subsec_nanosecond()),))
+        let space = crate::keys::Keys::new(&self.root).inference_wait_due_space(&());
+        let end = crate::keys::Keys::new(&self.root)
+            .inference_wait_due_space(&((now.as_second(), now.subsec_nanosecond()),))
             .range()
             .1;
         self.transaction(|trx| {

@@ -1,17 +1,13 @@
 //! Durable tool handoffs on persistent agent computers.
 use crate::{Result, Store, StoreError, read, scan, write};
-use jiff::Timestamp;
 use swarmy_core::{Event, Lease, RequestId, SessionId, SessionState, ToolJob};
 
 type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
-    pub(crate) fn tool_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        self.root.pack(&(kind, id.as_bytes().as_slice()))
-    }
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
-        self.root
-            .subspace(&("session_tools", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root)
+            .session_tools_space(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
@@ -88,7 +84,7 @@ impl Store {
             let values = &values;
             async move {
                 futures::try_join!(
-                    self.check_worker_lease(&trx, id, lease, Timestamp::now()),
+                    self.check_worker_lease(&trx, id, lease, self.now()),
                     self.check_live_placement(&trx, placement),
                 )?;
                 if jobs.is_empty() {
@@ -110,7 +106,7 @@ impl Store {
                         return Err(StoreError::InvalidState);
                     }
                     let event = trx
-                        .get(&self.event_space(id).pack(&(job.step,)), false)
+                        .get(&self.event_key(id, job.step), false)
                         .await?
                         .ok_or(StoreError::InvalidState)?;
                     match self.hydrate::<Event>(&event).await? {
@@ -127,22 +123,21 @@ impl Store {
                                 == Some(&job.arguments) => {}
                         _ => return Err(StoreError::InvalidState),
                     }
-                    trx.set(&self.tool_key("tool_job", job.request_id), value);
+                    trx.set(
+                        &crate::keys::Keys::new(&self.root)
+                            .tool_job(&(job.request_id.as_bytes().as_slice(),)),
+                        value,
+                    );
                     write(
                         &trx,
-                        &self.tool_key("tool_placement", job.request_id),
+                        &crate::keys::Keys::new(&self.root)
+                            .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
                         placement,
                     )?;
-                    write(
-                        &trx,
-                        &self
-                            .pending_space(id)
-                            .pack(&(job.request_id.as_bytes().as_slice(),)),
-                        &(),
-                    )?;
+                    write(&trx, &self.session_tool_key(id, job.request_id), &())?;
                 }
                 let session = self.session(&trx, id).await?;
-                self.transition(&trx, session, SessionState::WaitingTools, Timestamp::now())
+                self.transition(&trx, session, SessionState::WaitingTools, self.now())
                     .await
             }
         })
@@ -171,7 +166,7 @@ impl Store {
             else {
                 return Err(StoreError::InvalidState);
             };
-            trx.set(&self.event_space(id).pack(&(*seq,)), value);
+            trx.set(&self.event_key(id, *seq), value);
             if let Some(turn) = turn {
                 write(trx, &self.request_turn_key(*request_id), &turn)?;
             }
@@ -189,9 +184,12 @@ impl Store {
     ) -> Result<Vec<ToolJob>> {
         let values = self
             .transaction(|trx| async move {
-                let (mut begin, end) = self.root.subspace(&("tool_job",)).range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                    .tool_job_space(&())
+                    .range();
                 if let Some(id) = after {
-                    begin = self.tool_key("tool_job", id);
+                    begin =
+                        crate::keys::Keys::new(&self.root).tool_job(&(id.as_bytes().as_slice(),));
                     begin.push(0);
                 }
                 scan(&trx, (begin, end), limit).await
@@ -208,7 +206,12 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn tool_completed(&self, id: RequestId) -> Result<bool> {
         self.transaction(|trx| async move {
-            Ok(read::<bool>(&trx, &self.tool_key("tool_done", id)).await? == Some(true))
+            Ok(read::<bool>(
+                &trx,
+                &crate::keys::Keys::new(&self.root).tool_done(&(id.as_bytes().as_slice(),)),
+            )
+            .await?
+                == Some(true))
         })
         .await
     }

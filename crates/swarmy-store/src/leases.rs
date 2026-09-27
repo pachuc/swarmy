@@ -28,13 +28,11 @@ impl Store {
     }
 
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("lease", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).lease(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        self.root.pack(&(
-            "lease_by_expiry",
+        crate::keys::Keys::new(&self.root).lease_by_expiry(&(
             (expires.as_second(), expires.subsec_nanosecond()),
             id.as_ulid().to_bytes().as_slice(),
         ))
@@ -112,7 +110,7 @@ impl Store {
                     read(&trx, &turn_key),
                 )?;
                 let space = self.event_space(id);
-                let mut begin = space.pack(&(session.snapshot_seq.unwrap_or(0),));
+                let mut begin = self.event_key(id, session.snapshot_seq.unwrap_or(0));
                 begin.push(0);
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
@@ -158,7 +156,7 @@ impl Store {
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
-        session.state_since = Some(Timestamp::now());
+        session.state_since = Some(self.now());
         self.write_session(trx, &session)?;
         Ok((lease, session))
     }
@@ -289,14 +287,14 @@ impl Store {
     ) -> Result<Vec<(SessionId, Lease)>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let space = self.root.subspace(&("lease_by_expiry",));
+            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space(&());
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
                 begin = self.expiry_key(*id, lease.expires_at);
                 begin.push(0);
             }
-            let end = space
-                .subspace(&((now.as_second(), now.subsec_nanosecond()),))
+            let end = crate::keys::Keys::new(&self.root)
+                .lease_by_expiry_space(&((now.as_second(), now.subsec_nanosecond()),))
                 .range()
                 .1;
             if begin >= end {

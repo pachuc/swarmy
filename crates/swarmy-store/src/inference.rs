@@ -39,12 +39,8 @@ struct PreparedCompletion {
 }
 
 impl Store {
-    fn inference_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        self.root.pack(&(kind, id.as_bytes().as_slice()))
-    }
-
     pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
-        self.inference_key("inference_request", id)
+        crate::keys::Keys::new(&self.root).inference_request(&(id.as_bytes().as_slice(),))
     }
 
     /// Store the gateway payload for a request published before requests were
@@ -67,8 +63,10 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(self.inference_key("inference_request", id))
-            .await
+        self.get_payload(
+            crate::keys::Keys::new(&self.root).inference_request(&(id.as_bytes().as_slice(),)),
+        )
+        .await
     }
 
     /// Claim a request or renew the same owner's claim and record it as started.
@@ -90,9 +88,12 @@ impl Store {
         self.transaction(|trx| {
             let requested = &requested;
             async move {
-                let idem_key = self.inference_key("idem", claim.request_id);
-                let key = self.inference_key("inference_claim", claim.request_id);
-                let inflight_key = self.inference_key("inflight", claim.request_id);
+                let idem_key = crate::keys::Keys::new(&self.root)
+                    .idem(&(claim.request_id.as_bytes().as_slice(),));
+                let key = crate::keys::Keys::new(&self.root)
+                    .inference_claim(&(claim.request_id.as_bytes().as_slice(),));
+                let inflight_key = crate::keys::Keys::new(&self.root)
+                    .inflight(&(claim.request_id.as_bytes().as_slice(),));
                 let (idem, old, session, inflight) = futures::try_join!(
                     async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
                     read::<InferenceClaim>(&trx, &key),
@@ -132,7 +133,8 @@ impl Store {
     /// Returns storage failures.
     pub async fn release_inference(&self, claim: &InferenceClaim) -> Result<()> {
         self.transaction(|trx| async move {
-            let key = self.inference_key("inference_claim", claim.request_id);
+            let key = crate::keys::Keys::new(&self.root)
+                .inference_claim(&(claim.request_id.as_bytes().as_slice(),));
             if read::<InferenceClaim>(&trx, &key)
                 .await?
                 .is_some_and(|old| old.owner == claim.owner)
@@ -255,9 +257,11 @@ impl Store {
                 completed,
                 idle,
             } = prepared;
-            let now = snapshot.map_or(completion.now, |_| completion.now.max(Timestamp::now()));
-            let idem_key = self.inference_key("idem", claim.request_id);
-            let claim_key = self.inference_key("inference_claim", claim.request_id);
+            let now = snapshot.map_or(completion.now, |_| completion.now.max(self.now()));
+            let idem_key =
+                crate::keys::Keys::new(&self.root).idem(&(claim.request_id.as_bytes().as_slice(),));
+            let claim_key = crate::keys::Keys::new(&self.root)
+                .inference_claim(&(claim.request_id.as_bytes().as_slice(),));
             let (idem, current, mut session) = futures::try_join!(
                 async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
                 read::<InferenceClaim>(&trx, &claim_key),
@@ -295,26 +299,30 @@ impl Store {
                 )
                 .await?;
             }
-            trx.set(&self.event_space(claim.session_id).pack(&(head,)), event);
+            trx.set(&self.event_key(claim.session_id, head), event);
             trx.set(
-                &self.inference_key("inference_result", claim.request_id),
+                &crate::keys::Keys::new(&self.root)
+                    .inference_result(&(claim.request_id.as_bytes().as_slice(),)),
                 response,
             );
             trx.set(&idem_key, completed);
-            trx.clear(&self.inference_key("inflight", claim.request_id));
+            trx.clear(
+                &crate::keys::Keys::new(&self.root)
+                    .inflight(&(claim.request_id.as_bytes().as_slice(),)),
+            );
             // The completed request id is never retried. Retryable failures
             // create a new step after the worker's wait.
-            trx.clear(&self.inference_key("inference_request", claim.request_id));
+            trx.clear(
+                &crate::keys::Keys::new(&self.root)
+                    .inference_request(&(claim.request_id.as_bytes().as_slice(),)),
+            );
             trx.clear(&claim_key);
             session.head_seq = head;
             let interrupt_requested = session.interrupt_requested;
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {
-                trx.set(
-                    &self.event_space(claim.session_id).pack(&(snapshot.seq,)),
-                    event,
-                );
+                trx.set(&self.event_key(claim.session_id, snapshot.seq), event);
                 trx.set(
                     &self.snapshot_key(claim.session_id, snapshot.seq),
                     reference,
@@ -339,8 +347,10 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(self.inference_key("inference_result", id))
-            .await
+        self.get_payload(
+            crate::keys::Keys::new(&self.root).inference_result(&(id.as_bytes().as_slice(),)),
+        )
+        .await
     }
 
     async fn record_completion_metering(
@@ -429,7 +439,11 @@ impl Store {
                         actual: session.head_seq,
                     });
                 }
-                trx.set(&self.inference_key("inference_input", request_id), value);
+                trx.set(
+                    &crate::keys::Keys::new(&self.root)
+                        .inference_input(&(request_id.as_bytes().as_slice(),)),
+                    value,
+                );
                 Ok(())
             }
         })
@@ -443,8 +457,10 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(self.inference_key("inference_input", id))
-            .await
+        self.get_payload(
+            crate::keys::Keys::new(&self.root).inference_input(&(id.as_bytes().as_slice(),)),
+        )
+        .await
     }
 
     /// Scan in-flight requests in request-id order, strictly after the cursor.
@@ -459,10 +475,11 @@ impl Store {
         crate::check_limit(limit)?;
         let values = self
             .transaction(|trx| async move {
-                let space = self.root.subspace(&("inflight",));
+                let space = crate::keys::Keys::new(&self.root).inflight_space(&());
                 let mut begin = space.range().0;
                 if let Some(id) = after {
-                    begin = self.inference_key("inflight", id);
+                    begin =
+                        crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice(),));
                     begin.push(0);
                 }
                 crate::scan(&trx, (begin, space.range().1), limit).await
@@ -472,10 +489,12 @@ impl Store {
         for (key, value) in values {
             let record: InflightRecord = self.hydrate(&value).await?;
             if key
-                != self.inference_key(
-                    "inflight",
-                    RequestId::for_step(record.session_id, record.seq),
+                != crate::keys::Keys::new(&self.root).inflight(&(RequestId::for_step(
+                    record.session_id,
+                    record.seq,
                 )
+                .as_bytes()
+                .as_slice(),))
             {
                 return Err(StoreError::Corrupt);
             }
@@ -505,7 +524,10 @@ impl Store {
             async move {
                 self.check_worker_lease(&trx, record.session_id, lease, now)
                     .await?;
-                trx.set(&self.inference_key("inflight", id), value);
+                trx.set(
+                    &crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice(),)),
+                    value,
+                );
                 Ok(())
             }
         })

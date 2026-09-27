@@ -107,6 +107,36 @@ pub struct ExpandedChain {
     pub skipped: Vec<String>,
 }
 
+type BreakerKey = (String, Option<String>);
+type BreakerState = (Option<Timestamp>, Option<String>);
+
+/// Per-scheduler-tick cache. Route edits and breaker transitions are observed
+/// on the next tick, while identical sessions share pool and breaker reads.
+#[derive(Default)]
+pub struct RouteCache {
+    routes: HashMap<String, Option<RouteRecord>>,
+    pools: HashMap<String, Vec<PoolEntry>>,
+    breakers: HashMap<BreakerKey, BreakerState>,
+}
+
+// Keep route and provider precedence identical for transactional worker reads
+// and scheduler reads backed by a per-tick cache.
+fn select_route<'a>(
+    session_route: Option<&'a str>,
+    agent_route: Option<&'a str>,
+    default_route: Option<&'a str>,
+    session_provider: Option<&'a str>,
+    agent_provider: Option<&'a str>,
+    default_provider: &'a str,
+) -> (Option<&'a str>, &'a str) {
+    (
+        session_route.or(agent_route).or(default_route),
+        session_provider
+            .or(agent_provider)
+            .unwrap_or(default_provider),
+    )
+}
+
 fn skipped_step_reason(provider: &str, label: &str) -> String {
     format!("{provider}/{label} names an entry with no ready credential; trying the next step")
 }
@@ -196,7 +226,7 @@ impl RouteSnapshot {
 
 impl Store {
     pub(crate) fn route_key(&self, name: &str) -> Vec<u8> {
-        self.root.pack(&("route", name))
+        crate::keys::Keys::new(&self.root).route(&(name))
     }
 
     /// Store a named failover chain, replacing any previous steps.
@@ -207,7 +237,7 @@ impl Store {
         let record = RouteRecord {
             name: name.to_owned(),
             steps: steps.to_vec(),
-            updated_at: Timestamp::now(),
+            updated_at: self.now(),
         };
         self.transaction(|trx| {
             let record = &record;
@@ -228,7 +258,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn list_routes(&self) -> Result<Vec<RouteRecord>> {
-        let space = self.root.subspace(&("route",));
+        let space = crate::keys::Keys::new(&self.root).route_space(&());
         let (mut begin, end) = space.range();
         let mut routes = Vec::new();
         loop {
@@ -279,11 +309,8 @@ impl Store {
         provider: &str,
         now: Timestamp,
     ) -> Result<Vec<PoolEntry>> {
-        let space = self.root.subspace(&(
-            "credential_entry",
-            CredentialScope::Cluster.to_string(),
-            provider,
-        ));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(CredentialScope::Cluster.to_string(), provider));
         let (mut begin, end) = space.range();
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
         loop {
@@ -377,6 +404,99 @@ impl Store {
             Ok((agent, snapshot))
         })
         .await
+    }
+
+    /// Resolve one session using the scheduler's per-tick route, pool, and
+    /// breaker cache. The worker's atomic snapshot uses the same expansion.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn route_pick_with_cache(
+        &self,
+        session: &swarmy_core::SessionRecord,
+        agent: Option<&AgentRecord>,
+        default_route: Option<&str>,
+        default_provider: &str,
+        now: Timestamp,
+        cache: &mut RouteCache,
+    ) -> Result<RouteSnapshot> {
+        let (name, provider) = select_route(
+            session.route.as_deref(),
+            agent.and_then(|agent| agent.route.as_deref()),
+            default_route,
+            session.inference.provider.as_deref(),
+            agent.and_then(|agent| agent.provider.as_deref()),
+            default_provider,
+        );
+        let record = match name {
+            Some(name) => {
+                if let Some(cached) = cache.routes.get(name) {
+                    cached.clone()
+                } else {
+                    let record = self.get_route(name).await?;
+                    cache.routes.insert(name.to_owned(), record.clone());
+                    record
+                }
+            }
+            None => None,
+        };
+        let mut providers: Vec<String> = record
+            .as_ref()
+            .map(|record| {
+                record
+                    .steps
+                    .iter()
+                    .map(|step| step.provider.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        providers.push(provider.to_owned());
+        providers.sort();
+        providers.dedup();
+        let missing: Vec<String> = providers
+            .into_iter()
+            .filter(|provider| !cache.pools.contains_key(provider))
+            .collect();
+        if !missing.is_empty() {
+            cache.pools.extend(self.route_pools(&missing, now).await?);
+        }
+        let chain = Self::expand_chain(record.as_ref(), &cache.pools, provider);
+        let missing: Vec<(String, Option<String>)> = chain
+            .steps
+            .iter()
+            .map(|step| (step.provider.clone(), step.label.clone()))
+            .filter(|key| !cache.breakers.contains_key(key))
+            .collect();
+        if !missing.is_empty() {
+            for (key, state) in missing
+                .iter()
+                .zip(self.breaker_states(&missing, now).await?)
+            {
+                cache.breakers.insert(key.clone(), state);
+            }
+        }
+        let steps = chain
+            .steps
+            .into_iter()
+            .map(|step| {
+                let (open_until, reason) = cache
+                    .breakers
+                    .get(&(step.provider.clone(), step.label.clone()))
+                    .cloned()
+                    .unwrap_or((None, None));
+                RouteStepStatus {
+                    provider: step.provider,
+                    label: step.label,
+                    model: step.model,
+                    open_until,
+                    reason,
+                }
+            })
+            .collect();
+        Ok(RouteSnapshot {
+            name: chain.name,
+            steps,
+            skipped: chain.skipped,
+        })
     }
 
     /// Entry pools for several providers in one transaction, with readiness
@@ -534,17 +654,19 @@ impl Store {
         default_provider: &str,
         now: Timestamp,
     ) -> Result<RouteSnapshot> {
-        let name = session_route
-            .or(agent_route)
-            .or(default_route)
-            .map(str::to_owned);
+        let (name, provider) = select_route(
+            session_route,
+            agent_route,
+            default_route,
+            session_provider,
+            agent_provider,
+            default_provider,
+        );
+        let name = name.map(str::to_owned);
         let record = match name.as_deref() {
             Some(name) => read::<RouteRecord>(trx, &self.route_key(name)).await?,
             None => None,
         };
-        let provider = session_provider
-            .or(agent_provider)
-            .unwrap_or(default_provider);
         // One pool scan per distinct provider in the same transaction; entry
         // scans dominate snapshot cost, so named routes share them here.
         let mut providers: Vec<&str> = record

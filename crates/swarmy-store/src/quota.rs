@@ -63,11 +63,11 @@ pub use swarmy_core::quota::parse_window;
 
 impl Store {
     fn observed_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        self.root.pack(&("entry_quota_observed", provider, label))
+        crate::keys::Keys::new(&self.root).entry_quota_observed(&(provider, label))
     }
 
     fn config_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        self.root.pack(&("entry_quota_config", provider, label))
+        crate::keys::Keys::new(&self.root).entry_quota_config(&(provider, label))
     }
 
     pub(crate) fn write_observed(
@@ -110,7 +110,7 @@ impl Store {
         if remaining.is_empty() {
             return Ok(());
         }
-        let now = Timestamp::now();
+        let now = self.now();
         let remaining = remaining.clone();
         let resets = resets.clone();
         let key = self.observed_key(provider, label);
@@ -190,7 +190,7 @@ impl Store {
     pub async fn entry_quota(&self, provider: &str, label: &str) -> Result<EntryQuota> {
         let (observed, config) = self.quota_rows(provider, label).await?;
         if let Some(config) = config {
-            let now = Timestamp::now();
+            let now = self.now();
             let from = now
                 .as_second()
                 .checked_sub(i64::try_from(config.window_seconds).unwrap_or(i64::MAX))

@@ -107,7 +107,9 @@ impl Store {
         loop {
             let page: Vec<StoredSession> = self
                 .transaction(|trx| async move {
-                    let (mut begin, end) = self.root.subspace(&("session",)).range();
+                    let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                        .session_space(&())
+                        .range();
                     if let Some(id) = cursor {
                         begin = self.session_key(id);
                         begin.push(0);

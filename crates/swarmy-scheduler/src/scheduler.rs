@@ -1,30 +1,10 @@
-use std::collections::HashMap;
-
 use jiff::Timestamp;
 use swarmy_bus::Bus;
 use swarmy_core::{AgentRecord, Event, SessionId, SessionState, WakeReply, WakeRequest};
-use swarmy_store::{
-    MAX_SCAN_LIMIT, PoolEntry, RouteStepStatus, Store, StoreError, runnable_partition,
-};
+use swarmy_store::{MAX_SCAN_LIMIT, RouteCache, Store, StoreError, runnable_partition};
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
-
-/// One cached breaker state: the open retry time, if the breaker is open,
-/// with its stored reason.
-type BreakerState = (Option<Timestamp>, Option<String>);
-
-/// Per-tick caches for route resolution. A scan costs one transaction per
-/// distinct route, provider pool, and breaker step instead of one snapshot
-/// per session, so a swarm with hundreds of agents sharing routes runs a
-/// handful of transactions per scan. Nothing outlives the tick, so route
-/// edits apply on the next pass.
-#[derive(Default)]
-struct TickCache {
-    routes: HashMap<String, Option<swarmy_core::RouteRecord>>,
-    pools: HashMap<String, Vec<PoolEntry>>,
-    breakers: HashMap<(String, Option<String>), BreakerState>,
-}
 
 pub struct Scheduler {
     store: Store,
@@ -47,112 +27,31 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Resolve the session's route behind its steps' breaker records. A
-    /// usable step means the session can run; when every step is open the
-    /// session waits for the earliest retry among them. The scan starts at
-    /// the session's attempt position and wraps to a recovered earlier step,
-    /// so the scheduler and the worker agree on which step serves the next
-    /// attempt. Resolution reads the session's provider override directly,
-    /// so two sessions on one agent with different providers never share a
-    /// snapshot.
     async fn breaker_park(
         &self,
         session: &swarmy_core::SessionRecord,
         agent: Option<&AgentRecord>,
-        cache: &mut TickCache,
+        cache: &mut RouteCache,
     ) -> Result<Option<(Timestamp, String)>, StoreError> {
-        let now = Timestamp::now();
-        let agent_route = agent.and_then(|agent| agent.route.as_deref());
-        let agent_provider = agent.and_then(|agent| agent.provider.as_deref());
-        let name = session
-            .route
-            .as_deref()
-            .or(agent_route)
-            .or(self.config.default_route.as_deref());
-        let provider = session
-            .inference
-            .provider
-            .as_deref()
-            .or(agent_provider)
-            .unwrap_or(&self.config.provider);
-        let record = match name {
-            Some(name) => {
-                if let Some(cached) = cache.routes.get(name) {
-                    cached.clone()
-                } else {
-                    let record = self.store.get_route(name).await?;
-                    cache.routes.insert(name.to_owned(), record.clone());
-                    record
-                }
-            }
-            None => None,
-        };
-        let mut providers: Vec<String> = record
-            .as_ref()
-            .map(|record| {
-                record
-                    .steps
-                    .iter()
-                    .map(|step| step.provider.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        providers.push(provider.to_owned());
-        providers.sort();
-        providers.dedup();
-        let missing: Vec<String> = providers
-            .into_iter()
-            .filter(|provider| !cache.pools.contains_key(provider))
-            .collect();
-        if !missing.is_empty() {
-            for (provider, pool) in self.store.route_pools(&missing, now).await? {
-                cache.pools.insert(provider, pool);
-            }
-        }
-        // The same pure expansion the worker's transaction uses, so both
-        // agree on the chain including skipped missing or unready entries.
-        let chain = Store::expand_chain(record.as_ref(), &cache.pools, provider);
-        let missing: Vec<(String, Option<String>)> = chain
-            .steps
-            .iter()
-            .map(|step| (step.provider.clone(), step.label.clone()))
-            .filter(|key| !cache.breakers.contains_key(key))
-            .collect();
-        if !missing.is_empty() {
-            for (key, state) in missing
-                .iter()
-                .zip(self.store.breaker_states(&missing, now).await?)
-            {
-                cache.breakers.insert(key.clone(), state);
-            }
-        }
-        let mut steps = Vec::with_capacity(chain.steps.len());
-        for step in chain.steps {
-            let (open_until, reason) = cache
-                .breakers
-                .get(&(step.provider.clone(), step.label.clone()))
-                .cloned()
-                .unwrap_or((None, None));
-            steps.push(RouteStepStatus {
-                provider: step.provider,
-                label: step.label,
-                model: step.model,
-                reason,
-                open_until,
-            });
-        }
-        let snapshot = swarmy_store::RouteSnapshot {
-            name: chain.name,
-            steps,
-            skipped: chain.skipped,
-        };
+        let snapshot = self
+            .store
+            .route_pick_with_cache(
+                session,
+                agent,
+                self.config.default_route.as_deref(),
+                &self.config.provider,
+                Timestamp::now(),
+                cache,
+            )
+            .await?;
         if snapshot.pick(session.route_step).is_some() {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Ok(snapshot.earliest())
         }
-        Ok(snapshot.earliest())
     }
 
-    async fn nudge(&self, session_id: SessionId, force: bool, breakers: &mut TickCache) {
+    async fn nudge(&self, session_id: SessionId, force: bool, breakers: &mut RouteCache) {
         let partition = runnable_partition(session_id);
         if !self.config.partitions.contains(&partition) {
             return;
@@ -237,7 +136,7 @@ impl Scheduler {
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let mut breakers = TickCache::default();
+            let mut breakers = RouteCache::default();
             for &partition in &self.config.partitions {
                 if let Err(error) = self.scan_partition(partition, &mut breakers).await {
                     tracing::warn!(partition, %error, "runnable scan failed; will retry");
@@ -261,7 +160,7 @@ impl Scheduler {
         let now = Timestamp::now();
         for id in self.store.scan_due_inference_waits(now).await? {
             if self.store.wake_inference_wait(id, now).await? {
-                self.nudge(id, false, &mut TickCache::default()).await;
+                self.nudge(id, false, &mut RouteCache::default()).await;
             }
         }
         let mut cursor = None;
@@ -281,7 +180,7 @@ impl Scheduler {
                         {
                             tracing::warn!(%error, "timer event notification failed");
                         }
-                        self.nudge(id, false, &mut TickCache::default()).await;
+                        self.nudge(id, false, &mut RouteCache::default()).await;
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -299,7 +198,7 @@ impl Scheduler {
     async fn scan_partition(
         &self,
         partition: u16,
-        breakers: &mut TickCache,
+        breakers: &mut RouteCache,
     ) -> Result<(), StoreError> {
         let mut cursor = None;
         loop {
@@ -350,7 +249,7 @@ impl Scheduler {
                 match self.store.reap_lease(*session_id, lease, now).await {
                     Ok(()) => {
                         tracing::info!(%session_id, owner = %lease.owner, "reaped expired lease");
-                        self.nudge(*session_id, true, &mut TickCache::default())
+                        self.nudge(*session_id, true, &mut RouteCache::default())
                             .await;
                     }
                     // Another reaper or a renewal can win after the scan.
@@ -370,7 +269,7 @@ impl Scheduler {
             Ok(SessionState::Idle) => {
                 tracing::info!(%session_id, "woke idle session");
                 // If another instance owns this partition, its scan will nudge it.
-                self.nudge(session_id, true, &mut TickCache::default())
+                self.nudge(session_id, true, &mut RouteCache::default())
                     .await;
                 WakeReply::Runnable
             }

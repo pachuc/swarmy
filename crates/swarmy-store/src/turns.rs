@@ -122,7 +122,7 @@ impl Store {
                 (&input, &inflight, &value, &request, &preceding);
             let route = &route;
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 let turn_key = self.turn_key(id);
                 let ((), mut session, turn) = futures::try_join!(
                     self.check_worker_lease(&trx, id, lease, now),
@@ -140,24 +140,22 @@ impl Store {
                         .await?;
                 }
                 trx.set(
-                    &self
-                        .root
-                        .pack(&("inference_input", request_id.as_bytes().as_slice())),
+                    &crate::keys::Keys::new(&self.root)
+                        .inference_input(&(request_id.as_bytes().as_slice())),
                     input,
                 );
                 if let Some(request) = request {
                     trx.set(&self.inference_request_key(request_id), request);
                 }
                 trx.set(
-                    &self
-                        .root
-                        .pack(&("inflight", request_id.as_bytes().as_slice())),
+                    &crate::keys::Keys::new(&self.root)
+                        .inflight(&(request_id.as_bytes().as_slice())),
                     inflight,
                 );
                 for (seq, value) in preceding {
-                    trx.set(&self.event_space(id).pack(&(*seq,)), value);
+                    trx.set(&self.event_key(id, *seq), value);
                 }
-                trx.set(&self.event_space(id).pack(&(step,)), value);
+                trx.set(&self.event_key(id, step), value);
                 if let Some(turn) = turn {
                     write(&trx, &self.request_turn_key(request_id), &turn)?;
                 }
@@ -239,7 +237,7 @@ impl Store {
         self.transaction(|trx| {
             let (value, reference) = (&value, &reference);
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 self.check_worker_lease(&trx, id, lease, now).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
@@ -255,7 +253,7 @@ impl Store {
                 {
                     return Err(StoreError::InterruptPending);
                 }
-                trx.set(&self.event_space(id).pack(&(head,)), value);
+                trx.set(&self.event_key(id, head), value);
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);

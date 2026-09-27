@@ -26,7 +26,7 @@ pub(crate) struct PlacementHosting {
 
 impl Store {
     fn scratch_key(&self, agent: AgentId) -> Vec<u8> {
-        self.placement_key("scratch", agent)
+        crate::keys::Keys::new(&self.root).scratch(&(agent.as_ulid().to_bytes().as_slice(),))
     }
 
     /// Read the last reported local scratch location.
@@ -43,9 +43,13 @@ impl Store {
     pub async fn report_scratch(&self, agent: AgentId, record: &ScratchRecord) -> Result<()> {
         self.transaction(|trx| async move {
             self.check_computer(&trx, agent).await?;
-            if read::<PlacementRecord>(&trx, &self.placement_key("placement", agent))
-                .await?
-                .is_some_and(|placement| placement.node_id != record.node_id)
+            if read::<PlacementRecord>(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice(),)),
+            )
+            .await?
+            .is_some_and(|placement| placement.node_id != record.node_id)
             {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -76,7 +80,11 @@ impl Store {
     ) -> Result<Option<PlacementHosting>> {
         read(
             trx,
-            &self.placement_key("placement_hosting", placement.agent_id),
+            &crate::keys::Keys::new(&self.root).placement_hosting(&(placement
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),)),
         )
         .await
     }
@@ -113,7 +121,11 @@ impl Store {
             hosting.claimed.get_or_insert_with(Timestamp::now);
             write(
                 &trx,
-                &self.placement_key("placement_hosting", expected.agent_id),
+                &crate::keys::Keys::new(&self.root).placement_hosting(&(expected
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
                 &hosting,
             )
         })
@@ -133,7 +145,11 @@ impl Store {
             self.check_live_placement(&trx, expected).await?;
             write(
                 &trx,
-                &self.placement_key("placement_address", expected.agent_id),
+                &crate::keys::Keys::new(&self.root).placement_address(&(expected
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
                 &(expected.epoch, address),
             )
         })
@@ -147,7 +163,11 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read::<(u64, Ipv4Addr)>(
                 &trx,
-                &self.placement_key("placement_address", placement.agent_id),
+                &crate::keys::Keys::new(&self.root).placement_address(&(placement
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
             )
             .await?
             .and_then(|(epoch, address)| (epoch == placement.epoch).then_some(address)))
@@ -155,26 +175,20 @@ impl Store {
         .await
     }
 
-    pub(crate) fn placement_key(&self, kind: &str, agent: AgentId) -> Vec<u8> {
-        self.root
-            .pack(&(kind, agent.as_ulid().to_bytes().as_slice()))
-    }
-
     fn placement_node_key(&self, node: NodeId, agent: AgentId) -> Vec<u8> {
-        self.root.pack(&(
-            "placement_by_node",
+        crate::keys::Keys::new(&self.root).placement_by_node(&(
             node.as_ulid().to_bytes().as_slice(),
             agent.as_ulid().to_bytes().as_slice(),
         ))
     }
 
     fn placement_count_key(&self, node: NodeId) -> Vec<u8> {
-        self.root
-            .pack(&("placement_count", node.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).placement_count(&(node.as_ulid().to_bytes().as_slice()))
     }
 
     pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
-        self.placement_key("computer_memory", agent)
+        crate::keys::Keys::new(&self.root)
+            .computer_memory(&(agent.as_ulid().to_bytes().as_slice(),))
     }
 
     async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
@@ -216,9 +230,8 @@ impl Store {
         node: NodeId,
         exclude: AgentId,
     ) -> Result<u64> {
-        let (start, end) = self
-            .root
-            .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
+        let (start, end) = crate::keys::Keys::new(&self.root)
+            .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
             .range();
         let mut begin = start;
         let mut total: u64 = 0;
@@ -288,7 +301,11 @@ impl Store {
     fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
         write(
             trx,
-            &self.placement_key("placement", record.agent_id),
+            &crate::keys::Keys::new(&self.root).placement(&(record
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),)),
             record,
         )?;
         write(
@@ -298,7 +315,11 @@ impl Store {
         )?;
         write(
             trx,
-            &self.placement_key("placement_epoch", record.agent_id),
+            &crate::keys::Keys::new(&self.root).placement_epoch(&(record
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),)),
             &record.epoch,
         )
     }
@@ -309,10 +330,16 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<PlacementRecord> {
         self.check_computer(trx, expected.agent_id).await?;
-        let current: PlacementRecord =
-            read(trx, &self.placement_key("placement", expected.agent_id))
-                .await?
-                .ok_or(StoreError::LeaseMismatch)?;
+        let current: PlacementRecord = read(
+            trx,
+            &crate::keys::Keys::new(&self.root).placement(&(expected
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),)),
+        )
+        .await?
+        .ok_or(StoreError::LeaseMismatch)?;
         if current.node_id != expected.node_id || current.epoch != expected.epoch {
             return Err(StoreError::LeaseMismatch);
         }
@@ -324,7 +351,7 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<()> {
-        if self.checked_placement(trx, expected).await?.expires_at <= Timestamp::now() {
+        if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
             return Err(StoreError::LeaseMismatch);
         }
         Ok(())
@@ -355,19 +382,27 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             self.check_computer(&trx, agent).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
             }
-            if read::<PlacementRecord>(&trx, &self.placement_key("placement", agent))
-                .await?
-                .is_some()
+            if read::<PlacementRecord>(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice(),)),
+            )
+            .await?
+            .is_some()
             {
                 return Err(StoreError::PlacementExists);
             }
-            let epoch: u64 = read(&trx, &self.placement_key("placement_epoch", agent))
-                .await?
-                .unwrap_or(0);
+            let epoch: u64 = read(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .placement_epoch(&(agent.as_ulid().to_bytes().as_slice(),)),
+            )
+            .await?
+            .unwrap_or(0);
             self.reserve_computer(&trx, node, agent).await?;
             let record = PlacementRecord {
                 agent_id: agent,
@@ -384,7 +419,8 @@ impl Store {
             self.write_placement(&trx, &record)?;
             write(
                 &trx,
-                &self.placement_key("placement_hosting", agent),
+                &crate::keys::Keys::new(&self.root)
+                    .placement_hosting(&(agent.as_ulid().to_bytes().as_slice(),)),
                 &PlacementHosting::default(),
             )?;
             Ok(record)
@@ -404,7 +440,7 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             let mut current = self.checked_placement(&trx, expected).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if current.expires_at <= now || expires_at <= current.expires_at {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -419,7 +455,11 @@ impl Store {
             hosting.last_renewed = Some(now);
             write(
                 &trx,
-                &self.placement_key("placement_hosting", current.agent_id),
+                &crate::keys::Keys::new(&self.root).placement_hosting(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
                 &hosting,
             )?;
             current.expires_at = expires_at;
@@ -436,14 +476,32 @@ impl Store {
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
-            if current.expires_at <= Timestamp::now() {
+            if current.expires_at <= self.now() {
                 return Err(StoreError::LeaseMismatch);
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
-            trx.clear(&self.placement_key("placement", current.agent_id));
-            trx.clear(&self.placement_key("placement_hosting", current.agent_id));
-            trx.clear(&self.placement_key("placement_address", current.agent_id));
+            trx.clear(
+                &crate::keys::Keys::new(&self.root).placement(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
+            );
+            trx.clear(
+                &crate::keys::Keys::new(&self.root).placement_hosting(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
+            );
+            trx.clear(
+                &crate::keys::Keys::new(&self.root).placement_address(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
+            );
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             Ok(())
         })
@@ -464,7 +522,7 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if current.expires_at > now || expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -498,11 +556,21 @@ impl Store {
                 last_changed_at: now,
                 ..current
             };
-            trx.clear(&self.placement_key("placement_address", current.agent_id));
+            trx.clear(
+                &crate::keys::Keys::new(&self.root).placement_address(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
+            );
             self.write_placement(&trx, &record)?;
             write(
                 &trx,
-                &self.placement_key("placement_hosting", current.agent_id),
+                &crate::keys::Keys::new(&self.root).placement_hosting(&(current
+                    .agent_id
+                    .as_ulid()
+                    .to_bytes()
+                    .as_slice(),)),
                 &PlacementHosting {
                     failure_estimate: estimated_failure_at,
                     ..Default::default()
@@ -517,9 +585,14 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn get_by_agent(&self, agent: AgentId) -> Result<Option<PlacementRecord>> {
-        self.transaction(
-            |trx| async move { read(&trx, &self.placement_key("placement", agent)).await },
-        )
+        self.transaction(|trx| async move {
+            read(
+                &trx,
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice(),)),
+            )
+            .await
+        })
         .await
     }
 
@@ -535,9 +608,8 @@ impl Store {
     ) -> Result<Vec<PlacementRecord>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = self
-                .root
-                .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
+            let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
                 .range();
             if let Some(agent) = after {
                 begin = self.placement_node_key(node, agent);
@@ -559,12 +631,22 @@ impl Store {
         trx: &Transaction,
         agent: AgentId,
     ) -> Result<()> {
-        if let Some(current) =
-            read::<PlacementRecord>(trx, &self.placement_key("placement", agent)).await?
+        if let Some(current) = read::<PlacementRecord>(
+            trx,
+            &crate::keys::Keys::new(&self.root)
+                .placement(&(agent.as_ulid().to_bytes().as_slice(),)),
+        )
+        .await?
         {
             self.free_computer(trx, current.node_id, agent).await?;
-            trx.clear(&self.placement_key("placement", agent));
-            trx.clear(&self.placement_key("placement_hosting", agent));
+            trx.clear(
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice(),)),
+            );
+            trx.clear(
+                &crate::keys::Keys::new(&self.root)
+                    .placement_hosting(&(agent.as_ulid().to_bytes().as_slice(),)),
+            );
             trx.clear(&self.placement_node_key(current.node_id, agent));
         }
         Ok(())
