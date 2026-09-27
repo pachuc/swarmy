@@ -57,8 +57,8 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     let id = f.session().await;
     let session = f.store.fetch_session(id).await.unwrap().unwrap();
     assert!(!session.needs_route_snapshot(None));
-    // Warm the display cache: preparing a request may read the session's
-    // image, but route resolution must not make a store transaction.
+    // Warm the display cache. Ordinary requests still read placement to
+    // collect repository instructions, but route resolution must add none.
     f.worker.session_display(&session).await.unwrap();
     let mut request = swarmy_llm::Request {
         system_prompt: String::new(),
