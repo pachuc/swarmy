@@ -40,9 +40,12 @@ impl BedrockProvider {
     /// Returns an error for an incompatible credential kind.
     pub fn new(model: ModelInfo, auth: ClientAuth) -> Result<Self, Error> {
         let (token, extra) = match auth {
-            ClientAuth::Ambient => (None, BTreeMap::new()),
-            ClientAuth::Bearer(token) => (Some(token), BTreeMap::new()),
-            ClientAuth::ApiKeyWithExtra { key, extra } => (Some(key), extra),
+            ClientAuth::Ambient => (None, crate::BedrockAuth::default()),
+            ClientAuth::Bearer(token) => (Some(token), crate::BedrockAuth::default()),
+            ClientAuth::ApiKeyWithExtra {
+                key,
+                extra: crate::ProviderAuthExtra::Bedrock(extra),
+            } => (Some(key), extra),
             _ => {
                 return Err(Error::Credentials(
                     "Bedrock requires AWS credentials or a bearer token",
@@ -51,11 +54,11 @@ impl BedrockProvider {
         };
         let region = resolve_region(
             &model.id,
-            extra.get("region").map(String::as_str),
+            extra.region.as_deref(),
             std::env::var("AWS_REGION").ok().as_deref(),
         );
         let bearer_token = token
-            .or_else(|| extra.get("bearer_token").cloned())
+            .or(extra.bearer_token)
             .or_else(|| std::env::var("AWS_BEARER_TOKEN_BEDROCK").ok());
         Ok(Self {
             model,
@@ -1549,7 +1552,10 @@ mod tests {
             model.clone(),
             ClientAuth::ApiKeyWithExtra {
                 key: "fixture-token".into(),
-                extra: BTreeMap::from([("region".into(), "us-west-2".into())]),
+                extra: crate::ProviderAuthExtra::Bedrock(crate::BedrockAuth {
+                    region: Some("us-west-2".into()),
+                    ..Default::default()
+                }),
             },
         )
         .unwrap();

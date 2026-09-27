@@ -81,10 +81,10 @@ impl CompletionsProvider {
         if status.is_success() {
             return Ok(response);
         }
-        let retry_after = retry_after(response.headers());
+        let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
         let error = serde_json::from_str::<Value>(&body).map_or_else(
-            |_| provider_error(body.clone()),
+            |_| crate::error::message_error(body.clone()),
             |value| error_from_json(&value),
         );
         if matches!(error, Error::ContextOverflow(_)) {
@@ -151,7 +151,7 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
     for message in &request.messages {
         messages.extend(convert_message(message, provider, model, system_role)?);
     }
-    let mut messages = repair_tool_results(messages);
+    crate::protocol::repair_tool_results(&mut messages, crate::protocol::ToolWire::Completions);
     if model.compat.cache_control_format() == Some("anthropic") {
         cache_messages(&mut messages);
     }
@@ -318,99 +318,6 @@ fn convert_message(
     Ok(messages)
 }
 
-/// Reorder wire messages so every tool result immediately follows the
-/// assistant message holding its call.
-///
-/// A system notice or a late user prompt can sit between a call and its
-/// result in the durable log; those messages are emitted after the results
-/// with their relative order preserved. A result whose call id appears
-/// nowhere in the history gets a neutral placeholder call so switching
-/// providers never fails.
-fn repair_tool_results(messages: Vec<Value>) -> Vec<Value> {
-    let mut call_sites: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for (index, message) in messages.iter().enumerate() {
-        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-            for call in calls {
-                if let Some(id) = call.get("id").and_then(Value::as_str) {
-                    call_sites.entry(id.to_owned()).or_insert(index);
-                }
-            }
-        }
-    }
-    let mut taken = vec![false; messages.len()];
-    let mut messages = messages;
-    let mut repaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut output = Vec::with_capacity(messages.len() * 2);
-    for index in 0..messages.len() {
-        if taken[index] {
-            continue;
-        }
-        let message = std::mem::take(&mut messages[index]);
-        if message.is_null() {
-            continue;
-        }
-        if message.get("role").and_then(Value::as_str) == Some("tool") {
-            let id = message
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if call_sites.contains_key(&id) {
-                // The result is pulled forward to its assistant message below,
-                // or was already emitted there; never emit it twice.
-                continue;
-            }
-            taken[index] = true;
-            output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": "unknown_tool", "arguments": "{}"}}]}));
-            repaired.insert(id);
-            output.push(message);
-            continue;
-        }
-        let calls: Vec<String> = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(|calls| {
-                calls
-                    .iter()
-                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        output.push(message);
-        for id in calls {
-            let mut found = None;
-            for (candidate, message) in messages.iter().enumerate() {
-                if taken[candidate] {
-                    continue;
-                }
-                if message.get("role").and_then(Value::as_str) == Some("tool")
-                    && message.get("tool_call_id").and_then(Value::as_str) == Some(&id)
-                {
-                    found = Some(candidate);
-                    break;
-                }
-            }
-            if let Some(candidate) = found {
-                taken[candidate] = true;
-                output.push(std::mem::take(&mut messages[candidate]));
-            } else {
-                output.push(json!({
-                    "role": "tool", "tool_call_id": id,
-                    "content": json!({"error": "No result provided"}).to_string()
-                }));
-            }
-        }
-    }
-    if !repaired.is_empty() {
-        tracing::warn!(
-            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
-            "repaired tool result without a stored tool call; synthesized unknown_tool call"
-        );
-    }
-    output
-}
-
 fn cache_messages(messages: &mut [Value]) {
     let mut system = false;
     let mut users = 0;
@@ -437,34 +344,6 @@ fn cache_messages(messages: &mut [Value]) {
 }
 
 /// Classify the shared context-overflow phrases before deciding to retry.
-fn provider_error(message: String) -> Error {
-    let lower = message.to_ascii_lowercase();
-    if [
-        "maximum context length",
-        "context_length_exceeded",
-        "exceeds the context window",
-    ]
-    .iter()
-    .any(|phrase| lower.contains(phrase))
-    {
-        Error::ContextOverflow(message)
-    } else {
-        Error::Protocol(message)
-    }
-}
-
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
-    }
-    let date = jiff::fmt::rfc2822::parse(value).ok()?.timestamp();
-    let seconds = date
-        .as_second()
-        .saturating_sub(jiff::Timestamp::now().as_second());
-    Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
-}
-
 fn error_from_json(value: &Value) -> Error {
     let error = value.get("error").unwrap_or(value);
     let message = error["message"]
@@ -472,7 +351,7 @@ fn error_from_json(value: &Value) -> Error {
         .or_else(|| error.as_str())
         .unwrap_or("provider returned an error");
     let code = error["code"].as_str().unwrap_or_default();
-    provider_error(if code.is_empty() {
+    crate::error::message_error(if code.is_empty() {
         message.into()
     } else {
         format!("{code}: {message}")
@@ -802,15 +681,21 @@ mod tests {
     #[test]
     fn retry_after_supports_seconds_http_dates_and_invalid_values() {
         let mut headers = HeaderMap::new();
-        assert_eq!(retry_after(&headers), None);
+        assert_eq!(crate::retry::retry_after_header(&headers), None);
         headers.insert(RETRY_AFTER, HeaderValue::from_static("12"));
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(12)));
+        assert_eq!(
+            crate::retry::retry_after_header(&headers),
+            Some(Duration::from_secs(12))
+        );
         headers.insert(
             RETRY_AFTER,
             HeaderValue::from_static("Sun, 06 Nov 1994 08:49:37 GMT"),
         );
-        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        assert_eq!(
+            crate::retry::retry_after_header(&headers),
+            Some(Duration::ZERO)
+        );
         headers.insert(RETRY_AFTER, HeaderValue::from_static("invalid"));
-        assert_eq!(retry_after(&headers), None);
+        assert_eq!(crate::retry::retry_after_header(&headers), None);
     }
 }

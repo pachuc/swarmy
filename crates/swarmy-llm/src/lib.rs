@@ -5,7 +5,9 @@ pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod cost;
+pub mod error;
 pub mod fake;
+pub mod protocol;
 pub mod quota;
 pub mod reasoning;
 pub mod responses;
@@ -27,6 +29,43 @@ pub trait BearerSource: Send + Sync {
     fn token(&self) -> futures::future::BoxFuture<'_, Result<String, Error>>;
 }
 
+/// Azure endpoint metadata from a credential record.
+#[derive(Clone, Debug, Default)]
+pub struct AzureAuth {
+    pub resource_name: Option<String>,
+    pub base_url: Option<String>,
+}
+
+/// Bedrock token and region overrides from a credential record.
+#[derive(Clone, Debug, Default)]
+pub struct BedrockAuth {
+    pub region: Option<String>,
+    pub bearer_token: Option<String>,
+}
+
+/// Provider-specific auth metadata; wire clients never inspect string keys.
+#[derive(Clone, Debug)]
+pub enum ProviderAuthExtra {
+    Azure(AzureAuth),
+    Bedrock(BedrockAuth),
+}
+
+impl ProviderAuthExtra {
+    fn from_record(provider: &str, extra: &BTreeMap<String, String>) -> Result<Self, Error> {
+        match provider {
+            "azure" => Ok(Self::Azure(AzureAuth {
+                resource_name: extra.get("resource_name").cloned(),
+                base_url: extra.get("base_url").cloned(),
+            })),
+            "amazon-bedrock" => Ok(Self::Bedrock(BedrockAuth {
+                region: extra.get("region").cloned(),
+                bearer_token: extra.get("bearer_token").cloned(),
+            })),
+            _ => Err(Error::Credentials("unsupported provider auth metadata")),
+        }
+    }
+}
+
 /// Resolved credentials for a protocol client. Cloud credentials can add variants.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -36,13 +75,13 @@ pub enum ClientAuth {
     /// Provider metadata, such as Azure's `resource_name`, alongside an API key.
     ApiKeyWithExtra {
         key: String,
-        extra: BTreeMap<String, String>,
+        extra: ProviderAuthExtra,
     },
     Bearer(String),
     /// Provider metadata, such as Azure's `resource_name`, alongside a bearer token.
     BearerWithExtra {
         token: String,
-        extra: BTreeMap<String, String>,
+        extra: ProviderAuthExtra,
     },
     Vertex {
         project: String,

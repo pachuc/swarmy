@@ -1,11 +1,7 @@
 //! Anthropic Messages on Anthropic direct, Vertex, and `OpenRouter`.
 
 use base64::Engine as _;
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -147,21 +143,7 @@ impl AnthropicProvider {
         if status.is_success() {
             return Ok(response);
         }
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|header| header.to_str().ok())
-            .and_then(|value| {
-                value
-                    .parse::<u64>()
-                    .ok()
-                    .map(Duration::from_secs)
-                    .or_else(|| {
-                        httpdate::parse_http_date(value)
-                            .ok()
-                            .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
-                    })
-            });
+        let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
         if context_overflow(&body) {
             return Err(Error::ContextOverflow(body));
@@ -173,20 +155,7 @@ impl AnthropicProvider {
                 retry_after,
             });
         }
-        Err(provider_error(status, &body))
-    }
-}
-
-/// Keep the provider's own explanation; a bare status hides schema mistakes.
-fn provider_error(status: reqwest::StatusCode, body: &str) -> Error {
-    let message = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| body.trim().chars().take(600).collect());
-    if message.is_empty() {
-        Error::Status(status)
-    } else {
-        Error::Protocol(format!("provider error ({status}): {message}"))
+        Err(crate::error::provider_error(status, &body))
     }
 }
 
@@ -452,7 +421,7 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
             messages.push(json!({"role": role, "content": blocks}));
         }
     }
-    repair_tool_results(&mut messages);
+    crate::protocol::repair_tool_results(&mut messages, crate::protocol::ToolWire::Anthropic);
     if let Some(last) = messages
         .iter_mut()
         .rev()
@@ -465,41 +434,6 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
         );
     }
     Ok(messages)
-}
-
-fn repair_tool_results(messages: &mut Vec<Value>) {
-    let mut index = 0;
-    while index < messages.len() {
-        let calls: Vec<_> = messages[index]["content"]
-            .as_array()
-            .expect("constructed content array")
-            .iter()
-            .filter(|block| block["type"] == "tool_use")
-            .map(|block| block["id"].clone())
-            .collect();
-        if !calls.is_empty() {
-            if messages
-                .get(index + 1)
-                .is_none_or(|message| message["role"] != "user")
-            {
-                messages.insert(index + 1, json!({"role": "user", "content": []}));
-            }
-            let blocks = messages[index + 1]["content"]
-                .as_array_mut()
-                .expect("constructed content array");
-            for id in calls {
-                if !blocks
-                    .iter()
-                    .any(|block| block["type"] == "tool_result" && block["tool_use_id"] == id)
-                {
-                    blocks.push(json!({"type": "tool_result", "tool_use_id": id, "content": "No result provided", "is_error": true}));
-                }
-            }
-            // Tool results must precede ordinary user text, including rebuild notices.
-            blocks.sort_by_key(|block| block["type"] != "tool_result");
-        }
-        index += 1;
-    }
 }
 
 fn context_overflow(body: &str) -> bool {
@@ -839,13 +773,13 @@ mod tests {
 
     #[test]
     fn provider_errors_keep_the_message() {
-        let error = provider_error(
+        let error = crate::error::provider_error(
             reqwest::StatusCode::BAD_REQUEST,
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"tools.14: bad schema"}}"#,
         );
         assert!(error.to_string().contains("tools.14: bad schema"));
         assert!(matches!(
-            provider_error(reqwest::StatusCode::FORBIDDEN, ""),
+            crate::error::provider_error(reqwest::StatusCode::FORBIDDEN, ""),
             Error::Status(reqwest::StatusCode::FORBIDDEN)
         ));
     }

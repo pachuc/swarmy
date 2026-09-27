@@ -15,21 +15,7 @@ pub fn local(catalog: &Catalog, store: &str) -> Vec<ProviderRow> {
     catalog
         .providers()
         .map(|provider| {
-            let keys: &[&str] = match provider.id.as_str() {
-                "anthropic" => &["ANTHROPIC_API_KEY"],
-                "openai" => &["OPENAI_API_KEY"],
-                "xai" => &["XAI_API_KEY"],
-                "meta" => &["META_MODEL_API_KEY"],
-                "openrouter" => &["OPENROUTER_API_KEY"],
-                "azure" => &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
-                "google" => &[
-                    "GEMINI_API_KEY",
-                    "GOOGLE_API_KEY",
-                    "GOOGLE_GENERATIVE_AI_API_KEY",
-                ],
-                "amazon-bedrock" => &["AWS_BEARER_TOKEN_BEDROCK"],
-                _ => &[],
-            };
+            let keys = swarmy_llm::auth::provider_env_keys(&provider.id);
             let credential = if provider.id == "fake" {
                 "not required"
             } else if keys.iter().any(|key| present(key)) {

@@ -175,7 +175,7 @@ impl Resolver {
         let auth = if is_vertex(provider) {
             vertex_from_record(record.kind)
         } else {
-            auth_from_kind(record.kind)?
+            auth_from_kind(provider, record.kind)?
         };
         Ok(ResolvedAuth {
             auth,
@@ -212,7 +212,7 @@ impl Resolver {
             let auth = if is_vertex(provider) {
                 vertex_from_record(record.kind)
             } else {
-                auth_from_kind(record.kind)?
+                auth_from_kind(provider, record.kind)?
             };
             return Ok(ResolvedAuth {
                 auth,
@@ -296,7 +296,7 @@ fn vertex_from_record(kind: CredentialKind) -> ClientAuth {
     google::vertex_auth(&extra).unwrap_or(ClientAuth::Ambient)
 }
 
-fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
+fn auth_from_kind(provider: &str, kind: CredentialKind) -> Result<ClientAuth, Error> {
     match kind {
         CredentialKind::ApiKey { key, extra } => {
             if key.is_empty() {
@@ -305,7 +305,10 @@ fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
             if extra.is_empty() {
                 Ok(ClientAuth::ApiKey(key))
             } else {
-                Ok(ClientAuth::ApiKeyWithExtra { key, extra })
+                Ok(ClientAuth::ApiKeyWithExtra {
+                    key,
+                    extra: crate::ProviderAuthExtra::from_record(provider, &extra)?,
+                })
             }
         }
         CredentialKind::OAuth { access, extra, .. } => {
@@ -314,7 +317,7 @@ fn auth_from_kind(kind: CredentialKind) -> Result<ClientAuth, Error> {
             } else {
                 Ok(ClientAuth::BearerWithExtra {
                     token: access,
-                    extra,
+                    extra: crate::ProviderAuthExtra::from_record(provider, &extra)?,
                 })
             }
         }
@@ -337,21 +340,7 @@ fn environment(
         return ambient(ClientAuth::None);
     }
     // Catalog env_keys also lists endpoint and SDK settings. Only these are keys.
-    let key_names: &[&str] = match provider {
-        "anthropic" => &["ANTHROPIC_API_KEY"],
-        "openai" => &["OPENAI_API_KEY"],
-        "xai" => &["XAI_API_KEY"],
-        "meta" => &["META_MODEL_API_KEY"],
-        "openrouter" => &["OPENROUTER_API_KEY"],
-        "azure" => &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
-        "google" => &[
-            "GEMINI_API_KEY",
-            "GOOGLE_API_KEY",
-            "GOOGLE_GENERATIVE_AI_API_KEY",
-        ],
-        "amazon-bedrock" => &["AWS_BEARER_TOKEN_BEDROCK"],
-        _ => &[],
-    };
+    let key_names = super::provider_env_keys(provider);
     let catalog = crate::catalog::Catalog::get();
     let info = catalog
         .provider(provider)
@@ -363,19 +352,22 @@ fn environment(
     if let Some(key) = key {
         let version = *blake3::hash(key.as_bytes()).as_bytes();
         let auth = if provider == "azure" {
-            let mut extra = BTreeMap::new();
+            let mut extra = crate::AzureAuth::default();
             if let Some(resource) = get("AZURE_RESOURCE_NAME").filter(|s| !s.trim().is_empty()) {
-                extra.insert("resource_name".into(), resource);
+                extra.resource_name = Some(resource);
             }
             if let Some(endpoint) = get("AZURE_OPENAI_BASE_URL").filter(|s| !s.trim().is_empty()) {
-                extra.insert("base_url".into(), endpoint);
+                extra.base_url = Some(endpoint);
             }
-            if extra.is_empty() {
+            if extra.resource_name.is_none() && extra.base_url.is_none() {
                 return Err(Error::Credentials(
                     "Azure requires AZURE_RESOURCE_NAME or AZURE_OPENAI_BASE_URL",
                 ));
             }
-            ClientAuth::ApiKeyWithExtra { key, extra }
+            ClientAuth::ApiKeyWithExtra {
+                key,
+                extra: crate::ProviderAuthExtra::Azure(extra),
+            }
         } else if provider == "amazon-bedrock" {
             ClientAuth::Bearer(key)
         } else {
@@ -499,7 +491,7 @@ mod tests {
             ClientAuth::Bearer(_)
         ));
         assert!(
-            matches!(environment("azure", |name| Some(name.into())).unwrap().auth, ClientAuth::ApiKeyWithExtra { key, extra } if key == "AZURE_API_KEY" && extra["resource_name"] == "AZURE_RESOURCE_NAME")
+            matches!(environment("azure", |name| Some(name.into())).unwrap().auth, ClientAuth::ApiKeyWithExtra { key, extra } if key == "AZURE_API_KEY" && matches!(&extra, crate::ProviderAuthExtra::Azure(crate::AzureAuth { resource_name: Some(name), .. }) if name == "AZURE_RESOURCE_NAME"))
         );
         assert!(
             environment("azure", |name| (name == "AZURE_API_KEY")

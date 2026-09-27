@@ -55,6 +55,16 @@ impl SseParser {
         Ok(Some(Frame::Raw(line)))
     }
 
+    /// Flush a final unterminated event at EOF (used by Gemini).
+    /// # Errors
+    /// Rejects an oversized trailing line.
+    pub fn finish(&mut self) -> Result<Option<Frame>, Error> {
+        if !self.line.is_empty() {
+            let _ = self.push_byte(b'\n')?;
+        }
+        self.push_byte(b'\n')
+    }
+
     #[must_use]
     pub fn pending_line(&self) -> &[u8] {
         &self.line

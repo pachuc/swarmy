@@ -1,5 +1,5 @@
 //! Shared transport for direct Responses APIs and the Codex backend.
-use std::{collections::BTreeMap, sync::Arc, time::Duration, time::SystemTime};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use serde_json::Value;
@@ -51,12 +51,18 @@ impl ResponsesEndpoint {
         let base = model.base_url.as_deref().unwrap_or(&provider.base_url);
         let base = if provider.id == "azure" && base.is_empty() {
             let extra = match &auth {
-                ClientAuth::ApiKeyWithExtra { extra, .. }
-                | ClientAuth::BearerWithExtra { extra, .. } => Some(extra),
+                ClientAuth::ApiKeyWithExtra {
+                    extra: crate::ProviderAuthExtra::Azure(extra),
+                    ..
+                }
+                | ClientAuth::BearerWithExtra {
+                    extra: crate::ProviderAuthExtra::Azure(extra),
+                    ..
+                } => Some(extra),
                 _ => None,
             };
             let endpoint = extra
-                .and_then(|extra| extra.get("base_url"))
+                .and_then(|extra| extra.base_url.as_ref())
                 .cloned()
                 .or_else(|| {
                     if extra.is_none() {
@@ -80,7 +86,7 @@ impl ResponsesEndpoint {
                 format!("{}/openai/v1", endpoint.trim_end_matches('/'))
             } else {
                 let resource = extra
-                    .and_then(|extra| extra.get("resource_name"))
+                    .and_then(|extra| extra.resource_name.as_ref())
                     .cloned()
                     .or_else(|| std::env::var("AZURE_RESOURCE_NAME").ok())
                     .ok_or(Error::Credentials(
@@ -315,7 +321,7 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
         .headers()
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
-        .and_then(retry_after);
+        .and_then(crate::retry::retry_after);
     let body = response.text().await?;
     if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(&body) {
         return Err(Error::ContextOverflow(body));
@@ -327,31 +333,22 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
     })
 }
 
-fn retry_after(value: &str) -> Option<Duration> {
-    value
-        .parse::<u64>()
-        .ok()
-        .map(Duration::from_secs)
-        .or_else(|| {
-            httpdate::parse_http_date(value)
-                .ok()
-                .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn retry_after_accepts_seconds_and_http_dates() {
-        assert_eq!(retry_after("12"), Some(Duration::from_secs(12)));
         assert_eq!(
-            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            crate::retry::retry_after("12"),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            crate::retry::retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
             Some(Duration::ZERO)
         );
-        assert!(retry_after("Wed, 21 Oct 2099 07:28:00 GMT").is_some());
-        assert!(retry_after("invalid").is_none());
+        assert!(crate::retry::retry_after("Wed, 21 Oct 2099 07:28:00 GMT").is_some());
+        assert!(crate::retry::retry_after("invalid").is_none());
         assert!(!is_context_overflow("rate limit: too many tokens"));
     }
 }

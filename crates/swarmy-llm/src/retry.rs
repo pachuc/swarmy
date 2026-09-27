@@ -61,3 +61,41 @@ where
 pub(crate) fn retryable(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 409 | 429) || status.is_server_error()
 }
+
+/// Parse a Retry-After value as seconds or an HTTP date.
+#[must_use]
+pub fn retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = jiff::fmt::rfc2822::parse(value).ok()?.timestamp();
+    let seconds = date
+        .as_second()
+        .saturating_sub(jiff::Timestamp::now().as_second());
+    Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
+}
+
+/// Read Retry-After from a response.
+#[must_use]
+pub fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()
+        .and_then(retry_after)
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    #[test]
+    fn seconds_dates_and_invalid_values() {
+        assert_eq!(retry_after("12"), Some(Duration::from_secs(12)));
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(Duration::ZERO)
+        );
+        assert!(retry_after("Wed, 21 Oct 2099 07:28:00 GMT").is_some());
+        assert_eq!(retry_after("invalid"), None);
+    }
+}
