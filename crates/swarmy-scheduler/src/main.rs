@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     match store.migrate_legacy_sessions().await {
         Ok(migrated) => tracing::info!(migrated, "session V1 migration finished"),
         Err(error) => {
-            tracing::warn!(%error, "session migration incomplete; continuing with legacy reads")
+            tracing::warn!(%error, "session migration incomplete; continuing with legacy reads");
         }
     }
     let bus = Bus::connect(&url, bus_config).await?;
