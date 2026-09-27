@@ -365,58 +365,6 @@ impl Fixture {
         id
     }
 
-    async fn create_named_agent(&self, name: &str) -> AgentId {
-        self.store
-            .create_agent(
-                name,
-                image_fixture::image(&self.store).await,
-                "",
-                Timestamp::now(),
-                None,
-            )
-            .await
-            .unwrap()
-            .agent_id
-    }
-
-    async fn set_agent_route(&self, agent: AgentId, route: Option<&str>) {
-        self.store
-            .set_agent(
-                agent,
-                &swarmy_core::AgentSettings {
-                    route: route.map(str::to_owned),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-    }
-
-    async fn create_agent_session(&self, agent: AgentId, route: Option<&str>) -> SessionId {
-        let id = loop {
-            let id = SessionId::from_ulid(Ulid::generate());
-            if runnable_partition(id) == 7 {
-                break id;
-            }
-        };
-        // Named sessions pin the agent's image instead of taking one.
-        self.store
-            .create_agent_session(
-                id,
-                Some(agent),
-                Timestamp::now(),
-                Some(AgentSessionOptions {
-                    inference: Some(&swarmy_core::InferenceSelection::default()),
-                    route,
-                    ..Default::default()
-                }),
-            )
-            .await
-            .unwrap();
-        self.user_message(id).await;
-        id
-    }
-
     /// Wait until the gateway advertises a provider, so the first attempt
     /// cannot fail over behind a missing advertisement instead of the
     /// scripted failure the test asserts on.
