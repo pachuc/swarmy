@@ -436,15 +436,12 @@ impl CompletionsStream {
     fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
         match frame {
             crate::sse::Frame::Data(data) if data == b"[DONE]\n" => self.complete(deltas)?,
-            crate::sse::Frame::Data(data) | crate::sse::Frame::Raw(data) => {
+            crate::sse::Frame::Data(data) => {
+                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+            }
+            crate::sse::Frame::Raw(data) => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&data) {
-                    if value.get("choices").is_some() || value.get("usage").is_some() {
-                        self.event(&value, deltas)?;
-                    } else {
-                        return Err(error_from_json(&value));
-                    }
-                } else {
-                    self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+                    return Err(error_from_json(&value));
                 }
             }
         }
