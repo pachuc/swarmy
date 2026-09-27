@@ -2147,6 +2147,93 @@ async fn legacy_sessions_without_images_remain_readable() {
     test.cleanup().await;
 }
 
+#[tokio::test]
+async fn legacy_side_rows_migrate_to_one_versioned_session() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = SessionId::from_ulid(Ulid::from(0_u128));
+    let agent = AgentId::from_ulid(Ulid::from(0_u128));
+    let mut bytes = vec![1, 26];
+    bytes.extend([b'0'; 26]);
+    bytes.push(26);
+    bytes.extend([b'0'; 26]);
+    bytes.extend([1, 0, 0]); // Runnable, empty log, no snapshot.
+    assert_eq!(
+        bytes,
+        encode(&(id, agent, SessionState::Runnable, 0_u64, None::<u64>)).unwrap()
+    );
+    let header = test
+        .root
+        .pack(&("session", id.as_ulid().to_bytes().as_slice()));
+    let kind = test
+        .root
+        .pack(&("session_kind", id.as_ulid().to_bytes().as_slice()));
+    let step = test
+        .root
+        .pack(&("session_route_step", id.as_ulid().to_bytes().as_slice()));
+    let interrupt = test
+        .root
+        .pack(&("interrupt_requested", id.as_ulid().to_bytes().as_slice()));
+    // These are complete V1 envelope plus postcard side-row encodings.
+    let kind_bytes = [1, 0]; // Ephemeral
+    let step_bytes = [1, 3];
+    let interrupt_bytes = [1, 1];
+    test.db
+        .run(|trx, _| {
+            let (header, kind, step, interrupt, bytes) =
+                (&header, &kind, &step, &interrupt, &bytes);
+            async move {
+                trx.set(header, bytes);
+                trx.set(kind, &kind_bytes);
+                trx.set(step, &step_bytes);
+                trx.set(interrupt, &interrupt_bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let legacy = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(legacy.route_step, 3);
+    assert!(legacy.interrupt_requested);
+    assert_eq!(legacy.kind, swarmy_core::SessionKind::Ephemeral);
+    assert_eq!(test.store.migrate_legacy_sessions().await.unwrap(), 1);
+    assert_eq!(test.store.migrate_legacy_sessions().await.unwrap(), 0);
+    assert_eq!(test.store.fetch_session(id).await.unwrap().unwrap(), legacy);
+    test.db
+        .run(|trx, _| {
+            let (header, kind, step, interrupt) = (&header, &kind, &step, &interrupt);
+            async move {
+                assert_eq!(trx.get(header, false).await?.unwrap()[0], 2);
+                for key in [kind, step, interrupt] {
+                    assert!(trx.get(key, false).await?.is_none());
+                }
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn fetch_and_claim_each_read_one_session_record() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let before = test.store.session_record_read_count();
+    test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(test.store.session_record_read_count() - before, 1);
+    let before = test.store.session_record_read_count();
+    test.store
+        .claim_step(id, owner(), timestamp(100))
+        .await
+        .unwrap();
+    assert_eq!(test.store.session_record_read_count() - before, 1);
+    test.cleanup().await;
+}
+
 #[path = "store/agents.rs"]
 mod agents;
 

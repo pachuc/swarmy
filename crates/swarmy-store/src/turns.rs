@@ -136,7 +136,8 @@ impl Store {
                     });
                 }
                 if let Some(route) = route {
-                    self.write_submit_route_step(&trx, id, route, now).await?;
+                    self.write_submit_route_step(&trx, id, &mut session, route, now)
+                        .await?;
                 }
                 trx.set(
                     &self
@@ -179,16 +180,15 @@ impl Store {
         &self,
         trx: &foundationdb::Transaction,
         id: SessionId,
+        session: &mut crate::StoredSession,
         route: &SubmitRouteStep,
         now: Timestamp,
     ) -> Result<()> {
-        let mut session = self.session(trx, id).await?;
         let current = session.route_step;
         if route.step == current && route.reasons.is_empty() {
             return Ok(());
         }
         session.route_step = route.step;
-        self.write_session(trx, &session)?;
         if route.reasons.is_empty() {
             return Ok(());
         }

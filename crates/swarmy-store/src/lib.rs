@@ -300,6 +300,7 @@ pub struct Store {
     /// Binding-level retries inside one call count once; the counter exists
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
+    session_record_reads: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -331,6 +332,7 @@ impl Store {
             images: Arc::default(),
             blobs,
             transactions: Arc::default(),
+            session_record_reads: Arc::default(),
         })
     }
 
@@ -343,6 +345,7 @@ impl Store {
             blobs,
             images: Arc::default(),
             transactions: Arc::default(),
+            session_record_reads: Arc::default(),
         }
     }
 
@@ -353,6 +356,14 @@ impl Store {
     #[cfg(any(test, feature = "test-support"))]
     pub fn transaction_count(&self) -> u64 {
         self.transactions.load(Ordering::Relaxed)
+    }
+
+    /// Number of session-record key reads made by this store instance.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn session_record_read_count(&self) -> u64 {
+        self.session_record_reads.load(Ordering::Relaxed)
     }
 
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
@@ -508,7 +519,12 @@ impl Store {
         if bytes.first() == Some(&2) {
             let v: StoredSessionV2 =
                 postcard::from_bytes(&bytes[1..]).map_err(EncodingError::Payload)?;
-            Ok(v.into())
+            let mut session: StoredSession = v.into();
+            // The agent tombstone is authoritative for every named side session.
+            // Deleting a computer cannot atomically rewrite an unbounded set
+            // of conversations, so keep this one shared fence until queried.
+            session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
+            Ok(session)
         } else {
             self.hydrate_legacy_session(trx, decode(bytes)?).await
         }
@@ -519,6 +535,7 @@ impl Store {
         trx: &Transaction,
         id: SessionId,
     ) -> Result<Option<(StoredSession, Option<Vec<u8>>)>> {
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
         let Some(bytes) = trx.get(&self.session_key(id), false).await? else {
             return Ok(None);
         };
@@ -537,6 +554,7 @@ impl Store {
     }
 
     pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
         let bytes = trx
             .get(&self.session_key(id), false)
             .await?
@@ -552,6 +570,9 @@ impl Store {
             postcard::to_allocvec(&StoredSessionV2::from(session))
                 .map_err(EncodingError::Payload)?,
         );
+        if bytes.len() > INLINE_LIMIT {
+            return Err(StoreError::TooLarge);
+        }
         trx.set(&self.session_key(session.session_id), &bytes);
         let id = session.session_id;
         for key in [
@@ -619,7 +640,6 @@ impl Store {
     }
 
     /// Create an empty session and pin its registered image in the same transaction.
-    /// The separate image row preserves the binary layout of legacy session headers.
     /// Runnable creation also indexes the session.
     /// # Errors
     /// Rejects unknown images, duplicate ids, nonempty logs, and invalid initial state.
@@ -1100,6 +1120,51 @@ async fn scan(
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+
+    #[test]
+    fn fixed_versioned_session_bytes() {
+        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
+        let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128));
+        let v1 = StoredSessionV1 {
+            session_id: id,
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_seq: None,
+        };
+        let mut v1_bytes = vec![1, 26];
+        v1_bytes.extend([b'0'; 26]);
+        v1_bytes.push(26);
+        v1_bytes.extend([b'0'; 26]);
+        v1_bytes.extend([0, 0, 0]); // Idle, empty head, no snapshot.
+        assert_eq!(encode(&v1).unwrap(), v1_bytes);
+        let v2 = StoredSessionV2 {
+            session_id: id,
+            agent_id: agent,
+            state: SessionState::Idle,
+            head_seq: 0,
+            snapshot_seq: None,
+            kind: swarmy_core::SessionKind::Ephemeral,
+            computer_deleted: false,
+            plan: Vec::new(),
+            inference: swarmy_core::InferenceSelection::default(),
+            interrupt_requested: false,
+            route: None,
+            route_step: 0,
+            image: None,
+            idle_since: None,
+            state_since: None,
+        };
+        let mut bytes = vec![2];
+        bytes.extend(postcard::to_allocvec(&v2).unwrap());
+        let mut v2_bytes = v1_bytes;
+        v2_bytes[0] = 2;
+        v2_bytes.extend([0; 12]); // Kind through state-since are empty defaults.
+        assert_eq!(bytes, v2_bytes);
+        let decoded: StoredSessionV2 = postcard::from_bytes(&bytes[1..]).unwrap();
+        assert_eq!(decoded.session_id, id);
+        assert_eq!(decoded.route_step, 0);
+    }
 
     #[test]
     fn legacy_session_header_is_still_readable_and_writes_the_same_bytes() {

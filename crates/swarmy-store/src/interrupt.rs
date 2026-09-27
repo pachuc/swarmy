@@ -158,6 +158,7 @@ impl Store {
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
         trx.set(&self.event_space(session.session_id).pack(&(head,)), &value);
         session.head_seq = head;
+        session.interrupt_requested = false;
         self.transition(trx, session, SessionState::Idle, now).await
     }
 }

@@ -73,7 +73,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         let session = self.session(trx, id).await?;
-        match self.session_kind(trx, id).await? {
+        match session.kind {
             SessionKind::Ephemeral => self.delete_computer_in(trx, session.agent_id).await?,
             SessionKind::Named { agent_id } => {
                 if self

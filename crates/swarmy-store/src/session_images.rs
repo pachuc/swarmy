@@ -1,4 +1,4 @@
-//! Image metadata is stored separately so legacy session headers stay readable.
+//! Session image pins live in V2 records; V1 image rows are read during migration.
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError};
 use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
 
@@ -18,7 +18,7 @@ impl Store {
             .pack(&("session_image", id.as_ulid().to_bytes().as_slice()))
     }
 
-    /// Read a session's pinned image. Only legacy sessions can lack this row.
+    /// Read a session's pinned image. Old sessions may lack a pin.
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn session_image(&self, id: SessionId) -> Result<Option<ManifestId>> {

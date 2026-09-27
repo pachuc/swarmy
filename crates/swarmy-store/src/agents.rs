@@ -1,4 +1,4 @@
-//! Named identities and session metadata. Side rows preserve legacy postcard headers.
+//! Named identities and session creation. Legacy session rows are read during migration.
 use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
@@ -22,14 +22,6 @@ pub struct CreateAgentOptions<'a> {
 }
 
 impl Store {
-    pub(crate) async fn session_kind(
-        &self,
-        trx: &Transaction,
-        id: SessionId,
-    ) -> Result<SessionKind> {
-        Ok(self.session(trx, id).await?.kind)
-    }
-
     /// Create a named agent, resolving and pinning the registered image atomically.
     /// # Errors
     /// Rejects duplicate names or ids, invalid names, unknown images, and storage failures.
@@ -503,7 +495,7 @@ impl Store {
             let session = self.session(&trx, id).await?;
             self.check_computer(&trx, agent).await?;
             if session.agent_id != agent
-                || self.session_kind(&trx, id).await? != (SessionKind::Named { agent_id: agent })
+                || session.kind != (SessionKind::Named { agent_id: agent })
                 || session.state == SessionState::Completed
             {
                 return Err(StoreError::InvalidMainSession);
