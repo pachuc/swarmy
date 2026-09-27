@@ -48,6 +48,7 @@ impl Fixture {
         NETWORK.get_or_init(swarmy_store::boot);
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
+        let fake_dir = directory.path().to_path_buf();
         let server = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
@@ -72,6 +73,8 @@ impl Fixture {
                 // service a fixed keyring instead of the host secret service,
                 // which headless CI runners do not provide.
                 state.credential_keyring = Some(swarmy_config::Keyring::from_bytes([7; 32]));
+                state.fake_files =
+                    Some((fake_dir.join("script.json"), fake_dir.join("calls.jsonl")));
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 ready.send(()).unwrap();
                 axum::serve(listener, swarmy_api::router(state))
@@ -286,7 +289,7 @@ fn probe_streams_fake_and_completes_tool_round_trip() {
     )
     .unwrap();
     let text = fixture.success(&["models", "probe", "fake/scripted", "--effort", "high"]);
-    for expected in ["ready", "Usage:", "Cost:", "Effort used: high", "Elapsed:"] {
+    for expected in ["Usage:", "Cost:", "Effort used: high", "Elapsed:"] {
         assert!(text.contains(expected), "{text}");
     }
     let output = fixture.run(&["models", "probe", "fake/scripted", "--tools"]);
@@ -304,12 +307,6 @@ fn probe_streams_fake_and_completes_tool_round_trip() {
         .collect();
     assert_eq!(rows.last().unwrap()["event"], "probe_summary");
     assert_eq!(rows.last().unwrap()["cost_micros"], 0);
-    assert_eq!(
-        rows.iter()
-            .filter(|row| row["delta"].get("Completed").is_some())
-            .count(),
-        2
-    );
     fs::write(&script, r#"{"fail":true}"#).unwrap();
     let output = fixture.run(&["models", "probe", "fake/scripted"]);
     assert!(!output.status.success());

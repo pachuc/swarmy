@@ -98,6 +98,7 @@ async fn run() -> Result<()> {
     swarmy_api::images::sweep_stale_uploads(&state.upload_dir);
     state.resend_interval = std::time::Duration::from_millis(settings.scheduler_resend_interval_ms);
     state.default_image = settings.default_image.clone();
+    state.fake_files = Some((settings.fake.script.into(), settings.fake.call_log.into()));
     state.default_selection = swarmy_core::ResolvedSelection {
         provider: settings.provider.clone(),
         model: settings.model.clone(),

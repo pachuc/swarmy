@@ -4230,6 +4230,7 @@ dependencies = [
 name = "swarmy-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "bytes",
  "futures-util",
@@ -4238,6 +4239,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-api-types",
+ "swarmy-config",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

@@ -8,10 +8,10 @@ license.workspace = true
 
 [features]
 # Provisioning (EC2, SSM, S3, IAM) is opt-in so the default build skips the
-# EC2 provisioning SDKs. Node builds and plain workspace checks use the default;
-# laptop installs and provisioning tests enable `remote`.
+# EC2 provisioning SDKs. Laptop installs enable `remote` and `chat`; node
+# installs disable default features to omit terminal dependencies.
 default = ["chat"]
-chat = ["swarmy-chat/terminal"]
+chat = ["swarmy-chat/terminal", "dep:crossterm", "dep:unicode-width"]
 remote = ["swarmy-cloud/remote"]
 
 [lints]
@@ -48,6 +48,8 @@ swarmy-client.workspace = true
 swarmy-chat.workspace = true
 swarmy-api-types.workspace = true
 clap.workspace = true
+crossterm = { workspace = true, optional = true }
+unicode-width = { workspace = true, optional = true }
 swarmy-core.workspace = true
 swarmy-image.workspace = true
 anyhow.workspace = true

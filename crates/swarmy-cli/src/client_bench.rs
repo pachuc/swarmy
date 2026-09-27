@@ -79,7 +79,11 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
             Some(image.clone()),
             None,
             false,
-            swarmy_core::InferenceSelection::default(),
+            swarmy_core::InferenceSelection {
+                provider: Some("fake".into()),
+                model: Some("scripted".into()),
+                effort: None,
+            },
             None,
         )
         .await?;

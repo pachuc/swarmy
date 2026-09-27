@@ -8,7 +8,7 @@ use ulid::Ulid;
 
 use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
 
-use crate::api_client::call as request;
+use swarmy_client::api_client::call as request;
 async fn projection<T: serde::Serialize>(
     endpoint: &str,
     future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
@@ -85,7 +85,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                   --route, --memory, --gpu, --github-token, or --clear-github-token"
         );
     }
-    let (client, endpoint) = crate::api_client::connect()?;
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
     match command {
         Command::Session { command } => session(&client, &endpoint, command, json).await?,
         Command::Agent { command } => agent(&client, &endpoint, command, json).await?,
@@ -971,16 +971,12 @@ async fn key_from_source(
             .trim()
             .to_owned());
     }
-    let providers = crate::api_client::call(endpoint, client.cli_providers()).await?;
-    let names: Vec<String> = providers
+    let providers = swarmy_client::api_client::call(endpoint, client.cli_providers()).await?;
+    let names = providers
         .iter()
         .find(|row| row.id == provider)
-        .and_then(|row| row.catalog.get("credential_env_keys"))
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|key| key.as_str().map(str::to_owned))
-        .collect();
+        .map(crate::provider_report::credential_env_keys)
+        .unwrap_or_default();
     if names.is_empty() {
         anyhow::bail!("no API key environment mapping for {provider}; use --api-key or --file");
     }

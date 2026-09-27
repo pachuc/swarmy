@@ -7,7 +7,7 @@ use swarmy_llm::auth::{CredentialStore as _, FileCredentialStore};
 
 pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
     let settings = Settings::load()?.settings;
-    let (client, endpoint) = crate::api_client::connect()?;
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
     match command {
         Command::Import { file, label } => {
             let path = file
@@ -57,7 +57,7 @@ async fn submit(
 ) -> Result<()> {
     let body = serde_json::json!({"idempotency_key": ulid::Ulid::generate().to_string(),
         "provider":provider,"label":label,"record":record});
-    crate::api_client::call(
+    swarmy_client::api_client::call(
         endpoint,
         client.cli_set_credential(&serde_json::from_value(body)?),
     )

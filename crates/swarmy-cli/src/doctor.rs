@@ -336,7 +336,7 @@ async fn api_checks(
     checks: &mut Vec<Check>,
     loaded: &Loaded,
 ) -> Vec<crate::provider_report::ProviderRow> {
-    let (client, endpoint) = match crate::api_client::connect() {
+    let (client, endpoint) = match swarmy_client::api_client::connect() {
         Ok(result) => result,
         Err(error) => {
             checks.push(Check::new(
@@ -347,7 +347,7 @@ async fn api_checks(
             return Vec::new();
         }
     };
-    let health = crate::api_client::call(&endpoint, client.health()).await;
+    let health = swarmy_client::api_client::call(&endpoint, client.health()).await;
     let health = match health {
         Ok(health) => health,
         Err(error) => {
@@ -384,12 +384,12 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
-    let snapshot = crate::api_client::call(&endpoint, client.doctor())
+    let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));
     match snapshot {
         Ok(snapshot) => {
-            let providers = crate::api_client::call(&endpoint, client.cli_providers())
+            let providers = swarmy_client::api_client::call(&endpoint, client.cli_providers())
                 .await
                 .ok();
             snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
@@ -533,14 +533,7 @@ fn snapshot_checks(
         |providers| {
             crate::provider_report::local(
                 providers.iter().map(|p| {
-                    let keys = p
-                        .catalog
-                        .get("credential_env_keys")
-                        .and_then(serde_json::Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|key| key.as_str().map(str::to_owned))
-                        .collect();
+                    let keys = crate::provider_report::credential_env_keys(p);
                     (p.id.clone(), keys)
                 }),
                 "absent",

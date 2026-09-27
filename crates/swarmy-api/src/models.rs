@@ -80,9 +80,6 @@ pub async fn probe(
         .catalog
         .provider(&body.provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
-    if provider.api == swarmy_llm::catalog::Api::Fake {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
-    }
     let model = state
         .catalog
         .model(&body.provider, &body.model)
@@ -99,7 +96,18 @@ pub async fn probe(
         .transpose()?
         .unwrap_or(swarmy_core::ReasoningEffort::None);
     let (effort, _) = model.clamp_effort(requested);
-    let auth = resolve_auth(&state, &body).await?;
+    let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
+        let (script, call_log) = state
+            .fake_files
+            .as_ref()
+            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        swarmy_llm::ClientAuth::Scripted(Arc::new(
+            swarmy_llm::fake::FileFake::from_files(script, call_log)
+                .map_err(|failure| provider_failure(failure.to_string()))?,
+        ))
+    } else {
+        resolve_auth(&state, &body).await?
+    };
     let totals = match tokio::time::timeout(
         PROBE_TIMEOUT,
         run_probe(provider, model, auth, effort, body.tools),

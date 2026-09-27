@@ -1,5 +1,5 @@
 mod agent_command;
-mod api_client;
+use swarmy_client::api_client;
 mod api_commands;
 mod auth_command;
 mod bench_command;
@@ -318,7 +318,7 @@ fn run_auth_tool(
         _ => unreachable!("only interactive auth commands use the helper"),
     }
     let status = process.status().map_err(|error| {
-        anyhow::anyhow!("swarmy-auth helper unavailable; install swarmy-devtools: {error}")
+        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
     })?;
     anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
     Ok(())

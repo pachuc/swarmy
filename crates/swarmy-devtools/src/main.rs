@@ -1,9 +1,6 @@
-mod api_client;
+use swarmy_client::api_client;
 mod auth;
 mod auth_command;
-mod models_probe;
-mod models_probe_command;
-mod provider_runtime;
 use clap::Parser;
 #[derive(Parser)]
 struct Cli {
@@ -32,7 +29,6 @@ enum Command {
         #[arg(long)]
         label: Option<String>,
     },
-    Probe(models_probe_command::Args),
 }
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -64,7 +60,6 @@ fn main() -> anyhow::Result<()> {
                 )
                 .await
             }
-            Command::Probe(args) => models_probe::run(args, cli.json).await,
         }
     })
 }
