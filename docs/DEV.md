@@ -328,9 +328,11 @@ The public CLI never opens the database. Conversation commands (`run`,
 client machine needs no database, bus, or object store credentials. The
 developer volume tools live in the node daemon instead: run them as
 `swarmyd vol ...` on a machine with the store and devices (see
-[volume tools](#volume-tools)). Only `auth login`, `auth import`, and `models
-probe` act locally, and they resolve credentials from the login file and the
-environment, never from the cluster store.
+[volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
+provider keys can probe credentials stored in the swarm. Scripted `fake`
+probes still read local fixture files through the separately installed
+`swarmy-auth` helper. The helper also handles interactive `auth login` and
+`auth import`; both save credentials through the API. Node installs omit it.
 
 ## Manual reference
 
