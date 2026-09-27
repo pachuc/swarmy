@@ -22,7 +22,6 @@ mod disconnect;
 mod down;
 #[cfg(feature = "remote")]
 mod logs;
-#[cfg(feature = "remote")]
 mod services;
 #[cfg(feature = "remote")]
 mod state;
@@ -40,18 +39,17 @@ pub use aws::Aws;
 #[cfg(feature = "remote")]
 pub use services::Options as ServiceOptions;
 
-#[cfg(feature = "remote")]
 use std::future::Future;
 #[cfg(feature = "remote")]
 use std::time::Duration;
 
+use anyhow::Result;
 #[cfg(feature = "remote")]
-use anyhow::{Result, bail};
+use anyhow::bail;
 #[cfg(feature = "remote")]
 use std::path::PathBuf;
 #[cfg(feature = "remote")]
 use swarmy_config::Settings;
-#[cfg(feature = "remote")]
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 #[cfg(feature = "remote")]
@@ -65,7 +63,6 @@ use state::State;
 /// [`MachineSpec::from_settings`] fills them when the type is known and
 /// leaves them zero otherwise.
 #[derive(Clone, Debug)]
-#[cfg(feature = "remote")]
 pub struct MachineSpec {
     /// Human name; AWS also uses it for the `Name` tag and the client token.
     pub name: String,
@@ -98,7 +95,6 @@ pub struct MachineSpec {
     pub bootstrap: Option<Vec<u8>>,
 }
 
-#[cfg(feature = "remote")]
 impl MachineSpec {
     /// Build a launch request from saved remote settings.
     ///
@@ -135,7 +131,6 @@ impl MachineSpec {
 
 /// Provider-neutral view of one machine. Missing machines are `None`.
 #[derive(Clone, Debug)]
-#[cfg(feature = "remote")]
 pub struct Machine {
     /// Provider's machine id (the EC2 instance id on AWS).
     pub id: String,
@@ -150,7 +145,6 @@ pub struct Machine {
 ///
 /// The bucket survives `remote down`; the node credentials guard it.
 #[derive(Clone, Debug)]
-#[cfg(feature = "remote")]
 pub struct ObjectBucket {
     /// Bucket name.
     pub name: String,
@@ -168,7 +162,6 @@ pub struct ObjectBucket {
 /// The cloud boundary. Only the provider implementation knows about provider
 /// APIs; callers use machines, keys, images, and buckets. Missing resources
 /// are represented by `None`.
-#[cfg(feature = "remote")]
 pub trait Cloud {
     /// Create the bucket and the node credentials guarding it, idempotently.
     fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;
@@ -196,7 +189,6 @@ pub trait Cloud {
 }
 
 /// Key generation and provisioning over SSH, replaceable by a fake in tests.
-#[cfg(feature = "remote")]
 pub trait Host {
     fn services(
         &self,
@@ -218,7 +210,6 @@ pub trait Host {
     ) -> impl Future<Output = Result<String>>;
 }
 
-#[cfg(feature = "remote")]
 impl Host for ssh::Ssh {
     async fn services(
         &self,
@@ -296,7 +287,9 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 println!("No remote node named {name}");
                 return Ok(());
             };
-            let cloud = for_settings(&node.cloud_settings()).await?;
+            let mut cloud_settings = node.cloud_settings();
+            cloud_settings.region.clone_from(&node.region);
+            let cloud = for_settings(&cloud_settings).await?;
             down::run(&cloud, &state, &node, Duration::from_secs(5)).await
         }
         Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,

@@ -6,7 +6,8 @@ not a rewrite. The `swarmy remote` subcommand in the CLI is a thin
 dispatch into this crate behind the existing `remote` cargo feature;
 nothing else in the CLI imports a provider SDK. Without the feature the
 crate still provides the command parser, the SSH helpers, and the
-interface, but no provider.
+interface, but no provider. The fake implementation is compiled by the
+feature-enabled provisioning tests.
 
 ## The interface
 

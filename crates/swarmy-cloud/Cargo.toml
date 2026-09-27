@@ -8,7 +8,8 @@ license.workspace = true
 [features]
 # Provisioning against EC2, SSM, S3, and IAM is opt-in so the default build
 # skips the AWS SDKs entirely. The SSH helpers, the `remote` command parser,
-# the provider interface, and the fake used by tests need no provider SDKs.
+# the provider interface, and the SSH boundary need no provider SDKs.
+# The fake is compiled only by the provisioning tests with `remote` enabled.
 default = []
 remote = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm", "dep:aws-sdk-s3", "dep:aws-sdk-iam"]
 

@@ -982,6 +982,59 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
 }
 
 #[tokio::test]
+async fn iam_role_override_reaches_bucket_and_machine() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    let mut settings = settings();
+    settings.bucket = Some("test-bucket".into());
+    settings.aws.iam_role = Some("custom-node-role".into());
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        up::NewNode {
+            name: "role-test",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cloud.requests.borrow()[0].profile.as_deref(),
+        Some("custom-node-role")
+    );
+    assert_eq!(
+        cloud.role_creates.borrow().as_slice(),
+        &["custom-node-role"]
+    );
+    assert_eq!(
+        cloud.profile_creates.borrow().as_slice(),
+        &["custom-node-role"]
+    );
+}
+
+#[tokio::test]
+async fn for_settings_rejects_unknown_provider() {
+    let mut settings = settings();
+    settings.provider = "other-cloud".into();
+    let error = super::for_settings(&settings)
+        .await
+        .err()
+        .expect("unknown provider must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown cloud provider 'other-cloud'")
+    );
+}
+
+#[tokio::test]
 async fn profile_propagation_retries_one_failed_fake_launch() {
     let cloud = FakeCloud::default();
     cloud.fail_profile_launch_once.set(true);

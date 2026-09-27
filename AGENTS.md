@@ -204,13 +204,15 @@ Every pull request must pass the same three commands that CI runs:
 cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked -p swarmy-cloud --features remote
 cargo test --locked -p swarmy-cli --features remote
+cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 ```
 
-The last two run only when a change touches `crates/swarmy-cli/src/remote/`;
-the provisioning client is an opt-in feature that the workspace commands
-leave off.
+The feature-enabled commands run when a change touches `crates/swarmy-cloud/`
+or the CLI remote dispatch file; the provisioning client is an opt-in feature
+that the workspace commands leave off.
 
 Clippy runs with the `pedantic` group denied, so write code that satisfies it
 rather than silencing it. If a lint is genuinely wrong for a piece of code,
