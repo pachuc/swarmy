@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use swarmy_core::AgentId;
 use swarmy_store::ScratchRecord;
@@ -87,6 +87,31 @@ mod image_environment_tests {
         );
         assert!(parse_image_environment("DISPLAY=:99\nnot-an-assignment\n").is_err());
         assert!(parse_image_environment("9BAD=value\n").is_err());
+    }
+}
+
+const SCRATCH_PRESSURE_GRACE: Duration = Duration::from_secs(60 * 60);
+
+// A daemon restart makes every sandbox temporarily inactive. Give recently
+// hosted scratch time to be reattached before pressure can reclaim it.
+fn pressure_eligible(modified: SystemTime) -> bool {
+    modified.elapsed().unwrap_or_default() >= SCRATCH_PRESSURE_GRACE
+}
+
+#[cfg(test)]
+mod scratch_pressure_tests {
+    use super::{SCRATCH_PRESSURE_GRACE, pressure_eligible};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn recent_scratch_survives_pressure_after_a_daemon_restart() {
+        assert!(!pressure_eligible(SystemTime::now()));
+        assert!(!pressure_eligible(
+            SystemTime::now() - SCRATCH_PRESSURE_GRACE + Duration::from_secs(1)
+        ));
+        assert!(pressure_eligible(
+            SystemTime::now() - SCRATCH_PRESSURE_GRACE - Duration::from_secs(1)
+        ));
     }
 }
 
@@ -258,7 +283,9 @@ impl RuncRuntime {
                         },
                     )
                     .await?;
-                candidates.push((modified, id, bytes));
+                if pressure_eligible(modified) {
+                    candidates.push((modified, id, bytes));
+                }
             }
         }
         let total = fs2::total_space(&self.scratch_root)?;
