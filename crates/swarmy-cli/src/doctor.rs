@@ -512,7 +512,14 @@ fn snapshot_checks(
     service_checks(checks, &snapshot);
     let mut rows = settings
         .catalog()
-        .map(|catalog| crate::provider_report::local(&catalog, "absent"))
+        .map(|catalog| {
+            crate::provider_report::local(
+                catalog
+                    .providers()
+                    .map(|p| (p.id.clone(), p.env_keys.clone())),
+                "absent",
+            )
+        })
         .unwrap_or_default();
     let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {

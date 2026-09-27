@@ -27,8 +27,6 @@ fn provider_row(row: swarmy_api_types::Provider) -> Result<Value, serde_json::Er
     Ok(value)
 }
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
 #[derive(Subcommand)]
 pub enum Command {
     /// List available models.
@@ -126,7 +124,7 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             } else {
                 for row in rows {
                     let row = provider_row(row)?;
-                    let api: swarmy_llm::catalog::Api = serde_json::from_value(row["api"].clone())?;
+                    let api = text(&row["api"]);
                     line(&format!(
                         "{}  {:?}  credential: {}",
                         text(&row["id"]),
@@ -194,18 +192,20 @@ fn print_models(rows: &[Value], json: bool) -> anyhow::Result<()> {
 }
 // Keep long catalog ids and environment lists readable on narrow terminals.
 fn line(value: &str) {
-    let width = crossterm::terminal::size()
-        .map_or(80, |(width, _)| usize::from(width))
+    let width = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(80)
         .clamp(20, 100);
     let mut output = String::new();
     let mut column = 0;
     for word in value.split_inclusive(' ') {
-        if column > 2 && column + word.width() > width {
+        if column > 2 && column + word.chars().count() > width {
             output.push_str("\n  ");
             column = 2;
         }
         for ch in word.chars() {
-            let size = ch.width().unwrap_or(0);
+            let size = 1;
             if column + size > width {
                 output.push_str("\n  ");
                 column = 2;

@@ -1,8 +1,8 @@
 //! Terminal renderer for the API conversation stream.
 
+use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
 use crate::input::Input;
-use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
 use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -20,6 +20,7 @@ use std::{
 };
 use swarmy_api_types as api;
 use swarmy_client::{Client, StreamItem};
+use swarmy_core::InferenceSelection;
 
 struct RestoreTerminal;
 impl Drop for RestoreTerminal {
@@ -115,7 +116,8 @@ pub async fn run(
     image: Option<String>,
     agent: Option<String>,
     new: bool,
-    selection: SelectionArgs,
+    selection: InferenceSelection,
+    route: Option<String>,
 ) -> Result<()> {
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
@@ -136,17 +138,8 @@ pub async fn run(
     } else {
         id.map(|value| value.to_string())
     };
-    let route = selection.route.clone();
-    let mut conversation = Conversation::open(
-        client.clone(),
-        choice,
-        image,
-        agent,
-        new,
-        selection.into(),
-        route,
-    )
-    .await?;
+    let mut conversation =
+        Conversation::open(client.clone(), choice, image, agent, new, selection, route).await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;

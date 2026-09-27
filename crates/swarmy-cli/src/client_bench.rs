@@ -1,5 +1,5 @@
 //! Benchmark the same API append and SSE idle path as a human client.
-use crate::{bench_command::Command, client_conversation::Conversation};
+use crate::bench_command::Command;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
+use swarmy_chat::client_conversation::Conversation;
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 

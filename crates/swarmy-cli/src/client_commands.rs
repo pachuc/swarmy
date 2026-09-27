@@ -1,10 +1,8 @@
-use crate::{
-    client_conversation::{Conversation, ConversationItem, report_summary},
-    selection_command::SelectionArgs,
-};
+use crate::selection_command::SelectionArgs;
 use anyhow::Result;
 use std::io::Write;
 use swarmy_api_types as api;
+use swarmy_chat::client_conversation::{Conversation, ConversationItem, report_summary};
 use swarmy_client::Client;
 
 // The arguments mirror the `run` CLI flags plus the client and output mode,

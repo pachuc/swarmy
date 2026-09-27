@@ -815,7 +815,7 @@ fn is_completed_event(payload: &api::EventPayload) -> bool {
     )
 }
 
-pub(crate) fn report_summary(quiet: bool, json: bool, previous_session_id: &str, session_id: &str) {
+pub fn report_summary(quiet: bool, json: bool, previous_session_id: &str, session_id: &str) {
     if quiet {
         return;
     }

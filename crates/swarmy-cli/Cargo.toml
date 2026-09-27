@@ -10,13 +10,9 @@ license.workspace = true
 # Provisioning (EC2, SSM, S3, IAM) is opt-in so the default build skips the
 # EC2 provisioning SDKs. Node builds and plain workspace checks use the default;
 # laptop installs and provisioning tests enable `remote`.
-default = ["azure", "bedrock", "gemini"]
+default = ["chat"]
+chat = ["swarmy-chat/terminal"]
 remote = ["swarmy-cloud/remote"]
-# The CLI probes every provider by default. Each cloud client forwards to the
-# matching swarmy-llm feature; nothing else enables any.
-azure = ["swarmy-llm/azure"]
-bedrock = ["swarmy-llm/bedrock"]
-gemini = ["swarmy-llm/gemini"]
 
 [lints]
 workspace = true
@@ -40,9 +36,6 @@ async-trait.workspace = true
 swarmy-version.workspace = true
 swarmy-cloud.workspace = true
 shell-words.workspace = true
-ratatui.workspace = true
-crossterm.workspace = true
-unicode-width.workspace = true
 futures-util.workspace = true
 url.workspace = true
 toml.workspace = true
@@ -52,13 +45,13 @@ tempfile.workspace = true
 rustix.workspace = true
 swarmy-config.workspace = true
 swarmy-client.workspace = true
+swarmy-chat.workspace = true
 swarmy-api-types.workspace = true
 clap.workspace = true
 swarmy-core.workspace = true
 swarmy-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
-swarmy-llm.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 jiff.workspace = true

@@ -1,7 +1,7 @@
 # One-command install and check for swarmy.
 #
 #   make install       install the client plus every service binary into ~/.cargo/bin
-#   make install-client install only the client with remote provisioning (needs no libfdb_c)
+#   make install-client install the chat client, provisioning, and auth helper (needs no libfdb_c)
 #   make install-core   install the service binaries (need libfdb_c)
 #   make install-node  also install swarmyd (only useful on a machine with root)
 #   make dev-tools     install FoundationDB, NATS, and SeaweedFS under ~/.local
@@ -41,7 +41,8 @@ fdb-check:
 # plain cargo builds leave it off for the slimmer node binary.
 install-client:
 	@echo "==> swarmy-cli"
-	@$(CARGO) install --locked --features remote --path "crates/swarmy-cli" || exit 1
+	@$(CARGO) install --locked --features remote,chat --path "crates/swarmy-cli" || exit 1
+	@$(CARGO) install --locked --path "crates/swarmy-devtools" || exit 1
 	@echo "Installed: $$(ls $(HOME)/.cargo/bin | grep '^swarmy' | tr '\n' ' ')"
 	@$(HOME)/.cargo/bin/swarmy --version
 
@@ -53,7 +54,8 @@ install-core: fdb-check
 
 install: install-client install-core
 
-install-node: install
+install-node: install-core
+	@$(CARGO) install --locked --no-default-features --path "crates/swarmy-cli"
 	@for crate in $(NODE_CRATES); do \
 		echo "==> $$crate"; \
 		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/$$crate" || exit 1; \

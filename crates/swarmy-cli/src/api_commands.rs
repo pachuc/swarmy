@@ -956,7 +956,12 @@ async fn delete_agent(
     Ok(())
 }
 
-fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
+async fn key_from_source(
+    client: &Client,
+    endpoint: &str,
+    args: &auth_command::Set,
+    provider: &str,
+) -> Result<String> {
     if let Some(key) = &args.source.api_key {
         return Ok(key.clone());
     }
@@ -966,7 +971,16 @@ fn key_from_source(args: &auth_command::Set, provider: &str) -> Result<String> {
             .trim()
             .to_owned());
     }
-    let names = swarmy_llm::auth::provider_env_keys(provider);
+    let providers = crate::api_client::call(endpoint, client.cli_providers()).await?;
+    let names: Vec<String> = providers
+        .iter()
+        .find(|row| row.id == provider)
+        .and_then(|row| row.catalog.get("env_keys"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|key| key.as_str().map(str::to_owned))
+        .collect();
     if names.is_empty() {
         anyhow::bail!("no API key environment mapping for {provider}; use --api-key or --file");
     }
@@ -990,7 +1004,7 @@ async fn set_credential_key(
     provider: &str,
     json: bool,
 ) -> Result<()> {
-    let key = key_from_source(args, provider)?;
+    let key = key_from_source(client, endpoint, args, provider).await?;
     ensure!(!key.trim().is_empty(), "API key must not be empty");
     let mut extra: std::collections::BTreeMap<String, String> =
         args.extra.clone().into_iter().collect();
