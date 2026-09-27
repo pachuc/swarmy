@@ -1,5 +1,3 @@
-#[cfg(feature = "azure")]
-use std::collections::BTreeMap;
 use std::{sync::Arc, time::Duration};
 
 use futures::TryStreamExt;
@@ -148,7 +146,10 @@ async fn azure_resource_endpoint_and_deployment_use_api_key() {
     model.id = "my-deployment".into();
     let auth = ClientAuth::ApiKeyWithExtra {
         key: "azure-key".into(),
-        extra: BTreeMap::from([("resource_name".into(), "test-resource".into())]),
+        extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+            resource_name: Some("test-resource".into()),
+            base_url: None,
+        }),
     };
     let endpoint = ResponsesEndpoint::from_catalog(info, &model, auth.clone()).unwrap();
     assert_eq!(
@@ -191,20 +192,17 @@ fn azure_foundry_endpoint_from_credential_precedes_classic_resource() {
     for auth in [
         ClientAuth::ApiKeyWithExtra {
             key: "key".into(),
-            extra: BTreeMap::from([
-                ("resource_name".into(), "classic".into()),
-                (
-                    "base_url".into(),
-                    "https://foundry.services.ai.azure.com".into(),
-                ),
-            ]),
+            extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+                resource_name: Some("classic".into()),
+                base_url: Some("https://foundry.services.ai.azure.com".into()),
+            }),
         },
         ClientAuth::BearerWithExtra {
             token: "token".into(),
-            extra: BTreeMap::from([(
-                "base_url".into(),
-                "https://foundry.services.ai.azure.com".into(),
-            )]),
+            extra: swarmy_llm::ProviderAuthExtra::Azure(swarmy_llm::AzureAuth {
+                base_url: Some("https://foundry.services.ai.azure.com".into()),
+                resource_name: None,
+            }),
         },
     ] {
         let endpoint = ResponsesEndpoint::from_catalog(info, &model, auth).unwrap();

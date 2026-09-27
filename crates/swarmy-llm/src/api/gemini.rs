@@ -1,11 +1,8 @@
 //! Gemini generateContent on the Gemini API and Google Vertex.
 
+use crate::sse::{Frame, SseParser};
 use base64::Engine as _;
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -112,17 +109,7 @@ impl GeminiProvider {
         if status.is_success() {
             return Ok(response);
         }
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                v.parse::<u64>().ok().map(Duration::from_secs).or_else(|| {
-                    httpdate::parse_http_date(v)
-                        .ok()
-                        .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
-                })
-            });
+        let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
         if overflow(&body) {
             return Err(Error::ContextOverflow(
@@ -136,20 +123,7 @@ impl GeminiProvider {
                 retry_after,
             });
         }
-        Err(provider_error(status, &body))
-    }
-}
-
-/// Keep the provider's own explanation; a bare status hides configuration mistakes.
-fn provider_error(status: reqwest::StatusCode, body: &str) -> Error {
-    let message = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| body.trim().chars().take(600).collect());
-    if message.is_empty() {
-        Error::Status(status)
-    } else {
-        Error::Protocol(format!("provider error ({status}): {message}"))
+        Err(crate::error::provider_error(status, &body))
     }
 }
 
@@ -402,51 +376,28 @@ fn overflow(text: &str) -> bool {
 }
 
 #[derive(Default)]
-struct Sse {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
-}
+struct Sse(SseParser);
 impl Sse {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
         let mut events = Vec::new();
-        for &byte in bytes {
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\r' | b'\n') {
-                self.end_line(&mut events)?;
-            } else {
-                self.line.push(byte);
-            }
-            if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                return Err(Error::Protocol("Gemini SSE event exceeds 8 MiB".into()));
-            }
+        for frame in self.0.push(bytes)? {
+            Self::collect(frame, &mut events)?;
         }
         Ok(events)
     }
-    fn end_line(&mut self, events: &mut Vec<Value>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if !self.data.is_empty() {
-                let data = std::mem::take(&mut self.data);
-                if data != b"[DONE]\n" {
-                    events.push(serde_json::from_slice(&data)?);
-                }
-            }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
+    fn collect(frame: Frame, events: &mut Vec<Value>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame
+            && data != b"[DONE]\n"
+        {
+            events.push(serde_json::from_slice(&data)?);
         }
         Ok(())
     }
     fn finish(&mut self) -> Result<Vec<Value>, Error> {
         let mut events = Vec::new();
-        self.end_line(&mut events)?;
-        self.end_line(&mut events)?;
+        if let Some(frame) = self.0.finish()? {
+            Self::collect(frame, &mut events)?;
+        }
         Ok(events)
     }
 }
@@ -621,13 +572,13 @@ mod tests {
 
     #[test]
     fn provider_errors_keep_the_message() {
-        let error = provider_error(
+        let error = crate::error::provider_error(
             reqwest::StatusCode::BAD_REQUEST,
             r#"{"error": {"code": 400, "message": "thinking is disabled"}}"#,
         );
         assert!(error.to_string().contains("thinking is disabled"));
         assert!(matches!(
-            provider_error(reqwest::StatusCode::FORBIDDEN, ""),
+            crate::error::provider_error(reqwest::StatusCode::FORBIDDEN, ""),
             Error::Status(reqwest::StatusCode::FORBIDDEN)
         ));
     }

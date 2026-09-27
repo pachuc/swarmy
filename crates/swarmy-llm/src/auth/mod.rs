@@ -90,3 +90,24 @@ impl Login for OAuthClient {
         ))
     }
 }
+
+/// Provider API key environment variables, in resolution priority order.
+#[must_use]
+pub fn provider_env_keys(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "openai" => &["OPENAI_API_KEY"],
+        "xai" => &["XAI_API_KEY"],
+        "meta" => &["META_MODEL_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "azure" => &["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
+        "google" => &[
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ],
+        "google-vertex" | "google-vertex-anthropic" => &["GOOGLE_CLOUD_API_KEY"],
+        "amazon-bedrock" => &["AWS_BEARER_TOKEN_BEDROCK"],
+        _ => &[],
+    }
+}

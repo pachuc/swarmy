@@ -4366,7 +4366,6 @@ dependencies = [
  "base64",
  "blake3",
  "futures",
- "httpdate",
  "jiff",
  "jsonwebtoken",
  "rand 0.9.5",
