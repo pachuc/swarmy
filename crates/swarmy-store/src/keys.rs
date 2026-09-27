@@ -928,6 +928,8 @@ mod registry_tests {
         }
     }
 
+    // The snapshot enumerates every family in one place; splitting it obscures omissions.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn family_key_layout_matches_checked_in_hex() {
         let root = Subspace::from_bytes(Vec::new());
@@ -1128,13 +1130,15 @@ mod registry_tests {
             ),
         ];
         let expected = include_str!("../tests/key-layout.hex");
-        let rendered: String = actual
-            .iter()
-            .map(|(name, bytes)| {
-                let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                format!("{name} {hex}\n")
-            })
-            .collect();
+        use std::fmt::Write as _;
+        let mut rendered = String::new();
+        for (name, bytes) in actual {
+            write!(&mut rendered, "{name} ").unwrap();
+            for byte in bytes {
+                write!(&mut rendered, "{byte:02x}").unwrap();
+            }
+            rendered.push('\n');
+        }
         assert_eq!(rendered, expected);
     }
 }
