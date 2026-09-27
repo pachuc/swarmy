@@ -356,7 +356,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     );
     assert!(events.iter().any(|event| matches!(event,
         Event::ToolCallCompleted { result: swarmy_core::ToolResult::Error { error }, .. }
-        if error == "This session's computer has been deleted. Create a new session to run tools.")));
+        if error == "session computer has been deleted")));
     cleanup(&cluster, &url, &prefix).await;
 }
 

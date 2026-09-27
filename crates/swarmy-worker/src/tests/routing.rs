@@ -956,10 +956,7 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        errors,
-        ["This session's computer has been deleted. Create a new session to run tools."]
-    );
+    assert_eq!(errors, ["session computer has been deleted"]);
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
