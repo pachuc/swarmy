@@ -540,17 +540,24 @@ impl Store {
             return Ok(None);
         };
         let session = self.decode_session_in(trx, &bytes).await?;
-        let snapshot = if let Some(seq) = session.snapshot_seq {
-            Some(
-                trx.get(&self.snapshot_key(id, seq), false)
+        let snapshot = self.snapshot_for_session_in(trx, &session).await?;
+        Ok(Some((session, snapshot)))
+    }
+
+    pub(crate) async fn snapshot_for_session_in(
+        &self,
+        trx: &Transaction,
+        session: &StoredSession,
+    ) -> Result<Option<Vec<u8>>> {
+        match session.snapshot_seq {
+            Some(seq) => Ok(Some(
+                trx.get(&self.snapshot_key(session.session_id, seq), false)
                     .await?
                     .ok_or(StoreError::Corrupt)?
                     .to_vec(),
-            )
-        } else {
-            None
-        };
-        Ok(Some((session, snapshot)))
+            )),
+            None => Ok(None),
+        }
     }
 
     pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
@@ -746,16 +753,7 @@ impl Store {
                 let mut sessions = Vec::new();
                 for (_, value) in scan(&trx, (begin, end), limit).await? {
                     let session = self.decode_session_in(&trx, &value).await?;
-                    let snapshot = if let Some(seq) = session.snapshot_seq {
-                        Some(
-                            trx.get(&self.snapshot_key(session.session_id, seq), false)
-                                .await?
-                                .ok_or(StoreError::Corrupt)?
-                                .to_vec(),
-                        )
-                    } else {
-                        None
-                    };
+                    let snapshot = self.snapshot_for_session_in(&trx, &session).await?;
                     sessions.push((session, snapshot));
                 }
                 Ok(sessions)

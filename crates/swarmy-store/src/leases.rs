@@ -115,18 +115,7 @@ impl Store {
                 let mut begin = space.pack(&(session.snapshot_seq.unwrap_or(0),));
                 begin.push(0);
                 let (snapshot, values) = futures::try_join!(
-                    async {
-                        Ok::<_, StoreError>(if let Some(seq) = session.snapshot_seq {
-                            Some(
-                                trx.get(&self.snapshot_key(id, seq), false)
-                                    .await?
-                                    .ok_or(StoreError::Corrupt)?
-                                    .to_vec(),
-                            )
-                        } else {
-                            None
-                        })
-                    },
+                    self.snapshot_for_session_in(&trx, &session),
                     scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
                 )?;
                 Ok((lease, session, snapshot, turn, values))
