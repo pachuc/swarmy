@@ -772,6 +772,22 @@ fn agent_text(agent: &Value, detail: bool) -> String {
     }
     text
 }
+async fn update_agent(client: &Client, endpoint: &str, name: &str, body: Value) -> Result<Value> {
+    let updated = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.cli_update_agent(name, &serde_json::from_value(body)?),
+    )
+    .await
+    .context("agent update timed out")?
+    .map_err(|error| match &error {
+        swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
+            anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+        }
+        _ => swarmy_client::api_client::api_error(&error, endpoint),
+    })?;
+    Ok(serde_json::to_value(updated)?)
+}
+
 async fn agent(
     client: &Client,
     endpoint: &str,
@@ -852,19 +868,7 @@ async fn agent(
             body["github_token"] = json!(github_token.clone());
             body["clear_github_token"] = json!(clear_github_token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let updated = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                client.cli_update_agent(&name, &serde_json::from_value(body)?),
-            )
-            .await
-            .context("agent update timed out")?
-            .map_err(|error| match &error {
-                swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
-                    anyhow::anyhow!("the agent's computer is placed; retry after it is released")
-                }
-                _ => swarmy_client::api_client::api_error(&error, endpoint),
-            })?;
-            let updated = serde_json::to_value(updated)?;
+            let updated = update_agent(client, endpoint, &name, body).await?;
             print(
                 &updated,
                 &format!(
