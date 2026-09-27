@@ -185,7 +185,7 @@ impl Store {
         crate::keys::Keys::new(&self.root).agent_github_token(id)
     }
     pub(crate) fn agent_name_key(&self, name: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).agent_by_name(&(name))
+        crate::keys::Keys::new(&self.root).agent_by_name(name)
     }
     pub(crate) fn computer_deleted_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).computer_deleted(id)
@@ -1172,6 +1172,8 @@ mod registry_tests {
     }
     // The fixture contains complete master-era tuple keys, including nested time
     // tuples, binary identifiers, and each family's final component.
+    // Listing every family together makes an omitted constructor visible.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn family_key_layout_matches_checked_in_hex() {
         let root = Subspace::from_bytes(Vec::new());
