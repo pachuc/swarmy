@@ -540,17 +540,7 @@ impl Worker {
             for event in events {
                 after = event.seq();
                 if let Event::MessageAppended { message, .. } = event
-                    && message.role == swarmy_core::MessageRole::System
-                    && message.parts.iter().any(|part| match part {
-                        swarmy_core::Part::Notice {
-                            kind: swarmy_core::NoticeKind::EffortClamped,
-                            ..
-                        } => true,
-                        swarmy_core::Part::Text { text } => {
-                            text.starts_with("Reasoning effort clamped from ")
-                        }
-                        _ => false,
-                    })
+                    && is_effort_notice(&message)
                 {
                     return Ok(true);
                 }
@@ -592,5 +582,36 @@ pub(super) fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
                 metadata.remove("image_media_type");
             }
         }
+    }
+}
+
+/// Old rows used text parts for the clamp notice; only system messages count.
+fn is_effort_notice(message: &swarmy_core::Message) -> bool {
+    message.role == swarmy_core::MessageRole::System
+        && message.parts.iter().any(|part| match part {
+            swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::EffortClamped,
+                ..
+            } => true,
+            swarmy_core::Part::Text { text } => text.starts_with("Reasoning effort clamped from "),
+            _ => false,
+        })
+}
+
+#[cfg(test)]
+mod legacy_notice_tests {
+    use super::is_effort_notice;
+    use swarmy_core::{Message, MessageId, MessageRole, Part};
+
+    #[test]
+    fn old_clamp_text_still_counts_as_a_notice() {
+        let message = Message {
+            id: MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::System,
+            parts: vec![Part::Text {
+                text: "Reasoning effort clamped from high to medium".into(),
+            }],
+        };
+        assert!(is_effort_notice(&message));
     }
 }
