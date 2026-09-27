@@ -249,4 +249,3 @@ mod tests {
         assert_round_trip(&event);
     }
 }
-
