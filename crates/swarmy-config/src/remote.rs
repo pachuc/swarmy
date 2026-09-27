@@ -234,11 +234,13 @@ impl RemoteNode {
     /// region, so teardown never depends on a later configuration edit.
     #[must_use]
     pub fn cloud_settings(&self) -> RemoteSettings {
-        let mut settings = self.launch_settings.clone().unwrap_or_default();
-        if settings.region.is_empty() {
-            settings.region.clone_from(&self.region);
+        match &self.launch_settings {
+            Some(settings) => settings.clone(),
+            None => RemoteSettings {
+                region: self.region.clone(),
+                ..Default::default()
+            },
         }
-        settings
     }
 }
 
