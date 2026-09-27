@@ -655,11 +655,16 @@ async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
     })
     .await
     .expect("tool did not complete");
-    let events = store.read_events(job.session_id, 1, 10).await.unwrap();
-    let Event::ToolCallCompleted { result, .. } = &events[0] else {
-        panic!("missing result: {events:?}");
-    };
-    result.clone()
+    let events = store.read_events(job.session_id, 1, 20).await.unwrap();
+    events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolCallCompleted {
+                request_id, result, ..
+            } if *request_id == job.request_id => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing result: {events:?}"))
 }
 
 pub(super) async fn invoke(
