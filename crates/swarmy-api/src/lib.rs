@@ -131,10 +131,9 @@ fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>)
         StoreError::Domain(swarmy_store::DomainError::ImageMissing { .. }) => {
             error(StatusCode::NOT_FOUND, "image_not_found")
         }
-        StoreError::Domain(swarmy_store::DomainError::InvalidAgentName)
-        | StoreError::Domain(swarmy_store::DomainError::InvalidImage) => {
-            error(StatusCode::BAD_REQUEST, "invalid_request")
-        }
+        StoreError::Domain(
+            swarmy_store::DomainError::InvalidAgentName | swarmy_store::DomainError::InvalidImage,
+        ) => error(StatusCode::BAD_REQUEST, "invalid_request"),
         StoreError::Domain(swarmy_store::DomainError::RouteMissing) => {
             error(StatusCode::BAD_REQUEST, "route_not_found")
         }

@@ -1627,7 +1627,7 @@ impl Store {
                 Err(StoreError::Storage(crate::StorageError::CommitUnknown))
                     if attempts == 0 && !has_wait =>
                 {
-                    attempts += 1
+                    attempts += 1;
                 }
                 other => return other,
             }

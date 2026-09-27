@@ -707,8 +707,9 @@ async fn agent_and_session_assignment_validate_routes() {
                 },
             )
             .await,
-        Err(StoreError::Domain(swarmy_store::DomainError::AgentMissing)
-            | StoreError::Domain(swarmy_store::DomainError::RouteMissing))
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::AgentMissing | swarmy_store::DomainError::RouteMissing
+        ))
     ));
     let id = SessionId::from_ulid(ulid::Ulid::generate());
     assert!(matches!(

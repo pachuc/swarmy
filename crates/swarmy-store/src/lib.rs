@@ -831,9 +831,11 @@ impl Store {
                     Ok(true) => outcome.migrated += 1,
                     Ok(false) => {}
                     Err(
-                        error @ (StoreError::Storage(crate::StorageError::Encoding(_))
-                        | StoreError::Storage(crate::StorageError::TooLarge)
-                        | StoreError::Storage(crate::StorageError::Corrupt)),
+                        error @ StoreError::Storage(
+                            crate::StorageError::Encoding(_)
+                            | crate::StorageError::TooLarge
+                            | crate::StorageError::Corrupt,
+                        ),
                     ) => {
                         tracing::warn!(%id, %error, "skipping invalid legacy session");
                         outcome.skipped += 1;

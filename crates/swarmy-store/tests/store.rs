@@ -1063,7 +1063,7 @@ async fn large_snapshot_metadata_survives_head_and_lease_updates() {
 
 #[tokio::test]
 async fn inference_completion_is_atomic_fenced_and_idempotent() {
-    use swarmy_store::{InferenceClaim, InferenceCompletion};
+    use swarmy_store::{FenceError, InferenceClaim, InferenceCompletion};
 
     let Some(test) = TestStore::memory() else {
         return;
@@ -1144,15 +1144,13 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
     let response = "large result".repeat(20_000);
     assert!(matches!(
         test.store.complete_inference(&completion, &response).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(FenceError::LeaseMismatch))
     ));
     completion.claim = rival;
     completion.expected_head = 1;
     assert!(matches!(
         test.store.complete_inference(&completion, &response).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::StaleSequence { .. }
-        ))
+        Err(StoreError::Fence(FenceError::StaleSequence { .. }))
     ));
     assert_inference_pending(&test.store, id, request_id, inflight).await;
     completion.expected_head = 0;
@@ -1709,6 +1707,7 @@ async fn cloning_has_constant_metadata_cost_for_small_and_large_manifests() {
 
 #[tokio::test]
 async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisition() {
+    use swarmy_store::FenceError;
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -1731,7 +1730,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
     };
     assert!(matches!(
         loser,
-        StoreError::Fence(swarmy_store::FenceError::VolumeLeaseMismatch)
+        StoreError::Fence(FenceError::VolumeLeaseMismatch)
     ));
     let mut wrong = winner.clone();
     wrong.owner = owner();
@@ -1739,9 +1738,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &wrong, timestamp(2))
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     test.store
         .release_writer_lease(volume, &winner, timestamp(2))
@@ -1767,17 +1764,13 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &winner, timestamp(3))
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     assert!(matches!(
         test.store
             .release_writer_lease(volume, &next, timestamp(10))
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     let replacement = test
         .store
@@ -1789,9 +1782,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &next, timestamp(11))
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     test.store
         .release_writer_lease(volume, &replacement, timestamp(11))
@@ -1801,9 +1792,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .acquire_writer_lease(volume, owner(), timestamp(12), timestamp(12))
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     assert!(matches!(
         test.store
@@ -2471,6 +2460,7 @@ mod agents;
 async fn session_plan_replacement_is_atomic_fenced_and_validated() {
     use serde_json::json;
     use swarmy_core::{ToolCallId, ToolCallRecord, ToolResult};
+    use swarmy_store::FenceError;
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -2538,9 +2528,7 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
         test.store
             .complete_plan_tool(id, 2, &lease, RequestId::for_step(id, 3), &first)
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::StaleSequence { .. }
-        ))
+        Err(StoreError::Fence(FenceError::StaleSequence { .. }))
     ));
     let mut stale = lease.clone();
     stale.owner = owner();
@@ -2548,7 +2536,7 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
         test.store
             .complete_plan_tool(id, 3, &stale, RequestId::for_step(id, 4), &first)
             .await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(FenceError::LeaseMismatch))
     ));
     let empty = call(json!({"plan":[]}));
     let result = test
@@ -2559,15 +2547,8 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
     assert!(
         matches!(result, Event::ToolCallCompleted { result: ToolResult::Completed { output, .. }, .. } if output == "[]")
     );
-    assert!(
-        test.store
-            .fetch_session(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .plan
-            .is_empty()
-    );
+    let final_session = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert!(final_session.plan.is_empty());
     let events = test.store.read_events(id, 0, 10).await.unwrap();
     assert_eq!(events.len(), 4);
     test.cleanup().await;

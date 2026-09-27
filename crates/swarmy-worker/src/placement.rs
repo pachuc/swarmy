@@ -90,10 +90,10 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
             match result {
                 Ok(placement) => return Ok(placement),
                 Err(
-                    error @ (StoreError::Domain(swarmy_store::DomainError::NodeAtCapacity {
-                        ..
-                    })
-                    | StoreError::Domain(swarmy_store::DomainError::NodeMissing)),
+                    error @ StoreError::Domain(
+                        swarmy_store::DomainError::NodeAtCapacity { .. }
+                        | swarmy_store::DomainError::NodeMissing,
+                    ),
                 ) => {
                     rejection = Some(error.to_string());
                 }
