@@ -351,7 +351,7 @@ mod side_tail_tests {
 
     #[test]
     fn mid_turn_fast_path_needs_no_store_reads() {
-        use super::last_side_usage;
+        use super::super::summarize::last_side_usage;
         use swarmy_core::{Event, RequestId, SessionId, TokenUsage};
         // Folds below pressure decide from the events the worker already
         // holds: zero transactions, zero store reads. This test pins that by
