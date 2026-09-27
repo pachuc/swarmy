@@ -354,9 +354,11 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
         store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::WaitingInference
     );
-    assert!(events.iter().any(|event| matches!(event,
+    assert!(
+        events.iter().any(|event| matches!(event,
         Event::ToolCallCompleted { result: swarmy_core::ToolResult::Error { error }, .. }
-        if error == "session computer has been deleted")));
+        if error == "this session's computer has been deleted; create a new session to run tools"))
+    );
     cleanup(&cluster, &url, &prefix).await;
 }
 
