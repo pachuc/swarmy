@@ -1984,6 +1984,56 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
     .await;
 }
 
+#[tokio::test]
+async fn side_summary_fenced_array_continues() {
+    check_nonstandard_side_summary(
+        "```json\n{\"goals\":[\"Finish the routes task\"],\"state_of_work\":\"Handler done\"}\n```",
+        "[\"Finish the routes task\"]",
+        "Handler done",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn side_summary_prose_continues() {
+    check_nonstandard_side_summary(
+        "Handler done. Finish the routes task.",
+        "",
+        "Handler done. Finish the routes task.",
+    )
+    .await;
+}
+
+async fn check_nonstandard_side_summary(
+    reply: &'static str,
+    goals: &'static str,
+    state: &'static str,
+) {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 6000;
+        write_fleet_side_script(f, reply);
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("sidekick", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let new = wait_successor(f, id).await;
+        f.idle(new).await;
+        assert_mid_turn_links(f, id, new).await;
+        let events = read_all_events(f, new).await;
+        let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
+        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
+        let summary: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(summary["goals"], goals);
+        assert_eq!(summary["state_of_work"], state);
+        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Finished; nothing remains."))), "successor did not reach final answer");
+    })).await;
+}
+
 async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId) {
     assert_eq!(
         fixture

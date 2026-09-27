@@ -12,19 +12,20 @@ impl Worker {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
         }
-        let Some(Event::InferenceCompleted { request_id, .. }) =
-            events.iter().rev().find(|event| {
-                matches!(
-                    event,
-                    Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
-                )
-            })
-        else {
+        let Some(request_id) = events.iter().rev().find_map(|event| match event {
+            Event::InferenceCompleted { request_id, .. }
+            | Event::InferenceFailed {
+                request_id,
+                retryable: false,
+                ..
+            } => Some(*request_id),
+            _ => None,
+        }) else {
             return Ok(false);
         };
         Ok(self
             .store
-            .get_inference_input::<InferenceJob>(*request_id)
+            .get_inference_input::<InferenceJob>(request_id)
             .await?
             .is_some_and(|job| job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT))
     }
@@ -257,8 +258,23 @@ impl Worker {
                 _ => None,
             })
             .collect();
-        let Ok(summary) = serde_json::from_str::<swarmy_core::ConversationSummary>(&text) else {
-            tracing::warn!(session_id = %session.session_id, "invalid summary; retaining current session");
+        let is_main = self
+            .store
+            .get_agent(session.agent_id)
+            .await?
+            .is_some_and(|agent| agent.main_session == Some(session.session_id));
+        let summary = if let Some(summary) = parse_summary(&text) {
+            summary
+        } else if !is_main && !text.trim().is_empty() {
+            tracing::warn!(session_id = %session.session_id, reason = "unparseable summary reply", "rolling over side session with raw summary");
+            swarmy_core::ConversationSummary {
+                goals: String::new(),
+                state_of_work: text,
+                open_questions: String::new(),
+                facts_to_keep: String::new(),
+            }
+        } else {
+            tracing::warn!(session_id = %session.session_id, reason = "empty or invalid summary reply", "retaining current session");
             return Ok(false);
         };
         let opening = swarmy_core::Message {
@@ -272,11 +288,6 @@ impl Worker {
                 ),
             }],
         };
-        let is_main = self
-            .store
-            .get_agent(session.agent_id)
-            .await?
-            .is_some_and(|agent| agent.main_session == Some(session.session_id));
         let mut token = lease.lock().await;
         let (_, archived) = if is_main {
             self.store
@@ -369,6 +380,27 @@ impl Worker {
 }
 /// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
+
+fn parse_summary(text: &str) -> Option<swarmy_core::ConversationSummary> {
+    let text = text.trim();
+    let text = text.strip_prefix("```").map_or(text, |fenced| {
+        fenced.split_once('\n').map_or(fenced, |(_, body)| body)
+    });
+    let text = text.strip_suffix("```").unwrap_or(text).trim();
+    let json = text.get(text.find('{')?..=text.rfind('}')?)?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let field = |name: &str| match value.get(name) {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    };
+    Some(swarmy_core::ConversationSummary {
+        goals: field("goals"),
+        state_of_work: field("state_of_work"),
+        open_questions: field("open_questions"),
+        facts_to_keep: field("facts_to_keep"),
+    })
+}
 
 const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 
@@ -529,6 +561,7 @@ pub(super) fn summary_request(
     settings: swarmy_llm::GenerationSettings,
 ) -> swarmy_llm::Request {
     let mut settings = settings;
+    settings.reasoning_effort = Some(swarmy_llm::ReasoningEffort::Low);
     let cap = config
         .catalog
         .model(provider, &settings.model)
@@ -569,4 +602,29 @@ pub(super) fn summary_fits(
     }
     let estimated = chars.div_ceil(4);
     estimated.saturating_add(output) <= context
+}
+
+#[cfg(test)]
+mod summary_parse_tests {
+    use super::parse_summary;
+
+    #[test]
+    fn accepts_fences_arrays_missing_fields_and_preambles() {
+        let fenced =
+            parse_summary("```json\n{\"goals\":[\"one\",\"two\"],\"state_of_work\":\"done\"}\n```")
+                .unwrap();
+        assert_eq!(fenced.goals, "[\"one\",\"two\"]");
+        assert_eq!(fenced.open_questions, "");
+        assert_eq!(
+            parse_summary("Here is the summary: {\"goals\":\"work\"}")
+                .unwrap()
+                .goals,
+            "work"
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_json() {
+        assert!(parse_summary("{\"goals\": [\"unfinished\"").is_none());
+    }
 }

@@ -265,6 +265,38 @@ impl Worker {
             return Ok(None);
         }
         if self.summary_completed(session, events).await? {
+            if let Some(Event::InferenceFailed {
+                error,
+                retryable: false,
+                ..
+            }) = events.iter().rev().find(|event| {
+                matches!(
+                    event,
+                    Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
+                )
+            }) {
+                let error = error.clone();
+                tracing::warn!(session_id = %session.session_id, %error, "summary inference failed permanently");
+                let notice = swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::System,
+                    parts: vec![swarmy_core::Part::Text {
+                        text: format!(
+                            "Summary inference failed permanently; this session could not continue automatically. Error: {error}"
+                        ),
+                    }],
+                };
+                self.append(
+                    session,
+                    lease,
+                    events,
+                    &[Event::MessageAppended {
+                        seq: 0,
+                        message: notice,
+                    }],
+                )
+                .await?;
+            }
             self.finish(session, lease, &snapshot, events, turn).await?;
             return Ok(None);
         }
