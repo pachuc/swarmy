@@ -294,7 +294,8 @@ mod side_tail_tests {
         let warning = Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: MessageRole::System,
-            parts: vec![Part::Text {
+            parts: vec![Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
                 text: "context_pressure: input 150 tokens at 75 percent".into(),
             }],
         };
