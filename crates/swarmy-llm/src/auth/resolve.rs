@@ -533,7 +533,7 @@ mod tests {
                     key: "stored-key".into(),
                     extra: BTreeMap::from([
                         ("label".into(), "work".into()),
-                        ("auth_kind".into(), "api_key".into()),
+                        ("auth_kind".into(), "api-key".into()),
                     ]),
                 },
                 updated_at: jiff::Timestamp::now(),
