@@ -248,3 +248,53 @@ Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
 `iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+
+### Dedicated pull-request CI runner
+
+Provision a separate Ubuntu 24.04 x86-64 machine with 16 cores, 60 GiB RAM,
+root and local NVMe (for example, an `m6id.4xlarge` remote node); do not
+share it with worker sandboxes. Put `/var/lib/swarmy-ci` on persistent storage
+large enough for the target cache and check out this repository on the node.
+The runner runs untrusted pull-request code with passwordless access to the
+root test gate. Restrict repository write access and runner registration to
+trusted contributors; do not enable this runner for forked pull requests.
+
+On the operator machine, obtain a short-lived registration token and transfer
+it privately to the node (never put it in shell history or logs). On the node,
+from the trusted checkout, install and register in this order:
+
+```sh
+# Operator: gh api -X POST repos/OWNER/REPO/actions/runners/registration-token
+# Node: read the token privately (do not echo it or save it to disk).
+read -rs TOKEN
+sudo scripts/ci-runner-install.sh OWNER/REPO "$TOKEN"
+unset TOKEN
+sudo systemctl status swarmy-ci-runner swarmy-ci-clean.timer
+```
+
+The installer is safe to rerun: it retains an existing runner registration,
+installs the pinned Rust toolchain and dev tools for `ci`, and enables a weekly
+`cargo clean` timer. The CI workflow prints the shared target directory's size
+at the start of each run. Only one PR job runs at a time on this runner so
+that the test services and root suites do not collide. The master workflow
+continues on GitHub-hosted runners. Keep the runner checkout trusted: the
+root suite gate executes test binaries compiled from the pull request.
+
+For removal, stop the service and timer, unregister while the runner still has
+its stored credentials, and remove its local state and service files:
+
+```sh
+sudo systemctl disable --now swarmy-ci-runner.service swarmy-ci-clean.timer
+cd /var/lib/swarmy-ci/runner
+# Obtain a removal token with: gh api -X POST repos/OWNER/REPO/actions/runners/remove-token
+sudo -u ci ./config.sh remove --token "$REMOVE_TOKEN"
+unset REMOVE_TOKEN
+sudo rm -f /etc/systemd/system/swarmy-ci-{runner.service,clean.service,clean.timer} \
+  /etc/sudoers.d/swarmy-ci /usr/local/sbin/swarmy-ci-root
+sudo systemctl daemon-reload
+sudo rm -rf /var/lib/swarmy-ci
+```
+
+If the node has been lost, remove its offline runner in GitHub repository
+Settings > Actions > Runners instead. Do not remove `/home/ci` if other
+services use that account.

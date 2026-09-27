@@ -1,29 +1,47 @@
-name: Pull request CI
+name: Master CI
 on:
-  pull_request:
-
-# GitHub concurrency has only one grouping dimension. A single shared group
-# serializes all PRs because their root suites use the same host ports.
-concurrency:
-  group: swarmy-ci-pr-ports
-  cancel-in-progress: false
+  push:
+    branches: [master]
 
 jobs:
   linux:
-    concurrency:
-      group: swarmy-ci-pr-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    runs-on: [self-hosted, swarmy-ci]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Install pinned Rust toolchain
         run: rustup show
-      - name: Report persistent build cache size
-        run: du -sh "$CARGO_TARGET_DIR" || true
-      - name: Check formatting before starting services
-        run: cargo fmt --all --check
+      # Restore compiled dependencies keyed on the lockfile and toolchain so a
+      # run only compiles what changed; a cold run still works, just slower.
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install development services
+        env:
+          FDB_VERSION: 7.3.79
+          NATS_VERSION: 2.14.6
+          SEAWEEDFS_VERSION: '4.47'
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          for pkg in clients server; do
+            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
+            sha256sum -c "${deb}.sha256"
+            # Avoid package hooks starting a system database on our local port.
+            sudo dpkg-deb -x "$deb" /
+          done
+          sudo ldconfig
+          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
+          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
+          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
+          sudo install -m 0755 weed /usr/local/bin/weed
+          /usr/sbin/fdbserver --version
+          fdbcli --version
+          nats-server --version
+          weed version
       - name: Start development services
         run: |
           scripts/dev-stack.sh start
@@ -31,6 +49,7 @@ jobs:
           for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
             printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
           done
+      - run: cargo fmt --all --check
       # The end-to-end suite spawns the real scheduler, worker, gateway, and
       # CLI binaries, so build the workspace first and run that suite on its
       # own: each of its tests spawns those services, and they starve each
@@ -56,14 +75,18 @@ jobs:
       # Gemini, and Azure with a clear error instead of failing to compile.
       - name: Test the inference clients without cloud features
         run: cargo test --locked -p swarmy-llm --no-default-features
-      - name: Run root acceptance suites
-        run: scripts/ci-root-suites.sh
       - name: Run the reduced failure-injection test
         run: scripts/chaos-ci.sh
-      - name: Check OpenAPI compatibility
-        run: scripts/check-openapi-compat.sh origin/master
       - name: Stop development services
         if: always()
         run: |
           scripts/dev-stack.sh stop
           scripts/dev-stack.sh status
+  openapi-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check OpenAPI compatibility
+        run: scripts/check-openapi-compat.sh origin/master
