@@ -76,6 +76,7 @@ check:
 	bash scripts/test-remote-upgrade.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) build --locked -p swarmy-cli --no-default-features
+	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked
 	# The workspace test and clippy leave the opt-in `remote` feature off;
 	# build the provisioning client once and test and lint it with it on.
