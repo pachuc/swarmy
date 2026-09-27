@@ -5,9 +5,9 @@ pub mod auth;
 pub mod catalog;
 pub mod chatgpt;
 pub mod cost;
-pub mod error;
+pub(crate) mod error;
 pub mod fake;
-pub mod protocol;
+pub(crate) mod protocol;
 pub mod quota;
 pub mod reasoning;
 pub mod responses;
@@ -51,17 +51,17 @@ pub enum ProviderAuthExtra {
 }
 
 impl ProviderAuthExtra {
-    fn from_record(provider: &str, extra: &BTreeMap<String, String>) -> Result<Self, Error> {
+    fn from_record(provider: &str, extra: &BTreeMap<String, String>) -> Option<Self> {
         match provider {
-            "azure" => Ok(Self::Azure(AzureAuth {
+            "azure" => Some(Self::Azure(AzureAuth {
                 resource_name: extra.get("resource_name").cloned(),
                 base_url: extra.get("base_url").cloned(),
             })),
-            "amazon-bedrock" => Ok(Self::Bedrock(BedrockAuth {
+            "amazon-bedrock" => Some(Self::Bedrock(BedrockAuth {
                 region: extra.get("region").cloned(),
                 bearer_token: extra.get("bearer_token").cloned(),
             })),
-            _ => Err(Error::Credentials("unsupported provider auth metadata")),
+            _ => None,
         }
     }
 }

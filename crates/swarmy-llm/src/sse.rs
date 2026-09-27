@@ -55,13 +55,28 @@ impl SseParser {
         Ok(Some(Frame::Raw(line)))
     }
 
+    /// Parse a chunk into complete frames.
+    /// # Errors
+    /// Rejects an event exceeding 8 MiB.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, Error> {
+        let mut frames = Vec::new();
+        for &byte in bytes {
+            if let Some(frame) = self.push_byte(byte)? {
+                frames.push(frame);
+            }
+        }
+        Ok(frames)
+    }
+
     /// Flush a final unterminated event at EOF (used by Gemini).
     /// # Errors
     /// Rejects an oversized trailing line.
     pub fn finish(&mut self) -> Result<Option<Frame>, Error> {
         if !self.line.is_empty() {
+            self.previous_cr = false;
             let _ = self.push_byte(b'\n')?;
         }
+        self.previous_cr = false;
         self.push_byte(b'\n')
     }
 
@@ -97,6 +112,13 @@ mod tests {
                 assert_eq!(events.len(), count);
             }
         }
+    }
+
+    #[test]
+    fn finish_after_lone_carriage_return_flushes_data() {
+        let mut parser = SseParser::default();
+        assert!(parser.push(b"data: final\r").unwrap().is_empty());
+        assert!(matches!(parser.finish().unwrap(), Some(Frame::Data(data)) if data == b"final\n"));
     }
 
     #[test]

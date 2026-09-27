@@ -1,5 +1,6 @@
 //! Gemini generateContent on the Gemini API and Google Vertex.
 
+use crate::sse::{Frame, SseParser};
 use base64::Engine as _;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -375,19 +376,17 @@ fn overflow(text: &str) -> bool {
 }
 
 #[derive(Default)]
-struct Sse(crate::sse::SseParser);
+struct Sse(SseParser);
 impl Sse {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, Error> {
         let mut events = Vec::new();
-        for &byte in bytes {
-            if let Some(frame) = self.0.push_byte(byte)? {
-                Self::collect(frame, &mut events)?;
-            }
+        for frame in self.0.push(bytes)? {
+            Self::collect(frame, &mut events)?;
         }
         Ok(events)
     }
-    fn collect(frame: crate::sse::Frame, events: &mut Vec<Value>) -> Result<(), Error> {
-        if let crate::sse::Frame::Data(data) = frame
+    fn collect(frame: Frame, events: &mut Vec<Value>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame
             && data != b"[DONE]\n"
         {
             events.push(serde_json::from_slice(&data)?);

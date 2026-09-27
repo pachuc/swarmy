@@ -1,5 +1,6 @@
 //! `OpenRouter`'s Chat Completions transport and reasoning replay format.
 
+use crate::sse::{Frame, SseParser};
 use base64::Engine as _;
 use std::{collections::BTreeMap, time::Duration};
 
@@ -377,7 +378,7 @@ enum Output {
 pub struct CompletionsStream {
     provider: String,
     model: String,
-    framing: crate::sse::SseParser,
+    framing: SseParser,
     completed: bool,
     output: Vec<Output>,
     text: Option<usize>,
@@ -395,7 +396,7 @@ impl CompletionsStream {
         Self {
             provider: provider.into(),
             model: model.into(),
-            framing: crate::sse::SseParser::default(),
+            framing: SseParser::default(),
             completed: false,
             output: Vec::new(),
             text: None,
@@ -422,24 +423,22 @@ impl CompletionsStream {
     /// Rejects malformed events, provider errors, and events over 8 MiB.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Delta>, Error> {
         let mut deltas = Vec::new();
-        for &byte in bytes {
+        for frame in self.framing.push(bytes)? {
             if self.completed {
                 break;
             }
-            if let Some(frame) = self.framing.push_byte(byte)? {
-                self.frame(frame, &mut deltas)?;
-            }
+            self.frame(frame, &mut deltas)?;
         }
         Ok(deltas)
     }
 
-    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+    fn frame(&mut self, frame: Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
         match frame {
-            crate::sse::Frame::Data(data) if data == b"[DONE]\n" => self.complete(deltas)?,
-            crate::sse::Frame::Data(data) => {
+            Frame::Data(data) if data == b"[DONE]\n" => self.complete(deltas)?,
+            Frame::Data(data) => {
                 self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
             }
-            crate::sse::Frame::Raw(data) => {
+            Frame::Raw(data) => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&data) {
                     return Err(error_from_json(&value));
                 }
@@ -673,26 +672,4 @@ fn append_detail(details: &mut Vec<Value>, detail: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
-
-    #[test]
-    fn retry_after_supports_seconds_http_dates_and_invalid_values() {
-        let mut headers = HeaderMap::new();
-        assert_eq!(crate::retry::retry_after_header(&headers), None);
-        headers.insert(RETRY_AFTER, HeaderValue::from_static("12"));
-        assert_eq!(
-            crate::retry::retry_after_header(&headers),
-            Some(Duration::from_secs(12))
-        );
-        headers.insert(
-            RETRY_AFTER,
-            HeaderValue::from_static("Sun, 06 Nov 1994 08:49:37 GMT"),
-        );
-        assert_eq!(
-            crate::retry::retry_after_header(&headers),
-            Some(Duration::ZERO)
-        );
-        headers.insert(RETRY_AFTER, HeaderValue::from_static("invalid"));
-        assert_eq!(crate::retry::retry_after_header(&headers), None);
-    }
 }

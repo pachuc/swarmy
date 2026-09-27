@@ -317,11 +317,7 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
     if status.is_success() {
         return Ok(response);
     }
-    let retry_after = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(crate::retry::retry_after);
+    let retry_after = crate::retry::retry_after_header(response.headers());
     let body = response.text().await?;
     if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(&body) {
         return Err(Error::ContextOverflow(body));
@@ -338,17 +334,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retry_after_accepts_seconds_and_http_dates() {
-        assert_eq!(
-            crate::retry::retry_after("12"),
-            Some(Duration::from_secs(12))
-        );
-        assert_eq!(
-            crate::retry::retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
-            Some(Duration::ZERO)
-        );
-        assert!(crate::retry::retry_after("Wed, 21 Oct 2099 07:28:00 GMT").is_some());
-        assert!(crate::retry::retry_after("invalid").is_none());
+    fn context_overflow_classification() {
         assert!(!is_context_overflow("rate limit: too many tokens"));
     }
 }

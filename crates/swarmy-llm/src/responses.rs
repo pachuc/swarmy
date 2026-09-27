@@ -1,4 +1,5 @@
 //! Responses request normalization and incremental stream parsing.
+use crate::sse::{Frame, SseParser};
 use crate::{Delta, Error, Request, Response, StopReason, TokenUsage};
 use crate::{
     ReasoningEffort,
@@ -309,7 +310,7 @@ fn normalize_calls(input: &mut Vec<Value>) {
 /// split across arbitrary network chunks. Unknown event types are ignored.
 #[derive(Default)]
 pub struct ResponsesStream {
-    framing: crate::sse::SseParser,
+    framing: SseParser,
     output: BTreeMap<usize, Vec<Part>>,
     text_content: BTreeMap<usize, BTreeMap<usize, String>>,
     saw_tool_arguments: bool,
@@ -364,19 +365,17 @@ impl ResponsesStream {
     /// Rejects malformed events, provider errors, and events over 8 MiB.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Delta>, Error> {
         let mut deltas = Vec::new();
-        for &byte in bytes {
+        for frame in self.framing.push(bytes)? {
             if self.completed {
                 break;
             }
-            if let Some(frame) = self.framing.push_byte(byte)? {
-                self.frame(frame, &mut deltas)?;
-            }
+            self.frame(frame, &mut deltas)?;
         }
         Ok(deltas)
     }
 
-    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        if let crate::sse::Frame::Data(data) = frame {
+    fn frame(&mut self, frame: Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame {
             if data == b"[DONE]\n" {
                 return Err(Error::Protocol(
                     "stream ended without response.completed".into(),

@@ -296,31 +296,29 @@ fn vertex_from_record(kind: CredentialKind) -> ClientAuth {
     google::vertex_auth(&extra).unwrap_or(ClientAuth::Ambient)
 }
 
+/// Unrecognised extras (including API bookkeeping fields) are ignored.
 fn auth_from_kind(provider: &str, kind: CredentialKind) -> Result<ClientAuth, Error> {
     match kind {
         CredentialKind::ApiKey { key, extra } => {
             if key.is_empty() {
                 return Err(Error::Credentials("empty API key"));
             }
-            if extra.is_empty() {
-                Ok(ClientAuth::ApiKey(key))
-            } else {
-                Ok(ClientAuth::ApiKeyWithExtra {
-                    key,
-                    extra: crate::ProviderAuthExtra::from_record(provider, &extra)?,
-                })
-            }
+            Ok(
+                match crate::ProviderAuthExtra::from_record(provider, &extra) {
+                    Some(extra) => ClientAuth::ApiKeyWithExtra { key, extra },
+                    None => ClientAuth::ApiKey(key),
+                },
+            )
         }
-        CredentialKind::OAuth { access, extra, .. } => {
-            if extra.is_empty() {
-                Ok(ClientAuth::Bearer(access))
-            } else {
-                Ok(ClientAuth::BearerWithExtra {
+        CredentialKind::OAuth { access, extra, .. } => Ok(
+            match crate::ProviderAuthExtra::from_record(provider, &extra) {
+                Some(extra) => ClientAuth::BearerWithExtra {
                     token: access,
-                    extra: crate::ProviderAuthExtra::from_record(provider, &extra)?,
-                })
-            }
-        }
+                    extra,
+                },
+                None => ClientAuth::Bearer(access),
+            },
+        ),
     }
 }
 
@@ -524,6 +522,27 @@ mod tests {
                 extra: BTreeMap::new(),
             },
             updated_at: jiff::Timestamp::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_created_keys_ignore_bookkeeping_extras() {
+        for provider in ["openrouter", "openai"] {
+            let record = CredentialRecord {
+                kind: CredentialKind::ApiKey {
+                    key: "stored-key".into(),
+                    extra: BTreeMap::from([
+                        ("label".into(), "work".into()),
+                        ("auth_kind".into(), "api_key".into()),
+                    ]),
+                },
+                updated_at: jiff::Timestamp::now(),
+            };
+            let resolved = resolver(Some(record))
+                .resolve_using(provider, |_| None)
+                .await
+                .unwrap();
+            assert!(matches!(resolved.auth, ClientAuth::ApiKey(key) if key == "stored-key"));
         }
     }
 

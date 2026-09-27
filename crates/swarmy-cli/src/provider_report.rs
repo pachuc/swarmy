@@ -18,7 +18,11 @@ pub fn local(catalog: &Catalog, store: &str) -> Vec<ProviderRow> {
             let keys = swarmy_llm::auth::provider_env_keys(&provider.id);
             let credential = if provider.id == "fake" {
                 "not required"
-            } else if keys.iter().any(|key| present(key)) {
+            } else if keys
+                .iter()
+                .filter(|key| provider.env_keys.iter().any(|env| env == **key))
+                .any(|key| present(key))
+            {
                 "environment"
             } else if ambient(&provider.id) {
                 "ambient"

@@ -19,7 +19,7 @@ pub fn provider_error(status: StatusCode, body: &str) -> Error {
 
 /// Classify a provider-specific extracted message, including context exhaustion.
 #[must_use]
-pub fn message_error(message: String) -> Error {
+pub(crate) fn message_error(message: String) -> Error {
     if crate::responses::is_context_overflow(&message) {
         Error::ContextOverflow(message)
     } else {
@@ -36,9 +36,5 @@ pub(crate) fn response_event_error(value: &Value) -> Error {
             .unwrap_or("unknown"),
         value["message"].as_str().unwrap_or("request failed")
     );
-    if crate::responses::is_context_overflow(&message) {
-        Error::ContextOverflow(message)
-    } else {
-        Error::Protocol(message)
-    }
+    message_error(message)
 }

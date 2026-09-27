@@ -1,5 +1,6 @@
 //! Anthropic Messages on Anthropic direct, Vertex, and `OpenRouter`.
 
+use crate::sse::{Frame, SseParser};
 use base64::Engine as _;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -464,7 +465,7 @@ struct Block {
 pub struct AnthropicStream {
     model: String,
     provider: String,
-    framing: crate::sse::SseParser,
+    framing: SseParser,
     started: bool,
     completed: bool,
     blocks: BTreeMap<usize, Block>,
@@ -481,7 +482,7 @@ impl AnthropicStream {
         Self {
             model: model.into(),
             provider: provider.into(),
-            framing: crate::sse::SseParser::default(),
+            framing: SseParser::default(),
             started: false,
             completed: false,
             blocks: BTreeMap::new(),
@@ -507,19 +508,17 @@ impl AnthropicStream {
     /// Rejects malformed events, provider errors, and events larger than 8 MiB.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Delta>, Error> {
         let mut deltas = Vec::new();
-        for &byte in bytes {
+        for frame in self.framing.push(bytes)? {
             if self.completed {
                 break;
             }
-            if let Some(frame) = self.framing.push_byte(byte)? {
-                self.frame(frame, &mut deltas)?;
-            }
+            self.frame(frame, &mut deltas)?;
         }
         Ok(deltas)
     }
 
-    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        if let crate::sse::Frame::Data(data) = frame {
+    fn frame(&mut self, frame: Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let Frame::Data(data) = frame {
             self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
         }
         Ok(())
