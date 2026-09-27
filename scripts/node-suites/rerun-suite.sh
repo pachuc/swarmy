@@ -13,7 +13,14 @@ trap "sudo systemctl start swarmy-tunnel swarmyd" EXIT
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 scripts/dev-stack.sh start 2>&1 | tail -1
 set -a; . .dev/env; set +a
-CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api 2>&1 | tail -1
+# `--tests` builds a package's executable only when it has integration tests,
+# and the scheduler, worker, and gateway have none, while the chaos suites run
+# the service executables from target/debug. Build those explicitly, or the
+# chaos suites run whatever an earlier branch left there.
+CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api > ~/suite-build.log 2>&1 \
+  && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api -p swarmyd >> ~/suite-build.log 2>&1 \
+  || { tail -20 ~/suite-build.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 1; }
+tail -1 ~/suite-build.log
 sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -1
 bash "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/nbd-orphans.sh"
 sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev RUST_BACKTRACE=0 "$(command -v cargo)" test --locked -p "$pkg" --test "$suite" -- --test-threads=1 --nocapture 2>&1 | grep -vE "^\s+(Compiling|Finished|Running|Blocking)"

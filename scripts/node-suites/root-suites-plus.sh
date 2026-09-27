@@ -4,6 +4,9 @@ set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bash "$here/root-suites.sh" "$branch"
+# Exit 2 means the branch could not be checked out; do not run the image
+# suites against whatever checkout was there before.
+[ $? -eq 2 ] && exit 1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos

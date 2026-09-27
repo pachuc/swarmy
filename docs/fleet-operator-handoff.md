@@ -137,10 +137,13 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
    takes about forty minutes. `swarmy image build` needs an API, which
    `root-suites.sh` serves on a loopback port.
 
-   Known behaviour: in the long sequential run the chaos suites sometimes
-   fail within a second right after the node suite and pass when rerun alone
-   (`--only "swarmy-chaos bash"`); confirm with a rerun before sending a
-   worker a round. An interrupted nbd or node test can leave `/dev/nbdN`
+   The chaos suites run the service executables (scheduler, worker, gateway,
+   API, node daemon) from `target/debug`; `root-suites.sh` builds them
+   explicitly before any suite runs. Before 2026-09-27 it did not, so the
+   chaos suites ran the executables an earlier branch had left behind and
+   failed within seconds whenever the stored formats differed (for example
+   `unsupported stored value version 2`); a failure like that on a new run
+   is real. An interrupted nbd or node test can leave `/dev/nbdN`
    attached with no owner, which breaks later nbd tests; `nbd-orphans.sh`
    runs before every suite and detaches such devices. The suite node's build
    directory and dev-stack data live on its local NVMe drive
