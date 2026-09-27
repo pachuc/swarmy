@@ -334,16 +334,27 @@ impl Store {
     /// such entry exists; the legacy row is cleared in the same transaction.
     /// Rows are read in batches of one hundred. Rows that fail to decrypt
     /// (wrong or missing key) are left in place and skipped, so a later boot
-    /// with the right keyring can still migrate them. Returns the migrated
-    /// count for the startup log; database errors still propagate so the
-    /// caller can log them, but callers must not refuse to start.
+    /// with the right keyring can still migrate them. Returns the written and
+    /// cleared counts for the startup log; database errors still propagate so
+    /// the caller can log them, but callers must not refuse to start.
     /// # Errors
     /// Returns database, encoding, or encryption errors.
-    pub async fn migrate_legacy_credentials(&self, keyring: &Keyring) -> Result<u64> {
+    pub async fn migrate_legacy_credentials(&self, keyring: &Keyring) -> Result<LegacyMigration> {
         self.credentials(keyring.clone())
             .migrate_legacy_credentials()
             .await
     }
+}
+
+/// Outcome of the one-shot boot migration of retired single-record
+/// credential rows. `written` counts rows that produced a new `default`
+/// entry; `cleared` counts rows cleared without writing because the
+/// `default` entry already existed. Rows that fail to decrypt are left in
+/// place and counted in neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LegacyMigration {
+    pub written: u64,
+    pub cleared: u64,
 }
 
 impl CredentialStore {
@@ -482,16 +493,16 @@ impl CredentialStore {
     /// `default` entry when no such entry exists, and clears the legacy row
     /// in the same transaction. Rows that fail to decrypt are left in place
     /// so a later boot with the right keyring retries them; corrupt scope
-    /// encodings are left as well. Returns the migrated count for the
-    /// startup log line. Boot never fails on this: database errors propagate
-    /// for logging, but callers continue starting.
+    /// encodings are left as well. Returns the written and cleared counts for
+    /// the startup log line. Boot never fails on this: database errors
+    /// propagate for logging, but callers continue starting.
     /// # Errors
     /// Returns database, encoding, or encryption errors.
-    pub async fn migrate_legacy_credentials(&self) -> Result<u64> {
+    pub async fn migrate_legacy_credentials(&self) -> Result<LegacyMigration> {
         const BATCH: usize = 100;
         let space = self.store.root.subspace(&("credential",));
         let (mut begin, end) = space.range();
-        let mut migrated: u64 = 0;
+        let mut outcome = LegacyMigration::default();
         loop {
             let rows = self
                 .store
@@ -505,10 +516,10 @@ impl CredentialStore {
             }
             let complete = rows.len() < BATCH;
             for (key, bytes) in &rows {
-                let (scope_text, provider): (String, String) = match space.unpack(key) {
-                    Ok(parts) => parts,
-                    Err(_) => continue,
+                let Ok(parts) = space.unpack(key) else {
+                    continue;
                 };
+                let (scope_text, provider): (String, String) = parts;
                 let Some(scope) = parse_scope(&scope_text) else {
                     continue;
                 };
@@ -537,14 +548,16 @@ impl CredentialStore {
                     provider.as_str(),
                 ));
                 let created_at = record.updated_at;
-                self.store
+                let wrote = self
+                    .store
                     .transaction(|trx| {
                         let entry_key = &entry_key;
                         let legacy_key = &legacy_key;
                         let lease_key = &lease_key;
                         let ciphertext = &ciphertext;
                         async move {
-                            if read_entry(&trx, entry_key).await?.is_none() {
+                            let wrote = read_entry(&trx, entry_key).await?.is_none();
+                            if wrote {
                                 write(
                                     &trx,
                                     entry_key,
@@ -559,11 +572,15 @@ impl CredentialStore {
                             }
                             trx.clear(legacy_key);
                             trx.clear(lease_key);
-                            Ok(())
+                            Ok(wrote)
                         }
                     })
                     .await?;
-                migrated += 1;
+                if wrote {
+                    outcome.written += 1;
+                } else {
+                    outcome.cleared += 1;
+                }
             }
             if complete {
                 break;
@@ -575,7 +592,7 @@ impl CredentialStore {
                 break;
             }
         }
-        Ok(migrated)
+        Ok(outcome)
     }
 
     /// # Errors

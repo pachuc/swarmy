@@ -281,8 +281,8 @@ impl Store {
 
     /// Logical store transactions started so far. Tests use it to compare
     /// per-operation costs; production code never branches on it.
-    #[must_use]
     /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn transaction_count(&self) -> u64 {
         self.transactions.load(Ordering::Relaxed)

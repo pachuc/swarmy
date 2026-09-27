@@ -31,21 +31,29 @@ async fn run() -> Result<()> {
     // One-shot boot migration of retired single-record credential rows.
     // Boot never fails on this: undecryptable rows stay for a later boot
     // with the right keyring, and `swarmy doctor` reports the remainder.
-    match swarmy_config::Keyring::load() {
-        Ok(keyring) => match store.migrate_legacy_credentials(&keyring).await {
-            Ok(0) => {}
-            Ok(migrated) => {
+    // The keyring is loaded once so the migration and the credential routes
+    // below decrypt with the same key; loading separately could leave rows
+    // unmigrated while warning on every boot.
+    let keyring = match swarmy_config::Keyring::load() {
+        Ok(keyring) => Some(keyring),
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
+            None
+        }
+    };
+    if let Some(keyring) = &keyring {
+        match store.migrate_legacy_credentials(keyring).await {
+            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
+            Ok(outcome) => {
                 tracing::info!(
-                    migrated,
+                    written = outcome.written,
+                    cleared = outcome.cleared,
                     "migrated retired single-record credential rows to entries"
                 );
             }
             Err(error) => {
                 tracing::warn!(%error, "legacy credential migration failed; continuing without it");
             }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
         }
     }
     let bus = Bus::connect(
@@ -83,6 +91,7 @@ async fn run() -> Result<()> {
         }
     });
     let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);
+    state.credential_keyring = keyring;
     state.gc = settings.gc;
     state.upload_dir = std::path::PathBuf::from(&settings.state_dir).join("uploads");
     state.upload_max_bytes = settings.image_upload_max_bytes;

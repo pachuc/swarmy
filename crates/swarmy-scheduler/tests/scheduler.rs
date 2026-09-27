@@ -625,7 +625,13 @@ async fn due_side_timer_nudges_its_idle_session() {
     run(|f| async move {
         let agent = f
             .store
-            .create_agent("timer-side", image_fixture::image(&f.store).await, "", Timestamp::now(), None)
+            .create_agent(
+                "timer-side",
+                image_fixture::image(&f.store).await,
+                "",
+                Timestamp::now(),
+                None,
+            )
             .await
             .unwrap()
             .agent_id;

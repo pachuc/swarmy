@@ -199,10 +199,11 @@ async fn run(config: config::Config) -> Result<()> {
     // Boot never fails on this; the remainder is reported by `swarmy doctor`.
     match swarmy_config::Keyring::load() {
         Ok(keyring) => match store.migrate_legacy_credentials(&keyring).await {
-            Ok(0) => {}
-            Ok(migrated) => {
+            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
+            Ok(outcome) => {
                 tracing::info!(
-                    migrated,
+                    written = outcome.written,
+                    cleared = outcome.cleared,
                     "migrated retired single-record credential rows to entries"
                 );
             }

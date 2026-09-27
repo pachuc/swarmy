@@ -4484,6 +4484,7 @@ dependencies = [
  "swarmy-api-types",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-store",
  "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",
