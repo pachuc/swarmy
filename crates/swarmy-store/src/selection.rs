@@ -95,7 +95,7 @@ impl Store {
             Ok(
                 read::<GatewayProvider>(&trx, &self.root.pack(&("gateway_provider", provider)))
                     .await?
-                    .is_some_and(|record| record.expires_at > Timestamp::now()),
+                    .is_some_and(|record| record.expires_at > self.now()),
             )
         })
         .await

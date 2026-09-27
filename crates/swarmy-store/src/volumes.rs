@@ -333,7 +333,7 @@ impl Store {
                 .await?;
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
+                || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
                 return Err(StoreError::LeaseMismatch);
@@ -392,9 +392,7 @@ impl Store {
             self.check_volume_placement(&trx, id, expected.owner)
                 .await?;
             let mut volume = self.volume(&trx, id).await?;
-            if volume.writer_lease.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
-            {
+            if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
                 return Err(StoreError::LeaseMismatch);
             }
             let parent_key = self.manifest_parent_key(next);

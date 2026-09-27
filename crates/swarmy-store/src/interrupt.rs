@@ -58,7 +58,7 @@ impl Store {
                             .await?
                             .ok_or(StoreError::Corrupt)?
                     };
-                    self.append_interrupted(&trx, session, request_id, Timestamp::now())
+                    self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
                     trx.clear(&self.wait_due_key(id, wait.wake_at));
                     trx.clear(&self.wait_key(id));
@@ -105,7 +105,7 @@ impl Store {
                             .ok_or(StoreError::SequenceOverflow)?,
                     ))
             };
-            self.append_interrupted(&trx, session, request_id, Timestamp::now())
+            self.append_interrupted(&trx, session, request_id, self.now())
                 .await?;
             if let Some(wait) = read::<crate::InferenceWait>(&trx, &self.wait_key(id)).await? {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));

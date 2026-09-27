@@ -77,7 +77,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn list_services(&self) -> Result<Vec<ServiceHealth>> {
-        self.list_services_at(Timestamp::now()).await
+        self.list_services_at(self.now()).await
     }
 
     /// Evaluate health at a supplied time, useful for deterministic monitoring tests.
@@ -132,7 +132,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn expire_services(&self) -> Result<usize> {
-        self.expire_services_at(Timestamp::now()).await
+        self.expire_services_at(self.now()).await
     }
 
     /// Expire at a supplied time for deterministic tests.

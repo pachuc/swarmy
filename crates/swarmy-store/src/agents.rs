@@ -536,7 +536,7 @@ impl Store {
         self.transaction(|trx| {
             let (opening, archived_value) = (&opening, &archived_value);
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
                 if previous.head_seq != expected_head {
@@ -610,7 +610,7 @@ impl Store {
         self.transaction(|trx| {
             let (prepared, archived_value) = (&prepared, &archived_value);
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
                 if previous.head_seq != expected_head {
@@ -992,7 +992,7 @@ mod tests {
                 manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
             },
             String::new(),
-            Timestamp::now(),
+            self.now(),
             Some(session),
         ))
         .unwrap();

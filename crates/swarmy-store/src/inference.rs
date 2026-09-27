@@ -255,7 +255,7 @@ impl Store {
                 completed,
                 idle,
             } = prepared;
-            let now = snapshot.map_or(completion.now, |_| completion.now.max(Timestamp::now()));
+            let now = snapshot.map_or(completion.now, |_| completion.now.max(self.now()));
             let idem_key = self.inference_key("idem", claim.request_id);
             let claim_key = self.inference_key("inference_claim", claim.request_id);
             let (idem, current, mut session) = futures::try_join!(

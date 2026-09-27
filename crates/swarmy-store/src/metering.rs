@@ -703,7 +703,7 @@ impl Store {
         let upgrade_at = if let Some(at) = upgrade_at {
             at
         } else {
-            let now = Timestamp::now();
+            let now = self.now();
             let bytes = crate::encode(&now)?;
             self.transaction(|trx| {
                 let upgrade_key = &upgrade_key;

@@ -110,7 +110,7 @@ impl Store {
         if remaining.is_empty() {
             return Ok(());
         }
-        let now = Timestamp::now();
+        let now = self.now();
         let remaining = remaining.clone();
         let resets = resets.clone();
         let key = self.observed_key(provider, label);
@@ -190,7 +190,7 @@ impl Store {
     pub async fn entry_quota(&self, provider: &str, label: &str) -> Result<EntryQuota> {
         let (observed, config) = self.quota_rows(provider, label).await?;
         if let Some(config) = config {
-            let now = Timestamp::now();
+            let now = self.now();
             let from = now
                 .as_second()
                 .checked_sub(i64::try_from(config.window_seconds).unwrap_or(i64::MAX))

@@ -47,7 +47,7 @@ impl Store {
             if let Some(volume) = read::<VolumeRecord>(&trx, &self.volume_key(id)).await? {
                 if volume
                     .writer_lease
-                    .is_some_and(|lease| lease.expires_at > Timestamp::now())
+                    .is_some_and(|lease| lease.expires_at > self.now())
                     && !binding.is_some_and(|old| {
                         old.node_id == placement.node_id && old.epoch == placement.epoch
                     })
@@ -110,7 +110,7 @@ impl Store {
             let session = self.session(&trx, claim.job.session_id).await?;
             if session.agent_id != claim.placement.agent_id
                 || session.state != SessionState::WaitingTools
-                || claim.expires_at <= Timestamp::now()
+                || claim.expires_at <= self.now()
             {
                 return Err(StoreError::InvalidState);
             }
@@ -120,7 +120,7 @@ impl Store {
             let key = self.tool_key("placed_tool_claim", claim.job.request_id);
             if read::<StoredPlacedClaim>(&trx, &key)
                 .await?
-                .is_some_and(|old| old.expires_at > Timestamp::now())
+                .is_some_and(|old| old.expires_at > self.now())
             {
                 return Ok(false);
             }
@@ -154,7 +154,7 @@ impl Store {
         if current.owner != claim.owner
             || current.job_digest != job_digest(&claim.job)?
             || current.placement != claim.placement
-            || current.expires_at <= Timestamp::now()
+            || current.expires_at <= self.now()
         {
             return Err(StoreError::LeaseMismatch);
         }
@@ -232,7 +232,7 @@ impl Store {
                 trx.clear(&pending.pack(&(job.request_id.as_bytes().as_slice(),)));
                 session.head_seq = head;
                 if scan(&trx, pending.range(), 1).await?.is_empty() {
-                    self.transition(&trx, session, SessionState::Runnable, Timestamp::now())
+                    self.transition(&trx, session, SessionState::Runnable, self.now())
                         .await
                 } else {
                     self.write_session(&trx, &session)

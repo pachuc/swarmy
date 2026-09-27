@@ -111,8 +111,8 @@ async fn read_entry(trx: &RetryableTransaction, key: &[u8]) -> Result<Option<Ent
 /// expiry, so the scheduler can reconstruct readiness without decrypting.
 /// The reconstruction matches `CredentialRecord::status`: the login arms of
 /// that check never consult the clock, and only OAuth records expire.
-fn entry_readiness(record: &CredentialRecord) -> (bool, Option<Timestamp>) {
-    let needs_login = record.status(Timestamp::now()) == CredentialStatus::NeedsLogin;
+fn entry_readiness(record: &CredentialRecord, now: Timestamp) -> (bool, Option<Timestamp>) {
+    let needs_login = record.status(now) == CredentialStatus::NeedsLogin;
     let expires_at = match record.kind {
         CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
         CredentialKind::ApiKey { .. } => None,
@@ -387,7 +387,7 @@ impl CredentialStore {
             record,
         )?;
         let key = self.entry_key("credential_entry", scope, provider, label);
-        let (needs_login, expires_at) = entry_readiness(record);
+        let (needs_login, expires_at) = entry_readiness(record, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -399,7 +399,7 @@ impl CredentialStore {
                         key,
                         &EntryValue {
                             created_at: previous
-                                .map_or_else(Timestamp::now, |entry| entry.created_at),
+                                .map_or_else(|| self.store.now(), |entry| entry.created_at),
                             last_used_at: None,
                             needs_login,
                             expires_at,
@@ -459,7 +459,7 @@ impl CredentialStore {
                     let mut entry: EntryValue = read_entry(&trx, key)
                         .await?
                         .ok_or(StoreError::CredentialMissing)?;
-                    entry.last_used_at = Some(Timestamp::now());
+                    entry.last_used_at = Some(self.store.now());
                     write(&trx, key, &entry)
                 }
             })
@@ -528,7 +528,7 @@ impl CredentialStore {
                     tracing::warn!(provider = %provider, "legacy credential row did not decrypt; leaving it for a later boot");
                     continue;
                 };
-                let (needs_login, expires_at) = entry_readiness(&record);
+                let (needs_login, expires_at) = entry_readiness(&record, self.store.now());
                 let Ok(ciphertext) = encrypt(
                     &self.keyring,
                     scope,
@@ -626,7 +626,7 @@ impl CredentialStore {
                     &entry_identity(&provider, &label),
                     &entry.ciphertext,
                 )?;
-                let mut summary = CredentialSummary::new(provider, &record, Timestamp::now());
+                let mut summary = CredentialSummary::new(provider, &record, self.store.now());
                 summary.label = label;
                 summary.created_at = entry.created_at;
                 summary.last_used_at = entry.last_used_at;
@@ -695,7 +695,7 @@ impl CredentialStore {
         provider: &str,
     ) -> Result<Option<(String, CredentialRecord)>> {
         let entries = self.provider_entries(scope, provider).await?;
-        let now = Timestamp::now();
+        let now = self.store.now();
         if let Some((label, record)) = entries
             .iter()
             .find(|(_, record)| record.status(now) == CredentialStatus::Ready)
@@ -764,7 +764,7 @@ impl CredentialStore {
         };
         let remaining = lease
             .expires_at
-            .duration_since(Timestamp::now())
+            .duration_since(self.store.now())
             .try_into()
             .unwrap_or(Duration::ZERO);
         let refreshed = tokio::time::timeout(remaining, f(current.clone())).await;
@@ -785,7 +785,7 @@ impl CredentialStore {
         let bytes = if replacement == current {
             observed.ciphertext.clone()
         } else {
-            replacement.updated_at = Timestamp::now();
+            replacement.updated_at = self.store.now();
             encrypt(
                 &self.keyring,
                 scope,
@@ -824,7 +824,7 @@ impl CredentialStore {
                 if entry.ciphertext != observed.ciphertext {
                     return Ok(Claim::Changed(entry.ciphertext));
                 }
-                let now = Timestamp::now();
+                let now = self.store.now();
                 if read::<Lease>(&trx, lease_key)
                     .await?
                     .is_some_and(|lease| lease.expires_at > now)
@@ -864,7 +864,7 @@ impl CredentialStore {
     ) -> Result<()> {
         // A failed refresh marks the replacement as needing login; record its
         // hints alongside the new ciphertext so the scheduler pool stays exact.
-        let (needs_login, expires_at) = entry_readiness(replacement);
+        let (needs_login, expires_at) = entry_readiness(replacement, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -874,7 +874,7 @@ impl CredentialStore {
                     let held: Lease = read(&trx, lease_key)
                         .await?
                         .ok_or(StoreError::LeaseMismatch)?;
-                    if held != *lease || held.expires_at <= Timestamp::now() {
+                    if held != *lease || held.expires_at <= self.store.now() {
                         return Err(StoreError::LeaseMismatch);
                     }
                     let entry: EntryValue = read_entry(&trx, key)

@@ -38,7 +38,8 @@ mod gc;
 mod leases;
 mod routes;
 pub use routes::{
-    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteSnapshot, RouteStepStatus,
+    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteSnapshot,
+    RouteStepStatus,
 };
 mod nodes;
 pub mod objects;
@@ -307,6 +308,7 @@ impl From<&StoredSession> for StoredSessionV2 {
 pub struct Store {
     db: Arc<Database>,
     root: Subspace,
+    clock: Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>,
     blobs: Arc<dyn BlobStore>,
     images: session_images::ImageCache,
     /// Logical store transactions started through [`Store::transaction`].
@@ -342,6 +344,7 @@ impl Store {
         Ok(Self {
             db,
             root: Subspace::from_bytes(prefix),
+            clock: Arc::new(jiff::Timestamp::now),
             images: Arc::default(),
             blobs,
             transactions: Arc::default(),
@@ -355,11 +358,26 @@ impl Store {
         Self {
             db,
             root,
+            clock: Arc::new(jiff::Timestamp::now),
             blobs,
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
         }
+    }
+
+    /// Use a deterministic clock for lease and expiry tests.
+    #[must_use]
+    pub fn with_clock(
+        mut self,
+        clock: impl Fn() -> jiff::Timestamp + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = Arc::new(clock);
+        self
+    }
+
+    pub(crate) fn now(&self) -> jiff::Timestamp {
+        (self.clock)()
     }
 
     /// Logical store transactions started so far. Tests use it to compare
@@ -949,13 +967,8 @@ impl Store {
                 write(&trx, &self.turn_key(id), &message.id)?;
                 write(&trx, replay_key, &head)?;
                 session.head_seq = head;
-                self.transition(
-                    &trx,
-                    session,
-                    SessionState::Runnable,
-                    jiff::Timestamp::now(),
-                )
-                .await?;
+                self.transition(&trx, session, SessionState::Runnable, self.now())
+                    .await?;
                 Ok((head, true))
             }
         })
@@ -1021,13 +1034,8 @@ impl Store {
                 }
                 session.head_seq = head;
                 if wake {
-                    self.transition(
-                        &trx,
-                        session,
-                        SessionState::Runnable,
-                        jiff::Timestamp::now(),
-                    )
-                    .await
+                    self.transition(&trx, session, SessionState::Runnable, self.now())
+                        .await
                 } else {
                     self.write_session(&trx, &session)
                 }

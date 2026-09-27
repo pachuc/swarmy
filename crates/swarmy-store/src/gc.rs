@@ -12,7 +12,7 @@ impl Store {
     /// Rejects a live collector, invalid expiry, and transaction failures.
     pub async fn acquire_gc_lease(&self, run: &GcRun, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let now = Timestamp::now();
+            let now = self.now();
             let key = self.root.pack(&("gc_lease",));
             if expires_at <= now
                 || read::<Lease>(&trx, &key)
@@ -47,7 +47,7 @@ impl Store {
         self.transaction(|trx| async move {
             let key = self.root.pack(&("gc_lease",));
             if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
+                || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
                 return Err(StoreError::LeaseMismatch);
@@ -69,7 +69,7 @@ impl Store {
         self.transaction(|trx| async move {
             let key = self.root.pack(&("gc_lease",));
             if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= Timestamp::now()
+                || expected.expires_at <= self.now()
                 || expected.owner != run.owner
             {
                 return Err(StoreError::LeaseMismatch);
@@ -130,9 +130,7 @@ impl Store {
             if let Some(owner) = read::<LeaseOwnerId>(&trx, &deleting).await?
                 && read::<Lease>(&trx, &self.root.pack(&("gc_lease",)))
                     .await?
-                    .is_some_and(|lease| {
-                        lease.owner == owner && lease.expires_at > Timestamp::now()
-                    })
+                    .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -140,7 +138,7 @@ impl Store {
             write(
                 &trx,
                 &self.root.pack(&("chunk_reused", hash.0.as_slice())),
-                &Timestamp::now(),
+                &self.now(),
             )
         })
         .await
@@ -161,7 +159,7 @@ impl Store {
         self.transaction(|trx| async move {
             if !read::<Lease>(&trx, &self.root.pack(&("gc_lease",)))
                 .await?
-                .is_some_and(|lease| lease.owner == owner && lease.expires_at > Timestamp::now())
+                .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
             {
                 return Err(StoreError::LeaseMismatch);
             }

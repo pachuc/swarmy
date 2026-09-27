@@ -65,7 +65,7 @@ impl Store {
                     .pack(&("placement", agent.as_ulid().to_bytes().as_slice())),
             )
             .await?;
-            let now = Timestamp::now();
+            let now = self.now();
             Ok(placement
                 .filter(|placement| {
                     placement.node_id == status.node_id
@@ -220,7 +220,7 @@ impl Store {
         if session.state != SessionState::Completed
             && scan(trx, pending.range(), 1).await?.is_empty()
         {
-            self.transition(trx, session, SessionState::Runnable, Timestamp::now())
+            self.transition(trx, session, SessionState::Runnable, self.now())
                 .await
         } else {
             self.write_session(trx, &session)

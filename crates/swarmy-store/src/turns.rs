@@ -122,7 +122,7 @@ impl Store {
                 (&input, &inflight, &value, &request, &preceding);
             let route = &route;
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 let turn_key = self.turn_key(id);
                 let ((), mut session, turn) = futures::try_join!(
                     self.check_worker_lease(&trx, id, lease, now),
@@ -239,7 +239,7 @@ impl Store {
         self.transaction(|trx| {
             let (value, reference) = (&value, &reference);
             async move {
-                let now = Timestamp::now();
+                let now = self.now();
                 self.check_worker_lease(&trx, id, lease, now).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {

@@ -41,7 +41,7 @@ impl Store {
             })
             .await?;
         record
-            .filter(|entry| entry.expires_at > Timestamp::now())
+            .filter(|entry| entry.expires_at > self.now())
             .map(|entry| serde_json::from_str(&entry.result).map_err(|_| StoreError::Corrupt))
             .transpose()
     }
@@ -52,7 +52,8 @@ impl Store {
     pub async fn put_api_replay(&self, key: &str, result: serde_json::Value) -> Result<()> {
         let entry = ApiReplay {
             result: serde_json::to_string(&result).map_err(|_| StoreError::Corrupt)?,
-            expires_at: Timestamp::now()
+            expires_at: self
+                .now()
                 .checked_add(jiff::Span::new().hours(1))
                 .unwrap_or(Timestamp::MAX),
         };
@@ -75,9 +76,9 @@ impl Store {
             async move {
                 let storage_key = self.root.pack(&("api_idempotency", key));
                 let current: Option<ApiReplay> = read(&trx, &storage_key).await?;
-                if current.is_some_and(|entry| {
-                    entry.result == *expected && entry.expires_at > Timestamp::now()
-                }) {
+                if current
+                    .is_some_and(|entry| entry.result == *expected && entry.expires_at > self.now())
+                {
                     trx.clear(&storage_key);
                 }
                 Ok(())

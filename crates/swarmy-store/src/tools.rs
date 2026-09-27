@@ -88,7 +88,7 @@ impl Store {
             let values = &values;
             async move {
                 futures::try_join!(
-                    self.check_worker_lease(&trx, id, lease, Timestamp::now()),
+                    self.check_worker_lease(&trx, id, lease, self.now()),
                     self.check_live_placement(&trx, placement),
                 )?;
                 if jobs.is_empty() {
@@ -142,7 +142,7 @@ impl Store {
                     )?;
                 }
                 let session = self.session(&trx, id).await?;
-                self.transition(&trx, session, SessionState::WaitingTools, Timestamp::now())
+                self.transition(&trx, session, SessionState::WaitingTools, self.now())
                     .await
             }
         })

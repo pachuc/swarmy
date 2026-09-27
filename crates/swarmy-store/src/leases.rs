@@ -158,7 +158,7 @@ impl Store {
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
-        session.state_since = Some(Timestamp::now());
+        session.state_since = Some(self.now());
         self.write_session(trx, &session)?;
         Ok((lease, session))
     }

@@ -50,8 +50,7 @@ impl Store {
             let value = &value;
             let parsed = &parsed;
             async move {
-                self.check_worker_lease(&trx, id, lease, jiff::Timestamp::now())
-                    .await?;
+                self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
                     return Err(StoreError::StaleSequence {

@@ -108,10 +108,9 @@ impl Store {
             return Err(StoreError::InvalidState);
         }
         let timer_id = TimerId::from_ulid(ulid::Ulid::generate());
-        let now = Timestamp::now();
+        let now = self.now();
         self.transaction(|trx| async move {
-            self.check_worker_lease(&trx, id, lease, Timestamp::now())
-                .await?;
+            self.check_worker_lease(&trx, id, lease, self.now()).await?;
             let mut session = self.session(&trx, id).await?;
             if session.head_seq != expected_head {
                 return Err(StoreError::StaleSequence {

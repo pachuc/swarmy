@@ -324,7 +324,7 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<()> {
-        if self.checked_placement(trx, expected).await?.expires_at <= Timestamp::now() {
+        if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
             return Err(StoreError::LeaseMismatch);
         }
         Ok(())
@@ -355,7 +355,7 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             self.check_computer(&trx, agent).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -404,7 +404,7 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             let mut current = self.checked_placement(&trx, expected).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if current.expires_at <= now || expires_at <= current.expires_at {
                 return Err(StoreError::LeaseMismatch);
             }
@@ -436,7 +436,7 @@ impl Store {
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
-            if current.expires_at <= Timestamp::now() {
+            if current.expires_at <= self.now() {
                 return Err(StoreError::LeaseMismatch);
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
@@ -464,7 +464,7 @@ impl Store {
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
-            let now = Timestamp::now();
+            let now = self.now();
             if current.expires_at > now || expires_at <= now {
                 return Err(StoreError::LeaseMismatch);
             }
