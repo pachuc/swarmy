@@ -255,9 +255,16 @@ Provision a separate Ubuntu 24.04 x86-64 machine with 16 cores, 60 GiB RAM,
 root and local NVMe (for example, an `m6id.4xlarge` remote node); do not
 share it with worker sandboxes. Put `/var/lib/swarmy-ci` on persistent storage
 large enough for the target cache and check out this repository on the node.
-The runner runs untrusted pull-request code with passwordless access to the
-root test gate. Restrict repository write access and runner registration to
-trusted contributors; do not enable this runner for forked pull requests.
+**Security.** This repository is public. The runner builds pull-request code
+and executes its test binaries as root through the gate. Use a dedicated CI
+machine with no swarm credentials, never a swarm node or a worker host. Only
+pull requests from branches in this repository may use the self-hosted runner;
+fork pull requests run the hosted pipeline without root suites. Restrict write
+access and enable the repository Actions setting **Require approval for all
+outside collaborators** as a second guard. To remove the runner, stop its
+service and timer, unregister it with a removal token, and delete its local
+state as described below; if the machine is lost, remove the offline runner
+in GitHub Settings > Actions > Runners.
 
 On the operator machine, obtain a short-lived registration token and transfer
 it privately to the node (never put it in shell history or logs). On the node,
