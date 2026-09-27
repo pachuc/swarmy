@@ -72,10 +72,10 @@ fn builder_with_env(
     let mut base = AmazonS3Builder::new();
     if default_credentials {
         for (key, value) in env {
-            if key.starts_with("AWS_") {
-                if let Ok(config_key) = key.to_ascii_lowercase().parse::<AmazonS3ConfigKey>() {
-                    base = base.with_config(config_key, value);
-                }
+            if key.starts_with("AWS_")
+                && let Ok(config_key) = key.to_ascii_lowercase().parse::<AmazonS3ConfigKey>()
+            {
+                base = base.with_config(config_key, value);
             }
         }
     }
