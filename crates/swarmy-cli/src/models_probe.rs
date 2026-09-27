@@ -33,17 +33,7 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     let (client, endpoint) = crate::api_client::connect()?;
-    server_probe(
-        &client,
-        &endpoint,
-        provider,
-        model,
-        args.effort,
-        args.label,
-        args.tools,
-        json,
-    )
-    .await
+    server_probe(&client, &endpoint, provider, model, &args, json).await
 }
 
 async fn server_probe(
@@ -51,13 +41,12 @@ async fn server_probe(
     endpoint: &str,
     provider_id: &str,
     model_id: &str,
-    effort: Option<swarmy_core::ReasoningEffort>,
-    label: Option<String>,
-    tools: bool,
+    args: &Args,
     json: bool,
 ) -> anyhow::Result<()> {
     let started = std::time::Instant::now();
-    let effort = effort
+    let effort = args
+        .effort
         .map(|effort| {
             serde_json::to_value(effort)
                 .ok()
@@ -73,9 +62,9 @@ async fn server_probe(
         client.probe_model(&swarmy_api_types::ProbeModel {
             provider: provider_id.into(),
             model: model_id.into(),
-            label,
+            label: args.label.clone(),
             effort,
-            tools,
+            tools: args.tools,
         }),
     )
     .await

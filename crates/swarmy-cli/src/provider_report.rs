@@ -27,7 +27,7 @@ pub fn local(
                 "none"
             };
             ProviderRow {
-                provider: id.clone(),
+                provider: id,
                 credential: credential.into(),
                 status: match credential {
                     "none" => "no credential",

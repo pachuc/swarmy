@@ -104,6 +104,10 @@ async fn create_session(
     }
 }
 
+/// Wait until required services report healthy.
+///
+/// # Errors
+/// Returns an error if the API call or event stream fails.
 pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str>) -> Result<()> {
     let mut last = String::new();
     loop {
@@ -181,6 +185,10 @@ async fn apply_session_route(
 }
 
 impl Conversation {
+    /// Open or resume a conversation.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn open(
         client: Client,
         id: Option<String>,
@@ -285,6 +293,10 @@ impl Conversation {
         })
     }
 
+    /// Append one user message.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn send(&mut self, text: String) -> Result<String> {
         ensure!(!text.trim().is_empty(), "message is empty");
         self.last_text.clear();
@@ -457,6 +469,10 @@ impl Conversation {
         }))
     }
 
+    /// Interrupt the active turn.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn interrupt(&mut self) -> Result<()> {
         if self.current_turn.is_some() {
             crate::api_client::call(
@@ -474,6 +490,10 @@ impl Conversation {
         Ok(())
     }
 
+    /// Read the next streamed conversation item.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn next(&mut self) -> Result<ConversationItem> {
         loop {
             let (item, queued) = if let Some(item) = self.pending.pop_front() {
@@ -524,10 +544,18 @@ impl Conversation {
         self.pending.push_back(item);
     }
 
+    /// Wait until the selected provider is healthy.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn wait_healthy(&self, provider: Option<&str>) -> Result<()> {
         wait_healthy(&self.client, &self.endpoint, provider).await
     }
 
+    /// Render the stream until the session is idle.
+    ///
+    /// # Errors
+    /// Returns an error if the API call or event stream fails.
     pub async fn until_idle(&mut self, json: bool, run: bool, quiet: bool) -> Result<()> {
         let mut progress = TurnProgress::default();
         let deadline = Instant::now() + Duration::from_secs(30);

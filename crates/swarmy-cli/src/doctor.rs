@@ -516,8 +516,21 @@ fn snapshot_checks(
     api_providers: Option<&[swarmy_api_types::Provider]>,
 ) -> Vec<crate::provider_report::ProviderRow> {
     service_checks(checks, &snapshot);
-    let mut rows = api_providers
-        .map(|providers| {
+    let mut rows = api_providers.map_or_else(
+        || {
+            settings
+                .catalog()
+                .map(|catalog| {
+                    crate::provider_report::local(
+                        catalog
+                            .providers()
+                            .map(|p| (p.id.clone(), p.env_keys.clone())),
+                        "absent",
+                    )
+                })
+                .unwrap_or_default()
+        },
+        |providers| {
             crate::provider_report::local(
                 providers.iter().map(|p| {
                     let keys = p
@@ -532,20 +545,8 @@ fn snapshot_checks(
                 }),
                 "absent",
             )
-        })
-        .unwrap_or_else(|| {
-            settings
-                .catalog()
-                .map(|catalog| {
-                    crate::provider_report::local(
-                        catalog
-                            .providers()
-                            .map(|p| (p.id.clone(), p.env_keys.clone())),
-                        "absent",
-                    )
-                })
-                .unwrap_or_default()
-        });
+        },
+    );
     let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {

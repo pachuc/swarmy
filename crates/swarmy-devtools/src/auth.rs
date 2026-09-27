@@ -45,7 +45,6 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
             .await?;
             report("saved", login.provider(), json);
         }
-        _ => anyhow::bail!("use swarmy for auth set, ls, rm, and check"),
     }
     Ok(())
 }

@@ -110,6 +110,10 @@ async fn picker(
     }
 }
 
+/// Run the interactive conversation.
+///
+/// # Errors
+/// Returns an error if terminal setup, the API, or the event stream fails.
 pub async fn run(
     client: Client,
     id: Option<ulid::Ulid>,
