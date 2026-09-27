@@ -122,16 +122,32 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
    worktree (`git worktree add`) to see the conflicts, then either resolve
    and push yourself for trivial ones or write a rebase round for the worker.
 5. Root suites (worker, store, gateway, scheduler, bus, sandbox, volume,
-   image changes): on dev2-2, `setsid nohup bash ~/suite-queue.sh
-   swarmy/xxxxxx > ~/suite-queue.log 2>&1 < /dev/null &`. It waits for any
-   running suite, wipes the dev stack data between branches, and writes
-   `QUEUE_DONE branch SUITES_EXIT=0` lines to `~/suite-queue.log` with a
-   per-branch log at `~/root-suites-<suffix>-q.log`. About forty minutes per
-   branch, serial. The script stops the node daemon on dev2-2 for the run,
-   so prefer running it while workers on that node are idle. Copies of the
-   scripts are in `scripts/node-suites/`; `root-suites-plus.sh` adds the
-   image, vol, and nbd suites. `swarmy image build` needs an API, which the
-   script starts on a loopback port.
+   image changes) run on the suite node dev2-2, which hosts no workers, so
+   stopping its node daemon for a run affects nothing else. The scripts are
+   in `scripts/node-suites/`; copy them to the node's home directory after
+   changing them. Queue a run detached:
+   `setsid nohup bash ~/suite-queue.sh --plus swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
+   (`--plus` adds the image, vol, and nbd suites to the default node and chaos
+   set; `--node` runs the node suite alone; `--only "PACKAGE TEST"` reruns one
+   suite with full output). Every run takes `~/suite.lock`, so queued runs
+   wait for each other however they were started. Each branch appends
+   `QUEUE_DONE <branch> <mode> SUITES_EXIT=<0|1>` to `~/suite-queue.log`, with
+   the run log at `~/suite-logs/<suffix>-<mode>.log` and each suite's full
+   output at `~/suite-logs/<suffix>-<package>-<test>.log`. A full `--plus` run
+   takes about forty minutes. `swarmy image build` needs an API, which
+   `root-suites.sh` serves on a loopback port.
+
+   Known behaviour: in the long sequential run the chaos suites sometimes
+   fail within a second right after the node suite and pass when rerun alone
+   (`--only "swarmy-chaos bash"`); confirm with a rerun before sending a
+   worker a round. An interrupted nbd or node test can leave `/dev/nbdN`
+   attached with no owner, which breaks later nbd tests; `nbd-orphans.sh`
+   runs before every suite and detaches such devices. The suite node's build
+   directory and dev-stack data live on its local NVMe drive
+   (`~/chaos/target` and `~/chaos/.dev` are symbolic links into
+   `/mnt/swarmy-local/suites/`); the 100 GB root disk filled once and made
+   image uploads fail. When stopping anything on a node over SSH, kill by
+   process id: a `pkill -f` pattern also matches the SSH command running it.
 6. Merge with `gh pr merge N --squash --delete-branch` and check its output.
    Only then `tasky task test`, `pass`, `done`, and `fleet release TASK`. A
    done task cannot be reopened (a task in the `tasky` project adds a reopen
