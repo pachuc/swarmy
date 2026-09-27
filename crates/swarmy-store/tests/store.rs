@@ -2315,6 +2315,45 @@ async fn legacy_side_rows_migrate_to_one_versioned_session() {
 }
 
 #[tokio::test]
+async fn malformed_legacy_row_is_skipped_without_stopping_boot_migration() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let bad_id = SessionId::from_ulid(Ulid::from(0_u128));
+    let good_id = SessionId::from_ulid(Ulid::from(1_u128));
+    let bad_key = test
+        .root
+        .pack(&("session", bad_id.as_ulid().to_bytes().as_slice()));
+    let good_key = test
+        .root
+        .pack(&("session", good_id.as_ulid().to_bytes().as_slice()));
+    let good_bytes = encode(&(
+        good_id,
+        AgentId::from_ulid(Ulid::from(1_u128)),
+        SessionState::Idle,
+        0_u64,
+        None::<u64>,
+    ))
+    .unwrap();
+    test.db
+        .run(|trx, _| {
+            let (bad_key, good_key, good_bytes) = (&bad_key, &good_key, &good_bytes);
+            async move {
+                trx.set(bad_key, &[1, 0xff]);
+                trx.set(good_key, good_bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let outcome = test.store.migrate_legacy_sessions().await.unwrap();
+    assert_eq!(outcome.migrated, 1);
+    assert_eq!(outcome.skipped, 1);
+    assert!(test.store.fetch_session(good_id).await.unwrap().is_some());
+    test.cleanup().await;
+}
+
+#[tokio::test]
 async fn large_legacy_plan_migrates_without_shrinking_its_limit() {
     let Some(test) = TestStore::memory() else {
         return;
