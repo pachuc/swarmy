@@ -82,9 +82,7 @@ impl HeldLeaseGuard<'_> {
 
 type ActiveLease = HeldLease;
 
-/// One inference attempt on a resolved route step: the provider and entry
-/// the gateway must use, the route that selected them, and the step index
-/// recorded on the completion for metering.
+/// A resolved route step and its metering identity.
 struct ResolvedAttempt {
     provider: String,
     entry: Option<String>,
