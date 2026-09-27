@@ -8,6 +8,22 @@ use anyhow::{Context, Result, bail, ensure};
 use swarmy_api_types as api;
 use swarmy_client::{Client, EventStream, StreamItem};
 
+/// Client-side stream item: server events plus the CLI-synthesized notice
+/// that a summarized session continues elsewhere. The server never sends
+/// the notice, so it lives here rather than in the API contract.
+// The stream variant dwarfs the successor notice, but this enum is
+// short-lived (returned by value from `next` and matched immediately), so
+// padding the notice costs one stack slot per call while boxing would add
+// a heap allocation per streamed event.
+#[allow(clippy::large_enum_variant)]
+pub enum ConversationItem {
+    Stream(StreamItem),
+    Summarized {
+        previous_session_id: String,
+        session_id: String,
+    },
+}
+
 pub struct Conversation {
     pub id: String,
     pub agent_name: Option<String>,
@@ -407,12 +423,16 @@ impl Conversation {
             log_id: self.session.log_id.clone(),
             sequence: head,
             payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":head}}),
+                record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
+                    seq: head,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: swarmy_core::SessionState::Idle,
+                }),
             },
         }));
     }
 
-    async fn take_successor(&mut self) -> Result<Option<StreamItem>> {
+    async fn take_successor(&mut self) -> Result<Option<ConversationItem>> {
         let old = self.id.clone();
         let session = self.client.session(&old).await?;
         let Some(successor) = self.client.successor(&session).await? else {
@@ -431,13 +451,10 @@ impl Conversation {
         self.min_sequence = 0;
         self.delivered = 0;
         self.current_turn = None;
-        Ok(Some(StreamItem::Event(api::Event {
-            log_id: self.session.log_id.clone(),
-            sequence: 0,
-            payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"session_summarized":{"previous_session_id":old,"session_id":next}}),
-            },
-        })))
+        Ok(Some(ConversationItem::Summarized {
+            previous_session_id: old,
+            session_id: next,
+        }))
     }
 
     pub async fn interrupt(&mut self) -> Result<()> {
@@ -457,13 +474,13 @@ impl Conversation {
         Ok(())
     }
 
-    pub async fn next(&mut self) -> Result<StreamItem> {
+    pub async fn next(&mut self) -> Result<ConversationItem> {
         loop {
             let (item, queued) = if let Some(item) = self.pending.pop_front() {
-                (item, true)
+                (ConversationItem::Stream(item), true)
             } else {
                 (
-                    tokio::select! {
+                    ConversationItem::Stream(tokio::select! {
                         item = self.stream.next_item() => item?,
                         _ = self.poll.tick(), if self.current_turn.is_some() || self.session.state != api::SessionState::Idle => {
                             if self.poll_tick().await? {
@@ -471,11 +488,11 @@ impl Conversation {
                             }
                             continue;
                         }
-                    },
+                    }),
                     false,
                 )
             };
-            if let StreamItem::Event(event) = &item {
+            if let ConversationItem::Stream(StreamItem::Event(event)) = &item {
                 if self.is_duplicate(event, queued) {
                     continue;
                 }
@@ -488,7 +505,7 @@ impl Conversation {
                     self.observe_idle(event.sequence);
                 }
             }
-            if let StreamItem::TokenDelta { log_id, .. } = &item {
+            if let ConversationItem::Stream(StreamItem::TokenDelta { log_id, .. }) = &item {
                 // Deltas from the archived feed can arrive after following
                 // the successor; they belong to the old session, not the
                 // new view, so drop them instead of rendering stray text.
@@ -496,7 +513,7 @@ impl Conversation {
                     continue;
                 }
             }
-            if let StreamItem::Event(event) = &item {
+            if let ConversationItem::Stream(StreamItem::Event(event)) = &item {
                 self.delivered = self.delivered.max(event.sequence);
             }
             return Ok(item);
@@ -534,10 +551,10 @@ impl Conversation {
                 bail!("interrupted");
             };
             match item {
-                StreamItem::TokenDelta {
+                ConversationItem::Stream(StreamItem::TokenDelta {
                     payload: api::EventPayload::TokenDelta { text, .. },
                     ..
-                } => {
+                }) => {
                     if !quiet {
                         if json {
                             println!(
@@ -551,22 +568,27 @@ impl Conversation {
                     }
                     progress.streamed.push_str(&text);
                 }
-                StreamItem::Event(event) => {
-                    let api::EventPayload::StoreRecord { record } = event.payload else {
-                        continue;
-                    };
-                    if self.record_event(
-                        &record,
-                        event.sequence,
-                        json,
-                        run,
-                        quiet,
-                        &mut progress,
-                    )? {
-                        return Ok(());
+                ConversationItem::Stream(StreamItem::Event(event)) => {
+                    let sequence = event.sequence;
+                    if let api::EventPayload::StoreRecord { record } = event.payload {
+                        let Ok(value) = serde_json::to_value(&record) else {
+                            continue;
+                        };
+                        if self.record_event(&value, sequence, json, run, quiet, &mut progress)? {
+                            return Ok(());
+                        }
                     }
                 }
-                StreamItem::TokenDelta { .. } => {}
+                ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
+                ConversationItem::Summarized {
+                    previous_session_id,
+                    session_id,
+                } => {
+                    report_summary(quiet, json, &previous_session_id, &session_id);
+                    // Preserve the existing successor-switch behavior: a summary
+                    // notice marks the turn started and disables the pickup deadline.
+                    progress.started = true;
+                }
             }
         }
     }
@@ -581,11 +603,6 @@ impl Conversation {
         progress: &mut TurnProgress,
     ) -> Result<bool> {
         if sequence < self.min_sequence {
-            return Ok(false);
-        }
-        if let Some(summary) = record.get("session_summarized") {
-            report_summary(quiet, json, summary);
-            progress.started = true;
             return Ok(false);
         }
         if !quiet && json {
@@ -775,30 +792,41 @@ struct TurnProgress {
 }
 
 fn is_idle_event(event: &api::Event) -> bool {
-    matches!(&event.payload, api::EventPayload::StoreRecord { record }
-        if record.get("state_changed").and_then(|v| v.get("to"))
-            == Some(&serde_json::json!("idle")))
+    matches!(
+        &event.payload,
+        api::EventPayload::StoreRecord {
+            record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
+                to: swarmy_core::SessionState::Idle,
+                ..
+            })
+        }
+    )
 }
 
 fn is_completed_event(payload: &api::EventPayload) -> bool {
-    matches!(payload, api::EventPayload::StoreRecord { record }
-        if record.get("state_changed").and_then(|v| v.get("to"))
-            == Some(&serde_json::json!("completed")))
+    matches!(
+        payload,
+        api::EventPayload::StoreRecord {
+            record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
+                to: swarmy_core::SessionState::Completed,
+                ..
+            })
+        }
+    )
 }
 
-fn report_summary(quiet: bool, json: bool, summary: &serde_json::Value) {
+pub(crate) fn report_summary(quiet: bool, json: bool, previous_session_id: &str, session_id: &str) {
     if quiet {
         return;
     }
     if json {
         println!(
             "{}",
-            serde_json::json!({"event":"session_summarized","previous_session_id":summary["previous_session_id"],"session_id":summary["session_id"]})
+            serde_json::json!({"event":"session_summarized","previous_session_id":previous_session_id,"session_id":session_id})
         );
     } else {
         eprintln!(
-            "Conversation summarized. Session {} archived; continuing in {}.",
-            summary["previous_session_id"], summary["session_id"]
+            "Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
         );
     }
 }
@@ -893,11 +921,15 @@ mod tests {
             log_id: api::LogId::Session("s".into()),
             sequence,
             payload: api::EventPayload::StoreRecord {
-                record: if idle {
-                    serde_json::json!({"state_changed":{"from":"runnable","to":"idle","seq":sequence}})
-                } else {
-                    serde_json::json!({"message_appended":{"seq":sequence}})
-                },
+                record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
+                    seq: sequence,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: if idle {
+                        swarmy_core::SessionState::Idle
+                    } else {
+                        swarmy_core::SessionState::Runnable
+                    },
+                }),
             },
         }
     }

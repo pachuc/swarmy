@@ -1,5 +1,6 @@
 //! Terminal renderer for the API conversation stream.
 
+use crate::client_conversation::ConversationItem;
 use crate::input::Input;
 use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
 use anyhow::{Context, Result, ensure};
@@ -54,6 +55,7 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return None;
                 };
+                let record = serde_json::to_value(&record).ok()?;
                 record
                     .get("message_appended")?
                     .get("message")?
@@ -164,7 +166,7 @@ pub async fn run(
         }
         for event in events {
             after = event.sequence;
-            view.event(StreamItem::Event(event));
+            view.event(ConversationItem::Stream(StreamItem::Event(event)));
         }
     }
     view.ready = conversation.session.state == api::SessionState::Idle;
@@ -433,23 +435,27 @@ impl View {
             self.state, self.selection
         )
     }
-    fn event(&mut self, item: StreamItem) {
+    fn event(&mut self, item: ConversationItem) {
         match item {
-            StreamItem::TokenDelta {
+            ConversationItem::Summarized {
+                previous_session_id,
+                session_id,
+            } => {
+                self.entries.push(format!(
+                        "System: Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
+                    ));
+            }
+            ConversationItem::Stream(StreamItem::TokenDelta {
                 payload: api::EventPayload::TokenDelta { text, .. },
                 ..
-            } => self.partial.push_str(&text),
-            StreamItem::Event(event) => {
+            }) => self.partial.push_str(&text),
+            ConversationItem::Stream(StreamItem::Event(event)) => {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return;
                 };
-                if let Some(summary) = record.get("session_summarized") {
-                    self.entries.push(format!(
-                        "System: Conversation summarized. Session {} archived; continuing in {}.",
-                        summary["previous_session_id"], summary["session_id"]
-                    ));
+                let Ok(record) = serde_json::to_value(&record) else {
                     return;
-                }
+                };
                 if let Some(state) = record
                     .get("state_changed")
                     .and_then(|s| s.get("to"))
@@ -512,7 +518,7 @@ impl View {
                     self.message(message, session_id);
                 }
             }
-            StreamItem::TokenDelta { .. } => {}
+            ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
     fn message(&mut self, message: &serde_json::Value, session_id: &str) {
@@ -573,14 +579,24 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
-    fn state_event(to: &str, sequence: u64) -> StreamItem {
-        StreamItem::Event(api::Event {
+    fn state_event(to: &str, sequence: u64) -> ConversationItem {
+        let to_state = match to {
+            "idle" => swarmy_core::SessionState::Idle,
+            "leased" => swarmy_core::SessionState::Leased,
+            "completed" => swarmy_core::SessionState::Completed,
+            _ => swarmy_core::SessionState::Runnable,
+        };
+        ConversationItem::Stream(StreamItem::Event(api::Event {
             log_id: api::LogId::Session("test".into()),
             sequence,
             payload: api::EventPayload::StoreRecord {
-                record: serde_json::json!({"state_changed": {"from": "other", "to": to}}),
+                record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
+                    seq: sequence,
+                    from: swarmy_core::SessionState::Runnable,
+                    to: to_state,
+                }),
             },
-        })
+        }))
     }
 
     #[test]

@@ -4176,7 +4176,7 @@
           },
           {
             "type": "object",
-            "description": "Stored events without a dedicated public projection retain their original data.",
+            "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
             "required": [
               "data",
               "type"
@@ -4184,7 +4184,7 @@
             "properties": {
               "data": {
                 "type": "object",
-                "description": "Stored events without a dedicated public projection retain their original data.",
+                "description": "Durable session events and live timeline observations keep their\nstored shapes; the API carries the typed record instead of an\nuntyped JSON hole. Both arrive under the `store_record` tag so\nolder clients, which decode the record as a value, keep working.",
                 "required": [
                   "record"
                 ],

@@ -4121,6 +4121,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "swarmy-core",
  "utoipa",
 ]
 
@@ -4310,7 +4311,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
@@ -4432,8 +4432,6 @@ name = "swarmy-store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "aws-config",
- "aws-credential-types",
  "blake3",
  "bytes",
  "chacha20poly1305",
@@ -4444,7 +4442,6 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
- "swarmy-api-types",
  "swarmy-config",
  "swarmy-core",
  "swarmy-volume",

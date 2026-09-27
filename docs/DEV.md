@@ -564,10 +564,14 @@ from source still needs the library for the services, and the installer also
 supplies backing executables for local development. It needs
 no sudo. Preinstalled compilers and system prerequisites are assumed.
 
-Supply AWS credentials through the standard SDK credential chain, for example
+Supply AWS credentials for provisioning through the standard SDK credential chain, for example
 a profile in `~/.aws/credentials` with `export AWS_PROFILE=development`, or
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and, for temporary credentials,
-`AWS_SESSION_TOKEN`. Do not put credentials in the checkout. Provisioning needs
+`AWS_SESSION_TOKEN`. Do not put credentials in the checkout. These credentials
+serve only `swarmy remote up` and `remote down`, which manage EC2, IAM, and the
+S3 bucket through the provisioning SDK; no other laptop command talks to S3
+(the services on the nodes use the instance role, and the dev stack uses static
+keys from settings). Provisioning needs
 EC2 DescribeImages, DescribeInstances, DescribeKeyPairs, RunInstances,
 ImportKeyPair, CreateTags, TerminateInstances, DeleteKeyPair, and SSM GetParameter
 for the default AMI. Provider cleanup queries below additionally need

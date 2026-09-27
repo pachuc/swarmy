@@ -321,7 +321,7 @@ fn observe_tool_completion(
         ),
         ToolResult::Error { error } => (error.len() as u64, timing.exit_status),
     };
-    let tool = swarmy_api_types::ToolMetric {
+    let tool = swarmy_store::ToolMetric {
         request_id: claim.job.request_id.to_string(),
         name: claim.job.arguments.name().into(),
         started_ns: timing.started_ns,
@@ -356,7 +356,7 @@ fn observe_tool_completion(
                 store.observe_turn_metric(
                     session,
                     turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_api_types::ComputerMetric {
+                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
                         first_tool_chunks_fetched: Some(stats.fetched_chunks),
                         first_tool_bytes_fetched: Some(stats.fetched_bytes),
                         first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
