@@ -120,7 +120,7 @@ impl Store {
     }
 
     pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).inference_wait(id)
     }
 
     pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {

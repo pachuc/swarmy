@@ -29,8 +29,7 @@ impl Store {
     }
 
     pub(crate) fn interrupt_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
-            .interrupt_requested(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).interrupt_requested(id)
     }
 
     /// Request the current turn to end, or finish a parked inference atomically.

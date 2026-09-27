@@ -598,11 +598,11 @@ impl Store {
     }
 
     pub(crate) fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).volume_snapshots(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).volume_snapshots(id)
     }
 
     fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).manifest_parent(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).manifest_parent(id)
     }
 
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {

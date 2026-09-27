@@ -27,6 +27,12 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Resolve the session route against its breaker records. A usable step
+    /// lets the session run; if every step is open, wait for the earliest retry.
+    /// Picking starts at the session attempt position and wraps to a recovered
+    /// earlier step, so the scheduler and worker agree on the next attempt.
+    /// Resolve the session provider override directly so sessions on the same
+    /// agent with different overrides do not share a snapshot.
     async fn breaker_park(
         &self,
         session: &swarmy_core::SessionRecord,

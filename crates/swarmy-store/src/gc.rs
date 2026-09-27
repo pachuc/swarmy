@@ -113,7 +113,7 @@ impl Store {
     }
 
     fn gc_run_key(&self, owner: LeaseOwnerId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).gc_run(&(owner.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).gc_run(owner)
     }
 }
 

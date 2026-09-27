@@ -3,7 +3,7 @@ use swarmy_core::{NodeId, NodeRecord, decode};
 
 impl Store {
     pub(crate) fn node_key(&self, id: NodeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).node(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).node(id)
     }
 
     /// Register or refresh a node's advertised capacity and heartbeat.

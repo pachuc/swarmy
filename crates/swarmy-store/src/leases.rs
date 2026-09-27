@@ -28,7 +28,7 @@ impl Store {
     }
 
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).lease(id)
     }
 
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {

@@ -237,8 +237,7 @@ impl Store {
             if agent.requirements != previous_requirements
                 && read::<swarmy_core::PlacementRecord>(
                     &trx,
-                    &crate::keys::Keys::new(&self.root)
-                        .placement(&(id.as_ulid().to_bytes().as_slice(),)),
+                    &crate::keys::Keys::new(&self.root).placement(id),
                 )
                 .await?
                 .is_some()

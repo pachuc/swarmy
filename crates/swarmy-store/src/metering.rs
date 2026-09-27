@@ -753,7 +753,11 @@ impl Store {
         for (index_key, _) in &rows {
             let (_, request): (i64, Vec<u8>) =
                 prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(&(request.as_slice()));
+            let record_key = crate::keys::Keys::new(&self.root).usage_record(
+                swarmy_core::RequestId::from_bytes(
+                    request.try_into().map_err(|_| StoreError::Corrupt)?,
+                ),
+            );
             stale.push(index_key.clone());
             stale.push(record_key);
         }
@@ -797,7 +801,11 @@ impl Store {
         for (index_key, _) in &rows {
             let (_, request): (i64, Vec<u8>) =
                 prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(&(request.as_slice()));
+            let record_key = crate::keys::Keys::new(&self.root).usage_record(
+                swarmy_core::RequestId::from_bytes(
+                    request.try_into().map_err(|_| StoreError::Corrupt)?,
+                ),
+            );
             pairs.push((index_key.clone(), record_key));
         }
         let keys: Vec<Vec<u8>> = pairs.iter().map(|(_, key)| key.clone()).collect();

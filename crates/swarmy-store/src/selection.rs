@@ -17,7 +17,7 @@ pub struct GatewayProvider {
 
 impl Store {
     pub(crate) fn session_inference_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_inference(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_inference(id)
     }
 
     /// Advertise provider availability; expired advertisements are ignored.

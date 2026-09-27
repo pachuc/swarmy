@@ -20,7 +20,7 @@ impl Store {
         .await
     }
     pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_image(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_image(id)
     }
 
     /// Read a session's pinned image. Old sessions may lack a pin.

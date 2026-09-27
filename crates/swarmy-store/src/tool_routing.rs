@@ -16,8 +16,7 @@ impl Store {
         self.transaction(|trx| async move {
             let placement: PlacementRecord = read(
                 &trx,
-                &crate::keys::Keys::new(&self.root)
-                    .placement(&(status.agent_id.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root).placement(status.agent_id),
             )
             .await?
             .ok_or(StoreError::LeaseMismatch)?;
@@ -25,11 +24,7 @@ impl Store {
                 return Err(StoreError::LeaseMismatch);
             }
             self.check_live_placement(&trx, &placement).await?;
-            let key = crate::keys::Keys::new(&self.root).agent_call_status(&(status
-                .agent_id
-                .as_ulid()
-                .to_bytes()
-                .as_slice(),));
+            let key = crate::keys::Keys::new(&self.root).agent_call_status(status.agent_id);
             if read::<swarmy_core::AgentCallStatus>(&trx, &key)
                 .await?
                 .is_some_and(|old| {
@@ -52,17 +47,12 @@ impl Store {
         agent: swarmy_core::AgentId,
     ) -> Result<Option<swarmy_core::AgentCallStatus>> {
         self.transaction(|trx| async move {
-            let key = crate::keys::Keys::new(&self.root)
-                .agent_call_status(&(agent.as_ulid().to_bytes().as_slice()));
+            let key = crate::keys::Keys::new(&self.root).agent_call_status(agent);
             let Some(status) = read::<swarmy_core::AgentCallStatus>(&trx, &key).await? else {
                 return Ok(None);
             };
-            let placement: Option<PlacementRecord> = read(
-                &trx,
-                &crate::keys::Keys::new(&self.root)
-                    .placement(&(agent.as_ulid().to_bytes().as_slice())),
-            )
-            .await?;
+            let placement: Option<PlacementRecord> =
+                read(&trx, &crate::keys::Keys::new(&self.root).placement(agent)).await?;
             let now = self.now();
             Ok(placement
                 .filter(|placement| {
@@ -84,11 +74,7 @@ impl Store {
         id: swarmy_core::RequestId,
     ) -> Result<Option<PlacementRecord>> {
         self.transaction(|trx| async move {
-            read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).tool_placement(&(id.as_bytes().as_slice(),)),
-            )
-            .await
+            read(&trx, &crate::keys::Keys::new(&self.root).tool_placement(id)).await
         })
         .await
     }
@@ -105,8 +91,7 @@ impl Store {
         self.transaction(|trx| async move {
             if read::<bool>(
                 &trx,
-                &crate::keys::Keys::new(&self.root)
-                    .tool_done(&(job.request_id.as_bytes().as_slice(),)),
+                &crate::keys::Keys::new(&self.root).tool_done(job.request_id),
             )
             .await?
             .unwrap_or(false)
@@ -117,8 +102,7 @@ impl Store {
             self.check_computer(&trx, session.agent_id).await?;
             if let Some(placement) = read::<PlacementRecord>(
                 &trx,
-                &crate::keys::Keys::new(&self.root)
-                    .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
+                &crate::keys::Keys::new(&self.root).tool_placement(job.request_id),
             )
             .await?
             {
@@ -141,7 +125,7 @@ impl Store {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, placement).await?;
             let Some(value) = trx
-                .get(&crate::keys::Keys::new(&self.root).tool_job(&(job.request_id.as_bytes().as_slice(),)), false)
+                .get(&crate::keys::Keys::new(&self.root).tool_job(job.request_id), false)
                 .await?
             else {
                 return Ok(false);
@@ -151,7 +135,7 @@ impl Store {
             {
                 return Err(StoreError::InvalidState);
             }
-            let key = crate::keys::Keys::new(&self.root).tool_placement(&(job.request_id.as_bytes().as_slice(),));
+            let key = crate::keys::Keys::new(&self.root).tool_placement(job.request_id);
             let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
             let notice = self
                 .deliver_computer_notice(&trx, job.session_id, placement)
@@ -182,8 +166,7 @@ impl Store {
     ) -> Result<()> {
         if let Some(dispatched) = read::<PlacementRecord>(
             trx,
-            &crate::keys::Keys::new(&self.root)
-                .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
+            &crate::keys::Keys::new(&self.root).tool_placement(job.request_id),
         )
         .await?
             && (dispatched.agent_id != placement.agent_id
@@ -222,13 +205,13 @@ impl Store {
             .await?;
         trx.set(&self.event_key(job.session_id, session.head_seq), &event);
         let keys = crate::keys::Keys::new(&self.root);
-        let request = job.request_id.as_bytes();
-        trx.clear(&keys.tool_job(&(request.as_slice(),)));
-        trx.clear(&keys.tool_placement(&(request.as_slice(),)));
-        trx.clear(&keys.placed_tool_claim(&(request.as_slice(),)));
+        let request = job.request_id;
+        trx.clear(&keys.tool_job(request));
+        trx.clear(&keys.tool_placement(request));
+        trx.clear(&keys.placed_tool_claim(request));
         write(
             trx,
-            &crate::keys::Keys::new(&self.root).tool_done(&(job.request_id.as_bytes().as_slice(),)),
+            &crate::keys::Keys::new(&self.root).tool_done(job.request_id),
             &true,
         )?;
         let pending = self.pending_space(job.session_id);
@@ -255,8 +238,7 @@ impl Store {
             }
             if let Some(value) = trx
                 .get(
-                    &crate::keys::Keys::new(&self.root)
-                        .tool_job(&(job.request_id.as_bytes().as_slice(),)),
+                    &crate::keys::Keys::new(&self.root).tool_job(job.request_id),
                     false,
                 )
                 .await?

@@ -52,7 +52,7 @@ impl Store {
         self.transaction(|trx| async move {
             read(
                 &trx,
-                &crate::keys::Keys::new(&self.root).usage_record(&(request.as_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root).usage_record(request),
             )
             .await
         })
@@ -64,12 +64,9 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn session_usage(&self, id: SessionId) -> Result<UsageTotals> {
         self.transaction(|trx| async move {
-            Ok(read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).usage(&(id.as_ulid().to_bytes().as_slice())),
-            )
-            .await?
-            .unwrap_or_default())
+            Ok(read(&trx, &crate::keys::Keys::new(&self.root).usage(id))
+                .await?
+                .unwrap_or_default())
         })
         .await
     }
@@ -79,13 +76,11 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn agent_usage(&self, id: AgentId) -> Result<UsageTotals> {
         self.transaction(|trx| async move {
-            Ok(read(
-                &trx,
-                &crate::keys::Keys::new(&self.root)
-                    .usage_by_agent(&(id.as_ulid().to_bytes().as_slice())),
+            Ok(
+                read(&trx, &crate::keys::Keys::new(&self.root).usage_by_agent(id))
+                    .await?
+                    .unwrap_or_default(),
             )
-            .await?
-            .unwrap_or_default())
         })
         .await
     }
@@ -101,10 +96,8 @@ impl Store {
         usage: &swarmy_core::TokenUsage,
         cost_micros: u64,
     ) -> Result<()> {
-        let session_key =
-            crate::keys::Keys::new(&self.root).usage(&(session.as_ulid().to_bytes().as_slice()));
-        let agent_key = crate::keys::Keys::new(&self.root)
-            .usage_by_agent(&(agent.as_ulid().to_bytes().as_slice()));
+        let session_key = crate::keys::Keys::new(&self.root).usage(session);
+        let agent_key = crate::keys::Keys::new(&self.root).usage_by_agent(agent);
         let (session_totals, agent_totals) = futures::try_join!(
             read::<UsageTotals>(trx, &session_key),
             read::<UsageTotals>(trx, &agent_key)
@@ -116,8 +109,7 @@ impl Store {
         );
         crate::write(
             trx,
-            &crate::keys::Keys::new(&self.root)
-                .usage_record(&(attribution.request.as_bytes().as_slice())),
+            &crate::keys::Keys::new(&self.root).usage_record(attribution.request),
             &UsageRecord {
                 provider: attribution.provider.into(),
                 entry: entry.clone(),

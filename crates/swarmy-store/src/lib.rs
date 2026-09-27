@@ -1097,7 +1097,7 @@ impl Store {
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_idempotency(&self, id: RequestId) -> Result<Option<IdempotencyRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).idem(id))
             .await
     }
 
@@ -1106,27 +1106,21 @@ impl Store {
     /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
-        self.put_payload(
-            crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())),
-            record,
-        )
-        .await
+        self.put_payload(crate::keys::Keys::new(&self.root).idem(id), record)
+            .await
     }
 
     /// # Errors
     /// Returns storage or blob upload errors.
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
-        self.put_payload(
-            crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())),
-            record,
-        )
-        .await
+        self.put_payload(crate::keys::Keys::new(&self.root).inflight(id), record)
+            .await
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).inflight(id))
             .await
     }
 
@@ -1134,7 +1128,7 @@ impl Store {
     /// Returns transaction errors.
     pub async fn clear_inflight(&self, id: RequestId) -> Result<()> {
         self.transaction(|trx| async move {
-            trx.clear(&crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())));
+            trx.clear(&crate::keys::Keys::new(&self.root).inflight(id));
             Ok(())
         })
         .await
