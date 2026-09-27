@@ -1,4 +1,4 @@
-#[path = "support/image.rs"]
+#[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
 #[path = "cli_session/agents.rs"]
@@ -10,7 +10,7 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-#[path = "support/cli_bin.rs"]
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
 mod cli_bin;
 
 use std::{

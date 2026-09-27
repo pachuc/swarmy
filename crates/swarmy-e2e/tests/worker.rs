@@ -1,7 +1,7 @@
-#[path = "support/image.rs"]
+#[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
-#[path = "support/cli_bin.rs"]
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
 mod cli_bin;
 
 use std::{

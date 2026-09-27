@@ -18,7 +18,7 @@ swarmy-api.workspace = true
 swarmy-client.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
-swarmy-store.workspace = true
+swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-llm.workspace = true
 swarmy-config.workspace = true
 swarmy-api-types.workspace = true

@@ -55,6 +55,4 @@ swarmy-client.workspace = true
 reqwest.workspace = true
 foundationdb.workspace = true
 object_store.workspace = true
-futures-util.workspace = true
 unicode-width.workspace = true
-async-nats.workspace = true
