@@ -94,7 +94,7 @@ async fn serve(
     }
 }
 
-fn placement_refusal(
+pub(crate) fn placement_refusal(
     current: Option<&PlacementRecord>,
     dispatched: &PlacementRecord,
     node: NodeId,
