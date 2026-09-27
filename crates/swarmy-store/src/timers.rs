@@ -223,7 +223,10 @@ impl Store {
             begin = self.timer_due_key(after);
             begin.push(0);
         }
-        let end = space.subspace(&(now.as_millisecond(),)).range().1;
+        let end = crate::keys::Keys::new(&self.root)
+            .timer_due_space(&(now.as_millisecond(),))
+            .range()
+            .1;
         self.transaction(|trx| {
             let range = (begin.clone(), end.clone());
             async move {

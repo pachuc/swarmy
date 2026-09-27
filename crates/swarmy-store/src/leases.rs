@@ -293,8 +293,8 @@ impl Store {
                 begin = self.expiry_key(*id, lease.expires_at);
                 begin.push(0);
             }
-            let end = space
-                .subspace(&((now.as_second(), now.subsec_nanosecond()),))
+            let end = crate::keys::Keys::new(&self.root)
+                .lease_by_expiry_space(&((now.as_second(), now.subsec_nanosecond()),))
                 .range()
                 .1;
             if begin >= end {

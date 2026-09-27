@@ -389,8 +389,8 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn scan_due_inference_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
         let space = crate::keys::Keys::new(&self.root).inference_wait_due_space(&());
-        let end = space
-            .subspace(&((now.as_second(), now.subsec_nanosecond()),))
+        let end = crate::keys::Keys::new(&self.root)
+            .inference_wait_due_space(&((now.as_second(), now.subsec_nanosecond()),))
             .range()
             .1;
         self.transaction(|trx| {
