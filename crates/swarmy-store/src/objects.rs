@@ -41,7 +41,12 @@ fn finish(base: AmazonS3Builder, settings: &Settings, bucket: &str) -> AmazonS3B
 }
 
 fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
-    builder_with_env(settings, bucket, &std::env::vars().collect())
+    // Skip non-UTF-8 variables as `AmazonS3Builder::from_env` does;
+    // `std::env::vars` would panic on them.
+    let env = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    builder_with_env(settings, bucket, &env)
 }
 
 /// Use one path for live credentials and isolated test environments. The
