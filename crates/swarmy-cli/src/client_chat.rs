@@ -2,6 +2,7 @@
 
 use crate::input::Input;
 use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
+use crate::client_conversation::ConversationItem;
 use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -165,7 +166,7 @@ pub async fn run(
         }
         for event in events {
             after = event.sequence;
-            view.event(StreamItem::Event(event));
+            view.event(ConversationItem::Stream(StreamItem::Event(event)));
         }
     }
     view.ready = conversation.session.state == api::SessionState::Idle;
@@ -434,22 +435,21 @@ impl View {
             self.state, self.selection
         )
     }
-    fn event(&mut self, item: StreamItem) {
+    fn event(&mut self, item: ConversationItem) {
         match item {
-            StreamItem::TokenDelta {
+            ConversationItem::Summarized {
+                previous_session_id,
+                session_id,
+            } => {
+                self.entries.push(format!(
+                        "System: Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
+                    ));
+            }
+            ConversationItem::Stream(StreamItem::TokenDelta {
                 payload: api::EventPayload::TokenDelta { text, .. },
                 ..
-            } => self.partial.push_str(&text),
-            StreamItem::Event(event) => match event.payload {
-                api::EventPayload::SessionSummarized {
-                    previous_session_id,
-                    session_id,
-                } => {
-                    self.entries.push(format!(
-                            "System: Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
-                        ));
-                }
-                api::EventPayload::TimelineEvent { .. } => (),
+            }) => self.partial.push_str(&text),
+            ConversationItem::Stream(StreamItem::Event(event)) => match event.payload {
                 api::EventPayload::StoreRecord { record } => {
                     let Ok(record) = serde_json::to_value(&record) else {
                         return;
@@ -520,7 +520,7 @@ impl View {
                 }
                 _ => {}
             },
-            StreamItem::TokenDelta { .. } => {}
+            ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
     fn message(&mut self, message: &serde_json::Value, session_id: &str) {
@@ -581,24 +581,24 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
-    fn state_event(to: &str, sequence: u64) -> StreamItem {
+    fn state_event(to: &str, sequence: u64) -> ConversationItem {
         let to_state = match to {
             "idle" => swarmy_core::SessionState::Idle,
             "leased" => swarmy_core::SessionState::Leased,
             "completed" => swarmy_core::SessionState::Completed,
             _ => swarmy_core::SessionState::Runnable,
         };
-        StreamItem::Event(api::Event {
+        ConversationItem::Stream(StreamItem::Event(api::Event {
             log_id: api::LogId::Session("test".into()),
             sequence,
             payload: api::EventPayload::StoreRecord {
-                record: swarmy_core::Event::StateChanged {
+                record: api::RecordBody::Event(swarmy_core::Event::StateChanged {
                     seq: sequence,
                     from: swarmy_core::SessionState::Runnable,
                     to: to_state,
-                },
+                }),
             },
-        })
+        }))
     }
 
     #[test]

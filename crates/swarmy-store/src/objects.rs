@@ -3,9 +3,13 @@
 //! Every service using a metadata namespace must use the same object
 //! namespace. This constructor lives next to the store so the client binary
 //! never links an object storage implementation.
+#[cfg(test)]
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
+#[cfg(test)]
+use object_store::aws::AmazonS3ConfigKey;
 use swarmy_config::Settings;
 
 use crate::blob::BlobError;
@@ -17,14 +21,8 @@ fn regional_mode(settings: &Settings) -> (bool, bool) {
     )
 }
 
-fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
-    // Start from the process environment so `AWS_` variables (static keys,
-    // session token, web identity, container credentials) are honoured the
-    // same way the AWS default chain honours them. Explicit settings below
-    // override the environment; when the settings carry no static keys the
-    // builder falls back to its instance-metadata credential provider, which
-    // is what the nodes use with their instance role.
-    let mut builder = AmazonS3Builder::from_env()
+fn finish(base: AmazonS3Builder, settings: &Settings, bucket: &str) -> AmazonS3Builder {
+    let mut builder = base
         .with_bucket_name(bucket)
         .with_region(&settings.s3_region);
     let (regional, default_credentials) = regional_mode(settings);
@@ -42,6 +40,46 @@ fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
             .with_secret_access_key(&settings.s3_secret_key);
     }
     builder
+}
+
+fn builder(settings: &Settings, bucket: &str) -> AmazonS3Builder {
+    let (_, default_credentials) = regional_mode(settings);
+    if default_credentials {
+        // No static keys in settings: honour the process environment (static
+        // keys, session token, web identity, container credentials) the same
+        // way the AWS default chain does, falling back to the
+        // instance-metadata provider that the nodes use with their role.
+        finish(AmazonS3Builder::from_env(), settings, bucket)
+    } else {
+        // Settings-driven (the dev stack): ignore the shell so an
+        // `AWS_SESSION_TOKEN`, `AWS_ENDPOINT_URL`, or `AWS_ALLOW_HTTP` left
+        // over in the developer's environment cannot leak into the client.
+        finish(AmazonS3Builder::new(), settings, bucket)
+    }
+}
+
+/// Test constructor: the same client built from an explicit settings value
+/// plus an explicit environment map, so unit tests never depend on the
+/// developer's shell. The production [`builder`] above is the only caller of
+/// [`AmazonS3Builder::from_env`].
+#[cfg(test)]
+fn builder_with_env(
+    settings: &Settings,
+    bucket: &str,
+    env: &HashMap<String, String>,
+) -> AmazonS3Builder {
+    let (_, default_credentials) = regional_mode(settings);
+    let mut base = AmazonS3Builder::new();
+    if default_credentials {
+        for (key, value) in env {
+            if key.starts_with("AWS_") {
+                if let Ok(config_key) = key.to_ascii_lowercase().parse::<AmazonS3ConfigKey>() {
+                    base = base.with_config(config_key, value);
+                }
+            }
+        }
+    }
+    finish(base, settings, bucket)
 }
 
 /// Build the shared S3 client with namespace-relative request keys and
@@ -76,28 +114,80 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
 mod tests {
     use super::*;
 
+    fn hostile_env() -> HashMap<String, String> {
+        HashMap::from([
+            ("AWS_ACCESS_KEY_ID".into(), "hostile-key".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "hostile-secret".into()),
+            ("AWS_SESSION_TOKEN".into(), "hostile-token".into()),
+            ("AWS_ENDPOINT_URL".into(), "https://hostile.example.invalid".into()),
+            ("AWS_ALLOW_HTTP".into(), "true".into()),
+        ])
+    }
+
     #[test]
-    fn regional_and_custom_modes_build_without_network() {
-        let mut settings = Settings::default();
+    fn settings_keys_ignore_a_hostile_shell() {
+        // The dev stack carries static keys in settings. A shell's session
+        // token, endpoint, or allow-http flag must not leak into that client.
+        let settings = Settings::default();
         assert_eq!(regional_mode(&settings), (false, false));
-        let custom = builder(&settings, "bucket").build().unwrap();
+        let custom = builder_with_env(&settings, "bucket", &hostile_env())
+            .build()
+            .unwrap();
         let debug = format!("{custom:?}");
         assert!(debug.contains("http://127.0.0.1:8333/bucket"));
         assert!(debug.contains("StaticCredentialProvider"));
+        for leaked in [
+            "hostile-key",
+            "hostile-secret",
+            "hostile-token",
+            "hostile.example.invalid",
+        ] {
+            assert!(!debug.contains(leaked), "shell value leaked: {leaked}");
+        }
+    }
+
+    #[test]
+    fn no_keys_selects_the_instance_metadata_provider() {
+        // The nodes carry no static keys: the client must fall back to the
+        // instance-metadata provider for the instance role.
+        let mut settings = Settings::default();
         settings.s3_endpoint.clear();
         settings.s3_access_key.clear();
         settings.s3_secret_key.clear();
         assert_eq!(regional_mode(&settings), (true, true));
-        let regional = builder(&settings, "bucket").build().unwrap();
+        let regional = builder_with_env(&settings, "bucket", &HashMap::new())
+            .build()
+            .unwrap();
         let debug = format!("{regional:?}");
         assert!(debug.contains("https://bucket.s3.us-east-1.amazonaws.com"));
-        // No static keys: the builder falls back to its instance-metadata
-        // credential provider (the nodes' instance role), never a static one.
         assert!(!debug.contains("StaticCredentialProvider"));
+        assert!(
+            debug.contains("InstanceCredentialProvider"),
+            "expected the instance-metadata provider, got: {debug}"
+        );
     }
 
     #[test]
-    fn bucket_profile_uses_laptop_credentials_and_region() {
+    fn no_keys_honours_static_keys_from_the_environment() {
+        // Same branch with static keys in the environment map: the map is
+        // honoured, proving the no-keys tests above exercise the real
+        // environment path rather than a stub.
+        let mut settings = Settings::default();
+        settings.s3_endpoint.clear();
+        settings.s3_access_key.clear();
+        settings.s3_secret_key.clear();
+        let env = HashMap::from([
+            ("AWS_ACCESS_KEY_ID".into(), "env-key".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "env-secret".into()),
+        ]);
+        let regional = builder_with_env(&settings, "bucket", &env).build().unwrap();
+        let debug = format!("{regional:?}");
+        assert!(debug.contains("https://bucket.s3.us-east-1.amazonaws.com"));
+        assert!(debug.contains("StaticCredentialProvider"));
+    }
+
+    #[test]
+    fn bucket_profile_uses_settings_region_without_network() {
         let settings = Settings {
             s3_endpoint: String::new(),
             s3_bucket: "bucket".into(),
@@ -106,9 +196,15 @@ mod tests {
             s3_secret_key: String::new(),
             ..Settings::default()
         };
-        let regional = format!("{:?}", from_settings(&settings).unwrap());
-        assert!(regional.contains("https://bucket.s3.eu-west-1.amazonaws.com"));
-        assert!(!regional.contains("StaticCredentialProvider"));
+        let regional = builder_with_env(&settings, "bucket", &HashMap::new())
+            .build()
+            .unwrap();
+        let debug = format!("{regional:?}");
+        assert!(debug.contains("https://bucket.s3.eu-west-1.amazonaws.com"));
+        assert!(
+            debug.contains("InstanceCredentialProvider"),
+            "expected the instance-metadata provider, got: {debug}"
+        );
     }
 
     #[test]

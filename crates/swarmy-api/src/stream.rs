@@ -357,7 +357,9 @@ async fn catch_up(
             // A cursor only advances when the corresponding event has entered
             // the bounded output queue. The client can replay after a disconnect.
             let next = record.seq();
-            let payload = api::EventPayload::StoreRecord { record };
+            let payload = api::EventPayload::StoreRecord {
+                record: api::RecordBody::Event(record),
+            };
             let mut upcoming = sub.clone();
             upcoming.cursors[index].sequence = next;
             let Ok(id_field) = encode_cursor(&upcoming) else {
@@ -503,8 +505,11 @@ async fn produce(
                             let Ok(data) = serde_json::to_string(&api::Event {
                                 log_id: log,
                                 sequence,
-                                payload: api::EventPayload::TimelineEvent {
-                                    event: observation,
+                                // Timeline observations ride the `store_record`
+                                // tag so older clients, which decode the
+                                // record as a value, keep working.
+                                payload: api::EventPayload::StoreRecord {
+                                    record: api::RecordBody::Timeline(observation),
                                 },
                             }) else { return };
                             if !deliver(&sender, Event::default().event("event").data(data), Duration::from_secs(2)).await { return; }

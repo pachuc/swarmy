@@ -172,7 +172,10 @@ async fn measure(
             tokio::select! {
                 observation = timeline.next() => {
                     let event = observation.context("timeline feed closed")?;
-                    let api::EventPayload::TimelineEvent { event: observation } = event.payload else {
+                    let api::EventPayload::StoreRecord { record } = event.payload else {
+                        continue;
+                    };
+                    let api::RecordBody::Timeline(observation) = record else {
                         continue;
                     };
                     if observation.turn_id == turn_id { events.push(observation); }

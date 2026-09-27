@@ -642,7 +642,9 @@ async fn events(
         .into_iter()
         .map(|record| {
             let sequence = record.seq();
-            let payload = api::EventPayload::StoreRecord { record };
+            let payload = api::EventPayload::StoreRecord {
+                record: api::RecordBody::Event(record),
+            };
             Ok(api::Event {
                 log_id: api::LogId::Session(text.clone()),
                 sequence,

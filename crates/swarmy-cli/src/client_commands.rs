@@ -1,4 +1,7 @@
-use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
+use crate::{
+    client_conversation::{Conversation, ConversationItem, report_summary},
+    selection_command::SelectionArgs,
+};
 use anyhow::Result;
 use std::io::Write;
 use swarmy_api_types as api;
@@ -127,9 +130,18 @@ pub async fn chat(
                 return Ok(());
             }
             item = conversation.next() => {
-                if let swarmy_client::StreamItem::Event(event) = item? {
-                    conversation.queue(swarmy_client::StreamItem::Event(event));
-                    conversation.until_idle(json, false, false).await?;
+                match item? {
+                    ConversationItem::Stream(swarmy_client::StreamItem::Event(event)) => {
+                        conversation.queue(swarmy_client::StreamItem::Event(event));
+                        conversation.until_idle(json, false, false).await?;
+                    }
+                    ConversationItem::Stream(swarmy_client::StreamItem::TokenDelta { .. }) => {}
+                    ConversationItem::Summarized {
+                        previous_session_id,
+                        session_id,
+                    } => {
+                        report_summary(false, json, &previous_session_id, &session_id);
+                    }
                 }
             }
         }

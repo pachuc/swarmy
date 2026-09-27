@@ -669,6 +669,20 @@ pub struct Event {
     pub payload: EventPayload,
 }
 
+/// The typed body of a `store_record` payload: a durable session-log entry
+/// or a live turn-timeline observation. Untagged so each side serializes
+/// exactly as it did when the field carried untyped JSON, which keeps the
+/// outer `store_record` tag and the `record` field name stable for older
+/// clients that decode the record as a value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecordBody {
+    /// A durable session-log entry, replayed from the store.
+    Event(swarmy_core::Event),
+    /// A live turn-timeline observation, never replayed.
+    Timeline(swarmy_core::TurnEvent),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
@@ -710,23 +724,13 @@ pub enum EventPayload {
     NodeStatusChanged {
         node: Node,
     },
-    /// Durable session events keep their stored shape; the API carries the
-    /// typed event instead of an untyped JSON hole.
+    /// Durable session events and live timeline observations keep their
+    /// stored shapes; the API carries the typed record instead of an
+    /// untyped JSON hole. Both arrive under the `store_record` tag so
+    /// older clients, which decode the record as a value, keep working.
     StoreRecord {
         #[schema(value_type = serde_json::Value)]
-        record: swarmy_core::Event,
-    },
-    /// Live turn-timeline observations, which are never replayed.
-    TimelineEvent {
-        #[schema(value_type = serde_json::Value)]
-        event: swarmy_core::TurnEvent,
-    },
-    /// Client-local notice that a summarized session continues elsewhere.
-    /// The server never sends this; the CLI synthesizes it when following a
-    /// successor session.
-    SessionSummarized {
-        previous_session_id: String,
-        session_id: String,
+        record: RecordBody,
     },
 }
 
@@ -1351,6 +1355,11 @@ mod tests {
         let turn = serde_json::json!({"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
         let node = serde_json::json!({"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
         let health = serde_json::json!({"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
+        // A durable session-log entry and a live timeline observation both
+        // arrive under the `store_record` tag; older clients decode the
+        // record as a value, so the tag and field name never change.
+        let stored = serde_json::json!({"state_changed":{"seq":1,"from":"runnable","to":"idle"}});
+        let observation = serde_json::json!({"session_id":"01J0000000000000000000000","turn_id":"01J0000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
         let payloads = [
             serde_json::json!({"type":"message_appended","data":{"message":message}}),
             serde_json::json!({"type":"turn_started","data":{"turn":turn}}),
@@ -1362,6 +1371,8 @@ mod tests {
             serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
             serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
             serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
+            serde_json::json!({"type":"store_record","data":{"record":stored}}),
+            serde_json::json!({"type":"store_record","data":{"record":observation}}),
         ];
         for payload in payloads {
             round_trip::<EventPayload>(payload.clone());

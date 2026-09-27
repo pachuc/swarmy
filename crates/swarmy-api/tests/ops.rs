@@ -482,7 +482,10 @@ async fn timeline_stream_delivers_turn_observations() {
         .unwrap()
         .unwrap();
     assert_eq!(event.sequence, 1);
-    let api::EventPayload::TimelineEvent { event: observation } = event.payload else {
+    let api::EventPayload::StoreRecord { record } = event.payload else {
+        panic!("timeline observations keep the store_record tag");
+    };
+    let api::RecordBody::Timeline(observation) = record else {
         panic!("timeline observations arrive typed");
     };
     assert_eq!(observation.turn_id.to_string(), turn);
