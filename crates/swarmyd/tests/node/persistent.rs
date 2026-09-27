@@ -100,16 +100,20 @@ async fn dispatch_arguments(
         )
         .await
         .unwrap();
-    let placement = store
-        .place(
-            agent,
-            node,
-            jiff::Timestamp::now()
-                .checked_add(Duration::from_secs(60))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let placement = if let Some(placement) = store.get_by_agent(agent).await.unwrap() {
+        placement
+    } else {
+        store
+            .place(
+                agent,
+                node,
+                jiff::Timestamp::now()
+                    .checked_add(Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    };
     store
         .dispatch_placed_tool_jobs(id, &lease, std::slice::from_ref(&job), &placement)
         .await
