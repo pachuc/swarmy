@@ -19,7 +19,7 @@ impl Store {
     pub async fn api_session_id(&self, key: &str) -> Result<SessionId> {
         let fresh = SessionId::from_ulid(Ulid::generate());
         self.transaction(|trx| async move {
-            let storage_key = self.root.pack(&("api_session_id", key));
+            let storage_key = crate::keys::Keys::new(&self.root).api_session_id(&(key));
             if let Some(id) = read::<SessionId>(&trx, &storage_key).await? {
                 Ok(id)
             } else {
@@ -36,7 +36,7 @@ impl Store {
     pub async fn api_replay(&self, key: &str) -> Result<Option<serde_json::Value>> {
         let record = self
             .transaction(|trx| async move {
-                let key = self.root.pack(&("api_idempotency", key));
+                let key = crate::keys::Keys::new(&self.root).api_idempotency(&(key));
                 read::<ApiReplay>(&trx, &key).await
             })
             .await?;
@@ -59,7 +59,13 @@ impl Store {
         };
         self.transaction(|trx| {
             let entry = &entry;
-            async move { write(&trx, &self.root.pack(&("api_idempotency", key)), entry) }
+            async move {
+                write(
+                    &trx,
+                    &crate::keys::Keys::new(&self.root).api_idempotency(&(key)),
+                    entry,
+                )
+            }
         })
         .await
     }
@@ -74,7 +80,7 @@ impl Store {
         self.transaction(|trx| {
             let expected = &expected;
             async move {
-                let storage_key = self.root.pack(&("api_idempotency", key));
+                let storage_key = crate::keys::Keys::new(&self.root).api_idempotency(&(key));
                 let current: Option<ApiReplay> = read(&trx, &storage_key).await?;
                 if current
                     .is_some_and(|entry| entry.result == *expected && entry.expires_at > self.now())

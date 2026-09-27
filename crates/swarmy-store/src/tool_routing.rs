@@ -16,9 +16,8 @@ impl Store {
         self.transaction(|trx| async move {
             let placement: PlacementRecord = read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("placement", status.agent_id.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(status.agent_id.as_ulid().to_bytes().as_slice())),
             )
             .await?
             .ok_or(StoreError::LeaseMismatch)?;
@@ -26,10 +25,11 @@ impl Store {
                 return Err(StoreError::LeaseMismatch);
             }
             self.check_live_placement(&trx, &placement).await?;
-            let key = self.root.pack(&(
-                "agent_call_status",
-                status.agent_id.as_ulid().to_bytes().as_slice(),
-            ));
+            let key = crate::keys::Keys::new(&self.root).agent_call_status(&(status
+                .agent_id
+                .as_ulid()
+                .to_bytes()
+                .as_slice(),));
             if read::<swarmy_core::AgentCallStatus>(&trx, &key)
                 .await?
                 .is_some_and(|old| {
@@ -52,17 +52,15 @@ impl Store {
         agent: swarmy_core::AgentId,
     ) -> Result<Option<swarmy_core::AgentCallStatus>> {
         self.transaction(|trx| async move {
-            let key = self
-                .root
-                .pack(&("agent_call_status", agent.as_ulid().to_bytes().as_slice()));
+            let key = crate::keys::Keys::new(&self.root)
+                .agent_call_status(&(agent.as_ulid().to_bytes().as_slice()));
             let Some(status) = read::<swarmy_core::AgentCallStatus>(&trx, &key).await? else {
                 return Ok(None);
             };
             let placement: Option<PlacementRecord> = read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("placement", agent.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root)
+                    .placement(&(agent.as_ulid().to_bytes().as_slice())),
             )
             .await?;
             let now = self.now();
@@ -266,8 +264,7 @@ impl Store {
         }
         // Retain each observed epoch's explanation, even after later snapshots or
         // placement changes. Sessions have independent delivery cursors.
-        let key = self.root.pack(&(
-            "computer_notice",
+        let key = crate::keys::Keys::new(&self.root).computer_notice(&(
             placement.agent_id.as_ulid().to_bytes().as_slice(),
             placement.epoch,
         ));
@@ -313,12 +310,8 @@ impl Store {
         // The index read conflicts with concurrent session creation, so every
         // session present at delivery receives the same epoch atomically. Include
         // the caller for legacy sessions created before the index existed.
-        let (mut begin, end) = self
-            .root
-            .subspace(&(
-                "session_by_agent",
-                placement.agent_id.as_ulid().to_bytes().as_slice(),
-            ))
+        let (mut begin, end) = crate::keys::Keys::new(&self.root)
+            .session_by_agent_space(&(placement.agent_id.as_ulid().to_bytes().as_slice(),))
             .range();
         self.append_computer_notice(trx, id, placement.epoch, &message)
             .await?;
@@ -345,11 +338,8 @@ impl Store {
         epoch: u64,
         message: &Message,
     ) -> Result<()> {
-        let delivered = self.root.pack(&(
-            "computer_notice_delivered",
-            id.as_ulid().to_bytes().as_slice(),
-            epoch,
-        ));
+        let delivered = crate::keys::Keys::new(&self.root)
+            .computer_notice_delivered(&(id.as_ulid().to_bytes().as_slice(), epoch));
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
             session.head_seq = session

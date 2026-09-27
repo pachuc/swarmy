@@ -142,8 +142,7 @@ impl Store {
     }
 
     fn image_display_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        self.root.pack(&(
-            "image_display",
+        crate::keys::Keys::new(&self.root).image_display(&(
             name,
             tag.0.as_str(),
             manifest.as_ulid().to_bytes().as_slice(),
@@ -171,8 +170,7 @@ impl Store {
         tag: &ImageTag,
         manifest: ManifestId,
     ) -> Vec<u8> {
-        self.root.pack(&(
-            "image_memory",
+        crate::keys::Keys::new(&self.root).image_memory(&(
             name,
             tag.0.as_str(),
             manifest.as_ulid().to_bytes().as_slice(),
@@ -195,8 +193,7 @@ impl Store {
     }
 
     fn image_scratch_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        self.root.pack(&(
-            "image_scratch",
+        crate::keys::Keys::new(&self.root).image_scratch(&(
             name,
             tag.0.as_str(),
             manifest.as_ulid().to_bytes().as_slice(),
@@ -234,7 +231,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ImageRecord>> {
         self.transaction(|trx| async move {
-            let space = self.root.subspace(&("image",));
+            let space = crate::keys::Keys::new(&self.root).image_space(&());
             let (mut begin, end) = space.range();
             if let Some((name, tag)) = after {
                 begin = self.image_key(name, tag);
@@ -450,7 +447,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<(VolumeId, VolumeRecord)>> {
         self.transaction(|trx| async move {
-            let space = self.root.subspace(&("volume",));
+            let space = crate::keys::Keys::new(&self.root).volume_space(&());
             let (mut begin, end) = space.range();
             if let Some(id) = after {
                 begin = self.volume_key(id);
@@ -522,7 +519,12 @@ impl Store {
         self.transaction(|trx| async move {
             let mut live = BTreeSet::new();
             for kind in ["volume", "image", "agent"] {
-                let space = self.root.subspace(&(kind,));
+                let space = match kind {
+                    "volume" => crate::keys::Keys::new(&self.root).volume_space(&()),
+                    "image" => crate::keys::Keys::new(&self.root).image_space(&()),
+                    "agent" => crate::keys::Keys::new(&self.root).agent_space(&()),
+                    _ => unreachable!("unknown manifest source family"),
+                };
                 let (mut begin, end) = space.range();
                 loop {
                     let page =
@@ -596,13 +598,11 @@ impl Store {
     }
 
     pub(crate) fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
-        self.root
-            .pack(&("volume_snapshots", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).volume_snapshots(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
-        self.root
-            .pack(&("manifest_parent", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).manifest_parent(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {

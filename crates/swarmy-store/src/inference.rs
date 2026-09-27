@@ -40,7 +40,19 @@ struct PreparedCompletion {
 
 impl Store {
     fn inference_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        self.root.pack(&(kind, id.as_bytes().as_slice()))
+        {
+            let keys = crate::keys::Keys::new(&self.root);
+            let suffix = &(id.as_bytes().as_slice(),);
+            match kind {
+                "inference_request" => keys.inference_request(suffix),
+                "inference_claim" => keys.inference_claim(suffix),
+                "inference_result" => keys.inference_result(suffix),
+                "inference_input" => keys.inference_input(suffix),
+                "idem" => keys.idem(suffix),
+                "inflight" => keys.inflight(suffix),
+                _ => unreachable!("unknown inference key family"),
+            }
+        }
     }
 
     pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
@@ -459,7 +471,7 @@ impl Store {
         crate::check_limit(limit)?;
         let values = self
             .transaction(|trx| async move {
-                let space = self.root.subspace(&("inflight",));
+                let space = crate::keys::Keys::new(&self.root).inflight_space(&());
                 let mut begin = space.range().0;
                 if let Some(id) = after {
                     begin = self.inference_key("inflight", id);

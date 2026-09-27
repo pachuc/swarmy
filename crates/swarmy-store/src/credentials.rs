@@ -164,9 +164,8 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<String>> {
-        let space = self
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (begin, end) = space.range();
         let rows = self
             .transaction(|trx| {
@@ -200,9 +199,8 @@ impl Store {
         now: Timestamp,
     ) -> Result<Vec<BreakerCandidate>> {
         self.transaction(|trx| async move {
-            let space = self
-                .root
-                .subspace(&("credential_entry", scope.to_string(), provider));
+            let space = crate::keys::Keys::new(&self.root)
+                .credential_entry_space(&(scope.to_string(), provider));
             let (mut begin, end) = space.range();
             let mut entries: Vec<(String, bool)> = Vec::new();
             loop {
@@ -266,9 +264,8 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Option<[u8; 32]>> {
-        let space = self
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (mut begin, end) = space.range();
         let mut hash = blake3::Hasher::new();
         let mut found = false;
@@ -303,7 +300,7 @@ impl Store {
     /// # Errors
     /// Returns database errors.
     pub async fn legacy_credential_count(&self) -> Result<u64> {
-        let space = self.root.subspace(&("credential",));
+        let space = crate::keys::Keys::new(&self.root).credential_space(&());
         let (mut begin, end) = space.range();
         let mut count: u64 = 0;
         loop {
@@ -365,9 +362,15 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Vec<u8> {
-        self.store
-            .root
-            .pack(&(table, scope.to_string(), provider, label))
+        {
+            let keys = crate::keys::Keys::new(&self.store.root);
+            let suffix = &(scope.to_string(), provider, label);
+            match table {
+                "credential_entry" => keys.credential_entry(suffix),
+                "credential_lease" => keys.credential_lease(suffix),
+                _ => unreachable!("unknown credential key family"),
+            }
+        }
     }
 
     /// Add or replace a labelled entry without changing its creation order.
@@ -501,7 +504,7 @@ impl CredentialStore {
     pub async fn migrate_legacy_credentials(&self) -> Result<LegacyMigration> {
         // Bounded batches; `scan` rejects limits above `MAX_SCAN_LIMIT`.
         const BATCH: usize = crate::MAX_SCAN_LIMIT;
-        let space = self.store.root.subspace(&("credential",));
+        let space = crate::keys::Keys::new(&self.store.root).credential_space(&());
         let (mut begin, end) = space.range();
         let mut outcome = LegacyMigration::default();
         loop {
@@ -539,15 +542,10 @@ impl CredentialStore {
                 };
                 let entry_key =
                     self.entry_key("credential_entry", scope, provider.as_str(), "default");
-                let legacy_key =
-                    self.store
-                        .root
-                        .pack(&("credential", scope.to_string(), provider.as_str()));
-                let lease_key = self.store.root.pack(&(
-                    "credential_lease",
-                    scope.to_string(),
-                    provider.as_str(),
-                ));
+                let legacy_key = crate::keys::Keys::new(&self.store.root)
+                    .credential(&(scope.to_string(), provider.as_str()));
+                let lease_key = crate::keys::Keys::new(&self.store.root)
+                    .credential_lease(&(scope.to_string(), provider.as_str()));
                 let created_at = record.updated_at;
                 let wrote = self
                     .store
@@ -599,10 +597,8 @@ impl CredentialStore {
     /// # Errors
     /// Returns decryption, encoding, or database errors.
     pub async fn list_entries(&self, scope: CredentialScope) -> Result<Vec<CredentialSummary>> {
-        let space = self
-            .store
-            .root
-            .subspace(&("credential_entry", scope.to_string()));
+        let space =
+            crate::keys::Keys::new(&self.store.root).credential_entry_space(&(scope.to_string()));
         let (mut begin, end) = space.range();
         let mut result = Vec::new();
         loop {
@@ -654,10 +650,8 @@ impl CredentialStore {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<(String, CredentialRecord)>> {
-        let space = self
-            .store
-            .root
-            .subspace(&("credential_entry", scope.to_string(), provider));
+        let space = crate::keys::Keys::new(&self.store.root)
+            .credential_entry_space(&(scope.to_string(), provider));
         let (begin, end) = space.range();
         let rows = self
             .store

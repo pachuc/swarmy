@@ -21,8 +21,7 @@ fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
 
 impl Store {
     fn volume_placement_key(&self, id: VolumeId) -> Vec<u8> {
-        self.root
-            .pack(&("volume_placement", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).volume_placement(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Resolve the shared agent volume, initializing it from the session image.

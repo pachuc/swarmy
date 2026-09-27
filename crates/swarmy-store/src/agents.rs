@@ -49,7 +49,7 @@ impl Store {
         let result = self
             .transaction(|trx| async move {
                 if let Some(key) = replay_key {
-                    let replay_key = self.root.pack(&("api_idempotency", key));
+                    let replay_key = crate::keys::Keys::new(&self.root).api_idempotency(&(key));
                     if let Some(previous) =
                         read::<crate::api_idempotency::ApiReplay>(&trx, &replay_key).await?
                         && previous.expires_at > now
@@ -103,7 +103,7 @@ impl Store {
                     let result = serde_json::to_string(&record).map_err(|_| StoreError::Corrupt)?;
                     write(
                         &trx,
-                        &self.root.pack(&("api_idempotency", key)),
+                        &crate::keys::Keys::new(&self.root).api_idempotency(&(key)),
                         &crate::api_idempotency::ApiReplay {
                             result,
                             expires_at: now
@@ -183,7 +183,7 @@ impl Store {
     ) -> Result<Vec<AgentRecord>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = self.root.subspace(&("agent",)).range();
+            let (mut begin, end) = crate::keys::Keys::new(&self.root).agent_space(&()).range();
             if let Some(id) = after {
                 begin = self.agent_key(id);
                 begin.push(0);
@@ -726,11 +726,8 @@ impl Store {
     }
 
     fn session_link_key(&self, direction: &str, id: SessionId) -> Vec<u8> {
-        self.root.pack(&(
-            "session_chain",
-            direction,
-            id.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root)
+            .session_chain(&(direction, id.as_ulid().to_bytes().as_slice()))
     }
 
     /// The successor of an archived main session, if it has been summarized.
@@ -775,9 +772,8 @@ impl Store {
         check_limit(limit)?;
         let ids: Vec<SessionId> = self
             .transaction(|trx| async move {
-                let (mut begin, end) = self
-                    .root
-                    .subspace(&("session_by_agent", agent.as_ulid().to_bytes().as_slice()))
+                let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                    .session_by_agent_space(&(agent.as_ulid().to_bytes().as_slice()))
                     .range();
                 if let Some(id) = after {
                     begin = self.session_agent_key(agent, id);

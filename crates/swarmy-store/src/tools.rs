@@ -7,11 +7,21 @@ type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
     pub(crate) fn tool_key(&self, kind: &str, id: RequestId) -> Vec<u8> {
-        self.root.pack(&(kind, id.as_bytes().as_slice()))
+        {
+            let keys = crate::keys::Keys::new(&self.root);
+            let suffix = &(id.as_bytes().as_slice(),);
+            match kind {
+                "tool_job" => keys.tool_job(suffix),
+                "tool_placement" => keys.tool_placement(suffix),
+                "placed_tool_claim" => keys.placed_tool_claim(suffix),
+                "tool_done" => keys.tool_done(suffix),
+                _ => unreachable!("unknown tool key family"),
+            }
+        }
     }
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
-        self.root
-            .subspace(&("session_tools", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root)
+            .session_tools_space(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
@@ -189,7 +199,9 @@ impl Store {
     ) -> Result<Vec<ToolJob>> {
         let values = self
             .transaction(|trx| async move {
-                let (mut begin, end) = self.root.subspace(&("tool_job",)).range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                    .tool_job_space(&())
+                    .range();
                 if let Some(id) = after {
                     begin = self.tool_key("tool_job", id);
                     begin.push(0);

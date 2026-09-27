@@ -1403,16 +1403,14 @@ fn assemble_turn(
 
 impl Store {
     fn turn_summary_key(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
-        self.root.pack(&(
-            "turn_metrics",
+        crate::keys::Keys::new(&self.root).turn_metrics(&(
             session.as_ulid().to_bytes().as_slice(),
             turn.as_ulid().to_bytes().as_slice(),
         ))
     }
 
     fn turn_inference_key(&self, session: SessionId, turn: MessageId, request_id: &str) -> Vec<u8> {
-        self.root.pack(&(
-            "turn_inference",
+        crate::keys::Keys::new(&self.root).turn_inference(&(
             session.as_ulid().to_bytes().as_slice(),
             turn.as_ulid().to_bytes().as_slice(),
             request_id.as_bytes(),
@@ -1420,8 +1418,7 @@ impl Store {
     }
 
     fn turn_tool_key(&self, session: SessionId, turn: MessageId, call_id: &str) -> Vec<u8> {
-        self.root.pack(&(
-            "turn_tool",
+        crate::keys::Keys::new(&self.root).turn_tool(&(
             session.as_ulid().to_bytes().as_slice(),
             turn.as_ulid().to_bytes().as_slice(),
             call_id.as_bytes(),
@@ -1674,18 +1671,14 @@ impl Store {
         session: SessionId,
         turn: MessageId,
     ) -> Result<(Vec<StoredTurnInferenceV2>, Vec<StoredToolMetricV2>)> {
-        let (inference_begin, inference_end) = self
-            .root
-            .subspace(&(
-                "turn_inference",
+        let (inference_begin, inference_end) = crate::keys::Keys::new(&self.root)
+            .turn_inference_space(&(
                 session.as_ulid().to_bytes().as_slice(),
                 turn.as_ulid().to_bytes().as_slice(),
             ))
             .range();
-        let (tool_begin, tool_end) = self
-            .root
-            .subspace(&(
-                "turn_tool",
+        let (tool_begin, tool_end) = crate::keys::Keys::new(&self.root)
+            .turn_tool_space(&(
                 session.as_ulid().to_bytes().as_slice(),
                 turn.as_ulid().to_bytes().as_slice(),
             ))
@@ -1818,13 +1811,11 @@ impl Store {
     ) -> Result<Vec<TurnMetrics>> {
         let raw = self
             .transaction(|trx| async move {
-                let (mut begin, end) = self
-                    .root
-                    .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+                let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                    .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
                     .range();
                 if let Some(turn) = after {
-                    begin = self.root.pack(&(
-                        "turn_metrics",
+                    begin = crate::keys::Keys::new(&self.root).turn_metrics(&(
                         session.as_ulid().to_bytes().as_slice(),
                         turn.as_ulid().to_bytes().as_slice(),
                     ));
@@ -1875,15 +1866,13 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<StoredTurnSummaryV2>> {
         let mut summaries = Vec::new();
-        let mut end = self
-            .root
-            .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+        let mut end = crate::keys::Keys::new(&self.root)
+            .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
             .range()
             .1;
         let begin = match since {
             Some(turn) => {
-                let mut key = self.root.pack(&(
-                    "turn_metrics",
+                let mut key = crate::keys::Keys::new(&self.root).turn_metrics(&(
                     session.as_ulid().to_bytes().as_slice(),
                     turn.as_ulid().to_bytes().as_slice(),
                 ));
@@ -1891,8 +1880,8 @@ impl Store {
                 key
             }
             None => {
-                self.root
-                    .subspace(&("turn_metrics", session.as_ulid().to_bytes().as_slice()))
+                crate::keys::Keys::new(&self.root)
+                    .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
                     .range()
                     .0
             }

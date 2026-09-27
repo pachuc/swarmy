@@ -205,7 +205,7 @@ impl RouteSnapshot {
 
 impl Store {
     pub(crate) fn route_key(&self, name: &str) -> Vec<u8> {
-        self.root.pack(&("route", name))
+        crate::keys::Keys::new(&self.root).route(&(name))
     }
 
     /// Store a named failover chain, replacing any previous steps.
@@ -237,7 +237,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn list_routes(&self) -> Result<Vec<RouteRecord>> {
-        let space = self.root.subspace(&("route",));
+        let space = crate::keys::Keys::new(&self.root).route_space(&());
         let (mut begin, end) = space.range();
         let mut routes = Vec::new();
         loop {
@@ -288,11 +288,8 @@ impl Store {
         provider: &str,
         now: Timestamp,
     ) -> Result<Vec<PoolEntry>> {
-        let space = self.root.subspace(&(
-            "credential_entry",
-            CredentialScope::Cluster.to_string(),
-            provider,
-        ));
+        let space = crate::keys::Keys::new(&self.root)
+            .credential_entry_space(&(CredentialScope::Cluster.to_string(), provider));
         let (mut begin, end) = space.range();
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
         loop {

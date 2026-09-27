@@ -407,9 +407,14 @@ async fn background_upload_survives_sweep_before_manifest_publication() {
 
 #[tokio::test]
 async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
-    let Some(test) = Fixture::new() else {
+    let Some(mut test) = Fixture::new() else {
         return;
     };
+    let clock = Arc::new(std::sync::Mutex::new(Timestamp::now()));
+    test.store = test.store.with_clock({
+        let clock = Arc::clone(&clock);
+        move || *clock.lock().unwrap()
+    });
     test.store.get_gc_run(owner()).await.unwrap();
     let first = run_record();
     let second = run_record();
@@ -426,7 +431,7 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
         collect(&test.store, test.objects.clone(), policy(), false).await,
         Err(VolumeError::Store(StoreError::LeaseMismatch))
     ));
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    *clock.lock().unwrap() = expires.checked_add(Duration::from_millis(100)).unwrap();
     let next = run_record();
     let replacement = test
         .store

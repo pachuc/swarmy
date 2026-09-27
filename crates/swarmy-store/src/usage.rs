@@ -52,9 +52,7 @@ impl Store {
         self.transaction(|trx| async move {
             read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("usage_record", request.as_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root).usage_record(&(request.as_bytes().as_slice())),
             )
             .await
         })
@@ -68,9 +66,7 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("usage", id.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root).usage(&(id.as_ulid().to_bytes().as_slice())),
             )
             .await?
             .unwrap_or_default())
@@ -85,9 +81,8 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read(
                 &trx,
-                &self
-                    .root
-                    .pack(&("usage_by_agent", id.as_ulid().to_bytes().as_slice())),
+                &crate::keys::Keys::new(&self.root)
+                    .usage_by_agent(&(id.as_ulid().to_bytes().as_slice())),
             )
             .await?
             .unwrap_or_default())
@@ -106,12 +101,10 @@ impl Store {
         usage: &swarmy_core::TokenUsage,
         cost_micros: u64,
     ) -> Result<()> {
-        let session_key = self
-            .root
-            .pack(&("usage", session.as_ulid().to_bytes().as_slice()));
-        let agent_key = self
-            .root
-            .pack(&("usage_by_agent", agent.as_ulid().to_bytes().as_slice()));
+        let session_key =
+            crate::keys::Keys::new(&self.root).usage(&(session.as_ulid().to_bytes().as_slice()));
+        let agent_key = crate::keys::Keys::new(&self.root)
+            .usage_by_agent(&(agent.as_ulid().to_bytes().as_slice()));
         let (session_totals, agent_totals) = futures::try_join!(
             read::<UsageTotals>(trx, &session_key),
             read::<UsageTotals>(trx, &agent_key)
@@ -123,9 +116,8 @@ impl Store {
         );
         crate::write(
             trx,
-            &self
-                .root
-                .pack(&("usage_record", attribution.request.as_bytes().as_slice())),
+            &crate::keys::Keys::new(&self.root)
+                .usage_record(&(attribution.request.as_bytes().as_slice())),
             &UsageRecord {
                 provider: attribution.provider.into(),
                 entry: entry.clone(),
@@ -143,11 +135,8 @@ impl Store {
         // Secondary index for bounded pruning, written in the same transaction.
         let hour = crate::metering::hour_floor(attribution.recorded_at.as_second());
         trx.set(
-            &self.root.pack(&(
-                "usage_record_by_time",
-                hour,
-                attribution.request.as_bytes().as_slice(),
-            )),
+            &crate::keys::Keys::new(&self.root)
+                .usage_record_by_time(&(hour, attribution.request.as_bytes().as_slice())),
             &[],
         );
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {

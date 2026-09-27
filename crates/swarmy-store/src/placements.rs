@@ -156,21 +156,30 @@ impl Store {
     }
 
     pub(crate) fn placement_key(&self, kind: &str, agent: AgentId) -> Vec<u8> {
-        self.root
-            .pack(&(kind, agent.as_ulid().to_bytes().as_slice()))
+        {
+            let keys = crate::keys::Keys::new(&self.root);
+            let suffix = &(agent.as_ulid().to_bytes().as_slice(),);
+            match kind {
+                "scratch" => keys.scratch(suffix),
+                "placement" => keys.placement(suffix),
+                "placement_hosting" => keys.placement_hosting(suffix),
+                "placement_address" => keys.placement_address(suffix),
+                "placement_epoch" => keys.placement_epoch(suffix),
+                "computer_memory" => keys.computer_memory(suffix),
+                _ => unreachable!("unknown placement key family"),
+            }
+        }
     }
 
     fn placement_node_key(&self, node: NodeId, agent: AgentId) -> Vec<u8> {
-        self.root.pack(&(
-            "placement_by_node",
+        crate::keys::Keys::new(&self.root).placement_by_node(&(
             node.as_ulid().to_bytes().as_slice(),
             agent.as_ulid().to_bytes().as_slice(),
         ))
     }
 
     fn placement_count_key(&self, node: NodeId) -> Vec<u8> {
-        self.root
-            .pack(&("placement_count", node.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).placement_count(&(node.as_ulid().to_bytes().as_slice()))
     }
 
     pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
@@ -216,9 +225,8 @@ impl Store {
         node: NodeId,
         exclude: AgentId,
     ) -> Result<u64> {
-        let (start, end) = self
-            .root
-            .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
+        let (start, end) = crate::keys::Keys::new(&self.root)
+            .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
             .range();
         let mut begin = start;
         let mut total: u64 = 0;
@@ -535,9 +543,8 @@ impl Store {
     ) -> Result<Vec<PlacementRecord>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = self
-                .root
-                .subspace(&("placement_by_node", node.as_ulid().to_bytes().as_slice()))
+            let (mut begin, end) = crate::keys::Keys::new(&self.root)
+                .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
                 .range();
             if let Some(agent) = after {
                 begin = self.placement_node_key(node, agent);

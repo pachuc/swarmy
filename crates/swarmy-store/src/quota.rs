@@ -63,11 +63,11 @@ pub use swarmy_core::quota::parse_window;
 
 impl Store {
     fn observed_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        self.root.pack(&("entry_quota_observed", provider, label))
+        crate::keys::Keys::new(&self.root).entry_quota_observed(&(provider, label))
     }
 
     fn config_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        self.root.pack(&("entry_quota_config", provider, label))
+        crate::keys::Keys::new(&self.root).entry_quota_config(&(provider, label))
     }
 
     pub(crate) fn write_observed(

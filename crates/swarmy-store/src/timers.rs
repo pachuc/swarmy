@@ -11,21 +11,19 @@ use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read, scan, write};
 
 impl Store {
     fn timer_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        self.root.pack(&(
-            "timer",
+        crate::keys::Keys::new(&self.root).timer(&(
             agent.as_ulid().to_bytes().as_slice(),
             timer.as_ulid().to_bytes().as_slice(),
         ))
     }
 
     fn active_timers(&self, agent: AgentId) -> Subspace {
-        self.root
-            .subspace(&("timer_active", agent.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root)
+            .timer_active_space(&(agent.as_ulid().to_bytes().as_slice()))
     }
 
     fn timer_due_key(&self, timer: &TimerRecord) -> Vec<u8> {
-        self.root.pack(&(
-            "timer_due",
+        crate::keys::Keys::new(&self.root).timer_due(&(
             timer.due_at.as_millisecond(),
             timer.agent_id.as_ulid().to_bytes().as_slice(),
             timer.timer_id.as_ulid().to_bytes().as_slice(),
@@ -36,8 +34,7 @@ impl Store {
     /// summarized or closed origin cannot strand a note, but delivery prefers
     /// this idle session over the main conversation.
     fn timer_origin_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        self.root.pack(&(
-            "timer_origin",
+        crate::keys::Keys::new(&self.root).timer_origin(&(
             agent.as_ulid().to_bytes().as_slice(),
             timer.as_ulid().to_bytes().as_slice(),
         ))
@@ -221,7 +218,7 @@ impl Store {
         now: Timestamp,
         after: Option<&TimerRecord>,
     ) -> Result<Vec<TimerRecord>> {
-        let space = self.root.subspace(&("timer_due",));
+        let space = crate::keys::Keys::new(&self.root).timer_due_space(&());
         let (mut begin, _) = space.range();
         if let Some(after) = after {
             begin = self.timer_due_key(after);

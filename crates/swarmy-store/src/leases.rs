@@ -28,13 +28,11 @@ impl Store {
     }
 
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        self.root
-            .pack(&("lease", id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).lease(&(id.as_ulid().to_bytes().as_slice()))
     }
 
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        self.root.pack(&(
-            "lease_by_expiry",
+        crate::keys::Keys::new(&self.root).lease_by_expiry(&(
             (expires.as_second(), expires.subsec_nanosecond()),
             id.as_ulid().to_bytes().as_slice(),
         ))
@@ -289,7 +287,7 @@ impl Store {
     ) -> Result<Vec<(SessionId, Lease)>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let space = self.root.subspace(&("lease_by_expiry",));
+            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space(&());
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
                 begin = self.expiry_key(*id, lease.expires_at);
