@@ -8,7 +8,7 @@ license.workspace = true
 
 [features]
 # Provisioning (EC2, SSM, S3, IAM) is opt-in so the default build skips the
-# AWS SDKs entirely. Node builds and plain workspace checks use the default;
+# EC2 provisioning SDKs. Node builds and plain workspace checks use the default;
 # laptop installs and provisioning tests enable `remote`.
 default = ["azure", "bedrock", "gemini"]
 remote = ["swarmy-cloud/remote"]
