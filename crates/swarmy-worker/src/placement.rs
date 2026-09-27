@@ -99,7 +99,7 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
                 }
                 Err(
                     error @ (StoreError::Domain(swarmy_store::DomainError::PlacementExists)
-                    | StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)),
+                    | StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)),
                 ) => {
                     rejection = Some(error.to_string());
                     break;

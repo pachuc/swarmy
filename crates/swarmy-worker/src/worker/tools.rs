@@ -208,7 +208,10 @@ impl Worker {
                     .map(|()| (Vec::new(), jobs.to_vec())),
             };
             let (events, jobs) = match result {
-                Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)) if attempt == 0 => {
+                Err(StoreError::Fence(
+                    swarmy_store::FenceError::PlacementMismatch
+                    | swarmy_store::FenceError::LeaseMismatch,
+                )) if attempt == 0 => {
                     self.placements.invalidate(session.agent_id).await;
                     continue;
                 }

@@ -131,7 +131,7 @@ pub async fn complete(
         loop {
             tokio::select! {
                 biased;
-                () = tokio::time::sleep_until(deadline) => break Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch).into()),
+                () = tokio::time::sleep_until(deadline) => break Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch).into()),
                 _ = renewal.tick() => {
                     let next_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
                     let renewed = tokio::time::timeout_at(deadline, async {
@@ -140,7 +140,7 @@ pub async fn complete(
                     match renewed {
                         Ok(Ok(next)) => { lease = next; deadline = next_deadline; }
                         Ok(Err(error)) => break Err(error),
-                        Err(_) => break Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch).into()),
+                        Err(_) => break Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch).into()),
                     }
                 }
                 result = &mut work => break result,

@@ -106,7 +106,7 @@ pub async fn start(
             let _ = state.store.remove_api_replay(&replay_key, &reserved).await;
             return Err(match error {
                 swarmy_volume::VolumeError::Store(swarmy_store::StoreError::Fence(
-                    swarmy_store::FenceError::LeaseMismatch,
+                    swarmy_store::FenceError::GcLeaseMismatch,
                 )) => busy(),
                 other => volume(other),
             });
