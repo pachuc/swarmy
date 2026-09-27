@@ -367,7 +367,7 @@ impl CredentialStore {
             let suffix = &(scope.to_string(), provider, label);
             match table {
                 "credential_entry" => keys.credential_entry(suffix),
-                "credential_lease" => keys.credential_lease(suffix),
+                "credential_entry_lease" => keys.credential_entry_lease(suffix),
                 _ => unreachable!("unknown credential key family"),
             }
         }

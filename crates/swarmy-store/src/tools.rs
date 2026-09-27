@@ -1,6 +1,5 @@
 //! Durable tool handoffs on persistent agent computers.
 use crate::{Result, Store, StoreError, read, scan, write};
-use jiff::Timestamp;
 use swarmy_core::{Event, Lease, RequestId, SessionId, SessionState, ToolJob};
 
 type PreparedToolRequests = [(Event, Vec<u8>)];
@@ -137,10 +136,15 @@ impl Store {
                                 == Some(&job.arguments) => {}
                         _ => return Err(StoreError::InvalidState),
                     }
-                    trx.set(&self.tool_key("tool_job", job.request_id), value);
+                    trx.set(
+                        &crate::keys::Keys::new(&self.root)
+                            .tool_job(&(job.request_id.as_bytes().as_slice(),)),
+                        value,
+                    );
                     write(
                         &trx,
-                        &self.tool_key("tool_placement", job.request_id),
+                        &crate::keys::Keys::new(&self.root)
+                            .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
                         placement,
                     )?;
                     write(
@@ -203,7 +207,8 @@ impl Store {
                     .tool_job_space(&())
                     .range();
                 if let Some(id) = after {
-                    begin = self.tool_key("tool_job", id);
+                    begin =
+                        crate::keys::Keys::new(&self.root).tool_job(&(id.as_bytes().as_slice(),));
                     begin.push(0);
                 }
                 scan(&trx, (begin, end), limit).await
@@ -220,7 +225,12 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn tool_completed(&self, id: RequestId) -> Result<bool> {
         self.transaction(|trx| async move {
-            Ok(read::<bool>(&trx, &self.tool_key("tool_done", id)).await? == Some(true))
+            Ok(read::<bool>(
+                &trx,
+                &crate::keys::Keys::new(&self.root).tool_done(&(id.as_bytes().as_slice(),)),
+            )
+            .await?
+                == Some(true))
         })
         .await
     }

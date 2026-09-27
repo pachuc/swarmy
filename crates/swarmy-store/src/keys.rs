@@ -201,6 +201,101 @@ impl Store {
 // so point reads, indexes, and prefix scans share exactly the same bytes.
 use foundationdb::tuple::TuplePack;
 
+const AGENT: &str = "agent";
+const AGENT_BY_NAME: &str = "agent_by_name";
+const AGENT_CALL_STATUS: &str = "agent_call_status";
+const AGENT_GITHUB_TOKEN: &str = "agent_github_token";
+const API_APPEND: &str = "api_append";
+const API_IDEMPOTENCY: &str = "api_idempotency";
+const API_SESSION_ID: &str = "api_session_id";
+const CHUNK_REUSED: &str = "chunk_reused";
+const COMPUTER_DELETED: &str = "computer_deleted";
+const COMPUTER_MEMORY: &str = "computer_memory";
+const COMPUTER_NOTICE: &str = "computer_notice";
+const COMPUTER_NOTICE_DELIVERED: &str = "computer_notice_delivered";
+const CREDENTIAL: &str = "credential";
+const CREDENTIAL_ENTRY: &str = "credential_entry";
+const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
+const CREDENTIAL_LEASE: &str = "credential_lease";
+const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
+const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
+const EVENT: &str = "event";
+const GATEWAY_PROVIDER: &str = "gateway_provider";
+const GATEWAY_PROVIDER_ENTRY: &str = "gateway_provider_entry";
+const GC_DELETING: &str = "gc_deleting";
+const GC_LEASE: &str = "gc_lease";
+const GC_RUN: &str = "gc_run";
+const GC_SEQUENCE: &str = "gc_sequence";
+const IDEM: &str = "idem";
+const IMAGE: &str = "image";
+const IMAGE_DISPLAY: &str = "image_display";
+const IMAGE_MEMORY: &str = "image_memory";
+const IMAGE_SCRATCH: &str = "image_scratch";
+const INFERENCE_BREAKER: &str = "inference_breaker";
+const INFERENCE_CLAIM: &str = "inference_claim";
+const INFERENCE_INPUT: &str = "inference_input";
+const INFERENCE_REQUEST: &str = "inference_request";
+const INFERENCE_RESULT: &str = "inference_result";
+const INFERENCE_WAIT: &str = "inference_wait";
+const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
+const INFLIGHT: &str = "inflight";
+const INTERRUPT_REQUESTED: &str = "interrupt_requested";
+const LEASE: &str = "lease";
+const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
+const MANIFEST: &str = "manifest";
+const MANIFEST_PARENT: &str = "manifest_parent";
+const METERING_HOUR: &str = "metering_hour";
+const METERING_LEGACY_PRUNED: &str = "metering_legacy_pruned";
+const METERING_PRUNE_CURSOR: &str = "metering_prune_cursor";
+const METERING_UPGRADE_AT: &str = "metering_upgrade_at";
+const NODE: &str = "node";
+const PLACED_TOOL_CLAIM: &str = "placed_tool_claim";
+const PLACEMENT: &str = "placement";
+const PLACEMENT_ADDRESS: &str = "placement_address";
+const PLACEMENT_BY_NODE: &str = "placement_by_node";
+const PLACEMENT_COUNT: &str = "placement_count";
+const PLACEMENT_EPOCH: &str = "placement_epoch";
+const PLACEMENT_HOSTING: &str = "placement_hosting";
+const REQUEST_TURN: &str = "request_turn";
+const ROUTE: &str = "route";
+const RUNNABLE: &str = "runnable";
+const RUNNABLE_BY_SESSION: &str = "runnable_by_session";
+const SCRATCH: &str = "scratch";
+const SERVICE_HEARTBEAT: &str = "service_heartbeat";
+const SESSION: &str = "session";
+const SESSION_BY_AGENT: &str = "session_by_agent";
+const SESSION_CHAIN: &str = "session_chain";
+const SESSION_CHUNK: &str = "session_chunk";
+const SESSION_IDLE: &str = "session_idle";
+const SESSION_IMAGE: &str = "session_image";
+const SESSION_INFERENCE: &str = "session_inference";
+const SESSION_KIND: &str = "session_kind";
+const SESSION_PLAN: &str = "session_plan";
+const SESSION_ROUTE: &str = "session_route";
+const SESSION_ROUTE_STEP: &str = "session_route_step";
+const SESSION_STATE_SINCE: &str = "session_state_since";
+const SESSION_TOOLS: &str = "session_tools";
+const SNAPSHOT: &str = "snapshot";
+const TIMER: &str = "timer";
+const TIMER_ACTIVE: &str = "timer_active";
+const TIMER_DUE: &str = "timer_due";
+const TIMER_ORIGIN: &str = "timer_origin";
+const TOOL_DONE: &str = "tool_done";
+const TOOL_JOB: &str = "tool_job";
+const TOOL_PLACEMENT: &str = "tool_placement";
+const TURN: &str = "turn";
+const TURN_INFERENCE: &str = "turn_inference";
+const TURN_METRICS: &str = "turn_metrics";
+const TURN_TOOL: &str = "turn_tool";
+const USAGE: &str = "usage";
+const USAGE_BY_AGENT: &str = "usage_by_agent";
+const USAGE_RECORD: &str = "usage_record";
+const USAGE_RECORD_BY_TIME: &str = "usage_record_by_time";
+const VOLUME: &str = "volume";
+const VOLUME_LEASE_SEQ: &str = "volume_lease_seq";
+const VOLUME_PLACEMENT: &str = "volume_placement";
+const VOLUME_SNAPSHOTS: &str = "volume_snapshots";
+
 pub(crate) struct Keys<'a> {
     root: &'a Subspace,
 }
@@ -212,256 +307,253 @@ impl<'a> Keys<'a> {
         self.agent_space(&()).pack(suffix)
     }
     pub(crate) fn agent_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("agent",)).subspace(suffix)
+        self.root.subspace(&(AGENT,)).subspace(suffix)
     }
     pub(crate) fn agent_by_name<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.agent_by_name_space(&()).pack(suffix)
     }
     pub(crate) fn agent_by_name_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("agent_by_name",)).subspace(suffix)
+        self.root.subspace(&(AGENT_BY_NAME,)).subspace(suffix)
     }
     pub(crate) fn agent_call_status<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.agent_call_status_space(&()).pack(suffix)
     }
     pub(crate) fn agent_call_status_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("agent_call_status",)).subspace(suffix)
+        self.root.subspace(&(AGENT_CALL_STATUS,)).subspace(suffix)
     }
     pub(crate) fn agent_github_token<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.agent_github_token_space(&()).pack(suffix)
     }
     pub(crate) fn agent_github_token_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("agent_github_token",))
-            .subspace(suffix)
+        self.root.subspace(&(AGENT_GITHUB_TOKEN,)).subspace(suffix)
     }
     pub(crate) fn api_append<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.api_append_space(&()).pack(suffix)
     }
     pub(crate) fn api_append_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("api_append",)).subspace(suffix)
+        self.root.subspace(&(API_APPEND,)).subspace(suffix)
     }
     pub(crate) fn api_idempotency<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.api_idempotency_space(&()).pack(suffix)
     }
     pub(crate) fn api_idempotency_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("api_idempotency",)).subspace(suffix)
+        self.root.subspace(&(API_IDEMPOTENCY,)).subspace(suffix)
     }
     pub(crate) fn api_session_id<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.api_session_id_space(&()).pack(suffix)
     }
     pub(crate) fn api_session_id_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("api_session_id",)).subspace(suffix)
+        self.root.subspace(&(API_SESSION_ID,)).subspace(suffix)
     }
     pub(crate) fn chunk_reused<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.chunk_reused_space(&()).pack(suffix)
     }
     pub(crate) fn chunk_reused_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("chunk_reused",)).subspace(suffix)
+        self.root.subspace(&(CHUNK_REUSED,)).subspace(suffix)
     }
     pub(crate) fn computer_deleted<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.computer_deleted_space(&()).pack(suffix)
     }
     pub(crate) fn computer_deleted_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("computer_deleted",)).subspace(suffix)
+        self.root.subspace(&(COMPUTER_DELETED,)).subspace(suffix)
     }
     pub(crate) fn computer_notice<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.computer_notice_space(&()).pack(suffix)
     }
     pub(crate) fn computer_notice_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("computer_notice",)).subspace(suffix)
+        self.root.subspace(&(COMPUTER_NOTICE,)).subspace(suffix)
     }
     pub(crate) fn computer_notice_delivered<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.computer_notice_delivered_space(&()).pack(suffix)
     }
     pub(crate) fn computer_notice_delivered_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("computer_notice_delivered",))
+            .subspace(&(COMPUTER_NOTICE_DELIVERED,))
             .subspace(suffix)
     }
     pub(crate) fn credential<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.credential_space(&()).pack(suffix)
     }
     pub(crate) fn credential_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("credential",)).subspace(suffix)
+        self.root.subspace(&(CREDENTIAL,)).subspace(suffix)
     }
     pub(crate) fn credential_entry<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.credential_entry_space(&()).pack(suffix)
     }
     pub(crate) fn credential_entry_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("credential_entry",)).subspace(suffix)
+        self.root.subspace(&(CREDENTIAL_ENTRY,)).subspace(suffix)
+    }
+    pub(crate) fn credential_entry_lease<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
+        self.credential_entry_lease_space(&()).pack(suffix)
+    }
+    pub(crate) fn credential_entry_lease_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
+        self.root
+            .subspace(&(CREDENTIAL_ENTRY_LEASE,))
+            .subspace(suffix)
     }
     pub(crate) fn credential_lease<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.credential_lease_space(&()).pack(suffix)
     }
     pub(crate) fn credential_lease_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("credential_lease",)).subspace(suffix)
+        self.root.subspace(&(CREDENTIAL_LEASE,)).subspace(suffix)
     }
     pub(crate) fn entry_quota_config<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.entry_quota_config_space(&()).pack(suffix)
     }
     pub(crate) fn entry_quota_config_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("entry_quota_config",))
-            .subspace(suffix)
+        self.root.subspace(&(ENTRY_QUOTA_CONFIG,)).subspace(suffix)
     }
     pub(crate) fn entry_quota_observed<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.entry_quota_observed_space(&()).pack(suffix)
     }
     pub(crate) fn entry_quota_observed_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("entry_quota_observed",))
+            .subspace(&(ENTRY_QUOTA_OBSERVED,))
             .subspace(suffix)
     }
-    pub(crate) fn event<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
-        self.event_space(&()).pack(suffix)
-    }
     pub(crate) fn event_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("event",)).subspace(suffix)
+        self.root.subspace(&(EVENT,)).subspace(suffix)
     }
     pub(crate) fn gateway_provider<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gateway_provider_space(&()).pack(suffix)
     }
     pub(crate) fn gateway_provider_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("gateway_provider",)).subspace(suffix)
+        self.root.subspace(&(GATEWAY_PROVIDER,)).subspace(suffix)
     }
     pub(crate) fn gateway_provider_entry<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gateway_provider_entry_space(&()).pack(suffix)
     }
     pub(crate) fn gateway_provider_entry_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("gateway_provider_entry",))
+            .subspace(&(GATEWAY_PROVIDER_ENTRY,))
             .subspace(suffix)
     }
     pub(crate) fn gc_deleting<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gc_deleting_space(&()).pack(suffix)
     }
     pub(crate) fn gc_deleting_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("gc_deleting",)).subspace(suffix)
+        self.root.subspace(&(GC_DELETING,)).subspace(suffix)
     }
     pub(crate) fn gc_lease<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gc_lease_space(&()).pack(suffix)
     }
     pub(crate) fn gc_lease_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("gc_lease",)).subspace(suffix)
+        self.root.subspace(&(GC_LEASE,)).subspace(suffix)
     }
     pub(crate) fn gc_run<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gc_run_space(&()).pack(suffix)
     }
     pub(crate) fn gc_run_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("gc_run",)).subspace(suffix)
+        self.root.subspace(&(GC_RUN,)).subspace(suffix)
     }
     pub(crate) fn gc_sequence<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.gc_sequence_space(&()).pack(suffix)
     }
     pub(crate) fn gc_sequence_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("gc_sequence",)).subspace(suffix)
+        self.root.subspace(&(GC_SEQUENCE,)).subspace(suffix)
     }
     pub(crate) fn idem<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.idem_space(&()).pack(suffix)
     }
     pub(crate) fn idem_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("idem",)).subspace(suffix)
+        self.root.subspace(&(IDEM,)).subspace(suffix)
     }
     pub(crate) fn image<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.image_space(&()).pack(suffix)
     }
     pub(crate) fn image_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("image",)).subspace(suffix)
+        self.root.subspace(&(IMAGE,)).subspace(suffix)
     }
     pub(crate) fn image_display<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.image_display_space(&()).pack(suffix)
     }
     pub(crate) fn image_display_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("image_display",)).subspace(suffix)
+        self.root.subspace(&(IMAGE_DISPLAY,)).subspace(suffix)
     }
     pub(crate) fn image_memory<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.image_memory_space(&()).pack(suffix)
     }
     pub(crate) fn image_memory_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("image_memory",)).subspace(suffix)
+        self.root.subspace(&(IMAGE_MEMORY,)).subspace(suffix)
     }
     pub(crate) fn image_scratch<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.image_scratch_space(&()).pack(suffix)
     }
     pub(crate) fn image_scratch_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("image_scratch",)).subspace(suffix)
+        self.root.subspace(&(IMAGE_SCRATCH,)).subspace(suffix)
     }
     pub(crate) fn inference_breaker<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_breaker_space(&()).pack(suffix)
     }
     pub(crate) fn inference_breaker_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_breaker",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_BREAKER,)).subspace(suffix)
     }
     pub(crate) fn inference_input<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_input_space(&()).pack(suffix)
     }
     pub(crate) fn inference_input_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_input",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_INPUT,)).subspace(suffix)
     }
     pub(crate) fn inference_wait<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_wait_space(&()).pack(suffix)
     }
     pub(crate) fn inference_wait_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_wait",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_WAIT,)).subspace(suffix)
     }
     pub(crate) fn inference_wait_due<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_wait_due_space(&()).pack(suffix)
     }
     pub(crate) fn inference_wait_due_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("inference_wait_due",))
-            .subspace(suffix)
+        self.root.subspace(&(INFERENCE_WAIT_DUE,)).subspace(suffix)
     }
     pub(crate) fn inflight<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inflight_space(&()).pack(suffix)
     }
     pub(crate) fn inflight_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inflight",)).subspace(suffix)
+        self.root.subspace(&(INFLIGHT,)).subspace(suffix)
     }
     pub(crate) fn interrupt_requested<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.interrupt_requested_space(&()).pack(suffix)
     }
     pub(crate) fn interrupt_requested_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("interrupt_requested",))
-            .subspace(suffix)
+        self.root.subspace(&(INTERRUPT_REQUESTED,)).subspace(suffix)
     }
     pub(crate) fn lease<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.lease_space(&()).pack(suffix)
     }
     pub(crate) fn lease_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("lease",)).subspace(suffix)
+        self.root.subspace(&(LEASE,)).subspace(suffix)
     }
     pub(crate) fn lease_by_expiry<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.lease_by_expiry_space(&()).pack(suffix)
     }
     pub(crate) fn lease_by_expiry_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("lease_by_expiry",)).subspace(suffix)
+        self.root.subspace(&(LEASE_BY_EXPIRY,)).subspace(suffix)
     }
     pub(crate) fn manifest<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.manifest_space(&()).pack(suffix)
     }
     pub(crate) fn manifest_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("manifest",)).subspace(suffix)
+        self.root.subspace(&(MANIFEST,)).subspace(suffix)
     }
     pub(crate) fn manifest_parent<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.manifest_parent_space(&()).pack(suffix)
     }
     pub(crate) fn manifest_parent_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("manifest_parent",)).subspace(suffix)
+        self.root.subspace(&(MANIFEST_PARENT,)).subspace(suffix)
     }
     pub(crate) fn metering_hour<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.metering_hour_space(&()).pack(suffix)
     }
     pub(crate) fn metering_hour_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("metering_hour",)).subspace(suffix)
+        self.root.subspace(&(METERING_HOUR,)).subspace(suffix)
     }
     pub(crate) fn metering_legacy_pruned<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.metering_legacy_pruned_space(&()).pack(suffix)
     }
     pub(crate) fn metering_legacy_pruned_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("metering_legacy_pruned",))
+            .subspace(&(METERING_LEGACY_PRUNED,))
             .subspace(suffix)
     }
     pub(crate) fn metering_prune_cursor<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
@@ -469,330 +561,316 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn metering_prune_cursor_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("metering_prune_cursor",))
+            .subspace(&(METERING_PRUNE_CURSOR,))
             .subspace(suffix)
     }
     pub(crate) fn metering_upgrade_at<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.metering_upgrade_at_space(&()).pack(suffix)
     }
     pub(crate) fn metering_upgrade_at_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("metering_upgrade_at",))
-            .subspace(suffix)
+        self.root.subspace(&(METERING_UPGRADE_AT,)).subspace(suffix)
     }
     pub(crate) fn node<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.node_space(&()).pack(suffix)
     }
     pub(crate) fn node_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("node",)).subspace(suffix)
+        self.root.subspace(&(NODE,)).subspace(suffix)
     }
     pub(crate) fn placement<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_space(&()).pack(suffix)
     }
     pub(crate) fn placement_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT,)).subspace(suffix)
     }
     pub(crate) fn placement_by_node<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_by_node_space(&()).pack(suffix)
     }
     pub(crate) fn placement_by_node_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement_by_node",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT_BY_NODE,)).subspace(suffix)
     }
     pub(crate) fn placement_count<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_count_space(&()).pack(suffix)
     }
     pub(crate) fn placement_count_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement_count",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT_COUNT,)).subspace(suffix)
     }
     pub(crate) fn request_turn<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.request_turn_space(&()).pack(suffix)
     }
     pub(crate) fn request_turn_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("request_turn",)).subspace(suffix)
+        self.root.subspace(&(REQUEST_TURN,)).subspace(suffix)
     }
     pub(crate) fn route<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.route_space(&()).pack(suffix)
     }
     pub(crate) fn route_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("route",)).subspace(suffix)
+        self.root.subspace(&(ROUTE,)).subspace(suffix)
     }
     pub(crate) fn runnable<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.runnable_space(&()).pack(suffix)
     }
     pub(crate) fn runnable_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("runnable",)).subspace(suffix)
+        self.root.subspace(&(RUNNABLE,)).subspace(suffix)
     }
     pub(crate) fn runnable_by_session<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.runnable_by_session_space(&()).pack(suffix)
     }
     pub(crate) fn runnable_by_session_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("runnable_by_session",))
-            .subspace(suffix)
+        self.root.subspace(&(RUNNABLE_BY_SESSION,)).subspace(suffix)
     }
     pub(crate) fn service_heartbeat<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.service_heartbeat_space(&()).pack(suffix)
     }
     pub(crate) fn service_heartbeat_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("service_heartbeat",)).subspace(suffix)
+        self.root.subspace(&(SERVICE_HEARTBEAT,)).subspace(suffix)
     }
     pub(crate) fn session<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_space(&()).pack(suffix)
     }
     pub(crate) fn session_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session",)).subspace(suffix)
+        self.root.subspace(&(SESSION,)).subspace(suffix)
     }
     pub(crate) fn session_by_agent<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_by_agent_space(&()).pack(suffix)
     }
     pub(crate) fn session_by_agent_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_by_agent",)).subspace(suffix)
+        self.root.subspace(&(SESSION_BY_AGENT,)).subspace(suffix)
     }
     pub(crate) fn session_chain<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_chain_space(&()).pack(suffix)
     }
     pub(crate) fn session_chain_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_chain",)).subspace(suffix)
+        self.root.subspace(&(SESSION_CHAIN,)).subspace(suffix)
     }
     pub(crate) fn session_chunk<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_chunk_space(&()).pack(suffix)
     }
     pub(crate) fn session_chunk_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_chunk",)).subspace(suffix)
+        self.root.subspace(&(SESSION_CHUNK,)).subspace(suffix)
     }
     pub(crate) fn session_idle<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_idle_space(&()).pack(suffix)
     }
     pub(crate) fn session_idle_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_idle",)).subspace(suffix)
+        self.root.subspace(&(SESSION_IDLE,)).subspace(suffix)
     }
     pub(crate) fn session_image<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_image_space(&()).pack(suffix)
     }
     pub(crate) fn session_image_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_image",)).subspace(suffix)
+        self.root.subspace(&(SESSION_IMAGE,)).subspace(suffix)
     }
     pub(crate) fn session_inference<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_inference_space(&()).pack(suffix)
     }
     pub(crate) fn session_inference_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_inference",)).subspace(suffix)
+        self.root.subspace(&(SESSION_INFERENCE,)).subspace(suffix)
     }
     pub(crate) fn session_kind<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_kind_space(&()).pack(suffix)
     }
     pub(crate) fn session_kind_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_kind",)).subspace(suffix)
+        self.root.subspace(&(SESSION_KIND,)).subspace(suffix)
     }
     pub(crate) fn session_plan<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_plan_space(&()).pack(suffix)
     }
     pub(crate) fn session_plan_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_plan",)).subspace(suffix)
+        self.root.subspace(&(SESSION_PLAN,)).subspace(suffix)
     }
     pub(crate) fn session_route<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_route_space(&()).pack(suffix)
     }
     pub(crate) fn session_route_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_route",)).subspace(suffix)
+        self.root.subspace(&(SESSION_ROUTE,)).subspace(suffix)
     }
     pub(crate) fn session_route_step<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_route_step_space(&()).pack(suffix)
     }
     pub(crate) fn session_route_step_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("session_route_step",))
-            .subspace(suffix)
+        self.root.subspace(&(SESSION_ROUTE_STEP,)).subspace(suffix)
     }
     pub(crate) fn session_state_since<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.session_state_since_space(&()).pack(suffix)
     }
     pub(crate) fn session_state_since_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root
-            .subspace(&("session_state_since",))
-            .subspace(suffix)
-    }
-    pub(crate) fn session_tools<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
-        self.session_tools_space(&()).pack(suffix)
+        self.root.subspace(&(SESSION_STATE_SINCE,)).subspace(suffix)
     }
     pub(crate) fn session_tools_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("session_tools",)).subspace(suffix)
+        self.root.subspace(&(SESSION_TOOLS,)).subspace(suffix)
     }
     pub(crate) fn snapshot<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.snapshot_space(&()).pack(suffix)
     }
     pub(crate) fn snapshot_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("snapshot",)).subspace(suffix)
+        self.root.subspace(&(SNAPSHOT,)).subspace(suffix)
     }
     pub(crate) fn timer<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.timer_space(&()).pack(suffix)
     }
     pub(crate) fn timer_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("timer",)).subspace(suffix)
-    }
-    pub(crate) fn timer_active<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
-        self.timer_active_space(&()).pack(suffix)
+        self.root.subspace(&(TIMER,)).subspace(suffix)
     }
     pub(crate) fn timer_active_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("timer_active",)).subspace(suffix)
+        self.root.subspace(&(TIMER_ACTIVE,)).subspace(suffix)
     }
     pub(crate) fn timer_due<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.timer_due_space(&()).pack(suffix)
     }
     pub(crate) fn timer_due_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("timer_due",)).subspace(suffix)
+        self.root.subspace(&(TIMER_DUE,)).subspace(suffix)
     }
     pub(crate) fn timer_origin<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.timer_origin_space(&()).pack(suffix)
     }
     pub(crate) fn timer_origin_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("timer_origin",)).subspace(suffix)
+        self.root.subspace(&(TIMER_ORIGIN,)).subspace(suffix)
     }
     pub(crate) fn tool_job<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.tool_job_space(&()).pack(suffix)
     }
     pub(crate) fn tool_job_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("tool_job",)).subspace(suffix)
+        self.root.subspace(&(TOOL_JOB,)).subspace(suffix)
     }
     pub(crate) fn turn<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.turn_space(&()).pack(suffix)
     }
     pub(crate) fn turn_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("turn",)).subspace(suffix)
+        self.root.subspace(&(TURN,)).subspace(suffix)
     }
     pub(crate) fn turn_inference<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.turn_inference_space(&()).pack(suffix)
     }
     pub(crate) fn turn_inference_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("turn_inference",)).subspace(suffix)
+        self.root.subspace(&(TURN_INFERENCE,)).subspace(suffix)
     }
     pub(crate) fn turn_metrics<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.turn_metrics_space(&()).pack(suffix)
     }
     pub(crate) fn turn_metrics_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("turn_metrics",)).subspace(suffix)
+        self.root.subspace(&(TURN_METRICS,)).subspace(suffix)
     }
     pub(crate) fn turn_tool<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.turn_tool_space(&()).pack(suffix)
     }
     pub(crate) fn turn_tool_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("turn_tool",)).subspace(suffix)
+        self.root.subspace(&(TURN_TOOL,)).subspace(suffix)
     }
     pub(crate) fn usage<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.usage_space(&()).pack(suffix)
     }
     pub(crate) fn usage_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("usage",)).subspace(suffix)
+        self.root.subspace(&(USAGE,)).subspace(suffix)
     }
     pub(crate) fn usage_by_agent<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.usage_by_agent_space(&()).pack(suffix)
     }
     pub(crate) fn usage_by_agent_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("usage_by_agent",)).subspace(suffix)
+        self.root.subspace(&(USAGE_BY_AGENT,)).subspace(suffix)
     }
     pub(crate) fn usage_record<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.usage_record_space(&()).pack(suffix)
     }
     pub(crate) fn usage_record_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("usage_record",)).subspace(suffix)
+        self.root.subspace(&(USAGE_RECORD,)).subspace(suffix)
     }
     pub(crate) fn usage_record_by_time<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.usage_record_by_time_space(&()).pack(suffix)
     }
     pub(crate) fn usage_record_by_time_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
         self.root
-            .subspace(&("usage_record_by_time",))
+            .subspace(&(USAGE_RECORD_BY_TIME,))
             .subspace(suffix)
     }
     pub(crate) fn volume<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.volume_space(&()).pack(suffix)
     }
     pub(crate) fn volume_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("volume",)).subspace(suffix)
+        self.root.subspace(&(VOLUME,)).subspace(suffix)
     }
     pub(crate) fn volume_lease_seq<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.volume_lease_seq_space(&()).pack(suffix)
     }
     pub(crate) fn volume_lease_seq_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("volume_lease_seq",)).subspace(suffix)
+        self.root.subspace(&(VOLUME_LEASE_SEQ,)).subspace(suffix)
     }
     pub(crate) fn volume_placement<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.volume_placement_space(&()).pack(suffix)
     }
     pub(crate) fn volume_placement_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("volume_placement",)).subspace(suffix)
+        self.root.subspace(&(VOLUME_PLACEMENT,)).subspace(suffix)
     }
     pub(crate) fn volume_snapshots<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.volume_snapshots_space(&()).pack(suffix)
     }
     pub(crate) fn volume_snapshots_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("volume_snapshots",)).subspace(suffix)
+        self.root.subspace(&(VOLUME_SNAPSHOTS,)).subspace(suffix)
     }
     pub(crate) fn inference_request<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_request_space(&()).pack(suffix)
     }
     pub(crate) fn inference_request_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_request",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_REQUEST,)).subspace(suffix)
     }
     pub(crate) fn inference_claim<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_claim_space(&()).pack(suffix)
     }
     pub(crate) fn inference_claim_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_claim",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_CLAIM,)).subspace(suffix)
     }
     pub(crate) fn inference_result<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.inference_result_space(&()).pack(suffix)
     }
     pub(crate) fn inference_result_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("inference_result",)).subspace(suffix)
+        self.root.subspace(&(INFERENCE_RESULT,)).subspace(suffix)
     }
     pub(crate) fn tool_placement<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.tool_placement_space(&()).pack(suffix)
     }
     pub(crate) fn tool_placement_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("tool_placement",)).subspace(suffix)
+        self.root.subspace(&(TOOL_PLACEMENT,)).subspace(suffix)
     }
     pub(crate) fn placed_tool_claim<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placed_tool_claim_space(&()).pack(suffix)
     }
     pub(crate) fn placed_tool_claim_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placed_tool_claim",)).subspace(suffix)
+        self.root.subspace(&(PLACED_TOOL_CLAIM,)).subspace(suffix)
     }
     pub(crate) fn tool_done<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.tool_done_space(&()).pack(suffix)
     }
     pub(crate) fn tool_done_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("tool_done",)).subspace(suffix)
+        self.root.subspace(&(TOOL_DONE,)).subspace(suffix)
     }
     pub(crate) fn scratch<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.scratch_space(&()).pack(suffix)
     }
     pub(crate) fn scratch_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("scratch",)).subspace(suffix)
+        self.root.subspace(&(SCRATCH,)).subspace(suffix)
     }
     pub(crate) fn placement_hosting<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_hosting_space(&()).pack(suffix)
     }
     pub(crate) fn placement_hosting_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement_hosting",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT_HOSTING,)).subspace(suffix)
     }
     pub(crate) fn placement_address<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_address_space(&()).pack(suffix)
     }
     pub(crate) fn placement_address_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement_address",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT_ADDRESS,)).subspace(suffix)
     }
     pub(crate) fn placement_epoch<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.placement_epoch_space(&()).pack(suffix)
     }
     pub(crate) fn placement_epoch_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("placement_epoch",)).subspace(suffix)
+        self.root.subspace(&(PLACEMENT_EPOCH,)).subspace(suffix)
     }
     pub(crate) fn computer_memory<T: TuplePack>(&self, suffix: &T) -> Vec<u8> {
         self.computer_memory_space(&()).pack(suffix)
     }
     pub(crate) fn computer_memory_space<T: TuplePack>(&self, suffix: &T) -> Subspace {
-        self.root.subspace(&("computer_memory",)).subspace(suffix)
+        self.root.subspace(&(COMPUTER_MEMORY,)).subspace(suffix)
     }
 }
 
@@ -851,6 +929,10 @@ mod registry_tests {
             (
                 "credential_entry",
                 keys.credential_entry_space(&()).pack(&()),
+            ),
+            (
+                "credential_entry_lease",
+                keys.credential_entry_lease_space(&()).pack(&()),
             ),
             (
                 "credential_lease",

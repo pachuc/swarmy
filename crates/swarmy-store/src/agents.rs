@@ -235,9 +235,13 @@ impl Store {
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
             if agent.requirements != previous_requirements
-                && read::<swarmy_core::PlacementRecord>(&trx, &self.placement_key("placement", id))
-                    .await?
-                    .is_some()
+                && read::<swarmy_core::PlacementRecord>(
+                    &trx,
+                    &crate::keys::Keys::new(&self.root)
+                        .placement(&(id.as_ulid().to_bytes().as_slice(),)),
+                )
+                .await?
+                .is_some()
             {
                 return Err(StoreError::ActiveSandboxRequirements);
             }
