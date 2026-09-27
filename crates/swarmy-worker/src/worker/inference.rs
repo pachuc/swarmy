@@ -359,7 +359,7 @@ impl Worker {
     pub(super) async fn fail_step(
         &self,
         job: &InferenceJob,
-        kind: StepFailure,
+        kind: StepFailure<'_>,
     ) -> Result<Option<Event>> {
         let now = Timestamp::now();
         let claim = swarmy_store::InferenceClaim {

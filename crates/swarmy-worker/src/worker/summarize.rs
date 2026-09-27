@@ -26,32 +26,61 @@ impl Worker {
             .is_some_and(|job| job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT))
     }
 
-    /// Turn-end summarization check for named sessions. Main sessions
-    /// compare total tokens; side sessions compare input tokens and warn
-    /// first. Fleet-shaped turns are checked mid-turn in `fold_results`; this
-    /// stays for chat-shaped sessions that end their turn without tools.
+    /// Mid-turn checks use event usage first, avoiding store reads on every
+    /// tool round. Turn-end checks also handle the summary archive path.
     pub(super) async fn summarize(
         &self,
         session: &mut SessionRecord,
         lease: &ActiveLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
+        mid_turn: Option<&Event>,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
+        }
+        if mid_turn.is_some() {
+            let Some((mut provider, mut model, input)) = last_side_usage(events) else {
+                return Ok(false);
+            };
+            if provider.is_empty() {
+                provider = session
+                    .inference
+                    .provider
+                    .clone()
+                    .unwrap_or_else(|| self.config.provider.clone());
+            }
+            if model.is_empty() {
+                model = session
+                    .inference
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.config.harness.settings.model.clone());
+            }
+            if input < self.config.side_pressure_threshold(&provider, &model) {
+                return Ok(false);
+            }
         }
         let Some(agent) = self.store.get_agent(session.agent_id).await? else {
             return Ok(false);
         };
         let is_main = agent.main_session == Some(session.session_id);
+        if mid_turn.is_some() && is_main {
+            return Ok(false);
+        }
         let Some((_request_id, job, response, message)) = self.last_inference(events).await? else {
             return Ok(false);
         };
         if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
+            if mid_turn.is_some() {
+                return Ok(false);
+            }
             return self
                 .archive_summary(session, lease, snapshot, message.as_ref(), events)
                 .await;
         }
+        let provider = self.job_provider(&job);
+        let model = &job.request.settings.model;
         if is_main {
             let tokens = response
                 .usage
@@ -59,20 +88,18 @@ impl Worker {
                 .saturating_add(response.usage.output_tokens);
             if self
                 .config
-                .summarization_threshold(self.job_provider(&job), &job.request.settings.model)
+                .summarization_threshold(provider, model)
                 .is_none_or(|threshold| tokens < threshold)
             {
                 return Ok(false);
             }
         } else {
-            let provider = self.job_provider(&job).to_owned();
-            let model = job.request.settings.model.clone();
-            let threshold = self.config.side_summarization_threshold(&provider, &model);
+            // The stored job may reflect a newer agent model than the event
+            // used to gate the mid-turn fast path.
+            let threshold = self.config.side_summarization_threshold(provider, model);
             let input = response.usage.input_tokens;
-            if input >= threshold {
-                // Fall through to the shared summary request below.
-            } else {
-                let pressure = self.config.side_pressure_threshold(&provider, &model);
+            if input < threshold {
+                let pressure = self.config.side_pressure_threshold(provider, model);
                 if input >= pressure && !pressure_warned(snapshot, events) {
                     self.emit_pressure(session, lease, events, input, threshold)
                         .await?;
@@ -80,93 +107,15 @@ impl Worker {
                 return Ok(false);
             }
         }
-        self.issue_summary(session, lease, snapshot, events, &job, &[])
-            .await
-    }
-
-    /// Mid-turn summarization check for side sessions, called after tool
-    /// results are folded and before the next inference request is built. A
-    /// fleet task is one user prompt followed by hundreds of tool rounds
-    /// inside a single turn, so without this check the session grows until
-    /// the provider rejects it. The folded results travel as the preceding
-    /// events of the summary request, so no tool output is lost.
-    ///
-    /// Hot path: folds below the pressure level do no store reads. The last
-    /// `InferenceCompleted` event already carries usage, provider, and model,
-    /// so the threshold check runs on the history the worker holds. Only
-    /// folds at or above pressure touch the store (agent lookup, and the
-    /// summary input and result when the threshold is crossed).
-    pub(super) async fn maybe_summarize_mid_turn(
-        &self,
-        session: &mut SessionRecord,
-        lease: &ActiveLease,
-        snapshot: &Snapshot,
-        events: &mut Vec<Event>,
-        folded: &Event,
-    ) -> Result<bool> {
-        if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
-            return Ok(false);
-        }
-        let Some((mut provider, mut model, input)) = last_side_usage(events) else {
-            return Ok(false);
-        };
-        if provider.is_empty() {
-            provider = session
-                .inference
-                .provider
-                .clone()
-                .unwrap_or_else(|| self.config.provider.clone());
-        }
-        if model.is_empty() {
-            model = session
-                .inference
-                .model
-                .clone()
-                .unwrap_or_else(|| self.config.harness.settings.model.clone());
-        }
-        let pressure = self.config.side_pressure_threshold(&provider, &model);
-        if input < pressure {
-            return Ok(false);
-        }
-        if self
-            .store
-            .get_agent(session.agent_id)
-            .await?
-            .is_some_and(|agent| agent.main_session == Some(session.session_id))
-        {
-            return Ok(false);
-        }
-        let Some((_request_id, job, response, _message)) = self.last_inference(events).await?
-        else {
-            return Ok(false);
-        };
-        if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
-            return Ok(false);
-        }
-        // Re-resolve in case the event predates an agent model update; the
-        // usage above already gated the slow path, so this repeat is rare.
-        let provider = self.job_provider(&job).to_owned();
-        let model = job.request.settings.model.clone();
-        let threshold = self.config.side_summarization_threshold(&provider, &model);
-        let pressure = self.config.side_pressure_threshold(&provider, &model);
-        let input = response.usage.input_tokens;
-        if input >= threshold {
-            return self
-                .issue_summary(
-                    session,
-                    lease,
-                    snapshot,
-                    events,
-                    &job,
-                    std::slice::from_ref(folded),
-                )
-                .await;
-        }
-        if input >= pressure && !pressure_warned(snapshot, events) {
-            self.emit_pressure(session, lease, events, input, threshold)
-                .await?;
-        }
-        Ok(false)
+        self.issue_summary(
+            session,
+            lease,
+            snapshot,
+            events,
+            &job,
+            mid_turn.map_or(&[][..], std::slice::from_ref),
+        )
+        .await
     }
 
     /// Last stored inference input and output for the session tail.

@@ -1,6 +1,11 @@
 use super::step::pending_tools;
 use super::*;
 
+enum Dispatch<'a> {
+    Calls(&'a [ToolCallRecord]),
+    Pending(&'a [ToolJob]),
+}
+
 impl Worker {
     pub(super) async fn execute_pending(
         &self,
@@ -143,42 +148,8 @@ impl Worker {
         calls: &[ToolCallRecord],
         turn: Option<MessageId>,
     ) -> Result<()> {
-        for attempt in 0..2 {
-            let placement = self
-                .placements
-                .resolve(&self.store, session.agent_id, self.config.placement_lease)
-                .await?;
-            let (events, jobs) = {
-                let mut token = lease.lock().await;
-                let dispatched = self
-                    .store
-                    .dispatch_tool_calls(
-                        session.session_id,
-                        session.head_seq,
-                        token.as_ref().context("lease released")?,
-                        calls,
-                        &placement,
-                    )
-                    .await;
-                let dispatched = match dispatched {
-                    Err(StoreError::LeaseMismatch) if attempt == 0 => {
-                        // Eviction may release a placement before its cached expiry.
-                        // The failed transaction made no changes; resolve once again.
-                        self.placements.invalidate(session.agent_id).await;
-                        continue;
-                    }
-                    result => result?,
-                };
-                token.release();
-                dispatched
-            };
-            self.kill("after_release");
-            self.publish_events(session.session_id, &events).await?;
-            return self
-                .publish_tools(session.session_id, &placement, jobs, turn)
-                .await;
-        }
-        unreachable!("the second dispatch attempt returns its result")
+        self.dispatch(session, lease, Dispatch::Calls(calls), turn)
+            .await
     }
 
     pub(super) async fn dispatch_pending(
@@ -188,33 +159,59 @@ impl Worker {
         jobs: Vec<ToolJob>,
         turn: Option<MessageId>,
     ) -> Result<()> {
+        self.dispatch(session, lease, Dispatch::Pending(&jobs), turn)
+            .await
+    }
+
+    async fn dispatch(
+        &self,
+        session: &SessionRecord,
+        lease: &ActiveLease,
+        dispatch: Dispatch<'_>,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
         for attempt in 0..2 {
-            // Resolve before releasing the step, and persist the epoch with the jobs.
+            // The failed transaction made no changes; an eviction may have
+            // released a cached placement before its expiry.
             let placement = self
                 .placements
                 .resolve(&self.store, session.agent_id, self.config.placement_lease)
                 .await?;
-            {
-                let mut token = lease.lock().await;
-                let result = self
+            let mut token = lease.lock().await;
+            let result = match dispatch {
+                Dispatch::Calls(calls) => {
+                    self.store
+                        .dispatch_tool_calls(
+                            session.session_id,
+                            session.head_seq,
+                            token.as_ref().context("lease released")?,
+                            calls,
+                            &placement,
+                        )
+                        .await
+                }
+                Dispatch::Pending(jobs) => self
                     .store
                     .dispatch_placed_tool_jobs(
                         session.session_id,
                         token.as_ref().context("lease released")?,
-                        &jobs,
+                        jobs,
                         &placement,
                     )
-                    .await;
-                match result {
-                    Err(StoreError::LeaseMismatch) if attempt == 0 => {
-                        self.placements.invalidate(session.agent_id).await;
-                        continue;
-                    }
-                    result => result?,
+                    .await
+                    .map(|()| (Vec::new(), jobs.to_vec())),
+            };
+            let (events, jobs) = match result {
+                Err(StoreError::LeaseMismatch) if attempt == 0 => {
+                    self.placements.invalidate(session.agent_id).await;
+                    continue;
                 }
-                token.release();
-            }
+                result => result?,
+            };
+            token.release();
+            drop(token);
             self.kill("after_release");
+            self.publish_events(session.session_id, &events).await?;
             return self
                 .publish_tools(session.session_id, &placement, jobs, turn)
                 .await;

@@ -349,7 +349,7 @@ impl Worker {
         // folded tool results and the next request. A chat-shaped turn still
         // gets its check at turn end in `finish`.
         if self
-            .maybe_summarize_mid_turn(session, lease, snapshot, events, &folded)
+            .summarize(session, lease, snapshot, events, Some(&folded))
             .await?
         {
             return Ok(());
@@ -420,7 +420,11 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        if !session.interrupt_requested && self.summarize(session, lease, snapshot, events).await? {
+        if !session.interrupt_requested
+            && self
+                .summarize(session, lease, snapshot, events, None)
+                .await?
+        {
             return Ok(());
         }
         let event = loop {
