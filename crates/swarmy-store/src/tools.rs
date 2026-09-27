@@ -6,8 +6,7 @@ type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
-        crate::keys::Keys::new(&self.root)
-            .session_tools_space(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_tools_space(id)
     }
 
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
@@ -124,14 +123,12 @@ impl Store {
                         _ => return Err(StoreError::InvalidState),
                     }
                     trx.set(
-                        &crate::keys::Keys::new(&self.root)
-                            .tool_job(&(job.request_id.as_bytes().as_slice(),)),
+                        &crate::keys::Keys::new(&self.root).tool_job(job.request_id),
                         value,
                     );
                     write(
                         &trx,
-                        &crate::keys::Keys::new(&self.root)
-                            .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
+                        &crate::keys::Keys::new(&self.root).tool_placement(job.request_id),
                         placement,
                     )?;
                     write(&trx, &self.session_tool_key(id, job.request_id), &())?;
@@ -184,12 +181,9 @@ impl Store {
     ) -> Result<Vec<ToolJob>> {
         let values = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .tool_job_space(&())
-                    .range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root).tool_job_space().range();
                 if let Some(id) = after {
-                    begin =
-                        crate::keys::Keys::new(&self.root).tool_job(&(id.as_bytes().as_slice(),));
+                    begin = crate::keys::Keys::new(&self.root).tool_job(id);
                     begin.push(0);
                 }
                 scan(&trx, (begin, end), limit).await
@@ -206,12 +200,10 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn tool_completed(&self, id: RequestId) -> Result<bool> {
         self.transaction(|trx| async move {
-            Ok(read::<bool>(
-                &trx,
-                &crate::keys::Keys::new(&self.root).tool_done(&(id.as_bytes().as_slice(),)),
+            Ok(
+                read::<bool>(&trx, &crate::keys::Keys::new(&self.root).tool_done(id)).await?
+                    == Some(true),
             )
-            .await?
-                == Some(true))
         })
         .await
     }

@@ -547,8 +547,7 @@ impl Store {
     }
 
     fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
-            .session_chunk(&(id.as_ulid().to_bytes().as_slice(), index))
+        crate::keys::Keys::new(&self.root).session_chunk(id, index)
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
@@ -638,7 +637,7 @@ impl Store {
             return Err(StoreError::TooLarge);
         }
         let (begin, end) = crate::keys::Keys::new(&self.root)
-            .session_chunk_space(&(session.session_id.as_ulid().to_bytes().as_slice(),))
+            .session_chunk_space(session.session_id)
             .range();
         trx.clear_range(&begin, &end);
         if bytes.len() > INLINE_LIMIT {
@@ -687,9 +686,8 @@ impl Store {
         loop {
             let page: Vec<(SessionId, bool)> = self
                 .transaction(|trx| async move {
-                    let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                        .session_space(&())
-                        .range();
+                    let (mut begin, end) =
+                        crate::keys::Keys::new(&self.root).session_space().range();
                     if let Some(id) = after {
                         begin = self.session_key(id);
                         begin.push(0);
@@ -844,9 +842,7 @@ impl Store {
         check_limit(limit)?;
         let stored = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .session_space(&())
-                    .range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root).session_space().range();
                 if let Some(id) = after {
                     begin = self.session_key(id);
                     begin.push(0);
@@ -945,7 +941,7 @@ impl Store {
         if value.len() > MAX_BATCH_BYTES {
             return Err(StoreError::TooLarge);
         }
-        let replay_key = crate::keys::Keys::new(&self.root).api_append(&(key));
+        let replay_key = crate::keys::Keys::new(&self.root).api_append(key);
         self.transaction(|trx| {
             let replay_key = &replay_key;
             let value = &value;
@@ -1091,13 +1087,13 @@ impl Store {
     }
 
     fn snapshot_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).snapshot(&(id.as_ulid().to_bytes().as_slice(), seq))
+        crate::keys::Keys::new(&self.root).snapshot(id, seq)
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_idempotency(&self, id: RequestId) -> Result<Option<IdempotencyRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).idem(id))
             .await
     }
 
@@ -1106,27 +1102,21 @@ impl Store {
     /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
-        self.put_payload(
-            crate::keys::Keys::new(&self.root).idem(&(id.as_bytes().as_slice())),
-            record,
-        )
-        .await
+        self.put_payload(crate::keys::Keys::new(&self.root).idem(id), record)
+            .await
     }
 
     /// # Errors
     /// Returns storage or blob upload errors.
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
-        self.put_payload(
-            crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())),
-            record,
-        )
-        .await
+        self.put_payload(crate::keys::Keys::new(&self.root).inflight(id), record)
+            .await
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())))
+        self.get_payload(crate::keys::Keys::new(&self.root).inflight(id))
             .await
     }
 
@@ -1134,7 +1124,7 @@ impl Store {
     /// Returns transaction errors.
     pub async fn clear_inflight(&self, id: RequestId) -> Result<()> {
         self.transaction(|trx| async move {
-            trx.clear(&crate::keys::Keys::new(&self.root).inflight(&(id.as_bytes().as_slice())));
+            trx.clear(&crate::keys::Keys::new(&self.root).inflight(id));
             Ok(())
         })
         .await

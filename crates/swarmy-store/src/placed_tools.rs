@@ -21,7 +21,7 @@ fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
 
 impl Store {
     fn volume_placement_key(&self, id: VolumeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).volume_placement(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).volume_placement(id)
     }
 
     /// Resolve the shared agent volume, initializing it from the session image.
@@ -102,11 +102,7 @@ impl Store {
                 .await?;
             let Some(value) = trx
                 .get(
-                    &crate::keys::Keys::new(&self.root).tool_job(&(claim
-                        .job
-                        .request_id
-                        .as_bytes()
-                        .as_slice(),)),
+                    &crate::keys::Keys::new(&self.root).tool_job(claim.job.request_id),
                     false,
                 )
                 .await?
@@ -123,11 +119,7 @@ impl Store {
             if self.hydrate::<ToolJob>(&value).await? != claim.job {
                 return Err(StoreError::InvalidState);
             }
-            let key = crate::keys::Keys::new(&self.root).placed_tool_claim(&(claim
-                .job
-                .request_id
-                .as_bytes()
-                .as_slice(),));
+            let key = crate::keys::Keys::new(&self.root).placed_tool_claim(claim.job.request_id);
             if read::<StoredPlacedClaim>(&trx, &key)
                 .await?
                 .is_some_and(|old| old.expires_at > self.now())
@@ -154,11 +146,7 @@ impl Store {
         trx: &Transaction,
         claim: &PlacedToolClaim,
     ) -> Result<StoredPlacedClaim> {
-        let key = crate::keys::Keys::new(&self.root).placed_tool_claim(&(claim
-            .job
-            .request_id
-            .as_bytes()
-            .as_slice(),));
+        let key = crate::keys::Keys::new(&self.root).placed_tool_claim(claim.job.request_id);
         let ((), (), current) = futures::try_join!(
             self.check_live_placement(trx, &claim.placement),
             self.check_tool_dispatch(trx, &claim.job, &claim.placement),
@@ -190,11 +178,7 @@ impl Store {
             current.expires_at = expires_at;
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placed_tool_claim(&(claim
-                    .job
-                    .request_id
-                    .as_bytes()
-                    .as_slice(),)),
+                &crate::keys::Keys::new(&self.root).placed_tool_claim(claim.job.request_id),
                 &current,
             )
         })
@@ -242,22 +226,12 @@ impl Store {
                     return Err(StoreError::InvalidState);
                 }
                 trx.set(&self.event_key(job.session_id, head), event);
-                trx.clear(
-                    &crate::keys::Keys::new(&self.root)
-                        .tool_job(&(job.request_id.as_bytes().as_slice(),)),
-                );
-                trx.clear(
-                    &crate::keys::Keys::new(&self.root)
-                        .tool_placement(&(job.request_id.as_bytes().as_slice(),)),
-                );
-                trx.clear(
-                    &crate::keys::Keys::new(&self.root)
-                        .placed_tool_claim(&(job.request_id.as_bytes().as_slice(),)),
-                );
+                trx.clear(&crate::keys::Keys::new(&self.root).tool_job(job.request_id));
+                trx.clear(&crate::keys::Keys::new(&self.root).tool_placement(job.request_id));
+                trx.clear(&crate::keys::Keys::new(&self.root).placed_tool_claim(job.request_id));
                 write(
                     &trx,
-                    &crate::keys::Keys::new(&self.root)
-                        .tool_done(&(job.request_id.as_bytes().as_slice(),)),
+                    &crate::keys::Keys::new(&self.root).tool_done(job.request_id),
                     &true,
                 )?;
                 let pending = self.pending_space(job.session_id);

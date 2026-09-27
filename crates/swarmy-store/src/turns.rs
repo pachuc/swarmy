@@ -140,16 +140,14 @@ impl Store {
                         .await?;
                 }
                 trx.set(
-                    &crate::keys::Keys::new(&self.root)
-                        .inference_input(&(request_id.as_bytes().as_slice())),
+                    &crate::keys::Keys::new(&self.root).inference_input(request_id),
                     input,
                 );
                 if let Some(request) = request {
                     trx.set(&self.inference_request_key(request_id), request);
                 }
                 trx.set(
-                    &crate::keys::Keys::new(&self.root)
-                        .inflight(&(request_id.as_bytes().as_slice())),
+                    &crate::keys::Keys::new(&self.root).inflight(request_id),
                     inflight,
                 );
                 for (seq, value) in preceding {

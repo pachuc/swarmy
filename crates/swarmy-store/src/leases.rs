@@ -28,14 +28,11 @@ impl Store {
     }
 
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).lease(id)
     }
 
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease_by_expiry(&(
-            (expires.as_second(), expires.subsec_nanosecond()),
-            id.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).lease_by_expiry(expires, id)
     }
 
     async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
@@ -287,14 +284,14 @@ impl Store {
     ) -> Result<Vec<(SessionId, Lease)>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space(&());
+            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space_root();
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
                 begin = self.expiry_key(*id, lease.expires_at);
                 begin.push(0);
             }
             let end = crate::keys::Keys::new(&self.root)
-                .lease_by_expiry_space(&((now.as_second(), now.subsec_nanosecond()),))
+                .lease_by_expiry_space(now)
                 .range()
                 .1;
             if begin >= end {

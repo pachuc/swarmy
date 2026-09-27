@@ -84,6 +84,12 @@ pub struct ImageTag(pub String);
 pub struct RequestId([u8; 32]);
 
 impl RequestId {
+    /// Reconstruct a request ID from its indexed bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     #[must_use]
     pub fn for_step(session: SessionId, seq: u64) -> Self {
         let mut hasher = blake3::Hasher::new();

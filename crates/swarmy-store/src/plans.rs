@@ -5,7 +5,7 @@ use swarmy_core::{
 
 impl Store {
     pub(crate) fn session_plan_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_plan(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_plan(id)
     }
 
     /// Replace a session plan and append its tool result in one leased transaction.
