@@ -47,15 +47,3 @@ pub async fn call_with_timeout<T>(
         .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
         .map_err(|error| api_error(&error, endpoint))
 }
-
-/// Upload a file with a timeout proportional to its size on disk.
-pub async fn call_upload<T>(
-    endpoint: &str,
-    file: &std::path::Path,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
-) -> Result<T> {
-    let size = std::fs::metadata(file)
-        .with_context(|| format!("reading upload size for {}", file.display()))?
-        .len();
-    call_with_timeout(endpoint, swarmy_client::upload_timeout(size), future).await
-}

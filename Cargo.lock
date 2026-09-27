@@ -4183,6 +4183,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "ratatui",
+ "reqwest",
  "serde_json",
  "swarmy-api-types",
  "swarmy-client",

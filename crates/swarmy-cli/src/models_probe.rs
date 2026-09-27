@@ -2,10 +2,6 @@ use crate::models_probe_command::Args;
 use anyhow::Context;
 
 pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !args.tools,
-        "tool-call probes are not supported by the API probe route"
-    );
     let (provider, model) = args
         .model
         .split_once('/')
@@ -18,6 +14,7 @@ pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         model,
         args.effort,
         args.label,
+        args.tools,
         json,
     )
     .await
@@ -30,6 +27,7 @@ async fn server_probe(
     model_id: &str,
     effort: Option<swarmy_core::ReasoningEffort>,
     label: Option<String>,
+    tools: bool,
     json: bool,
 ) -> anyhow::Result<()> {
     let started = std::time::Instant::now();
@@ -51,6 +49,7 @@ async fn server_probe(
             model: model_id.into(),
             label,
             effort,
+            tools,
         }),
     )
     .await

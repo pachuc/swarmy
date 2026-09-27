@@ -12,8 +12,6 @@ use swarmy_chat::client_conversation::Conversation;
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
-const SCRIPT: &str = include_str!("../../../scripts/benchmarks/turn-fake.json");
-
 #[derive(Serialize)]
 struct Sample {
     shape: String,
@@ -73,19 +71,6 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
         output,
         timeout_secs,
     } = command;
-    let settings = swarmy_config::Settings::load()?.settings;
-    ensure!(
-        settings.provider == "fake",
-        "bench turn requires provider=fake"
-    );
-    let configured: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&settings.fake.script).context(
-            "read fake script; configure scripts/benchmarks/turn-fake.json and restart dev up",
-        )?)?;
-    ensure!(
-        configured == serde_json::from_str::<serde_json::Value>(SCRIPT)?,
-        "bench turn requires scripts/benchmarks/turn-fake.json; configure it and restart the gateway"
-    );
     let mut samples = Vec::new();
     for shape in ["no_tool", "bash"] {
         let mut conversation = Conversation::open(

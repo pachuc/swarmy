@@ -79,7 +79,7 @@ for phase in ("probe", "routed"):
             continue
         provider, model = row["provider"], row["model"]
         print(f"Checking {phase}: {provider}/{model}", file=sys.stderr, flush=True)
-        args = (["models", "probe", f"{provider}/{model}",  ] if phase == "probe"
+        args = (["models", "probe", f"{provider}/{model}", "--tools"] if phase == "probe"
                 else ["run", "--image", os.environ.get("SWARMY_SMOKE_IMAGE", "swarmy-dev:dev2"), "--provider", provider, "--model", model, "reply with the word ready"])
         code, output, error = run(args)
         row[phase] = "PASS" if code == 0 else "FAIL"
@@ -88,7 +88,7 @@ for phase in ("probe", "routed"):
         if code:
             row["errors"].append(f"{phase}: " + safe(error or output or f"exit {code}"))
 
-print("| Provider | Model | API probe | Routed run | Reply | Error |")
+print("| Provider | Model | API probe + tools | Routed run | Reply | Error |")
 print("|---|---|---|---|---|---|")
 for row in rows:
     print("| " + " | ".join([row["provider"], safe(row["model"]), row["probe"], row["routed"],

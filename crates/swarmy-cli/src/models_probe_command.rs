@@ -9,9 +9,7 @@ pub struct Args {
     /// Require a `get_time` call and send its result back before the answer
     #[arg(long)]
     pub tools: bool,
-    /// Credential entry label to probe on the control plane (default entry
-    /// when absent). Local file and environment fallback always uses the
-    /// default entry.
+    /// Credential entry label to probe on the control plane (default when absent).
     #[arg(long)]
     pub label: Option<String>,
 }
