@@ -332,7 +332,7 @@ impl Store {
     /// Each `("credential", scope, provider)` row is decrypted with the
     /// cluster keyring and written as the provider's `default` entry when no
     /// such entry exists; the legacy row is cleared in the same transaction.
-    /// Rows are read in batches of one hundred. Rows that fail to decrypt
+    /// Rows are read in bounded batches. Rows that fail to decrypt
     /// (wrong or missing key) are left in place and skipped, so a later boot
     /// with the right keyring can still migrate them. Returns the written and
     /// cleared counts for the startup log; database errors still propagate so
@@ -488,7 +488,7 @@ impl CredentialStore {
     }
 
     /// One-shot boot migration of retired single-record credential rows.
-    /// Reads `("credential", scope, provider)` rows in batches of one hundred,
+    /// Reads `("credential", scope, provider)` rows in bounded batches,
     /// decrypts each with the cluster keyring, writes it as the provider's
     /// `default` entry when no such entry exists, and clears the legacy row
     /// in the same transaction. Rows that fail to decrypt are left in place
@@ -499,7 +499,8 @@ impl CredentialStore {
     /// # Errors
     /// Returns database, encoding, or encryption errors.
     pub async fn migrate_legacy_credentials(&self) -> Result<LegacyMigration> {
-        const BATCH: usize = 100;
+        // Bounded batches; `scan` rejects limits above `MAX_SCAN_LIMIT`.
+        const BATCH: usize = crate::MAX_SCAN_LIMIT;
         let space = self.store.root.subspace(&("credential",));
         let (mut begin, end) = space.range();
         let mut outcome = LegacyMigration::default();
