@@ -805,6 +805,10 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                     ("api".into(), serde_json::json!(p.api)),
                     ("auth_kinds".into(), serde_json::json!(p.auth_kinds)),
                     ("env_keys".into(), serde_json::json!(p.env_keys)),
+                    (
+                        "credential_env_keys".into(),
+                        serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
+                    ),
                     ("credential".into(), serde_json::json!("unknown")),
                 ]
                 .into(),

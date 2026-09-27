@@ -535,7 +535,7 @@ fn snapshot_checks(
                 providers.iter().map(|p| {
                     let keys = p
                         .catalog
-                        .get("env_keys")
+                        .get("credential_env_keys")
                         .and_then(serde_json::Value::as_array)
                         .into_iter()
                         .flatten()

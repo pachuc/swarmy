@@ -975,7 +975,7 @@ async fn key_from_source(
     let names: Vec<String> = providers
         .iter()
         .find(|row| row.id == provider)
-        .and_then(|row| row.catalog.get("env_keys"))
+        .and_then(|row| row.catalog.get("credential_env_keys"))
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
