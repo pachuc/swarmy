@@ -2,9 +2,8 @@
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    Event, Message, MessageId, MessageRole, Part, PlacementChangeReason,
-    PlacementRecord, SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord,
-    computer_rebuilt_message,
+    Event, Message, MessageId, MessageRole, Part, PlacementChangeReason, PlacementRecord,
+    SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord, computer_rebuilt_message,
 };
 
 use crate::{Result, Store, StoreError, read, scan, write};

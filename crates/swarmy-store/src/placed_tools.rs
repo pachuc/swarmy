@@ -3,8 +3,8 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    Event, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState,
-    ToolJob, ToolResult, VolumeId, VolumeRecord,
+    Event, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState, ToolJob,
+    ToolResult, VolumeId, VolumeRecord,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
