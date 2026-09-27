@@ -13,7 +13,7 @@ and on GitHub for acceptance items 1 to 4; items 5 and 7 were moved out on
   eeffd46). Its successor, `dev2`, is the split layout from 2026-09-24: an
   m6i.xlarge control node with no sandboxes and an m6id.4xlarge sandbox node
   with four sandboxes on local NVMe, chunks in the S3 bucket
-  `swarmy-pachu-dev2` (`docs/fleet-runbook.md`, "The split layout in
+  `<swarm-bucket>` (`docs/fleet-runbook.md`, "The split layout in
   practice"; `docs/proofs/perf-baseline-2026-09.md`, "Environments"). `dev`
   was retired on 2026-09-26 before its perf baseline leg ran, because dev2
   answered the question that mattered.

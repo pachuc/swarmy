@@ -37,11 +37,14 @@ the durable ones are repeated below.
 
 ## The swarm
 
-- `dev2`: control node `54.89.211.116` (m6i.xlarge, no sandboxes) and sandbox
-  node `dev2-2` at `3.83.161.75` (m6id.4xlarge, four sandboxes, each capped
-  at 8 GiB, which forces single-job cargo builds). Bucket `swarmy-pachu-dev2`.
-  Images `base-ubuntu:dev2` and `swarmy-dev:dev2`. The earlier `dev` swarm
-  was retired on 2026-09-26.
+- `dev2`: control node `dev2` (m6i.xlarge, no sandboxes); worker node
+  `dev2-3` (m6id.8xlarge, four sandboxes at 24 GiB each); and suite node
+  `dev2-2` (m6id.4xlarge, `SWARMY_NODE_SANDBOXES=0` in `/etc/swarmy/node.env`,
+  so it takes no workers and runs the root-only suites). Addresses, instance
+  ids, and the bucket name are in the local remote state (`swarmy remote
+  status`, `.swarmy/remote/`), never in the repository. Images
+  `base-ubuntu:dev2` and `swarmy-dev:dev2`. The earlier `dev` swarm was
+  retired on 2026-09-26.
 - Tunnel: `swarmy remote connect dev2`. Local ports are fixed, so only one
   swarm can be connected at a time. Plain `swarmy` commands that need the API
   take `--remote dev2`. `swarmy remote status` shows nodes, services, images.

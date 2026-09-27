@@ -643,7 +643,7 @@
     "verified_at": "2026-09-15T21:29:21.927664+00:00",
     "instances": [
       {
-        "Id": "i-0b1dd2396ec6f2bcd",
+        "Id": "i-<redacted>",
         "State": "terminated"
       }
     ],

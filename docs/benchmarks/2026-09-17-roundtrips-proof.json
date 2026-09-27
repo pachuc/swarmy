@@ -1,7 +1,7 @@
 {
   "recorded_at": "2026-09-17T12:52:24.639300+00:00",
   "node": {
-    "InstanceId": "i-0030ed4607356cea9",
+    "InstanceId": "i-<redacted>",
     "InstanceType": "m6id.xlarge",
     "State": "running at initial capture",
     "Volumes": [
@@ -62,7 +62,7 @@
     "8333": "blocked",
     "22": "reachable"
   },
-  "firewall": "Chain OUTPUT (policy ACCEPT 191K packets, 71M bytes)\n pkts bytes target     prot opt in     out     source               destination         \n    3   180 REJECT     6    --  *      *       0.0.0.0/0            172.31.52.16         multiport dports 4500,4222,8333 owner UID match 1000 reject-with icmp-port-unreachable\n",
+  "firewall": "Chain OUTPUT (policy ACCEPT 191K packets, 71M bytes)\n pkts bytes target     prot opt in     out     source               destination         \n    3   180 REJECT     6    --  *      *       0.0.0.0/0            <private-ip>         multiport dports 4500,4222,8333 owner UID match 1000 reject-with icmp-port-unreachable\n",
   "connect": {
     "default_image": "base-ubuntu:turn-roundtrips",
     "fdb_cluster_file": "/home/ubuntu/workspace/.swarmy/remote/turn-roundtrips.cluster",
@@ -101,11 +101,11 @@
     "tool_ok": 3,
     "bytes": 5674
   },
-  "down": "Terminating i-0030ed4607356cea9\nConfirmed i-0030ed4607356cea9 is terminated or absent\nDeleting key pair swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A\nRemoved remote turn-roundtrips\n",
+  "down": "Terminating i-<redacted>\nConfirmed i-<redacted> is terminated or absent\nDeleting key pair swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A\nRemoved remote turn-roundtrips\n",
   "teardown": {
     "instances": [
       {
-        "InstanceId": "i-0030ed4607356cea9",
+        "InstanceId": "i-<redacted>",
         "State": "terminated"
       }
     ],
@@ -114,7 +114,7 @@
     "gcp_instances": [],
     "remaining_aws": [
       {
-        "InstanceId": "i-074ffdebcc7a6968c",
+        "InstanceId": "i-<redacted>",
         "State": "running",
         "Name": "cdx-1789646380346-536815da"
       }

@@ -312,6 +312,19 @@ keep its own disk in order. The rules, which the task prompt repeats:
   you ran to validate it with their results, and notes anything from the test
   plan you could not verify in the sandbox and why.
 - Never commit secrets, `.dev/`, or `target/`.
+- This repository is public. Never commit, or write into a pull request
+  description, comment, or CI log, anything that identifies our running
+  infrastructure: credentials and tokens of any kind, IP addresses and host
+  names of real machines, cloud account ids, instance, volume, subnet, and
+  security-group ids, ARNs, bucket names, SSH keys or known-hosts entries, and
+  the contents of `.swarmy/`, `scripts/fleet/fleet.toml`, or `/etc/swarmy/`.
+  Benchmark and proof records use placeholders such as `<account-id>`,
+  `<swarm-bucket>`, and `i-<redacted>`, and name machines by their role
+  (`dev2-3`, "the suite node"). Public identifiers that are not ours, such as
+  a stock Ubuntu image id, are fine. Before pushing, check the diff with
+  `git diff origin/master | grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b|[0-9]{12}|\bi-0[0-9a-f]{8,}'`
+  and remove any real value it finds (loopback and documentation addresses
+  such as `127.0.0.1` are fine).
 
 ## Operating notes
 

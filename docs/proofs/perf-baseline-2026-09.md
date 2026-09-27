@@ -10,7 +10,7 @@ dev2 against codex-daytona answers the question that matters.
 
 - **dev2**: split swarm. Control node m6i.xlarge (FoundationDB, NATS,
   scheduler, worker, gateway, API), sandbox node m6id.4xlarge with local
-  NVMe scratch, chunks in the S3 bucket `swarmy-pachu-dev2`. Sessions ran
+  NVMe scratch, chunks in the S3 bucket `<swarm-bucket>`. Sessions ran
   on image `swarmy-dev:dev2` (Rust toolchain, 6 GiB memory limit, empty
   cargo caches). swarmy at commit d665659. Runs driven by
   `benchmarks/run-swarm.sh local dev2-muse` on the control node.

@@ -1,8 +1,8 @@
 {
   "instance": {
-    "InstanceId": "i-04aec8f7ccb782c82",
-    "PrivateIpAddress": "172.31.53.192",
-    "PublicIpAddress": "54.166.119.241",
+    "InstanceId": "i-<redacted>",
+    "PrivateIpAddress": "<private-ip>",
+    "PublicIpAddress": "<redacted-ip>",
     "State": "running"
   },
   "direct_probes": {
@@ -76,7 +76,7 @@
   "teardown": {
     "terminated": [
       {
-        "InstanceId": "i-04aec8f7ccb782c82",
+        "InstanceId": "i-<redacted>",
         "State": "terminated"
       }
     ],
@@ -86,9 +86,9 @@
   },
   "baseline_node": {
     "instance": {
-      "InstanceId": "i-0ded0f4e47b5ecab3",
-      "PrivateIpAddress": "172.31.55.142",
-      "PublicIpAddress": "18.204.222.88",
+      "InstanceId": "i-<redacted>",
+      "PrivateIpAddress": "<private-ip>",
+      "PublicIpAddress": "<redacted-ip>",
       "State": "running"
     },
     "direct_probes": {
@@ -162,7 +162,7 @@
     "teardown": {
       "terminated": [
         {
-          "InstanceId": "i-0ded0f4e47b5ecab3",
+          "InstanceId": "i-<redacted>",
           "State": "terminated"
         }
       ],
