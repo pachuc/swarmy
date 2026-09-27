@@ -414,6 +414,7 @@ impl Hosting {
             result = crate::tools::execute(
                 &self.store,
                 self.runtime.clone(),
+                self.node,
                 placement,
                 call.job,
                 turn,

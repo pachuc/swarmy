@@ -94,9 +94,27 @@ async fn serve(
     }
 }
 
+fn placement_refusal(
+    current: Option<&PlacementRecord>,
+    dispatched: &PlacementRecord,
+    node: NodeId,
+) -> Option<anyhow::Error> {
+    current
+        .filter(|placement| placement.node_id != node)
+        .or_else(|| (dispatched.node_id != node).then_some(dispatched))
+        .map(|placement| {
+            anyhow::anyhow!(
+                "agent is placed on another node {} at epoch {}",
+                placement.node_id,
+                placement.epoch
+            )
+        })
+}
+
 pub async fn execute(
     store: &Store,
     runtime: Arc<RuncRuntime>,
+    node: NodeId,
     placement: &PlacementRecord,
     job: ToolJob,
     turn: Option<swarmy_core::MessageId>,
@@ -119,14 +137,9 @@ pub async fn execute(
     let claimed = match store.claim_placed_tool(&claim).await {
         Ok(claimed) => claimed,
         Err(error) => {
-            if let Some(current) = store.get_by_agent(placement.agent_id).await?
-                && current.node_id != placement.node_id
-            {
-                anyhow::bail!(
-                    "agent is placed on another node {} at epoch {}",
-                    current.node_id,
-                    current.epoch
-                );
+            let current = store.get_by_agent(placement.agent_id).await?;
+            if let Some(refusal) = placement_refusal(current.as_ref(), placement, node) {
+                return Err(refusal);
             }
             return Err(error.into());
         }
@@ -609,6 +622,48 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::placement_refusal;
+    use swarmy_core::{AgentId, NodeId, PlacementChangeReason, PlacementRecord};
+
+    #[test]
+    fn rejected_claim_explains_other_nodes_placement() {
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let other = NodeId::from_ulid(ulid::Ulid::generate());
+        let now = jiff::Timestamp::now();
+        let dispatched = PlacementRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            node_id: other,
+            epoch: 2,
+            expires_at: now,
+            last_change_reason: PlacementChangeReason::Initial,
+            last_changed_at: now,
+        };
+        let explanation = format!("agent is placed on another node {other} at epoch 2");
+        // The takeover test dispatches the replacement placement to the old node.
+        assert_eq!(
+            placement_refusal(Some(&dispatched), &dispatched, node)
+                .unwrap()
+                .to_string(),
+            explanation
+        );
+        assert_eq!(
+            placement_refusal(None, &dispatched, node)
+                .unwrap()
+                .to_string(),
+            explanation
+        );
+        let local = PlacementRecord {
+            node_id: node,
+            ..dispatched.clone()
+        };
+        assert_eq!(
+            placement_refusal(Some(&dispatched), &local, node)
+                .unwrap()
+                .to_string(),
+            explanation
+        );
+        assert!(placement_refusal(Some(&local), &local, node).is_none());
+    }
 
     struct Processes(tempfile::TempDir);
 
