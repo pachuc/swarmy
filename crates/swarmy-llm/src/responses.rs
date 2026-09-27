@@ -89,7 +89,7 @@ fn build_input(
             }
             input.push(match part {
                 Part::Image { media_type, bytes, detail, .. } => json!({"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": format!("data:{media_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)), "detail": detail.as_deref().unwrap_or("auto") }]}),
-                Part::Text { text } => {
+                Part::Text { text } | Part::Notice { text, .. } => {
                     let (role, kind) = match message.role {
                         // Harness notices use the backend's developer role. A system
                         // role in input is rejected after a computer rebuild.

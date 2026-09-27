@@ -45,6 +45,7 @@ impl Fixture {
                 provider,
                 label,
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: CredentialKind::ApiKey {
                         key: format!("{label}-key"),
                         extra: BTreeMap::new(),
@@ -722,6 +723,7 @@ impl Fixture {
                 provider,
                 label,
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: CredentialKind::OAuth {
                         access: "stale-access".into(),
                         refresh: "stale-refresh".into(),

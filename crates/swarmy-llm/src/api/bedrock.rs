@@ -520,7 +520,9 @@ fn part_block(part: &Part, model: &ModelInfo) -> Result<Option<ContentBlock>, Er
                     .map_err(build_error)?,
             ))
         }
-        Part::Text { text } => (!text.trim().is_empty()).then(|| ContentBlock::Text(text.clone())),
+        Part::Text { text } | Part::Notice { text, .. } => {
+            (!text.trim().is_empty()).then(|| ContentBlock::Text(text.clone()))
+        }
         Part::Reasoning { text, metadata } => reasoning(text, metadata, model)?,
         Part::ToolCall {
             call_id,

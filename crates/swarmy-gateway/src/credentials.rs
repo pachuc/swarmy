@@ -196,6 +196,7 @@ impl AuthStore for ClusterCredentials {
                         .map_err(|_| StoreError::CredentialRefresh)?
                         .ok_or(StoreError::CredentialRefresh)?;
                     Ok(CredentialRecord {
+                        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                         kind,
                         updated_at: jiff::Timestamp::now(),
                     })
@@ -441,6 +442,7 @@ mod tests {
                 login.provider(),
                 "default",
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind,
                     updated_at: jiff::Timestamp::now(),
                 },

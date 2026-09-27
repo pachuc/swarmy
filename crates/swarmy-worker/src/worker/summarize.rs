@@ -392,9 +392,9 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
     let mut chars = 0;
     for part in &message.parts {
         chars += match part {
-            swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
-                text.len()
-            }
+            swarmy_core::Part::Text { text }
+            | swarmy_core::Part::Reasoning { text, .. }
+            | swarmy_core::Part::Notice { text, .. } => text.len(),
             swarmy_core::Part::ToolCall { tool, input, .. } => {
                 tool.len() + serde_json::to_string(input).map_or(0, |json| json.len())
             }

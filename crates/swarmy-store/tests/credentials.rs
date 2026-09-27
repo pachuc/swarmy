@@ -397,6 +397,7 @@ async fn first_entry_prefers_the_oldest_ready_entry() {
         .await
         .unwrap();
     let ready = CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: CredentialKind::ApiKey {
             key: "live".into(),
             extra: std::collections::BTreeMap::default(),
@@ -485,6 +486,7 @@ async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
 async fn default_entry_lists_once() {
     let Some(f) = Fixture::new() else { return };
     let record = CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: CredentialKind::ApiKey {
             key: "synthetic".into(),
             extra: std::collections::BTreeMap::default(),

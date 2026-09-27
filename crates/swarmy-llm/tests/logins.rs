@@ -123,6 +123,7 @@ async fn azure_process_helper() {
     assert_eq!(extra["resource_name"], "test-resource");
     assert_eq!(extra["scope"], "https://custom/.default");
     let record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: kind.clone(),
         updated_at: jiff::Timestamp::now(),
     };

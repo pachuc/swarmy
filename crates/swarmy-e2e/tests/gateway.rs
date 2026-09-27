@@ -458,11 +458,11 @@ async fn credential_changes_update_a_running_gateway() {
                 }
             }).await.unwrap();
             assert!(!f.store.gateway_serves("openrouter").await.unwrap());
-            credentials.put_entry(CredentialScope::Cluster, "openrouter", "primary", &CredentialRecord {
+            credentials.put_entry(CredentialScope::Cluster, "openrouter", "primary", &CredentialRecord { bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: CredentialKind::ApiKey { key: "fixture-key".into(), extra: std::collections::BTreeMap::default() },
                 updated_at: Timestamp::now(),
             }).await.unwrap();
-            credentials.put_entry(CredentialScope::Cluster, "openrouter", "backup", &CredentialRecord {
+            credentials.put_entry(CredentialScope::Cluster, "openrouter", "backup", &CredentialRecord { bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: CredentialKind::ApiKey { key: "fixture-backup".into(), extra: std::collections::BTreeMap::default() },
                 updated_at: Timestamp::now(),
             }).await.unwrap();

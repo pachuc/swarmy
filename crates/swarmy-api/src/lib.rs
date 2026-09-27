@@ -888,20 +888,14 @@ async fn set_credential(
     }
     let store = credential_store(&state)?;
     let record = CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping {
+            cloud: body.kind == api::CredentialKind::Cloud,
+            label: Some(body.label.clone()),
+            ..Default::default()
+        },
         kind: CredentialKind::ApiKey {
             key: body.secret,
-            extra: std::collections::BTreeMap::from([
-                ("label".into(), body.label.clone()),
-                (
-                    "auth_kind".into(),
-                    if body.kind == api::CredentialKind::Cloud {
-                        "cloud"
-                    } else {
-                        "api-key"
-                    }
-                    .into(),
-                ),
-            ]),
+            extra: std::collections::BTreeMap::new(),
         },
         updated_at: Timestamp::now(),
     };

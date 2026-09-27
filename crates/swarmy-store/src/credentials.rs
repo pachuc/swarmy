@@ -70,11 +70,7 @@ fn parse_scope(text: &str) -> Option<CredentialScope> {
 fn entry_kind(record: &CredentialRecord) -> String {
     match &record.kind {
         CredentialKind::OAuth { .. } => "subscription",
-        CredentialKind::ApiKey { extra, .. }
-            if extra.get("auth_kind").is_some_and(|s| s == "cloud") =>
-        {
-            "cloud"
-        }
+        CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud",
         CredentialKind::ApiKey { .. } => "api-key",
     }
     .into()
@@ -365,14 +361,16 @@ impl CredentialStore {
         label: &str,
         record: &CredentialRecord,
     ) -> Result<()> {
+        let mut record = record.clone();
+        record.migrate_bookkeeping();
         let ciphertext = encrypt(
             &self.keyring,
             scope,
             &entry_identity(provider, label),
-            record,
+            &record,
         )?;
         let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
-        let (needs_login, expires_at) = entry_readiness(record, self.store.now());
+        let (needs_login, expires_at) = entry_readiness(&record, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -582,7 +580,76 @@ impl CredentialStore {
                 break;
             }
         }
+        self.migrate_entry_bookkeeping().await?;
         Ok(outcome)
+    }
+
+    /// Rewrite legacy string flags in place without losing entries that cannot decrypt.
+    async fn migrate_entry_bookkeeping(&self) -> Result<()> {
+        let space = crate::keys::Keys::new(&self.store.root).credential_entry_space_root();
+        let (mut begin, end) = space.range();
+        loop {
+            let rows = self
+                .store
+                .transaction(|trx| {
+                    let range = (begin.clone(), end.clone());
+                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                })
+                .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let complete = rows.len() < crate::MAX_SCAN_LIMIT;
+            for (key, bytes) in &rows {
+                let Ok((scope_text, provider, label)): std::result::Result<
+                    (String, String, String),
+                    _,
+                > = space.unpack(key) else {
+                    continue;
+                };
+                let Some(scope) = parse_scope(&scope_text) else {
+                    continue;
+                };
+                let Ok(mut entry) = decode_entry(bytes) else {
+                    continue;
+                };
+                let identity = entry_identity(&provider, &label);
+                let Ok(mut record) =
+                    decrypt_raw(&self.keyring, scope, &identity, &entry.ciphertext)
+                else {
+                    continue;
+                };
+                if !record.migrate_bookkeeping() {
+                    continue;
+                }
+                let old = entry.ciphertext.clone();
+                entry.ciphertext = encrypt(&self.keyring, scope, &identity, &record)?;
+                (entry.needs_login, entry.expires_at) = entry_readiness(&record, self.store.now());
+                self.store
+                    .transaction(|trx| {
+                        let entry = &entry;
+                        let old = &old;
+                        async move {
+                            if read_entry(&trx, key)
+                                .await?
+                                .is_some_and(|current| current.ciphertext == *old)
+                            {
+                                write(&trx, key, entry)?;
+                            }
+                            Ok(())
+                        }
+                    })
+                    .await?;
+            }
+            if complete {
+                break;
+            }
+            if let Some((last, _)) = rows.last() {
+                begin.clone_from(last);
+                begin.push(0);
+            }
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -757,12 +824,7 @@ impl CredentialStore {
             Ok(Ok(record)) => (record, false),
             Ok(Err(_)) => {
                 let mut record = current.clone();
-                let extra = match &mut record.kind {
-                    CredentialKind::ApiKey { extra, .. } | CredentialKind::OAuth { extra, .. } => {
-                        extra
-                    }
-                };
-                extra.insert("needs_login".into(), "true".into());
+                record.bookkeeping.needs_login = true;
                 (record, true)
             }
             Err(_) => return Err(StoreError::LeaseMismatch),
@@ -936,7 +998,7 @@ fn encrypt(
     Ok(bytes)
 }
 
-fn decrypt(
+fn decrypt_raw(
     key: &Keyring,
     scope: CredentialScope,
     provider: &str,
@@ -958,6 +1020,17 @@ fn decrypt(
     Ok(decode(&plaintext)?)
 }
 
+fn decrypt(
+    key: &Keyring,
+    scope: CredentialScope,
+    provider: &str,
+    bytes: &[u8],
+) -> Result<CredentialRecord> {
+    let mut record = decrypt_raw(key, scope, provider, bytes)?;
+    record.migrate_bookkeeping();
+    Ok(record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,6 +1038,7 @@ mod tests {
     fn authenticated_round_trip() {
         let key = Keyring::from_bytes([1; 32]);
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: "secret".into(),
                 extra: std::collections::BTreeMap::new(),

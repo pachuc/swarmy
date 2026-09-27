@@ -90,6 +90,7 @@ impl Credentials {
             .ok_or(Error::Credentials("missing tokens"))?
             .remove("refresh_token");
         Ok(swarmy_core::CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: swarmy_core::CredentialKind::OAuth {
                 access: self.access_token().into(),
                 refresh: self.token("refresh_token")?.into(),
@@ -116,7 +117,7 @@ impl Credentials {
         else {
             return Err(Error::Credentials("ChatGPT requires OAuth"));
         };
-        if extra.get("needs_login").is_some_and(|v| v == "true") {
+        if record.bookkeeping.needs_login {
             return Err(Error::Credentials("ChatGPT needs login"));
         }
         let mut value: Value = if let Some(metadata) = extra.get("chatgpt_json") {

@@ -32,6 +32,7 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
                 swarmy_llm::auth::login_for(&provider, resource.as_deref(), scope.as_deref())?;
             let kind = login.login(&TerminalUi { json }).await?;
             let record = CredentialRecord {
+                bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind,
                 updated_at: jiff::Timestamp::now(),
             };

@@ -89,9 +89,9 @@ const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
 /// completed part is the first observable content for those turns.
 fn part_has_content(part: &swarmy_core::Part) -> bool {
     match part {
-        swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
+        swarmy_core::Part::Text { text }
+        | swarmy_core::Part::Reasoning { text, .. }
+        | swarmy_core::Part::Notice { text, .. } => !text.is_empty(),
         swarmy_core::Part::ToolCall { .. } | swarmy_core::Part::Image { .. } => true,
         swarmy_core::Part::ToolResult { .. } => false,
     }

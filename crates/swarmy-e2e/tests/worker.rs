@@ -145,6 +145,7 @@ impl Fixture {
                 provider,
                 label,
                 &swarmy_core::CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: swarmy_core::CredentialKind::ApiKey {
                         key: format!("{label}-key"),
                         extra: BTreeMap::new(),

@@ -78,6 +78,7 @@ impl Login for OAuthClient {
 
     async fn refresh(&self, kind: &CredentialKind) -> Result<Option<CredentialKind>, Error> {
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: kind.clone(),
             updated_at: jiff::Timestamp::now(),
         };

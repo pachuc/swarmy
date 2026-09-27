@@ -245,7 +245,7 @@ fn convert_message(
     for part in &message.parts {
         match part {
             Part::Image { media_type, bytes, detail, .. } => content.push(json!({"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)), "detail": detail.as_deref().unwrap_or("auto")}})),
-            Part::Text { text } => content.push(json!({"type": "text", "text": text})),
+            Part::Text { text } | Part::Notice { text, .. } => content.push(json!({"type": "text", "text": text})),
             Part::Reasoning { text, metadata } => {
                 let replay =
                     metadata

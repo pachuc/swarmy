@@ -1041,6 +1041,7 @@ async fn set_credential_key(
         }
     }
     let record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: swarmy_core::CredentialKind::ApiKey { key, extra },
         updated_at: jiff::Timestamp::now(),
     };

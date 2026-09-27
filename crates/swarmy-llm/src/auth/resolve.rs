@@ -67,11 +67,7 @@ pub struct ResolvedAuth {
 pub fn entry_kind_for(record: &CredentialRecord) -> String {
     match &record.kind {
         CredentialKind::OAuth { .. } => "subscription".into(),
-        CredentialKind::ApiKey { extra, .. }
-            if extra.get("auth_kind").is_some_and(|kind| kind == "cloud") =>
-        {
-            "cloud".into()
-        }
+        CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud".into(),
         CredentialKind::ApiKey { .. } => "api-key".into(),
     }
 }
@@ -529,6 +525,7 @@ mod tests {
     async fn api_created_keys_ignore_bookkeeping_extras() {
         for provider in ["openrouter", "openai"] {
             let record = CredentialRecord {
+                bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: CredentialKind::ApiKey {
                     key: "stored-key".into(),
                     extra: BTreeMap::from([
@@ -553,6 +550,7 @@ mod tests {
     #[tokio::test]
     async fn expired_bedrock_record_explains_iam_alternative() {
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::OAuth {
                 access: "expired".into(),
                 refresh: "unusable".into(),
@@ -601,6 +599,7 @@ mod tests {
             assert!(matches!(resolved.auth, ClientAuth::Ambient));
         }
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: "ya29.token".into(),
                 extra: BTreeMap::from([
@@ -648,6 +647,7 @@ mod tests {
             matches!(resolver(None).resolve_using("openai", |_| Some("environment".into())).await.unwrap().auth, ClientAuth::ApiKey(key) if key == "environment")
         );
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::OAuth {
                 access: "old".into(),
                 refresh: "refresh".into(),

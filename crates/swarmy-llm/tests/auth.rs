@@ -167,6 +167,7 @@ async fn device_code_exchange_persists_codex_layout() {
     };
     assert_eq!(extra["account_id"], "account-test");
     let saved = Credentials::from_record(&swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind,
         updated_at: jiff::Timestamp::now(),
     })
@@ -361,6 +362,7 @@ impl CredentialStore for MemoryCredentials {
 async fn native_store_records_need_only_account_metadata() {
     let now = jiff::Timestamp::now();
     let record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: swarmy_core::CredentialKind::OAuth {
             access: "access-fixture".into(),
             refresh: "refresh-fixture".into(),

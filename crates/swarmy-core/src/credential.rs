@@ -25,6 +25,43 @@ impl std::fmt::Display for CredentialScope {
 pub struct CredentialRecord {
     pub kind: CredentialKind,
     pub updated_at: Timestamp,
+    #[serde(default, with = "crate::trailing")]
+    pub bookkeeping: CredentialBookkeeping,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialBookkeeping {
+    pub needs_login: bool,
+    pub cloud: bool,
+    pub azure_cli: bool,
+    pub label: Option<String>,
+}
+
+impl CredentialRecord {
+    /// Move legacy flags to typed fields without discarding provider metadata.
+    pub fn migrate_bookkeeping(&mut self) -> bool {
+        let extra = match &mut self.kind {
+            CredentialKind::ApiKey { extra, .. } | CredentialKind::OAuth { extra, .. } => extra,
+        };
+        let mut changed = false;
+        if let Some(value) = extra.remove("needs_login") {
+            self.bookkeeping.needs_login |= value == "true";
+            changed = true;
+        }
+        if let Some(value) = extra.remove("auth_kind") {
+            self.bookkeeping.cloud |= value == "cloud";
+            changed = true;
+        }
+        if let Some(value) = extra.remove("token_source") {
+            self.bookkeeping.azure_cli |= value == "azure_cli";
+            changed = true;
+        }
+        if let Some(value) = extra.remove("label") {
+            self.bookkeeping.label.get_or_insert(value);
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,22 +90,16 @@ impl CredentialRecord {
     #[must_use]
     pub fn status(&self, now: Timestamp) -> CredentialStatus {
         match &self.kind {
-            CredentialKind::ApiKey { key, extra }
-                if key.is_empty() || extra.get("needs_login").is_some_and(|v| v == "true") =>
+            CredentialKind::ApiKey { key, .. }
+                if key.is_empty() || self.bookkeeping.needs_login =>
             {
                 CredentialStatus::NeedsLogin
             }
             CredentialKind::OAuth {
-                access,
-                refresh,
-                extra,
-                ..
+                access, refresh, ..
             } if access.is_empty()
-                || (refresh.is_empty()
-                    && extra
-                        .get("token_source")
-                        .is_none_or(|source| source != "azure_cli"))
-                || extra.get("needs_login").is_some_and(|v| v == "true") =>
+                || (refresh.is_empty() && !self.bookkeeping.azure_cli)
+                || self.bookkeeping.needs_login =>
             {
                 CredentialStatus::NeedsLogin
             }
@@ -109,6 +140,7 @@ mod tests {
             (1300, CredentialStatus::Ready, false),
         ] {
             let record = CredentialRecord {
+                bookkeeping: CredentialBookkeeping::default(),
                 kind: CredentialKind::OAuth {
                     access: "access".into(),
                     refresh: "refresh".into(),
@@ -125,6 +157,7 @@ mod tests {
             );
         }
         let record = CredentialRecord {
+            bookkeeping: CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: String::new(),
                 extra: BTreeMap::new(),
