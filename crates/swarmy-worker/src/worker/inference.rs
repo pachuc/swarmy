@@ -5,6 +5,62 @@ pub(super) enum StepFailure<'a> {
     Unserved { provider: &'a str, retryable: bool },
 }
 
+/// A resolved route step and its metering identity.
+struct ResolvedAttempt {
+    provider: String,
+    entry: Option<String>,
+    route: Option<String>,
+    route_step: u32,
+    snapshot: swarmy_store::RouteSnapshot,
+}
+
+impl Worker {
+    pub(super) async fn route_snapshot(
+        &self,
+        session: &SessionRecord,
+    ) -> Result<swarmy_store::RouteSnapshot> {
+        Ok(self
+            .store
+            .route_snapshot(
+                session.agent_id,
+                session.route.as_deref(),
+                session.inference.provider.as_deref(),
+                self.config.default_route.as_deref(),
+                &self.config.provider,
+                Timestamp::now(),
+            )
+            .await?)
+    }
+}
+
+pub(super) fn warn_on_route_fallback(
+    session: &SessionRecord,
+    resolved: Option<&str>,
+    skipped: &[String],
+) {
+    // A deleted or renamed route falls back to the implicit chain; say so
+    // once per resolution so the operator can fix the assignment. A route
+    // whose named steps are all unready falls back the same way, but the
+    // route itself exists, so name the skipped steps instead.
+    let requested = session.route.as_deref();
+    if requested.is_some() && resolved != requested {
+        if skipped.is_empty() {
+            tracing::warn!(
+                session_id = %session.session_id,
+                route = requested,
+                "assigned route is missing; using the implicit provider chain",
+            );
+        } else {
+            tracing::warn!(
+                session_id = %session.session_id,
+                route = requested,
+                skipped = skipped.join("; "),
+                "assigned route has no usable step; using the implicit provider chain",
+            );
+        }
+    }
+}
+
 impl Worker {
     pub(super) async fn prepare_request(
         &self,

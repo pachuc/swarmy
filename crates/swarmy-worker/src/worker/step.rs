@@ -1,3 +1,4 @@
+use super::inference::warn_on_route_fallback;
 use super::*;
 
 /// State carried from claim through the final fenced write. The lease remains
