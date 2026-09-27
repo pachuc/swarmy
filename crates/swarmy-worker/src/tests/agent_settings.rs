@@ -254,6 +254,8 @@ async fn assert_default_settings(f: &Fixture) {
     }
 }
 
+// This integration scenario deliberately exercises all selection layers and the wait path.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn session_selection_routes_and_missing_gateway_waits() {
     let Some(f) = Fixture::new().await else {

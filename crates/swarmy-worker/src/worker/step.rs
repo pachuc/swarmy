@@ -391,7 +391,7 @@ impl Worker {
                 .is_none_or(|wait| wait.last_failure_seq != *seq)
             {
                 return self
-                    .failover_or_park(session, lease, *seq, error, *failure_kind, *retry_at, now)
+                    .failover_or_park(session, lease, *seq, (error, *failure_kind), *retry_at, now)
                     .await;
             }
         }
@@ -406,11 +406,11 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &HeldLease,
         seq: u64,
-        error: &str,
-        failure_kind: swarmy_core::FailureKind,
+        failure: (&str, swarmy_core::FailureKind),
         retry_at: Timestamp,
         now: Timestamp,
     ) -> Result<bool> {
+        let (error, failure_kind) = failure;
         let outcome = {
             let token = lease.lock().await;
             let lease_ref = token.as_ref().context("lease released")?;
