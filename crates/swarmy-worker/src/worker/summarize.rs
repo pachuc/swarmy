@@ -285,8 +285,10 @@ impl Worker {
                     .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
                     .await?
                     .and_then(std::result::Result::ok)
-                    .map(|response| format!("{:?}", response.stop_reason))
-                    .unwrap_or_else(|| "unknown".into())
+                    .map_or_else(
+                        || "unknown".into(),
+                        |response| format!("{:?}", response.stop_reason),
+                    )
             } else {
                 "unknown".into()
             };
