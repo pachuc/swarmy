@@ -273,7 +273,12 @@ impl Store {
             {
                 // Timers are lease-fenced to their agent, so a mismatched origin
                 // only means stale state: fall through to the main conversation.
-                if let Ok(session) = self.session(&trx, origin).await
+                let origin_session = match self.session(&trx, origin).await {
+                    Ok(session) => Some(session),
+                    Err(crate::StoreError::SessionMissing) => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some(session) = origin_session
                     && session.agent_id == agent.agent_id
                     && session.state == SessionState::Idle
                 {
