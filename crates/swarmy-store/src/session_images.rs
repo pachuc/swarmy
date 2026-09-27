@@ -11,10 +11,11 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn pinned_image(&self, id: SessionId) -> Result<Option<ImageRecord>> {
         self.transaction(|trx| async move {
-            Ok(self
-                .fetch_session_in(&trx, id)
-                .await?
-                .and_then(|(session, _)| session.image))
+            match self.session(&trx, id).await {
+                Ok(session) => Ok(session.image),
+                Err(StoreError::SessionMissing) => Ok(None),
+                Err(error) => Err(error),
+            }
         })
         .await
     }
@@ -32,10 +33,11 @@ impl Store {
         }
         let manifest = self
             .transaction(|trx| async move {
-                Ok(self
-                    .fetch_session_in(&trx, id)
-                    .await?
-                    .and_then(|(session, _)| session.image.map(|image| image.manifest_id)))
+                match self.session(&trx, id).await {
+                    Ok(session) => Ok(session.image.map(|image| image.manifest_id)),
+                    Err(StoreError::SessionMissing) => Ok(None),
+                    Err(error) => Err(error),
+                }
             })
             .await?;
         // Only committed, immutable pins are cached. A missing legacy row may

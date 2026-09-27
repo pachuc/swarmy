@@ -198,6 +198,17 @@ enum StoredValue {
 }
 
 const SESSION_RECORD_VERSION: u8 = 2;
+// Postcard encodes a session id with a 26-byte prefix, so this marker cannot
+// collide with an inline V2 record. Oversized V1 side rows need bounded chunks.
+const SESSION_CHUNK_MARKER: u8 = 0xff;
+const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
+
+/// Counts from one bounded-page boot migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionMigration {
+    pub migrated: usize,
+    pub skipped: usize,
+}
 
 // Frozen version-one header. Do not add fields here.
 #[derive(Serialize, Deserialize)]
@@ -209,8 +220,8 @@ struct StoredSessionV1 {
     snapshot_seq: Option<u64>,
 }
 
-// Version two owns all session-local metadata. Appended fields use trailing
-// markers so future readers can still decode this schema.
+/// Version two owns all session-local metadata. Add future fields only with
+/// `swarmy_core::trailing`; never change the shape of existing fields.
 #[derive(Serialize, Deserialize)]
 struct StoredSessionV2 {
     session_id: SessionId,
@@ -517,10 +528,36 @@ impl Store {
         })
     }
 
+    fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
+        self.root
+            .pack(&("session_chunk", id.as_ulid().to_bytes().as_slice(), index))
+    }
+
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
         if bytes.first() == Some(&SESSION_RECORD_VERSION) {
+            let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
+                if bytes.len() != 20 {
+                    return Err(StoreError::Corrupt);
+                }
+                let id = keys::session_id(bytes[2..18].to_vec())?;
+                let count = u16::from_be_bytes([bytes[18], bytes[19]]);
+                if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
+                    return Err(StoreError::Corrupt);
+                }
+                let mut payload = Vec::new();
+                for index in 0..count {
+                    let chunk = trx
+                        .get(&self.session_chunk_key(id, index), false)
+                        .await?
+                        .ok_or(StoreError::Corrupt)?;
+                    payload.extend_from_slice(&chunk);
+                }
+                payload
+            } else {
+                bytes[1..].to_vec()
+            };
             let v: StoredSessionV2 =
-                postcard::from_bytes(&bytes[1..]).map_err(EncodingError::Payload)?;
+                postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
             let mut session: StoredSession = v.into();
             // The agent tombstone is authoritative for every named side session.
             // Deleting a computer cannot atomically rewrite an unbounded set
@@ -579,8 +616,34 @@ impl Store {
             postcard::to_allocvec(&StoredSessionV2::from(session))
                 .map_err(EncodingError::Payload)?,
         );
-        if bytes.len() > INLINE_LIMIT {
+        if bytes.len() > SESSION_MAX_BYTES {
             return Err(StoreError::TooLarge);
+        }
+        let (begin, end) = self
+            .root
+            .subspace(&(
+                "session_chunk",
+                session.session_id.as_ulid().to_bytes().as_slice(),
+            ))
+            .range();
+        trx.clear_range(&begin, &end);
+        if bytes.len() > INLINE_LIMIT {
+            let payload = &bytes[1..];
+            let count = u16::try_from(payload.len().div_ceil(INLINE_LIMIT))
+                .map_err(|_| StoreError::TooLarge)?;
+            for (index, chunk) in payload.chunks(INLINE_LIMIT).enumerate() {
+                trx.set(
+                    &self.session_chunk_key(
+                        session.session_id,
+                        u16::try_from(index).map_err(|_| StoreError::TooLarge)?,
+                    ),
+                    chunk,
+                );
+            }
+            bytes.truncate(1);
+            bytes.push(SESSION_CHUNK_MARKER);
+            bytes.extend(session.session_id.as_ulid().to_bytes());
+            bytes.extend(count.to_be_bytes());
         }
         trx.set(&self.session_key(session.session_id), &bytes);
         let id = session.session_id;
@@ -603,12 +666,12 @@ impl Store {
     /// Rewrite remaining V1 sessions in bounded scan pages. Concurrent writers
     /// are safe: each rewrite reads the header in its committing transaction.
     /// # Errors
-    /// Returns storage or decoding errors; callers may retry from the start.
-    pub async fn migrate_legacy_sessions(&self) -> Result<usize> {
+    /// Returns scan and transaction errors; malformed individual rows are skipped.
+    pub async fn migrate_legacy_sessions(&self) -> Result<SessionMigration> {
         let mut after = None;
-        let mut migrated = 0;
+        let mut outcome = SessionMigration::default();
         loop {
-            let page: Vec<SessionId> = self
+            let page: Vec<(SessionId, bool)> = self
                 .transaction(|trx| async move {
                     let (mut begin, end) = self.root.subspace(&("session",)).range();
                     if let Some(id) = after {
@@ -616,10 +679,13 @@ impl Store {
                         begin.push(0);
                     }
                     let mut ids = Vec::new();
-                    for (key, _) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
+                    for (key, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
                         let (_, bytes): (String, Vec<u8>) =
                             self.root.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-                        ids.push(keys::session_id(bytes)?);
+                        ids.push((
+                            keys::session_id(bytes)?,
+                            value.first() != Some(&SESSION_RECORD_VERSION),
+                        ));
                     }
                     Ok(ids)
                 })
@@ -627,25 +693,40 @@ impl Store {
             if page.is_empty() {
                 break;
             }
-            after = page.last().copied();
-            for id in page {
-                migrated += usize::from(
-                    self.transaction(|trx| async move {
+            after = page.last().map(|(id, _)| *id);
+            for (id, legacy) in page {
+                if !legacy {
+                    continue;
+                }
+                let result = self
+                    .transaction(|trx| async move {
                         let Some(value) = trx.get(&self.session_key(id), false).await? else {
                             return Ok(false);
                         };
-                        if value.first() == Some(&2) {
+                        if value.first() == Some(&SESSION_RECORD_VERSION) {
                             return Ok(false);
                         }
                         let session = self.hydrate_legacy_session(&trx, decode(&value)?).await?;
                         self.write_session(&trx, &session)?;
                         Ok(true)
                     })
-                    .await?,
-                );
+                    .await;
+                match result {
+                    Ok(true) => outcome.migrated += 1,
+                    Ok(false) => {}
+                    Err(
+                        error @ (StoreError::Encoding(_)
+                        | StoreError::TooLarge
+                        | StoreError::Corrupt),
+                    ) => {
+                        tracing::warn!(%id, %error, "skipping invalid legacy session");
+                        outcome.skipped += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
-        Ok(migrated)
+        Ok(outcome)
     }
 
     /// Create an empty session and pin its registered image in the same transaction.

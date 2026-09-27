@@ -299,7 +299,6 @@ impl Store {
             }),
             agent.unwrap_or_else(|| AgentId::from_ulid(ulid::Ulid::generate())),
             settings,
-            now,
         );
         self.create_session_record(&session, now, options.image)
             .await?;
@@ -473,7 +472,6 @@ impl Store {
                 SessionKind::Named { agent_id: agent },
                 agent,
                 SessionSettings::new(id),
-                now,
             );
             self.create_session_in(&trx, &session, now, None).await?;
             record.main_session = Some(id);
@@ -560,7 +558,6 @@ impl Store {
                     },
                     agent.agent_id,
                     SessionSettings::new(id),
-                    now,
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 let mut created = self.session(&trx, id).await?;
@@ -651,7 +648,6 @@ impl Store {
                     },
                     agent.agent_id,
                     settings,
-                    now,
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)

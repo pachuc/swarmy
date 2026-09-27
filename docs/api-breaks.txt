@@ -5,3 +5,5 @@
 # accepted and the reason it is safe.
 # 2026-09-27: LogId channel one-of member removed: reserved variant never implemented; swarmy is currently its own only client.
 PUT /v1/events/{connection_id}/subscription removed `subschema #2` from the `cursors/items/log_id` request property `oneOf` list
+
+Session V2 storage is a one-way upgrade. Scheduler boot migrates V1 sessions; older binaries cannot read them. Upgrade the whole swarm together with `swarmy remote upgrade` (all nodes before services restart); do not roll back past this change.

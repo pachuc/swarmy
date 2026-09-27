@@ -273,10 +273,7 @@ impl Store {
             {
                 // Timers are lease-fenced to their agent, so a mismatched origin
                 // only means stale state: fall through to the main conversation.
-                if let Some(session) = self
-                    .fetch_session_in(&trx, origin)
-                    .await?
-                    .map(|(session, _)| session)
+                if let Ok(session) = self.session(&trx, origin).await
                     && session.agent_id == agent.agent_id
                     && session.state == SessionState::Idle
                 {
@@ -300,7 +297,6 @@ impl Store {
                     },
                     agent.agent_id,
                     swarmy_core::SessionSettings::new(id),
-                    now,
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 agent.main_session = Some(id);

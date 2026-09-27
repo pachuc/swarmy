@@ -2,6 +2,32 @@ use super::*;
 use swarmy_core::{AgentRecord, AgentSettings, ReasoningEffort, SessionKind};
 use swarmy_store::{AgentSessionOptions, CreateAgentOptions};
 
+// Restore the frozen V1 header so clearing a side row exercises legacy hydration.
+async fn restore_v1_header(test: &TestStore, session: &SessionRecord) {
+    let key = test.root.pack(&(
+        "session",
+        session.session_id.as_ulid().to_bytes().as_slice(),
+    ));
+    let bytes = encode(&(
+        session.session_id,
+        session.agent_id,
+        session.state,
+        session.head_seq,
+        None::<u64>,
+    ))
+    .unwrap();
+    test.db
+        .run(|trx, _| {
+            let (key, bytes) = (&key, &bytes);
+            async move {
+                trx.set(key, bytes);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     let Some(test) = TestStore::memory() else {
@@ -189,6 +215,7 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
             .unwrap(),
         vec![session.clone()]
     );
+    restore_v1_header(&test, &session).await;
     // Simulate an old writer with no kind row and the unchanged session header.
     let key = test
         .root
@@ -815,6 +842,8 @@ async fn legacy_session_without_selection_row_inherits_defaults() {
         return;
     };
     let id = test.create().await;
+    let session = test.store.fetch_session(id).await.unwrap().unwrap();
+    restore_v1_header(&test, &session).await;
     let key = test
         .root
         .pack(&("session_inference", id.as_ulid().to_bytes().as_slice()));

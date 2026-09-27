@@ -64,7 +64,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     match store.migrate_legacy_sessions().await {
-        Ok(migrated) => tracing::info!(migrated, "session V1 migration finished"),
+        Ok(result) => tracing::info!(
+            migrated = result.migrated,
+            skipped = result.skipped,
+            "session V1 migration finished"
+        ),
         Err(error) => {
             tracing::warn!(%error, "session migration incomplete; continuing with legacy reads");
         }

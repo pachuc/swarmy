@@ -118,15 +118,9 @@ impl SessionSettings {
 }
 
 impl SessionRecord {
-    /// Build a fresh idle session. The creation timestamp belongs to the
-    /// store's state-since field, not to the public session record.
+    /// Build a fresh idle session.
     #[must_use]
-    pub fn new(
-        kind: SessionKind,
-        agent: AgentId,
-        settings: SessionSettings,
-        _now: Timestamp,
-    ) -> Self {
+    pub fn new(kind: SessionKind, agent: AgentId, settings: SessionSettings) -> Self {
         Self {
             interrupt_requested: false,
             kind,
