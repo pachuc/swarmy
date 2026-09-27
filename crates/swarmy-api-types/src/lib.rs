@@ -1,7 +1,7 @@
 //! Public JSON contract for the versioned control plane API.
 //! This crate intentionally has no dependency on storage or transport.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 mod metrics;
 pub use metrics::{
     AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, StageTiming, ToolMetric,
@@ -670,17 +670,47 @@ pub struct Event {
 }
 
 /// The typed body of a `store_record` payload: a durable session-log entry
-/// or a live turn-timeline observation. Untagged so each side serializes
-/// exactly as it did when the field carried untyped JSON, which keeps the
-/// outer `store_record` tag and the `record` field name stable for older
-/// clients that decode the record as a value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+/// or a live turn-timeline observation. Each side serializes exactly as it
+/// did when the field carried untyped JSON, which keeps the outer
+/// `store_record` tag and the `record` field name stable for older clients
+/// that decode the record as a value.
+///
+/// The serde impls are manual: the derived untagged form cannot round-trip
+/// turn observations because serde's content buffer has no 128-bit integer
+/// for their wall-clock field, so decoding goes through a JSON value and
+/// tries the durable shape before the timeline shape. The two shapes are
+/// disjoint (single-key tag maps versus observation structs), so the order
+/// never misclassifies.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordBody {
     /// A durable session-log entry, replayed from the store.
     Event(swarmy_core::Event),
     /// A live turn-timeline observation, never replayed.
     Timeline(swarmy_core::TurnEvent),
+}
+
+impl Serialize for RecordBody {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Event(event) => event.serialize(serializer),
+            Self::Timeline(observation) => observation.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match serde_json::from_value::<swarmy_core::Event>(value.clone()) {
+            Ok(event) => Ok(Self::Event(event)),
+            Err(event_error) => match serde_json::from_value::<swarmy_core::TurnEvent>(value) {
+                Ok(observation) => Ok(Self::Timeline(observation)),
+                Err(timeline_error) => Err(serde::de::Error::custom(format!(
+                    "record is neither a stored event ({event_error}) nor a timeline observation ({timeline_error})"
+                ))),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1359,7 +1389,7 @@ mod tests {
         // arrive under the `store_record` tag; older clients decode the
         // record as a value, so the tag and field name never change.
         let stored = serde_json::json!({"state_changed":{"seq":1,"from":"runnable","to":"idle"}});
-        let observation = serde_json::json!({"session_id":"01J0000000000000000000000","turn_id":"01J0000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
+        let observation = serde_json::json!({"session_id":"01J00000000000000000000000","turn_id":"01J00000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
         let payloads = [
             serde_json::json!({"type":"message_appended","data":{"message":message}}),
             serde_json::json!({"type":"turn_started","data":{"turn":turn}}),
