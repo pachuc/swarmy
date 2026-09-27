@@ -12,15 +12,25 @@ impl Worker {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
         }
-        let Some(request_id) = events.iter().rev().find_map(|event| match event {
-            Event::InferenceCompleted { request_id, .. }
-            | Event::InferenceFailed {
-                request_id,
-                retryable: false,
-                ..
-            } => Some(*request_id),
-            _ => None,
-        }) else {
+        let Some(request_id) = events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(
+                    event,
+                    Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
+                )
+            })
+            .and_then(|event| match event {
+                Event::InferenceCompleted { request_id, .. }
+                | Event::InferenceFailed {
+                    request_id,
+                    retryable: false,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+        else {
             return Ok(false);
         };
         Ok(self
@@ -266,7 +276,21 @@ impl Worker {
         let summary = if let Some(summary) = parse_summary(&text) {
             summary
         } else if !is_main && !text.trim().is_empty() {
-            tracing::warn!(session_id = %session.session_id, reason = "unparseable summary reply", "rolling over side session with raw summary");
+            let stop_reason = if let Some(Event::InferenceCompleted { request_id, .. }) = events
+                .iter()
+                .rev()
+                .find(|event| matches!(event, Event::InferenceCompleted { .. }))
+            {
+                self.store
+                    .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                    .await?
+                    .and_then(std::result::Result::ok)
+                    .map(|response| format!("{:?}", response.stop_reason))
+                    .unwrap_or_else(|| "unknown".into())
+            } else {
+                "unknown".into()
+            };
+            tracing::warn!(session_id = %session.session_id, %stop_reason, "unparseable summary reply; rolling over side session with raw summary");
             swarmy_core::ConversationSummary {
                 goals: String::new(),
                 state_of_work: text,
@@ -389,7 +413,8 @@ fn parse_summary(text: &str) -> Option<swarmy_core::ConversationSummary> {
     let text = text.strip_suffix("```").unwrap_or(text).trim();
     let json = text.get(text.find('{')?..=text.rfind('}')?)?;
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let field = |name: &str| match value.get(name) {
+    let object = value.as_object()?;
+    let field = |name: &str| match object.get(name) {
         Some(serde_json::Value::String(text)) => text.clone(),
         Some(value) => value.to_string(),
         None => String::new(),
