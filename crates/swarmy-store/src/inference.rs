@@ -75,7 +75,7 @@ impl Store {
     /// and storage failures.
     pub async fn start_inference(&self, claim: &InferenceClaim, now: Timestamp) -> Result<bool> {
         if claim.expires_at <= now {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
         }
         let requested = self
             .prepare(&IdempotencyRecord {
@@ -108,12 +108,15 @@ impl Store {
                     return Ok(false);
                 }
                 if session.state != SessionState::WaitingInference {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(
+                        crate::DomainError::UnexpectedSessionState,
+                    ));
                 }
-                let inflight = inflight.ok_or(StoreError::InvalidState)?;
+                let inflight =
+                    inflight.ok_or(StoreError::Domain(crate::DomainError::MissingInflight))?;
                 let inflight: InflightRecord = self.hydrate(&inflight).await?;
                 if inflight.session_id != claim.session_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::InflightMismatch));
                 }
                 write(&trx, &key, claim)?;
                 trx.set(&idem_key, requested);
@@ -174,7 +177,9 @@ impl Store {
             || RequestId::for_step(completion.claim.session_id, completion.expected_head)
                 != completion.claim.request_id
         {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(
+                crate::DomainError::InvalidInferenceCompletion,
+            ));
         }
         self.complete_inference_inner(completion, response, Some(snapshot))
             .await
@@ -190,7 +195,7 @@ impl Store {
         let head = completion
             .expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let mut event = completion.event.clone();
         match &mut event {
             Event::InferenceCompleted {
@@ -199,7 +204,11 @@ impl Store {
             | Event::InferenceFailed {
                 seq, request_id, ..
             } if *request_id == claim.request_id => *seq = head,
-            _ => return Err(StoreError::InvalidState),
+            _ => {
+                return Err(StoreError::Domain(
+                    crate::DomainError::InvalidInferenceCompletion,
+                ));
+            }
         }
         let event = self.prepare(&event).await?;
         let response = self.prepare(response).await?;
@@ -265,21 +274,23 @@ impl Store {
                     return Ok(false);
                 }
             }
-            let current = current.ok_or(StoreError::LeaseMismatch)?;
+            let current = current.ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
             if current.owner != claim.owner
                 || current.session_id != claim.session_id
                 || current.expires_at <= now
             {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             if session.head_seq != completion.expected_head {
-                return Err(StoreError::StaleSequence {
+                return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                     expected: completion.expected_head,
                     actual: session.head_seq,
-                });
+                }));
             }
             if session.state != SessionState::WaitingInference {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Domain(
+                    crate::DomainError::UnexpectedSessionState,
+                ));
             }
             if matches!(&completion.event, Event::InferenceCompleted { .. }) {
                 self.record_completion_metering(
@@ -407,7 +418,7 @@ impl Store {
     ) -> Result<()> {
         let step = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let request_id = RequestId::for_step(session_id, step);
         let value = self.prepare(input).await?;
         self.transaction(|trx| {
@@ -417,10 +428,10 @@ impl Store {
                     .await?;
                 let session = self.session(&trx, session_id).await?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 trx.set(
                     &crate::keys::Keys::new(&self.root).inference_input(request_id),
@@ -471,7 +482,7 @@ impl Store {
                 != crate::keys::Keys::new(&self.root)
                     .inflight(RequestId::for_step(record.session_id, record.seq))
             {
-                return Err(StoreError::Corrupt);
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
             }
             records.push(record);
         }
@@ -491,7 +502,9 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         if RequestId::for_step(record.session_id, record.seq) != id {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(
+                crate::DomainError::InvalidInferenceRequest,
+            ));
         }
         let value = self.prepare(record).await?;
         self.transaction(|trx| {

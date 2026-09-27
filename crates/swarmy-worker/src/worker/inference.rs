@@ -185,7 +185,8 @@ impl Worker {
                     message: swarmy_core::Message {
                         id: MessageId::from_ulid(Ulid::generate()),
                         role: swarmy_core::MessageRole::System,
-                        parts: vec![swarmy_core::Part::Text {
+                        parts: vec![swarmy_core::Part::Notice {
+                            kind: swarmy_core::NoticeKind::EffortClamped,
                             text: format!(
                                 "Reasoning effort clamped from {} to {effort} for {}/{}",
                                 selection.effort, step.provider, model_id
@@ -438,9 +439,7 @@ impl Worker {
                 provider,
                 retryable,
             } => (
-                format!(
-                    "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
-                ),
+                format!("no gateway serves provider {provider}"),
                 retryable,
                 retryable
                     .then(|| now.checked_add(self.config.gateway_wait))
@@ -456,6 +455,10 @@ impl Worker {
             error,
             retryable,
             retry_at,
+            failure_kind: match kind {
+                StepFailure::Unserved { .. } => swarmy_core::FailureKind::GatewayUnserved,
+                StepFailure::Publication(_) => swarmy_core::FailureKind::Publication,
+            },
         };
         let committed = self
             .store
@@ -537,8 +540,8 @@ impl Worker {
             for event in events {
                 after = event.seq();
                 if let Event::MessageAppended { message, .. } = event
-                    && message.role == swarmy_core::MessageRole::System
-                    && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("Reasoning effort clamped from "))) {
+                    && is_effort_notice(&message)
+                {
                     return Ok(true);
                 }
             }
@@ -579,5 +582,36 @@ pub(super) fn omit_unsupported_images(request: &mut swarmy_llm::Request) {
                 metadata.remove("image_media_type");
             }
         }
+    }
+}
+
+/// Old rows used text parts for the clamp notice; only system messages count.
+fn is_effort_notice(message: &swarmy_core::Message) -> bool {
+    message.role == swarmy_core::MessageRole::System
+        && message.parts.iter().any(|part| match part {
+            swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::EffortClamped,
+                ..
+            } => true,
+            swarmy_core::Part::Text { text } => text.starts_with("Reasoning effort clamped from "),
+            _ => false,
+        })
+}
+
+#[cfg(test)]
+mod legacy_notice_tests {
+    use super::is_effort_notice;
+    use swarmy_core::{Message, MessageId, MessageRole, Part};
+
+    #[test]
+    fn old_clamp_text_still_counts_as_a_notice() {
+        let message = Message {
+            id: MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::System,
+            parts: vec![Part::Text {
+                text: "Reasoning effort clamped from high to medium".into(),
+            }],
+        };
+        assert!(is_effort_notice(&message));
     }
 }

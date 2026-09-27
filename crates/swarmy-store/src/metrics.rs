@@ -638,7 +638,7 @@ fn decode_summary(bytes: &[u8]) -> Result<DecodedSummary> {
                 ));
             }
             StoredTurnMetrics::V2Inference(_) | StoredTurnMetrics::V2Tool(_) => {
-                return Err(StoreError::Corrupt);
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
             }
         }
     }
@@ -663,7 +663,7 @@ fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
     if let Ok(row) = decode::<StoredTurnInferenceV2>(bytes) {
         return Ok(row);
     }
-    Err(StoreError::Corrupt)
+    Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
 fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
@@ -673,7 +673,7 @@ fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
     if let Ok(row) = decode::<ToolMetric>(bytes) {
         return Ok(StoredToolMetricV2::from_public(&row));
     }
-    Err(StoreError::Corrupt)
+    Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
 /// One worker dispatch folds the tool name into the dispatch stage it already
@@ -1238,7 +1238,7 @@ async fn scan_reverse(
     limit: usize,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     if !(1..=MAX_SCAN_LIMIT).contains(&limit) {
-        return Err(crate::StoreError::InvalidLimit);
+        return Err(crate::StoreError::Domain(crate::DomainError::InvalidLimit));
     }
     let options = RangeOption {
         limit: Some(limit),
@@ -1624,7 +1624,11 @@ impl Store {
             match attempted {
                 // Wait batches are not replayed: the increment is not
                 // idempotent, so a landed commit would double-count.
-                Err(StoreError::CommitUnknown) if attempts == 0 && !has_wait => attempts += 1,
+                Err(StoreError::Storage(crate::StorageError::CommitUnknown))
+                    if attempts == 0 && !has_wait =>
+                {
+                    attempts += 1;
+                }
                 other => return other,
             }
         }
@@ -1745,12 +1749,12 @@ impl Store {
             .session_id
             .parse()
             .map(SessionId::from_ulid)
-            .map_err(|_| StoreError::Corrupt)?;
+            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         let turn: MessageId = summary
             .turn_id
             .parse()
             .map(MessageId::from_ulid)
-            .map_err(|_| StoreError::Corrupt)?;
+            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         let (inference_rows, tool_rows) = self.turn_rows(session, turn).await?;
         Ok(assemble_turn(
             &summary,
@@ -1917,7 +1921,7 @@ impl Store {
         let record = self
             .get_agent(agent)
             .await?
-            .ok_or(crate::StoreError::AgentMissing)?;
+            .ok_or(crate::StoreError::Domain(crate::DomainError::AgentMissing))?;
         let mut output = AgentMetrics {
             agent_id: agent.to_string(),
             main_session_id: record.main_session.map(|id| id.to_string()),

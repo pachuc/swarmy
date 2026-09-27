@@ -157,7 +157,7 @@ impl Hosting {
             Ok(None) => return Ok(()),
             // The store's fence check is the guard; read placements afterwards
             // only to explain a refusal for a job fenced to another node.
-            Err(swarmy_store::StoreError::LeaseMismatch) => {
+            Err(swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)) => {
                 if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
                     let current = self.store.get_by_agent(dispatched.agent_id).await?;
                     if let Some(refusal) =
@@ -166,7 +166,10 @@ impl Hosting {
                         return Err(refusal);
                     }
                 }
-                return Err(swarmy_store::StoreError::LeaseMismatch.into());
+                return Err(swarmy_store::StoreError::Fence(
+                    swarmy_store::FenceError::PlacementMismatch,
+                )
+                .into());
             }
             Err(error) => return Err(error.into()),
         };
@@ -519,8 +522,8 @@ impl Hosting {
             match self.store.put_agent_call_status(&status).await {
                 Ok(())
                 | Err(
-                    swarmy_store::StoreError::LeaseMismatch
-                    | swarmy_store::StoreError::ComputerDeleted,
+                    swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)
+                    | swarmy_store::StoreError::Domain(swarmy_store::DomainError::ComputerDeleted),
                 ) => {}
                 Err(error) => return Err(error.into()),
             }

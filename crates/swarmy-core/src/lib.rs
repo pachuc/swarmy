@@ -17,12 +17,12 @@ mod volume;
 
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use encoding::{json, trailing};
-pub use event::{Event, interrupted_event};
+pub use event::{Event, FailureKind, interrupted_event};
 pub use id::{
     AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
     SessionId, TimerId, VolumeId,
 };
-pub use message::{Message, MessageRole, Part, ToolCallId, ToolCallRecord, ToolResult};
+pub use message::{Message, MessageRole, NoticeKind, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
 pub use session::{
     ConversationSummary, Lease, SessionKind, SessionRecord, SessionSettings, SessionState,
@@ -81,7 +81,9 @@ pub use timer::{
 };
 
 pub mod credential;
-pub use credential::{CredentialKind, CredentialRecord, CredentialScope, CredentialStatus};
+pub use credential::{
+    CredentialBookkeeping, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus,
+};
 
 pub mod quota;
 

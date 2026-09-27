@@ -137,6 +137,7 @@ async fn assert_resource_projections(
 
 async fn assert_credential_entries(client: &swarmy_client::Client) {
     let record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: swarmy_core::CredentialKind::ApiKey {
             key: "synthetic-test-value".into(),
             extra: std::collections::BTreeMap::from([("label".into(), "fixture".into())]),

@@ -25,6 +25,7 @@ impl FakeFailure {
     #[must_use]
     pub fn error(&self) -> Error {
         Error::ProviderResponse {
+            reason: crate::classify_provider_failure(&self.message),
             status: reqwest::StatusCode::from_u16(self.status)
                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
             message: self.message.clone(),

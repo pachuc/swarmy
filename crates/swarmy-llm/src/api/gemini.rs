@@ -119,6 +119,7 @@ impl GeminiProvider {
         if retryable(status) {
             return Err(Error::ProviderResponse {
                 status,
+                reason: crate::classify_provider_failure(&body),
                 message: body,
                 retry_after,
             });
@@ -256,7 +257,7 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
                 } => {
                     json!({"inlineData": {"mimeType": media_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}})
                 }
-                Part::Text { text } => json!({"text": text}),
+                Part::Text { text } | Part::Notice { text, .. } => json!({"text": text}),
                 Part::Reasoning { text, metadata } => {
                     let meta = metadata.get("google");
                     if meta.is_some_and(|m| m.get("target_index").is_some()) {

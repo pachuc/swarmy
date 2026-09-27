@@ -151,7 +151,7 @@ fn is_combined(dimension: MeteringDimension) -> bool {
 fn split_combined_key(key: &str) -> Result<(String, String)> {
     key.split_once('/')
         .map(|(owner, entry)| (owner.to_owned(), entry.to_owned()))
-        .ok_or(StoreError::Corrupt)
+        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
 fn add(trx: &Transaction, key: &[u8], delta: u64) {
@@ -533,8 +533,9 @@ impl Store {
             let prefix = crate::keys::Keys::new(&self.root)
                 .metering_hour_space_owner(dimension.as_str(), owner.as_str());
             for (raw_key, value) in &rows {
-                let (hour, row_entry, field): (i64, String, String) =
-                    prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+                let (hour, row_entry, field): (i64, String, String) = prefix
+                    .unpack(raw_key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 if row_entry == entry && FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
@@ -545,8 +546,9 @@ impl Store {
         } else {
             let prefix = crate::keys::Keys::new(&self.root).metering_hour_space(dimension.as_str());
             for (raw_key, value) in &rows {
-                let (hour, row_key, field): (i64, String, String) =
-                    prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+                let (hour, row_key, field): (i64, String, String) = prefix
+                    .unpack(raw_key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 if row_key == key && FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
@@ -614,8 +616,9 @@ impl Store {
         // every row in the slice folds exactly once.
         let mut folded: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
-            let (hour, _key, field): (i64, String, String) =
-                prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+            let (hour, _key, field): (i64, String, String) = prefix
+                .unpack(raw_key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             if FIELDS.contains(&field.as_str()) {
                 fold_row(&mut folded, hour, field, counter(value));
             }
@@ -658,8 +661,9 @@ impl Store {
             crate::keys::Keys::new(&self.root).metering_hour_space_owner(dimension.as_str(), owner);
         let mut folded: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
-            let (_hour, entry, field): (i64, String, String) =
-                prefix.unpack(raw_key).map_err(|_| StoreError::Corrupt)?;
+            let (_hour, entry, field): (i64, String, String) = prefix
+                .unpack(raw_key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             if FIELDS.contains(&field.as_str()) {
                 fold_row(&mut folded, entry, field, counter(value));
             }
@@ -751,11 +755,14 @@ impl Store {
         }
         let mut stale = Vec::with_capacity(rows.len() * 2);
         for (index_key, _) in &rows {
-            let (_, request): (i64, Vec<u8>) =
-                prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
+            let (_, request): (i64, Vec<u8>) = prefix
+                .unpack(index_key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             let record_key = crate::keys::Keys::new(&self.root).usage_record(
                 swarmy_core::RequestId::from_bytes(
-                    request.try_into().map_err(|_| StoreError::Corrupt)?,
+                    request
+                        .try_into()
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 ),
             );
             stale.push(index_key.clone());
@@ -799,11 +806,14 @@ impl Store {
         }
         let mut pairs = Vec::with_capacity(rows.len());
         for (index_key, _) in &rows {
-            let (_, request): (i64, Vec<u8>) =
-                prefix.unpack(index_key).map_err(|_| StoreError::Corrupt)?;
+            let (_, request): (i64, Vec<u8>) = prefix
+                .unpack(index_key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             let record_key = crate::keys::Keys::new(&self.root).usage_record(
                 swarmy_core::RequestId::from_bytes(
-                    request.try_into().map_err(|_| StoreError::Corrupt)?,
+                    request
+                        .try_into()
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 ),
             );
             pairs.push((index_key.clone(), record_key));

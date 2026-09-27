@@ -20,7 +20,7 @@ impl Store {
 
     pub(crate) async fn check_computer(&self, trx: &Transaction, agent: AgentId) -> Result<()> {
         if self.computer_deleted(trx, agent).await? {
-            return Err(StoreError::ComputerDeleted);
+            return Err(StoreError::Domain(crate::DomainError::ComputerDeleted));
         }
         Ok(())
     }
@@ -81,7 +81,7 @@ impl Store {
                     .await?
                     .is_some_and(|agent| agent.main_session == Some(id))
                 {
-                    return Err(StoreError::MainSessionClose);
+                    return Err(StoreError::Domain(crate::DomainError::MainSessionClose));
                 }
             }
         }
@@ -101,7 +101,7 @@ impl Store {
     ) -> Result<usize> {
         let cutoff = now
             .checked_sub(retention)
-            .map_err(|_| StoreError::InvalidState)?;
+            .map_err(|_| StoreError::Domain(crate::DomainError::InvalidRetention))?;
         let mut cursor = None;
         let mut closed = 0;
         loop {

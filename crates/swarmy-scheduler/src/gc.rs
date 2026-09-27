@@ -16,7 +16,9 @@ pub async fn run(
         tokio::time::sleep(Duration::from_secs(policy.interval_seconds.get())).await;
         match swarmy_volume::gc::collect(store, objects.clone(), policy, false).await {
             Ok(run) => tracing::info!(?run, "chunk collection finished"),
-            Err(VolumeError::Store(StoreError::LeaseMismatch)) => {
+            Err(VolumeError::Store(StoreError::Fence(
+                swarmy_store::FenceError::GcLeaseMismatch,
+            ))) => {
                 tracing::debug!("collector lease busy or lost; retry next interval");
             }
             Err(error) => tracing::error!(%error, "chunk collection failed; retry next interval"),

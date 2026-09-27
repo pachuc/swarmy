@@ -42,7 +42,10 @@ impl Store {
             .await?;
         record
             .filter(|entry| entry.expires_at > self.now())
-            .map(|entry| serde_json::from_str(&entry.result).map_err(|_| StoreError::Corrupt))
+            .map(|entry| {
+                serde_json::from_str(&entry.result)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))
+            })
             .transpose()
     }
 
@@ -51,7 +54,8 @@ impl Store {
     /// Returns database and encoding errors.
     pub async fn put_api_replay(&self, key: &str, result: serde_json::Value) -> Result<()> {
         let entry = ApiReplay {
-            result: serde_json::to_string(&result).map_err(|_| StoreError::Corrupt)?,
+            result: serde_json::to_string(&result)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
             expires_at: self
                 .now()
                 .checked_add(jiff::Span::new().hours(1))
@@ -76,7 +80,8 @@ impl Store {
     /// # Errors
     /// Returns database and encoding failures.
     pub async fn remove_api_replay(&self, key: &str, expected: &serde_json::Value) -> Result<()> {
-        let expected = serde_json::to_string(expected).map_err(|_| StoreError::Corrupt)?;
+        let expected = serde_json::to_string(expected)
+            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         self.transaction(|trx| {
             let expected = &expected;
             async move {

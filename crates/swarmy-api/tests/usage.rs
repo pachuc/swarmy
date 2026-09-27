@@ -442,6 +442,7 @@ async fn usage_echoes_by_and_entry_quota_round_trips() {
             "openai",
             "main",
             &swarmy_core::CredentialRecord {
+                bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: swarmy_core::CredentialKind::ApiKey {
                     key: "test".into(),
                     extra: std::collections::BTreeMap::new(),

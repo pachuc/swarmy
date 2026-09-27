@@ -40,10 +40,10 @@ impl Store {
         let replay_key = options.replay_key;
         validate_github_token(github_token)?;
         if name.is_empty() || name.chars().any(char::is_control) {
-            return Err(StoreError::InvalidAgentName);
+            return Err(StoreError::Domain(crate::DomainError::InvalidAgentName));
         }
         if name.len() > 1024 || description.len() > crate::INLINE_LIMIT / 2 {
-            return Err(StoreError::TooLarge);
+            return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
         let id = AgentId::from_ulid(ulid::Ulid::generate());
         let result = self
@@ -55,13 +55,13 @@ impl Store {
                         && previous.expires_at > now
                     {
                         return serde_json::from_str(&previous.result)
-                            .map_err(|_| StoreError::Corrupt);
+                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt));
                     }
                 }
                 if trx.get(&self.agent_name_key(name), false).await?.is_some()
                     || trx.get(&self.agent_key(id), false).await?.is_some()
                 {
-                    return Err(StoreError::AgentExists);
+                    return Err(StoreError::Domain(crate::DomainError::AgentExists));
                 }
                 let image = self.resolve_image(&trx, image).await?;
                 if let Some(name) = settings.route.as_deref()
@@ -69,7 +69,7 @@ impl Store {
                         .await?
                         .is_none()
                 {
-                    return Err(StoreError::RouteMissing);
+                    return Err(StoreError::Domain(crate::DomainError::RouteMissing));
                 }
                 let default_memory: Option<u64> = read(
                     &trx,
@@ -100,7 +100,8 @@ impl Store {
                 }
                 write(&trx, &self.agent_name_key(name), &id)?;
                 if let Some(key) = replay_key {
-                    let result = serde_json::to_string(&record).map_err(|_| StoreError::Corrupt)?;
+                    let result = serde_json::to_string(&record)
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                     write(
                         &trx,
                         &crate::keys::Keys::new(&self.root).api_idempotency(key),
@@ -115,7 +116,10 @@ impl Store {
                 Ok(record)
             })
             .await;
-        if matches!(result, Err(StoreError::ImageMissing { .. })) {
+        if matches!(
+            result,
+            Err(StoreError::Domain(crate::DomainError::ImageMissing { .. }))
+        ) {
             return Err(self.unregistered_image(image).await?);
         }
         result
@@ -160,7 +164,7 @@ impl Store {
         validate_github_token(token)?;
         self.transaction(|trx| async move {
             if trx.get(&self.agent_key(id), false).await?.is_none() {
-                return Err(StoreError::AgentMissing);
+                return Err(StoreError::Domain(crate::DomainError::AgentMissing));
             }
             let key = self.agent_github_token_key(id);
             if let Some(token) = token {
@@ -217,20 +221,20 @@ impl Store {
             // Fail fast outside the write transaction; the transaction below
             // rechecks so a concurrent deletion cannot slip through.
             if self.get_route(name).await?.is_none() {
-                return Err(StoreError::RouteMissing);
+                return Err(StoreError::Domain(crate::DomainError::RouteMissing));
             }
         }
         self.transaction(|trx| async move {
             let mut agent = self
                 .read_agent(&trx, id)
                 .await?
-                .ok_or(StoreError::AgentMissing)?;
+                .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
             if let Some(name) = settings.route.as_deref()
                 && read::<RouteRecord>(&trx, &self.route_key(name))
                     .await?
                     .is_none()
             {
-                return Err(StoreError::RouteMissing);
+                return Err(StoreError::Domain(crate::DomainError::RouteMissing));
             }
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
@@ -242,7 +246,9 @@ impl Store {
                 .await?
                 .is_some()
             {
-                return Err(StoreError::ActiveSandboxRequirements);
+                return Err(StoreError::Domain(
+                    crate::DomainError::ActiveSandboxRequirements,
+                ));
             }
             write(&trx, &self.agent_key(id), &agent)?;
             Ok(agent)
@@ -320,17 +326,22 @@ impl Store {
             || session.interrupt_requested
             || !matches!(session.state, SessionState::Idle | SessionState::Runnable)
         {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(
+                crate::DomainError::UnexpectedSessionState,
+            ));
         }
         if matches!(session.kind, SessionKind::Named { .. }) && image.is_some() {
-            return Err(StoreError::NamedAgentImage);
+            return Err(StoreError::Domain(crate::DomainError::NamedAgentImage));
         }
         let result = self
             .transaction(
                 |trx| async move { self.create_session_in(&trx, session, now, image).await },
             )
             .await;
-        if matches!(result, Err(StoreError::ImageMissing { .. })) {
+        if matches!(
+            result,
+            Err(StoreError::Domain(crate::DomainError::ImageMissing { .. }))
+        ) {
             return Err(self.unregistered_image(image.unwrap_or_default()).await?);
         }
         result
@@ -346,14 +357,14 @@ impl Store {
         let id = session.session_id;
         let key = self.session_key(id);
         if trx.get(&key, false).await?.is_some() {
-            return Err(StoreError::SessionExists);
+            return Err(StoreError::Domain(crate::DomainError::SessionExists));
         }
         if let Some(name) = &session.route
             && read::<RouteRecord>(trx, &self.route_key(name))
                 .await?
                 .is_none()
         {
-            return Err(StoreError::RouteMissing);
+            return Err(StoreError::Domain(crate::DomainError::RouteMissing));
         }
         self.check_computer(trx, session.agent_id).await?;
         let selected = match session.kind {
@@ -365,18 +376,23 @@ impl Store {
                     .await?
                     .is_some()
                 {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(
+                        crate::DomainError::SessionComputerExists,
+                    ));
                 }
-                self.resolve_image(trx, image.ok_or(StoreError::SessionImageRequired)?)
-                    .await?
+                self.resolve_image(
+                    trx,
+                    image.ok_or(StoreError::Domain(crate::DomainError::SessionImageRequired))?,
+                )
+                .await?
             }
             SessionKind::Named { agent_id } => {
                 if agent_id != session.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::SessionAgentMismatch));
                 }
                 self.read_agent(trx, agent_id)
                     .await?
-                    .ok_or(StoreError::AgentMissing)?
+                    .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?
                     .image
             }
         };
@@ -397,7 +413,7 @@ impl Store {
             plan: session.plan.clone(),
         }
         .validate()
-        .map_err(|_| StoreError::InvalidState)?;
+        .map_err(|_| StoreError::Domain(crate::DomainError::InvalidSessionRecord))?;
         write(trx, &self.session_agent_key(session.agent_id, id), &id)?;
         self.write_session(
             trx,
@@ -437,13 +453,15 @@ impl Store {
         let (name, tag) = image
             .split_once(':')
             .filter(|(name, tag)| !name.is_empty() && !tag.is_empty() && !tag.contains(':'))
-            .ok_or(StoreError::InvalidImage)?;
+            .ok_or(StoreError::Domain(crate::DomainError::InvalidImage))?;
         let tag = ImageTag(tag.into());
         let manifest_id = read(trx, &self.image_key(name, &tag))
             .await?
-            .ok_or_else(|| StoreError::ImageMissing {
-                image: image.into(),
-                registered: String::new(),
+            .ok_or_else(|| {
+                StoreError::Domain(crate::DomainError::ImageMissing {
+                    image: image.into(),
+                    registered: String::new(),
+                })
             })?;
         Ok(ImageRecord {
             name: name.into(),
@@ -466,7 +484,7 @@ impl Store {
             let mut record = self
                 .read_agent(&trx, agent)
                 .await?
-                .ok_or(StoreError::AgentMissing)?;
+                .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
             self.check_computer(&trx, agent).await?;
             if let Some(main) = record.main_session {
                 return Ok((main, false));
@@ -492,14 +510,14 @@ impl Store {
             let mut record = self
                 .read_agent(&trx, agent)
                 .await?
-                .ok_or(StoreError::AgentMissing)?;
+                .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
             let session = self.session(&trx, id).await?;
             self.check_computer(&trx, agent).await?;
             if session.agent_id != agent
                 || session.kind != (SessionKind::Named { agent_id: agent })
                 || session.state == SessionState::Completed
             {
-                return Err(StoreError::InvalidMainSession);
+                return Err(StoreError::Domain(crate::DomainError::InvalidMainSession));
             }
             record.main_session = Some(id);
             write(&trx, &self.agent_key(agent), &record)
@@ -519,7 +537,7 @@ impl Store {
         opening: &swarmy_core::Message,
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         let id = SessionId::from_ulid(ulid::Ulid::generate());
         let event = swarmy_core::Event::MessageAppended {
@@ -529,7 +547,7 @@ impl Store {
         let opening = self.prepare(&event).await?;
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let archived = swarmy_core::Event::StateChanged {
             seq: head,
             from: SessionState::Leased,
@@ -543,17 +561,17 @@ impl Store {
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
                 if previous.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: previous.head_seq,
-                    });
+                    }));
                 }
                 let mut agent = self
                     .read_agent(&trx, previous.agent_id)
                     .await?
-                    .ok_or(StoreError::AgentMissing)?;
+                    .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
                 if agent.main_session != Some(old) {
-                    return Err(StoreError::InvalidMainSession);
+                    return Err(StoreError::Domain(crate::DomainError::InvalidMainSession));
                 }
                 let session = SessionRecord::new(
                     SessionKind::Named {
@@ -597,7 +615,7 @@ impl Store {
         tail: &[swarmy_core::Message],
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         // Keep the successor in the old session's runnable partition so the
         // same scheduler and worker continue the task without rebalancing.
@@ -617,24 +635,24 @@ impl Store {
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
                 if previous.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: previous.head_seq,
-                    });
+                    }));
                 }
                 let agent = self
                     .read_agent(&trx, previous.agent_id)
                     .await?
-                    .ok_or(StoreError::AgentMissing)?;
+                    .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
                 let kind = previous.kind;
                 let SessionKind::Named { agent_id } = kind else {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(crate::DomainError::InvalidSessionRecord));
                 };
                 if agent_id != agent.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::SessionAgentMismatch));
                 }
                 if agent.main_session == Some(old) {
-                    return Err(StoreError::InvalidMainSession);
+                    return Err(StoreError::Domain(crate::DomainError::InvalidMainSession));
                 }
                 let inference = previous.inference.clone();
                 let plan = previous.plan.clone();
@@ -657,7 +675,7 @@ impl Store {
                     .await?;
                 previous.head_seq = expected_head
                     .checked_add(1)
-                    .ok_or(StoreError::SequenceOverflow)?;
+                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
                 self.transition(&trx, previous, SessionState::Completed, now)
                     .await?;
                 write(&trx, &self.session_link_key("next", old), &id)?;
@@ -679,7 +697,7 @@ impl Store {
             let seq = u64::try_from(index)
                 .ok()
                 .and_then(|i| i.checked_add(1))
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             let event = swarmy_core::Event::MessageAppended {
                 seq,
                 message: message.clone(),
@@ -688,14 +706,15 @@ impl Store {
         }
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let archived = swarmy_core::Event::StateChanged {
             seq: head,
             from: SessionState::Leased,
             to: SessionState::Completed,
         };
         let archived_value = self.prepare(&archived).await?;
-        let new_head = u64::try_from(messages.len()).map_err(|_| StoreError::SequenceOverflow)?;
+        let new_head = u64::try_from(messages.len())
+            .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         Ok((prepared, archived_value, archived, new_head))
     }
 
@@ -715,7 +734,7 @@ impl Store {
             let seq = u64::try_from(index)
                 .ok()
                 .and_then(|i| i.checked_add(1))
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             trx.set(&self.event_key(id, seq), value);
         }
         let head = self
@@ -723,7 +742,7 @@ impl Store {
             .await?
             .head_seq
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         trx.set(&self.event_key(old, head), archived_value);
         Ok(())
     }
@@ -790,7 +809,11 @@ impl Store {
             .await?;
         let mut sessions = Vec::with_capacity(ids.len());
         for id in ids {
-            sessions.push(self.fetch_session(id).await?.ok_or(StoreError::Corrupt)?);
+            sessions.push(
+                self.fetch_session(id)
+                    .await?
+                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?,
+            );
         }
         Ok(sessions)
     }
@@ -800,7 +823,7 @@ fn validate_github_token(token: Option<&str>) -> Result<()> {
     if token.is_some_and(|token| {
         token.is_empty() || token.len() > 4096 || !token.bytes().all(|byte| byte.is_ascii_graphic())
     }) {
-        return Err(StoreError::InvalidGithubToken);
+        return Err(StoreError::Domain(crate::DomainError::InvalidGithubToken));
     }
     Ok(())
 }

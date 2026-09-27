@@ -121,7 +121,7 @@ impl Store {
             updated_at: now,
         })?;
         if value.len() > crate::INLINE_LIMIT {
-            return Err(crate::StoreError::TooLarge);
+            return Err(crate::StoreError::Storage(crate::StorageError::TooLarge));
         }
         self.transaction(|trx| {
             let key = &key;

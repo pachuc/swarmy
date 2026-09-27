@@ -38,7 +38,7 @@ impl Store {
             self.check_live_placement(&trx, placement).await?;
             let stored = self.session(&trx, session).await?;
             if stored.agent_id != placement.agent_id {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Fence(crate::FenceError::PlacementAgentMismatch));
             }
             let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
             let key = self.volume_placement_key(id);
@@ -51,13 +51,13 @@ impl Store {
                         old.node_id == placement.node_id && old.epoch == placement.epoch
                     })
                 {
-                    return Err(StoreError::LeaseMismatch);
+                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
                 }
             } else {
                 let manifest = stored
                     .image
                     .as_ref()
-                    .ok_or(StoreError::ManifestMissing)?
+                    .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?
                     .manifest_id;
                 write(
                     &trx,
@@ -85,7 +85,7 @@ impl Store {
             read::<PlacementRecord>(trx, &self.volume_placement_key(id)).await?
         {
             if owner.as_ulid() != placement.node_id.as_ulid() {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.check_live_placement(trx, &placement).await?;
         }
@@ -114,10 +114,10 @@ impl Store {
                 || session.state != SessionState::WaitingTools
                 || claim.expires_at <= self.now()
             {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
             }
             if self.hydrate::<ToolJob>(&value).await? != claim.job {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             let key = crate::keys::Keys::new(&self.root).placed_tool_claim(claim.job.request_id);
             if read::<StoredPlacedClaim>(&trx, &key)
@@ -152,13 +152,17 @@ impl Store {
             self.check_tool_dispatch(trx, &claim.job, &claim.placement),
             read::<StoredPlacedClaim>(trx, &key),
         )?;
-        let current = current.ok_or(StoreError::LeaseMismatch)?;
+        let current = current.ok_or(StoreError::Fence(
+            crate::FenceError::PlacedToolClaimMismatch,
+        ))?;
         if current.owner != claim.owner
             || current.job_digest != job_digest(&claim.job)?
             || current.placement != claim.placement
             || current.expires_at <= self.now()
         {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(
+                crate::FenceError::PlacedToolClaimMismatch,
+            ));
         }
         Ok(current)
     }
@@ -173,7 +177,9 @@ impl Store {
         self.transaction(|trx| async move {
             let mut current = self.check_placed_tool(&trx, claim).await?;
             if expires_at <= current.expires_at {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(
+                    crate::FenceError::PlacedToolClaimMismatch,
+                ));
             }
             current.expires_at = expires_at;
             write(
@@ -198,7 +204,7 @@ impl Store {
         let job = &claim.job;
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = self
             .prepare(&Event::ToolCallCompleted {
                 seq: head,
@@ -215,15 +221,15 @@ impl Store {
                     self.session(&trx, job.session_id),
                 )?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if session.state != SessionState::WaitingTools
                     || session.agent_id != claim.placement.agent_id
                 {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
                 }
                 trx.set(&self.event_key(job.session_id, head), event);
                 trx.clear(&crate::keys::Keys::new(&self.root).tool_job(job.request_id));

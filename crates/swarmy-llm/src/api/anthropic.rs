@@ -152,6 +152,7 @@ impl AnthropicProvider {
         if retryable(status) {
             return Err(Error::ProviderResponse {
                 status,
+                reason: crate::classify_provider_failure(&body),
                 message: body,
                 retry_after,
             });
@@ -350,7 +351,7 @@ fn content(part: &Part, request: &Request, endpoint: &Endpoint) -> Option<Value>
         } => {
             json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}})
         }
-        Part::Text { text } => {
+        Part::Text { text } | Part::Notice { text, .. } => {
             if text.is_empty() {
                 return None;
             }

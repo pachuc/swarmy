@@ -287,6 +287,28 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Provider response classification, independent of diagnostic wording.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProviderFailureReason {
+    #[default]
+    Other,
+    Quota,
+}
+
+/// Classify a provider payload at its HTTP boundary, before it becomes diagnostic text.
+#[must_use]
+pub fn classify_provider_failure(body: &str) -> ProviderFailureReason {
+    let text = body.to_ascii_lowercase();
+    if ["usage_limit", "usage limit", "rate_limit", "rate limit"]
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        ProviderFailureReason::Quota
+    } else {
+        ProviderFailureReason::Other
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unknown catalog model: {provider}/{model}")]
@@ -310,6 +332,7 @@ pub enum Error {
         status: reqwest::StatusCode,
         message: String,
         retry_after: Option<std::time::Duration>,
+        reason: ProviderFailureReason,
     },
     #[error("HTTP request failed with retryable status {status}")]
     Retryable {
@@ -482,6 +505,30 @@ mod job_tests {
         assert_eq!(
             swarmy_core::decode::<InferenceJobRef>(&encoded).unwrap(),
             reference
+        );
+    }
+}
+
+#[cfg(test)]
+mod provider_failure_reason_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_quota_payload_at_response_boundary() {
+        for payload in [
+            r#"{"error":{"code":"usage_limit_reached"}}"#,
+            r#"{"error":"rate_limit_exceeded"}"#,
+            "usage limit reached",
+            "rate limit exceeded",
+        ] {
+            assert_eq!(
+                classify_provider_failure(payload),
+                ProviderFailureReason::Quota
+            );
+        }
+        assert_eq!(
+            classify_provider_failure(r#"{"error":"invalid token"}"#),
+            ProviderFailureReason::Other
         );
     }
 }

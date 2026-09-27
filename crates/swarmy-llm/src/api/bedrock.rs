@@ -154,6 +154,7 @@ fn request_error(
     use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError as E;
     let Some(error) = error else {
         return Error::ProviderResponse {
+            reason: crate::ProviderFailureReason::Other,
             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
             message: "Bedrock request transport failed".into(),
             retry_after: None,
@@ -175,6 +176,7 @@ fn stream_error(error: Option<&sdk::error::ConverseStreamOutputError>) -> Error 
     use sdk::error::ConverseStreamOutputError as E;
     let Some(error) = error else {
         return Error::ProviderResponse {
+            reason: crate::ProviderFailureReason::Other,
             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
             message: "Bedrock event stream transport failed".into(),
             retry_after: None,
@@ -198,12 +200,14 @@ fn service_error(code: &str, message: Option<&str>) -> Error {
             Error::ContextOverflow(message.unwrap_or_default().into())
         }
         "ThrottlingException" | "ModelNotReadyException" => Error::ProviderResponse {
+            reason: crate::ProviderFailureReason::Other,
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
             message: format!("Bedrock {code}: {}", message.unwrap_or("service error")),
             retry_after: None,
         },
         "ServiceUnavailableException" | "InternalServerException" | "ModelTimeoutException" => {
             Error::ProviderResponse {
+                reason: crate::ProviderFailureReason::Other,
                 status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                 message: format!("Bedrock {code}: {}", message.unwrap_or("service error")),
                 retry_after: None,
@@ -520,7 +524,9 @@ fn part_block(part: &Part, model: &ModelInfo) -> Result<Option<ContentBlock>, Er
                     .map_err(build_error)?,
             ))
         }
-        Part::Text { text } => (!text.trim().is_empty()).then(|| ContentBlock::Text(text.clone())),
+        Part::Text { text } | Part::Notice { text, .. } => {
+            (!text.trim().is_empty()).then(|| ContentBlock::Text(text.clone()))
+        }
         Part::Reasoning { text, metadata } => reasoning(text, metadata, model)?,
         Part::ToolCall {
             call_id,

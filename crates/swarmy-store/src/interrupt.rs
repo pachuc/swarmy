@@ -22,10 +22,14 @@ impl Store {
             return Ok(false);
         };
         let event: Event = self.hydrate(&bytes).await?;
-        Ok(
-            matches!(event, Event::InferenceFailed { retryable: false, error, .. }
-            if error == "interrupted by operator"),
-        )
+        Ok(matches!(
+            event,
+            Event::InferenceFailed {
+                retryable: false,
+                failure_kind: swarmy_core::FailureKind::OperatorInterrupted,
+                ..
+            }
+        ))
     }
 
     pub(crate) fn interrupt_key(&self, id: SessionId) -> Vec<u8> {
@@ -39,23 +43,24 @@ impl Store {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
             match session.state {
-                SessionState::Idle | SessionState::Completed => Err(StoreError::NothingToInterrupt),
+                SessionState::Idle | SessionState::Completed => {
+                    Err(StoreError::Domain(crate::DomainError::NothingToInterrupt))
+                }
                 SessionState::Sleeping => {
                     let wait = read::<crate::InferenceWait>(&trx, &self.wait_key(id))
                         .await?
-                        .ok_or(StoreError::InvalidState)?;
+                        .ok_or(StoreError::Domain(crate::DomainError::MissingInferenceWait))?;
                     let request_id = if wait.last_failure_seq == 0 {
                         RequestId::for_step(
                             id,
-                            session
-                                .head_seq
-                                .checked_add(1)
-                                .ok_or(StoreError::SequenceOverflow)?,
+                            session.head_seq.checked_add(1).ok_or(StoreError::Storage(
+                                crate::StorageError::SequenceOverflow,
+                            ))?,
                         )
                     } else {
                         self.request_from_event(&trx, id, wait.last_failure_seq)
                             .await?
-                            .ok_or(StoreError::Corrupt)?
+                            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
@@ -101,7 +106,7 @@ impl Store {
                         session
                             .head_seq
                             .checked_add(1)
-                            .ok_or(StoreError::SequenceOverflow)?,
+                            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
                     ))
             };
             self.append_interrupted(&trx, session, request_id, self.now())
@@ -146,7 +151,7 @@ impl Store {
         let head = session
             .head_seq
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = swarmy_core::interrupted_event(head, request_id);
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
         trx.set(&self.event_key(session.session_id, head), &value);

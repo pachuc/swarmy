@@ -517,6 +517,7 @@ fn exhausted_inference_ends_the_turn_instead_of_retrying() {
             error: "provider failed".into(),
             retryable: false,
             retry_at: None,
+            failure_kind: swarmy_core::FailureKind::Unknown,
         },
     ];
     assert_eq!(step(&events), Action::EndTurn);
@@ -531,6 +532,7 @@ fn exhausted_inference_ends_the_turn_instead_of_retrying() {
             error: "stale".into(),
             retryable: false,
             retry_at: None,
+            failure_kind: swarmy_core::FailureKind::Unknown,
         },
     ];
     assert_eq!(step(&unrelated), Action::Wait);

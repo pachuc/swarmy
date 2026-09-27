@@ -45,6 +45,7 @@ impl Fixture {
                 provider,
                 label,
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: CredentialKind::ApiKey {
                         key: format!("{label}-key"),
                         extra: BTreeMap::new(),
@@ -93,11 +94,15 @@ async fn route_crud_validates_names_steps_and_providers() {
         f.store
             .put_route("", &[Fixture::step("openai", "default")])
             .await,
-        Err(StoreError::InvalidRoute(_))
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidRoute(
+            _
+        )))
     ));
     assert!(matches!(
         f.store.put_route("empty", &[]).await,
-        Err(StoreError::InvalidRoute(_))
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidRoute(
+            _
+        )))
     ));
     assert!(f.store.get_route("missing").await.unwrap().is_none());
     assert!(!f.store.delete_route("missing").await.unwrap());
@@ -508,6 +513,7 @@ async fn failover(
             lease,
             seq,
             error,
+            swarmy_core::FailureKind::Unknown,
             retry_at,
             step,
             Some("fallback"),
@@ -563,7 +569,7 @@ async fn session_route_assignment_validates_and_round_trips() {
                 })
             )
             .await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
     let id = routed_session(&f).await;
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
@@ -578,7 +584,7 @@ async fn session_route_assignment_validates_and_round_trips() {
     assert_eq!(record.route, None);
     assert!(matches!(
         f.store.set_session_route(id, Some("missing")).await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
 }
 
@@ -664,6 +670,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 &stale,
                 9,
                 "openai/primary: quota reached",
+                swarmy_core::FailureKind::Unknown,
                 retry_at,
                 0,
                 Some("fallback"),
@@ -674,7 +681,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 Duration::from_secs(3600),
             )
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     // Success restarts the chain for the next turn.
     f.store.clear_inference_wait(id).await.unwrap();
@@ -700,12 +707,14 @@ async fn agent_and_session_assignment_validate_routes() {
                 },
             )
             .await,
-        Err(StoreError::AgentMissing | StoreError::RouteMissing)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::AgentMissing | swarmy_store::DomainError::RouteMissing
+        ))
     ));
     let id = SessionId::from_ulid(ulid::Ulid::generate());
     assert!(matches!(
         f.store.set_session_route(id, Some("missing")).await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
 }
 
@@ -720,6 +729,7 @@ impl Fixture {
                 provider,
                 label,
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: CredentialKind::OAuth {
                         access: "stale-access".into(),
                         refresh: "stale-refresh".into(),
@@ -799,6 +809,7 @@ async fn failover_resume_after_advance_is_a_noop() {
             &lease,
             seq,
             "openai/primary: quota reached",
+            swarmy_core::FailureKind::Unknown,
             retry_at,
             route_step,
             Some("fallback"),
@@ -866,6 +877,7 @@ async fn failover_and_park_cost_one_transaction_each() {
             &lease,
             7,
             "openai/primary: quota reached",
+            swarmy_core::FailureKind::Unknown,
             retry_at,
             0,
             Some("fallback"),
@@ -899,6 +911,7 @@ async fn failover_and_park_cost_one_transaction_each() {
             &lease,
             8,
             "openai/backup: quota reached",
+            swarmy_core::FailureKind::Unknown,
             retry_at,
             1,
             Some("fallback"),

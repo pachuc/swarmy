@@ -38,9 +38,12 @@ impl Store {
         let mut size = 0;
         for (index, call) in calls.iter().enumerate() {
             let step = expected_head
-                .checked_add(u64::try_from(index).map_err(|_| StoreError::SequenceOverflow)?)
+                .checked_add(
+                    u64::try_from(index)
+                        .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+                )
                 .and_then(|head| head.checked_add(1))
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             let request_id = RequestId::for_step(id, step);
             let event = Event::ToolCallRequested {
                 seq: step,
@@ -50,7 +53,7 @@ impl Store {
             let value = self.prepare(&event).await?;
             size += value.len();
             if size > crate::MAX_BATCH_BYTES {
-                return Err(StoreError::TooLarge);
+                return Err(StoreError::Storage(crate::StorageError::TooLarge));
             }
             events.push((event, value));
             jobs.push(ToolJob {
@@ -59,7 +62,7 @@ impl Store {
                 step,
                 call_id: call.call_id.clone(),
                 arguments: swarmy_core::SandboxArguments::parse(&call.tool, call.arguments.clone())
-                    .map_err(|_| StoreError::InvalidState)?,
+                    .map_err(|_| StoreError::Domain(crate::DomainError::InvalidToolCall))?,
             });
         }
         self.dispatch_jobs(id, lease, &jobs, placement, Some((expected_head, &events)))
@@ -87,14 +90,14 @@ impl Store {
                     self.check_live_placement(&trx, placement),
                 )?;
                 if jobs.is_empty() {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(crate::DomainError::EmptyToolJobs));
                 }
                 if let Some((expected_head, events)) = append {
                     self.append_tool_requests(&trx, id, expected_head, events)
                         .await?;
                 }
                 if self.session(&trx, id).await?.agent_id != placement.agent_id {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::PlacementAgentMismatch));
                 }
                 self.deliver_computer_notice(&trx, id, placement).await?;
                 for (job, value) in jobs.iter().zip(values) {
@@ -102,12 +105,12 @@ impl Store {
                         || RequestId::for_step(id, job.step) != job.request_id
                         || !job.arguments.valid()
                     {
-                        return Err(StoreError::InvalidState);
+                        return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
                     }
                     let event = trx
                         .get(&self.event_key(id, job.step), false)
                         .await?
-                        .ok_or(StoreError::InvalidState)?;
+                        .ok_or(StoreError::Domain(crate::DomainError::MissingToolRequest))?;
                     match self.hydrate::<Event>(&event).await? {
                         Event::ToolCallRequested {
                             request_id, call, ..
@@ -120,7 +123,7 @@ impl Store {
                             .ok()
                             .as_ref()
                                 == Some(&job.arguments) => {}
-                        _ => return Err(StoreError::InvalidState),
+                        _ => return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch)),
                     }
                     trx.set(
                         &crate::keys::Keys::new(&self.root).tool_job(job.request_id),
@@ -150,10 +153,10 @@ impl Store {
     ) -> Result<()> {
         let mut session = self.session(trx, id).await?;
         if session.head_seq != expected_head {
-            return Err(StoreError::StaleSequence {
+            return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                 expected: expected_head,
                 actual: session.head_seq,
-            });
+            }));
         }
         let turn = read::<swarmy_core::MessageId>(trx, &self.turn_key(id)).await?;
         for (event, value) in events {
@@ -161,7 +164,7 @@ impl Store {
                 seq, request_id, ..
             } = event
             else {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
             };
             trx.set(&self.event_key(id, *seq), value);
             if let Some(turn) = turn {

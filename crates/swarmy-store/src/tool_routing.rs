@@ -19,9 +19,9 @@ impl Store {
                 &crate::keys::Keys::new(&self.root).placement(status.agent_id),
             )
             .await?
-            .ok_or(StoreError::LeaseMismatch)?;
+            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
             if placement.node_id != status.node_id || placement.epoch != status.epoch {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.check_live_placement(&trx, &placement).await?;
             let key = crate::keys::Keys::new(&self.root).agent_call_status(status.agent_id);
@@ -107,7 +107,7 @@ impl Store {
             .await?
             {
                 if placement.node_id != node {
-                    return Err(StoreError::LeaseMismatch);
+                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
                 }
                 self.check_live_placement(&trx, &placement).await?;
             }
@@ -133,7 +133,7 @@ impl Store {
             if self.hydrate::<ToolJob>(&value).await? != *job
                 || self.session(&trx, job.session_id).await?.agent_id != placement.agent_id
             {
-                return Err(StoreError::InvalidState);
+                return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             let key = crate::keys::Keys::new(&self.root).tool_placement(job.request_id);
             let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
@@ -173,7 +173,7 @@ impl Store {
                 || dispatched.node_id != placement.node_id
                 || dispatched.epoch != placement.epoch)
         {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(())
     }
@@ -189,12 +189,14 @@ impl Store {
             session.state,
             SessionState::WaitingTools | SessionState::Completed
         ) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(
+                crate::DomainError::UnexpectedSessionState,
+            ));
         }
         session.head_seq = session
             .head_seq
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = self
             .prepare(&Event::ToolCallCompleted {
                 seq: session.head_seq,
@@ -244,10 +246,14 @@ impl Store {
                 .await?
             {
                 if self.hydrate::<ToolJob>(&value).await? != *job {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
                 }
-                self.fail_lost_tool(&trx, job, StoreError::ComputerDeleted.to_string())
-                    .await?;
+                self.fail_lost_tool(
+                    &trx,
+                    job,
+                    StoreError::Domain(crate::DomainError::ComputerDeleted).to_string(),
+                )
+                .await?;
             }
             Ok(true)
         })
@@ -281,13 +287,14 @@ impl Store {
                     self.session(trx, id)
                         .await?
                         .image
-                        .ok_or(StoreError::ManifestMissing)?
+                        .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?
                         .manifest_id
                 };
             // Manifest IDs are time-ordered ULIDs minted for snapshot publication.
             let millis = i64::try_from(manifest.as_ulid().timestamp_ms())
-                .map_err(|_| StoreError::Corrupt)?;
-            let snapshot = Timestamp::from_millisecond(millis).map_err(|_| StoreError::Corrupt)?;
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let snapshot = Timestamp::from_millisecond(millis)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             let text = computer_rebuilt_message(
                 placement.last_change_reason,
                 snapshot,
@@ -296,7 +303,7 @@ impl Store {
                     .await?
                     .and_then(|hosting| hosting.failure_estimate),
             )
-            .ok_or(StoreError::Corrupt)?;
+            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
             let message = Message {
                 id: MessageId::from_ulid(ulid::Ulid::generate()),
                 role: MessageRole::System,
@@ -306,7 +313,7 @@ impl Store {
             message
         };
         let Some(Part::Text { text }) = message.parts.first() else {
-            return Err(StoreError::Corrupt);
+            return Err(StoreError::Storage(crate::StorageError::Corrupt));
         };
         let explanation = text.clone();
         // The index read conflicts with concurrent session creation, so every
@@ -346,7 +353,7 @@ impl Store {
             session.head_seq = session
                 .head_seq
                 .checked_add(1)
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             let event = self
                 .prepare(&Event::MessageAppended {
                     seq: session.head_seq,

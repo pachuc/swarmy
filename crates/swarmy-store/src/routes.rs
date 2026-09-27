@@ -250,7 +250,8 @@ impl Store {
     /// # Errors
     /// Returns invalid routes or storage failures.
     pub async fn put_route(&self, name: &str, steps: &[swarmy_core::RouteStep]) -> Result<()> {
-        swarmy_core::route::validate(name, steps).map_err(StoreError::InvalidRoute)?;
+        swarmy_core::route::validate(name, steps)
+            .map_err(|error| StoreError::Domain(crate::DomainError::InvalidRoute(error)))?;
         let record = RouteRecord {
             name: name.to_owned(),
             steps: steps.to_vec(),
@@ -289,10 +290,12 @@ impl Store {
                 break;
             }
             for (key, value) in rows {
-                let (name,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (name,): (String,) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 let mut record: RouteRecord = swarmy_core::decode(&value)?;
                 if record.name != name {
-                    return Err(StoreError::Corrupt);
+                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
                 }
                 record.name = name;
                 routes.push(record);
@@ -334,7 +337,9 @@ impl Store {
             let rows = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
             let complete = rows.len() < crate::MAX_SCAN_LIMIT;
             for (key, value) in rows {
-                let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (label,): (String,) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 let entry = decode_entry(&value)?;
                 entries.push((
                     entry.created_at,
@@ -735,7 +740,7 @@ impl Store {
         if let Some(name) = route
             && self.get_route(name).await?.is_none()
         {
-            return Err(StoreError::RouteMissing);
+            return Err(StoreError::Domain(crate::DomainError::RouteMissing));
         }
         self.transaction(|trx| async move {
             let mut session = self.session(&trx, id).await?;
@@ -787,15 +792,6 @@ impl Store {
         Ok(())
     }
 
-    /// Failures from `fail_unserved` carry this prefix. The provider may
-    /// appear on the next gateway advertisement, so the session waits out
-    /// the gateway interval on its current step instead of consuming a
-    /// route step.
-    #[must_use]
-    pub fn is_unserved_error(error: &str) -> bool {
-        error.starts_with("no gateway serves provider ")
-    }
-
     /// Resolve one retryable failure against the session's route and either
     /// advance to the next usable step or park the exhausted chain, in a
     /// single transaction: the snapshot, the step move, and the wait write
@@ -813,6 +809,7 @@ impl Store {
         lease: &Lease,
         seq: u64,
         error: &str,
+        failure_kind: swarmy_core::FailureKind,
         retry_at: Timestamp,
         route_step: u32,
         session_route: Option<&str>,
@@ -857,7 +854,7 @@ impl Store {
                 )
                 .await?;
             let route = snapshot.name.clone();
-            if Self::is_unserved_error(error) {
+            if failure_kind == swarmy_core::FailureKind::GatewayUnserved {
                 self.park_leased_in(
                     &trx,
                     id,

@@ -264,6 +264,27 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
     print_usage(&response, json)
 }
 
+async fn close_session(client: &Client, endpoint: &str, id: &str) -> Result<()> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.close_session(
+            id,
+            &swarmy_api_types::CloseSession {
+                idempotency_key: Ulid::generate().to_string(),
+            },
+        ),
+    )
+    .await
+    .context("session close timed out")?
+    .map_err(|error| match &error {
+        swarmy_client::Error::Api { body, .. } if body.code == "main_session_close" => {
+            anyhow::anyhow!("cannot close an agent main session; use swarmy agent delete")
+        }
+        _ => swarmy_client::api_client::api_error(&error, endpoint),
+    })?;
+    Ok(())
+}
+
 async fn session(
     client: &Client,
     endpoint: &str,
@@ -315,16 +336,7 @@ async fn session(
         }
         session_command::Command::Close { session_id } => {
             let id = session_id.to_string();
-            request(
-                endpoint,
-                client.close_session(
-                    &id,
-                    &swarmy_api_types::CloseSession {
-                        idempotency_key: Ulid::generate().to_string(),
-                    },
-                ),
-            )
-            .await?;
+            close_session(client, endpoint, &id).await?;
             print(
                 &json!({"event":"session_closed","session_id":id}),
                 &format!("Closed session {id}"),
@@ -772,6 +784,22 @@ fn agent_text(agent: &Value, detail: bool) -> String {
     }
     text
 }
+async fn update_agent(client: &Client, endpoint: &str, name: &str, body: Value) -> Result<Value> {
+    let updated = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.cli_update_agent(name, &serde_json::from_value(body)?),
+    )
+    .await
+    .context("agent update timed out")?
+    .map_err(|error| match &error {
+        swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
+            anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+        }
+        _ => swarmy_client::api_client::api_error(&error, endpoint),
+    })?;
+    Ok(serde_json::to_value(updated)?)
+}
+
 async fn agent(
     client: &Client,
     endpoint: &str,
@@ -852,11 +880,7 @@ async fn agent(
             body["github_token"] = json!(github_token.clone());
             body["clear_github_token"] = json!(clear_github_token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let updated = projection(
-                endpoint,
-                client.cli_update_agent(&name, &serde_json::from_value(body)?),
-            )
-            .await?;
+            let updated = update_agent(client, endpoint, &name, body).await?;
             print(
                 &updated,
                 &format!(
@@ -1017,6 +1041,7 @@ async fn set_credential_key(
         }
     }
     let record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: swarmy_core::CredentialKind::ApiKey { key, extra },
         updated_at: jiff::Timestamp::now(),
     };

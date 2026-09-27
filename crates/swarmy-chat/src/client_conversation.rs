@@ -772,11 +772,18 @@ fn tool_error(record: &serde_json::Value) -> Option<String> {
 /// The inference failure a record reports, if the record is an inference
 /// failure. Missing error strings clear a previous error.
 fn inference_error(record: &serde_json::Value) -> Option<String> {
-    record
-        .get("inference_failed")?
-        .get("error")?
-        .as_str()
-        .map(str::to_owned)
+    let failure = record.get("inference_failed")?;
+    let error = failure.get("error")?.as_str()?;
+    if failure
+        .get("failure_kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("gateway_unserved")
+    {
+        return Some(format!(
+            "{error}; run `swarmy auth set PROVIDER` or start a gateway that serves it"
+        ));
+    }
+    Some(error.to_owned())
 }
 
 /// The text of an assistant message that finishes a text turn: a non-empty
@@ -960,6 +967,20 @@ mod tests {
                 }),
             },
         }
+    }
+
+    #[test]
+    fn gateway_unserved_failure_gives_cli_advice() {
+        let record = serde_json::json!({"inference_failed": {
+            "error": "no gateway serves provider openai",
+            "failure_kind": "gateway_unserved"
+        }});
+        assert_eq!(
+            inference_error(&record).as_deref(),
+            Some(
+                "no gateway serves provider openai; run `swarmy auth set PROVIDER` or start a gateway that serves it"
+            )
+        );
     }
 
     #[test]

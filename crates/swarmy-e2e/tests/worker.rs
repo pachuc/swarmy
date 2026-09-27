@@ -20,7 +20,7 @@ use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
+    AgentId, Event, Message, MessageId, MessageRole, NoticeKind, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::{Response, StopReason, TokenUsage};
@@ -145,6 +145,7 @@ impl Fixture {
                 provider,
                 label,
                 &swarmy_core::CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: swarmy_core::CredentialKind::ApiKey {
                         key: format!("{label}-key"),
                         extra: BTreeMap::new(),
@@ -1652,16 +1653,22 @@ async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
     .unwrap()
 }
 
+fn is_pressure_message(message: &Message) -> bool {
+    message.role == MessageRole::System
+        && message.parts.iter().any(|part| {
+            matches!(
+                part,
+                Part::Notice {
+                    kind: NoticeKind::ContextPressure,
+                    ..
+                }
+            )
+        })
+}
+
 fn has_pressure_marker(events: &[Event]) -> bool {
-    events.iter().any(|event| match event {
-        Event::MessageAppended { message, .. } => {
-            message.role == MessageRole::System
-                && message.parts.iter().any(|part| match part {
-                    Part::Text { text } => text.contains("context_pressure"),
-                    _ => false,
-                })
-        }
-        _ => false,
+    events.iter().any(|event| {
+        matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
     })
 }
 
@@ -1906,15 +1913,8 @@ async fn read_all_events(fixture: &Fixture, id: SessionId) -> Vec<Event> {
 fn count_pressure(events: &[Event]) -> usize {
     events
         .iter()
-        .filter(|event| match event {
-            Event::MessageAppended { message, .. } => {
-                message.role == MessageRole::System
-                    && message.parts.iter().any(|part| match part {
-                        Part::Text { text } => text.contains("context_pressure"),
-                        _ => false,
-                    })
-            }
-            _ => false,
+        .filter(|event| {
+            matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
         })
         .count()
 }

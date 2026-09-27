@@ -222,6 +222,7 @@ mod tests {
             error: "rate limited".into(),
             retryable: true,
             retry_at: None,
+            failure_kind: swarmy_core::FailureKind::Unknown,
         };
         assert_eq!(
             log(id, &[request(1, 1), failure, request(3, 3)]).unwrap(),

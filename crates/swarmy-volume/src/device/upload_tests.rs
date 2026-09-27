@@ -542,7 +542,9 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     gate.add_permits(1);
     assert!(matches!(
         task.await.unwrap(),
-        Err(VolumeError::Store(StoreError::LeaseMismatch))
+        Err(VolumeError::Store(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        )))
     ));
     let record = store.get_volume(volume).await.unwrap().unwrap();
     assert_eq!(record.head_manifest, base);

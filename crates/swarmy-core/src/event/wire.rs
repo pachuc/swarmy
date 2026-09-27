@@ -1,6 +1,7 @@
 //! Preserve existing postcard discriminants; JSON keeps the public completion name.
 use super::{
-    Event, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord, ToolResult,
+    Event, FailureKind, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord,
+    ToolResult,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -71,6 +72,8 @@ enum HumanEvent {
         retryable: bool,
         #[serde(default)]
         retry_at: Option<jiff::Timestamp>,
+        #[serde(default)]
+        failure_kind: FailureKind,
     },
 }
 
@@ -116,6 +119,8 @@ enum BinaryEvent {
         seq: u64,
         request_id: RequestId,
         error: String,
+        #[serde(default, with = "crate::trailing")]
+        failure_kind: FailureKind,
     },
     MeteredInferenceCompleted {
         seq: u64,
@@ -153,6 +158,8 @@ enum BinaryEvent {
         error: String,
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
+        #[serde(default, with = "crate::trailing")]
+        failure_kind: FailureKind,
     },
 }
 
@@ -219,13 +226,27 @@ fn failed_completion(
     error: String,
     retryable: bool,
     retry_at: Option<jiff::Timestamp>,
+    failure_kind: FailureKind,
 ) -> Event {
+    // Legacy interrupt events had no kind. Classify them once while decoding
+    // so the store never has to make a decision from the display text.
+    let failure_kind = if failure_kind == FailureKind::Unknown && error == "interrupted by operator"
+    {
+        FailureKind::OperatorInterrupted
+    } else if failure_kind == FailureKind::Unknown
+        && error.starts_with("no gateway serves provider ")
+    {
+        FailureKind::GatewayUnserved
+    } else {
+        failure_kind
+    };
     Event::InferenceFailed {
         seq,
         request_id,
         error,
         retryable,
         retry_at,
+        failure_kind,
     }
 }
 
@@ -353,10 +374,12 @@ impl From<Event> for BinaryEvent {
                 error,
                 retryable: false,
                 retry_at: None,
+                failure_kind: FailureKind::Unknown,
             } => Self::InferenceFailed {
                 seq,
                 request_id,
                 error,
+                failure_kind: FailureKind::Unknown,
             },
             Event::InferenceFailed {
                 seq,
@@ -364,12 +387,14 @@ impl From<Event> for BinaryEvent {
                 error,
                 retryable,
                 retry_at,
+                failure_kind,
             } => Self::RetryableInferenceFailed {
                 seq,
                 request_id,
                 error,
                 retryable,
                 retry_at,
+                failure_kind,
             },
         }
     }
@@ -424,14 +449,16 @@ impl From<BinaryEvent> for Event {
                 seq,
                 request_id,
                 error,
-            } => failed_completion(seq, request_id, error, false, None),
+                failure_kind,
+            } => failed_completion(seq, request_id, error, false, None, failure_kind),
             BinaryEvent::RetryableInferenceFailed {
                 seq,
                 request_id,
                 error,
                 retryable,
                 retry_at,
-            } => failed_completion(seq, request_id, error, retryable, retry_at),
+                failure_kind,
+            } => failed_completion(seq, request_id, error, retryable, retry_at, failure_kind),
             BinaryEvent::MeteredInferenceCompleted {
                 seq,
                 request_id,
@@ -615,6 +642,59 @@ mod tests {
             retryable: bool,
             retry_at: Option<jiff::Timestamp>,
         },
+    }
+
+    #[test]
+    fn old_failure_rows_default_kind() {
+        let request_id = crate::RequestId::for_step(
+            crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
+            4,
+        );
+        let old = PreRoutesBinaryEvent::RetryableInferenceFailed {
+            seq: 7,
+            request_id,
+            error: "provider unavailable".into(),
+            retryable: true,
+            retry_at: None,
+        };
+        let bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
+        assert_eq!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                seq: 7,
+                request_id,
+                error: "provider unavailable".into(),
+                retryable: true,
+                retry_at: None,
+                failure_kind: FailureKind::Unknown,
+            }
+        );
+        let unserved = PreRoutesBinaryEvent::InferenceFailed {
+            seq: 9,
+            request_id,
+            error: "no gateway serves provider openai".into(),
+        };
+        let bytes = postcard::to_extend(&unserved, vec![crate::STORAGE_VERSION]).unwrap();
+        assert!(matches!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                failure_kind: FailureKind::GatewayUnserved,
+                ..
+            }
+        ));
+        let interrupt = PreRoutesBinaryEvent::InferenceFailed {
+            seq: 8,
+            request_id,
+            error: "interrupted by operator".into(),
+        };
+        let bytes = postcard::to_extend(&interrupt, vec![crate::STORAGE_VERSION]).unwrap();
+        assert!(matches!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                failure_kind: FailureKind::OperatorInterrupted,
+                ..
+            }
+        ));
     }
 
     #[test]

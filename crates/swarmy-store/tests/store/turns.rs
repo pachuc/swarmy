@@ -37,11 +37,11 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
             store
                 .submit_inference::<_, ()>(0, lease, &record, &"input", None)
                 .await,
-            Err(StoreError::LeaseMismatch)
+            Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
         ));
         assert!(matches!(
             store.finish_turn(id, 0, lease, &snapshot).await,
-            Err(StoreError::LeaseMismatch)
+            Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
         ));
     }
     store
@@ -62,11 +62,11 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
         store
             .submit_inference::<_, ()>(0, &expired, &record, &"input", None)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         store.finish_turn(id, 0, &expired, &snapshot).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
@@ -134,7 +134,7 @@ async fn submission_and_idle_commit_all_records_together() {
     );
     assert!(matches!(
         store.finish_turn(id, 0, &live, &snapshot).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     store
         .set_state(id, SessionState::Runnable, None, Timestamp::now())
@@ -152,7 +152,9 @@ async fn submission_and_idle_commit_all_records_together() {
         .unwrap();
     assert!(matches!(
         store.finish_turn(id, 0, &next, &snapshot).await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     let snapshot = SnapshotRef { seq: 2, ..snapshot };
     let idle = store.finish_turn(id, 1, &next, &snapshot).await.unwrap();
@@ -164,7 +166,7 @@ async fn submission_and_idle_commit_all_records_together() {
     assert_eq!(store.read_events(id, 1, 64).await.unwrap(), vec![idle]);
     assert!(matches!(
         store.release_lease(id, &next, Timestamp::now()).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;
 }
@@ -285,7 +287,7 @@ async fn tool_fold_and_inference_share_the_lease_fence_and_commit() {
                 })
             )
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
@@ -339,7 +341,7 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         store
             .complete_inference_and_idle(&completion, &"answer", &snapshot)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     completion.claim.owner = owner();
     completion.claim.expires_at = Timestamp::now()
@@ -369,7 +371,7 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         store
             .complete_inference_and_idle(&stale, &"answer", &snapshot)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert_eq!(store.read_events(id, 0, 64).await.unwrap().len(), 1);
     assert!(

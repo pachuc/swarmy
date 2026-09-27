@@ -70,11 +70,7 @@ fn parse_scope(text: &str) -> Option<CredentialScope> {
 fn entry_kind(record: &CredentialRecord) -> String {
     match &record.kind {
         CredentialKind::OAuth { .. } => "subscription",
-        CredentialKind::ApiKey { extra, .. }
-            if extra.get("auth_kind").is_some_and(|s| s == "cloud") =>
-        {
-            "cloud"
-        }
+        CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud",
         CredentialKind::ApiKey { .. } => "api-key",
     }
     .into()
@@ -175,7 +171,9 @@ impl Store {
             .await?;
         let mut labels = Vec::new();
         for (key, _) in rows {
-            let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+            let (label,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             labels.push(label);
         }
         labels.sort();
@@ -207,8 +205,9 @@ impl Store {
                 let rows = scan(&trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
                 let complete = rows.len() < crate::MAX_SCAN_LIMIT;
                 for (key, value) in rows {
-                    let (label,): (String,) =
-                        space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                    let (label,): (String,) = space
+                        .unpack(&key)
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                     let entry = decode_entry(&value)?;
                     entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
                     begin = key;
@@ -365,14 +364,16 @@ impl CredentialStore {
         label: &str,
         record: &CredentialRecord,
     ) -> Result<()> {
+        let mut record = record.clone();
+        record.migrate_bookkeeping();
         let ciphertext = encrypt(
             &self.keyring,
             scope,
             &entry_identity(provider, label),
-            record,
+            &record,
         )?;
         let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
-        let (needs_login, expires_at) = entry_readiness(record, self.store.now());
+        let (needs_login, expires_at) = entry_readiness(&record, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -446,7 +447,7 @@ impl CredentialStore {
                 async move {
                     let mut entry: EntryValue = read_entry(&trx, key)
                         .await?
-                        .ok_or(StoreError::CredentialMissing)?;
+                        .ok_or(StoreError::Domain(crate::DomainError::CredentialMissing))?;
                     entry.last_used_at = Some(self.store.now());
                     write(&trx, key, &entry)
                 }
@@ -582,7 +583,76 @@ impl CredentialStore {
                 break;
             }
         }
+        self.migrate_entry_bookkeeping().await?;
         Ok(outcome)
+    }
+
+    /// Rewrite legacy string flags in place without losing entries that cannot decrypt.
+    async fn migrate_entry_bookkeeping(&self) -> Result<()> {
+        let space = crate::keys::Keys::new(&self.store.root).credential_entry_space_root();
+        let (mut begin, end) = space.range();
+        loop {
+            let rows = self
+                .store
+                .transaction(|trx| {
+                    let range = (begin.clone(), end.clone());
+                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                })
+                .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let complete = rows.len() < crate::MAX_SCAN_LIMIT;
+            for (key, bytes) in &rows {
+                let Ok((scope_text, provider, label)): std::result::Result<
+                    (String, String, String),
+                    _,
+                > = space.unpack(key) else {
+                    continue;
+                };
+                let Some(scope) = parse_scope(&scope_text) else {
+                    continue;
+                };
+                let Ok(mut entry) = decode_entry(bytes) else {
+                    continue;
+                };
+                let identity = entry_identity(&provider, &label);
+                let Ok(mut record) =
+                    decrypt_raw(&self.keyring, scope, &identity, &entry.ciphertext)
+                else {
+                    continue;
+                };
+                if !record.migrate_bookkeeping() {
+                    continue;
+                }
+                let old = entry.ciphertext.clone();
+                entry.ciphertext = encrypt(&self.keyring, scope, &identity, &record)?;
+                (entry.needs_login, entry.expires_at) = entry_readiness(&record, self.store.now());
+                self.store
+                    .transaction(|trx| {
+                        let entry = &entry;
+                        let old = &old;
+                        async move {
+                            if read_entry(&trx, key)
+                                .await?
+                                .is_some_and(|current| current.ciphertext == *old)
+                            {
+                                write(&trx, key, entry)?;
+                            }
+                            Ok(())
+                        }
+                    })
+                    .await?;
+            }
+            if complete {
+                break;
+            }
+            if let Some((last, _)) = rows.last() {
+                begin.clone_from(last);
+                begin.push(0);
+            }
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -603,8 +673,9 @@ impl CredentialStore {
                 break;
             }
             for (key, value) in rows {
-                let (provider, label): (String, String) =
-                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (provider, label): (String, String) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 let entry: EntryValue = decode_entry(&value)?;
                 let record = decrypt(
                     &self.keyring,
@@ -652,7 +723,9 @@ impl CredentialStore {
             .await?;
         let mut entries = Vec::new();
         for (key, value) in rows {
-            let (label,): (String,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+            let (label,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
@@ -705,7 +778,7 @@ impl CredentialStore {
         Fut: Future<Output = Result<CredentialRecord>>,
     {
         if ttl.is_zero() {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Domain(crate::DomainError::InvalidLeaseTtl));
         }
         let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
         let lease_key =
@@ -717,7 +790,7 @@ impl CredentialStore {
                 async move { read_entry(&trx, key).await }
             })
             .await?
-            .ok_or(StoreError::CredentialMissing)?;
+            .ok_or(StoreError::Domain(crate::DomainError::CredentialMissing))?;
         let owner = LeaseOwnerId::from_ulid(ulid::Ulid::generate());
         let (lease, current) = loop {
             let result = self
@@ -757,16 +830,16 @@ impl CredentialStore {
             Ok(Ok(record)) => (record, false),
             Ok(Err(_)) => {
                 let mut record = current.clone();
-                let extra = match &mut record.kind {
-                    CredentialKind::ApiKey { extra, .. } | CredentialKind::OAuth { extra, .. } => {
-                        extra
-                    }
-                };
-                extra.insert("needs_login".into(), "true".into());
+                record.bookkeeping.needs_login = true;
                 (record, true)
             }
-            Err(_) => return Err(StoreError::LeaseMismatch),
+            Err(_) => {
+                return Err(StoreError::Fence(
+                    crate::FenceError::CredentialRefreshMismatch,
+                ));
+            }
         };
+        replacement.migrate_bookkeeping();
         let bytes = if replacement == current {
             observed.ciphertext.clone()
         } else {
@@ -781,7 +854,7 @@ impl CredentialStore {
         self.finish_entry_refresh(&key, &lease_key, &observed, &bytes, &replacement, &lease)
             .await?;
         if failed {
-            Err(StoreError::CredentialRefresh)
+            Err(StoreError::Domain(crate::DomainError::CredentialRefresh))
         } else {
             Ok(replacement)
         }
@@ -805,7 +878,7 @@ impl CredentialStore {
             .transaction(|trx| async move {
                 let entry: EntryValue = read_entry(&trx, key)
                     .await?
-                    .ok_or(StoreError::CredentialMissing)?;
+                    .ok_or(StoreError::Domain(crate::DomainError::CredentialMissing))?;
                 if entry.ciphertext != observed.ciphertext {
                     return Ok(Claim::Changed(entry.ciphertext));
                 }
@@ -823,14 +896,14 @@ impl CredentialStore {
                     &entry.ciphertext,
                 )?;
                 if record.status(now) == CredentialStatus::NeedsLogin {
-                    return Err(StoreError::CredentialRefresh);
+                    return Err(StoreError::Domain(crate::DomainError::CredentialRefresh));
                 }
                 let lease = Lease {
                     owner,
                     seq: 0,
-                    expires_at: now
-                        .checked_add(ttl)
-                        .map_err(|_| StoreError::LeaseMismatch)?,
+                    expires_at: now.checked_add(ttl).map_err(|_| {
+                        StoreError::Fence(crate::FenceError::CredentialRefreshMismatch)
+                    })?,
                 };
                 write(&trx, lease_key, &lease)?;
                 Ok(Claim::Acquired(lease, record))
@@ -856,17 +929,21 @@ impl CredentialStore {
                 let lease_key = &lease_key;
                 let observed = &observed;
                 async move {
-                    let held: Lease = read(&trx, lease_key)
-                        .await?
-                        .ok_or(StoreError::LeaseMismatch)?;
+                    let held: Lease = read(&trx, lease_key).await?.ok_or(StoreError::Fence(
+                        crate::FenceError::CredentialRefreshMismatch,
+                    ))?;
                     if held != *lease || held.expires_at <= self.store.now() {
-                        return Err(StoreError::LeaseMismatch);
+                        return Err(StoreError::Fence(
+                            crate::FenceError::CredentialRefreshMismatch,
+                        ));
                     }
                     let entry: EntryValue = read_entry(&trx, key)
                         .await?
-                        .ok_or(StoreError::CredentialMissing)?;
+                        .ok_or(StoreError::Domain(crate::DomainError::CredentialMissing))?;
                     if entry.ciphertext != observed.ciphertext {
-                        return Err(StoreError::LeaseMismatch);
+                        return Err(StoreError::Fence(
+                            crate::FenceError::CredentialRefreshMismatch,
+                        ));
                     }
                     if bytes != observed.ciphertext {
                         write(
@@ -916,12 +993,12 @@ fn encrypt(
 ) -> Result<Vec<u8>> {
     let plaintext = encode(record)?;
     if plaintext.len() > crate::INLINE_LIMIT {
-        return Err(StoreError::TooLarge);
+        return Err(StoreError::Storage(crate::StorageError::TooLarge));
     }
     let mut nonce = [0; 24];
     rand::rngs::OsRng
         .try_fill_bytes(&mut nonce)
-        .map_err(|_| StoreError::Keyring)?;
+        .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
     let ciphertext = XChaCha20Poly1305::new(key.key().into())
         .encrypt(
             XNonce::from_slice(&nonce),
@@ -930,20 +1007,20 @@ fn encrypt(
                 aad: &associated_data(scope, provider)?,
             },
         )
-        .map_err(|_| StoreError::Keyring)?;
+        .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
     let mut bytes = nonce.to_vec();
     bytes.extend(ciphertext);
     Ok(bytes)
 }
 
-fn decrypt(
+fn decrypt_raw(
     key: &Keyring,
     scope: CredentialScope,
     provider: &str,
     bytes: &[u8],
 ) -> Result<CredentialRecord> {
     if bytes.len() < 24 {
-        return Err(StoreError::Keyring);
+        return Err(StoreError::Storage(crate::StorageError::Keyring));
     }
     let (nonce, ciphertext) = bytes.split_at(24);
     let plaintext = XChaCha20Poly1305::new(key.key().into())
@@ -954,8 +1031,19 @@ fn decrypt(
                 aad: &associated_data(scope, provider)?,
             },
         )
-        .map_err(|_| StoreError::Keyring)?;
+        .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
     Ok(decode(&plaintext)?)
+}
+
+fn decrypt(
+    key: &Keyring,
+    scope: CredentialScope,
+    provider: &str,
+    bytes: &[u8],
+) -> Result<CredentialRecord> {
+    let mut record = decrypt_raw(key, scope, provider, bytes)?;
+    record.migrate_bookkeeping();
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -965,6 +1053,7 @@ mod tests {
     fn authenticated_round_trip() {
         let key = Keyring::from_bytes([1; 32]);
         let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: "secret".into(),
                 extra: std::collections::BTreeMap::new(),
@@ -975,7 +1064,7 @@ mod tests {
         assert!(decrypt(&key, CredentialScope::Cluster, "openai", &bytes).unwrap() == record);
         assert!(matches!(
             decrypt(&key, CredentialScope::Cluster, "anthropic", &bytes),
-            Err(StoreError::Keyring)
+            Err(StoreError::Storage(crate::StorageError::Keyring))
         ));
         assert!(matches!(
             decrypt(
@@ -984,17 +1073,17 @@ mod tests {
                 "openai",
                 &bytes
             ),
-            Err(StoreError::Keyring)
+            Err(StoreError::Storage(crate::StorageError::Keyring))
         ));
         let agent = CredentialScope::Agent(swarmy_core::AgentId::from_ulid(ulid::Ulid::generate()));
         assert!(matches!(
             decrypt(&key, agent, "openai", &bytes),
-            Err(StoreError::Keyring)
+            Err(StoreError::Storage(crate::StorageError::Keyring))
         ));
         for short in [vec![], vec![0; 23], vec![0; 24]] {
             assert!(matches!(
                 decrypt(&key, CredentialScope::Cluster, "openai", &short),
-                Err(StoreError::Keyring)
+                Err(StoreError::Storage(crate::StorageError::Keyring))
             ));
         }
         assert_ne!(

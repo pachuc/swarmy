@@ -40,9 +40,8 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
         store.create_agent("tommy", image, "coding", timestamp(0), None)
     );
     let agent = match (a, b) {
-        (Ok(agent), Err(StoreError::AgentExists)) | (Err(StoreError::AgentExists), Ok(agent)) => {
-            agent
-        }
+        (Ok(agent), Err(StoreError::Domain(swarmy_store::DomainError::AgentExists)))
+        | (Err(StoreError::Domain(swarmy_store::DomainError::AgentExists)), Ok(agent)) => agent,
         other => panic!("uniqueness failed: {other:?}"),
     };
     assert_eq!(
@@ -66,7 +65,9 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     );
     assert!(matches!(
         store.create_agent("", image, "", timestamp(0), None).await,
-        Err(StoreError::InvalidAgentName)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::InvalidAgentName
+        ))
     ));
     let id = assert_named_session_pin(store, &agent, image).await;
     store
@@ -88,7 +89,9 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
     assert!(matches!(
         store.ensure_session_computer(id).await,
-        Err(StoreError::ComputerDeleted)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     assert_ne!(
         store
@@ -119,7 +122,9 @@ async fn assert_named_session_pin(
                 })
             )
             .await,
-        Err(StoreError::NamedAgentImage)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::NamedAgentImage
+        ))
     ));
     assert!(store.fetch_session(id).await.unwrap().is_none());
     let replacement = ManifestId::from_ulid(Ulid::generate());
@@ -162,7 +167,9 @@ async fn assert_named_session_pin(
     store.set_main_session(agent.agent_id, id).await.unwrap();
     assert!(matches!(
         store.close_session(id, timestamp(1)).await,
-        Err(StoreError::MainSessionClose)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::MainSessionClose
+        ))
     ));
     assert_eq!(
         store
@@ -193,7 +200,9 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
         store
             .create_agent_session(id, None, timestamp(0), None)
             .await,
-        Err(StoreError::SessionImageRequired)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::SessionImageRequired
+        ))
     ));
     let session = store
         .create_agent_session(
@@ -241,7 +250,7 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
     assert!(closed.computer_deleted);
     assert!(matches!(
         store.create_session(&session, timestamp(0), image).await,
-        Err(StoreError::SessionExists)
+        Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
     ));
     test.cleanup().await;
 }
@@ -440,7 +449,7 @@ async fn concurrent_settings_and_rejected_updates(
     };
     assert!(matches!(
         store.set_agent(expected.agent_id, &oversized).await,
-        Err(StoreError::TooLarge)
+        Err(StoreError::Storage(swarmy_store::StorageError::TooLarge))
     ));
     assert_eq!(
         store.get_agent(expected.agent_id).await.unwrap(),
@@ -459,7 +468,7 @@ async fn concurrent_settings_and_rejected_updates(
                 })
             )
             .await,
-        Err(StoreError::TooLarge)
+        Err(StoreError::Storage(swarmy_store::StorageError::TooLarge))
     ));
     assert!(
         store
@@ -473,7 +482,7 @@ async fn concurrent_settings_and_rejected_updates(
         store
             .set_agent(expected.agent_id, &AgentSettings::default())
             .await,
-        Err(StoreError::AgentMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::AgentMissing))
     ));
 }
 
@@ -642,7 +651,9 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
     );
     assert!(matches!(
         store.close_session(side.session_id, timestamp(1)).await,
-        Err(StoreError::MainSessionClose)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::MainSessionClose
+        ))
     ));
     store.close_session(first, timestamp(1)).await.unwrap();
     store.close_session(first, timestamp(1)).await.unwrap();
@@ -655,7 +666,9 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
         .unwrap();
     assert!(matches!(
         store.set_main_session(agent.agent_id, first).await,
-        Err(StoreError::InvalidMainSession)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::InvalidMainSession
+        ))
     ));
     assert_eq!(
         store
@@ -769,7 +782,9 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
             store
                 .set_main_session(agent.agent_id, foreign.session_id)
                 .await,
-            Err(StoreError::InvalidMainSession)
+            Err(StoreError::Domain(
+                swarmy_store::DomainError::InvalidMainSession
+            ))
         ));
     }
     let side = store
@@ -787,7 +802,17 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
     );
     assert!(matches!(
         (set, close),
-        (Ok(()), Err(StoreError::MainSessionClose)) | (Err(StoreError::InvalidMainSession), Ok(()))
+        (
+            Ok(()),
+            Err(StoreError::Domain(
+                swarmy_store::DomainError::MainSessionClose
+            ))
+        ) | (
+            Err(StoreError::Domain(
+                swarmy_store::DomainError::InvalidMainSession
+            )),
+            Ok(())
+        )
     ));
     test.cleanup().await;
 }

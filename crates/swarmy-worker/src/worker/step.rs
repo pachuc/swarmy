@@ -396,6 +396,7 @@ impl Worker {
                 ),
                 retryable: false,
                 retry_at: None,
+                failure_kind: swarmy_core::FailureKind::WaitExceeded,
             };
             self.append(session, lease, events, &[terminal]).await?;
             self.store.clear_inference_wait(id).await?;
@@ -405,6 +406,7 @@ impl Worker {
         if let Some(Event::InferenceFailed {
             seq,
             error,
+            failure_kind,
             retryable: true,
             retry_at: Some(retry_at),
             ..
@@ -421,7 +423,7 @@ impl Worker {
                 .is_none_or(|wait| wait.last_failure_seq != *seq)
             {
                 return self
-                    .failover_or_park(session, lease, *seq, error, *retry_at, now)
+                    .failover_or_park(session, lease, *seq, (error, *failure_kind), *retry_at, now)
                     .await;
             }
         }
@@ -436,10 +438,11 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &HeldLease,
         seq: u64,
-        error: &str,
+        failure: (&str, swarmy_core::FailureKind),
         retry_at: Timestamp,
         now: Timestamp,
     ) -> Result<bool> {
+        let (error, failure_kind) = failure;
         let outcome = {
             let token = lease.lock().await;
             let lease_ref = token.as_ref().context("lease released")?;
@@ -449,6 +452,7 @@ impl Worker {
                     lease_ref,
                     seq,
                     error,
+                    failure_kind,
                     retry_at,
                     session.route_step,
                     session.route.as_deref(),
@@ -615,7 +619,7 @@ impl Worker {
             };
             match result {
                 Ok(event) => break event,
-                Err(StoreError::InterruptPending) => {
+                Err(StoreError::Domain(swarmy_store::DomainError::InterruptPending)) => {
                     events.pop();
                     let request_id = events
                         .iter()

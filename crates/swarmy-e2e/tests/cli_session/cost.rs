@@ -254,6 +254,7 @@ async fn auth_quota_lists_observed_and_configured_entries() {
                 "openai",
                 "main",
                 &swarmy_core::CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: swarmy_core::CredentialKind::ApiKey {
                         key: "test".into(),
                         extra: std::collections::BTreeMap::new(),
@@ -282,6 +283,7 @@ async fn auth_quota_lists_observed_and_configured_entries() {
                 "chatgpt",
                 "default",
                 &swarmy_core::CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind: swarmy_core::CredentialKind::OAuth {
                         access: "test".into(),
                         refresh: "test".into(),

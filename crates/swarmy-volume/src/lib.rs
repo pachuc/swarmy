@@ -90,7 +90,9 @@ impl ChunkStore {
         if let Some(metadata) = self.metadata.get() {
             loop {
                 match metadata.protect_reused_chunk(hash).await {
-                    Err(swarmy_store::StoreError::LeaseMismatch) => {
+                    Err(swarmy_store::StoreError::Fence(
+                        swarmy_store::FenceError::GcLeaseMismatch,
+                    )) => {
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                     result => {

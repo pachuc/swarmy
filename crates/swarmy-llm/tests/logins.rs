@@ -122,10 +122,13 @@ async fn azure_process_helper() {
     assert_eq!(expires_at.to_string(), "2099-01-02T03:04:05Z");
     assert_eq!(extra["resource_name"], "test-resource");
     assert_eq!(extra["scope"], "https://custom/.default");
-    let record = swarmy_core::CredentialRecord {
+    let mut record = swarmy_core::CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
         kind: kind.clone(),
         updated_at: jiff::Timestamp::now(),
     };
+    assert!(record.migrate_bookkeeping());
+    assert!(record.bookkeeping.azure_cli);
     assert_eq!(
         record.status(jiff::Timestamp::now()),
         swarmy_core::CredentialStatus::Ready

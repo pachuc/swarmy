@@ -294,14 +294,21 @@ mod side_tail_tests {
         let warning = Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: MessageRole::System,
-            parts: vec![Part::Text {
+            parts: vec![Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
                 text: "context_pressure: input 150 tokens at 75 percent".into(),
             }],
         };
+        let legacy_warning = text(
+            MessageRole::System,
+            "context_pressure: input 150 tokens at 75 percent",
+        );
+        assert!(super::summarize::is_pressure_warning(&legacy_warning));
         let history = vec![
             text(MessageRole::User, "launch"),
             assistant_calls("a", false),
             tool_result("a"),
+            legacy_warning,
             warning,
             assistant_calls("b", false),
             tool_result("b"),

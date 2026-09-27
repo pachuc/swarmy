@@ -119,14 +119,27 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
 fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
     use swarmy_store::StoreError;
     match value {
-        StoreError::AgentExists => error(StatusCode::CONFLICT, "agent_exists"),
-        StoreError::AgentMissing => error(StatusCode::NOT_FOUND, "agent_not_found"),
-        StoreError::ImageMissing { .. } => error(StatusCode::NOT_FOUND, "image_not_found"),
-        StoreError::InvalidAgentName | StoreError::InvalidImage => {
-            error(StatusCode::BAD_REQUEST, "invalid_request")
+        StoreError::Domain(swarmy_store::DomainError::ActiveSandboxRequirements) => {
+            error(StatusCode::CONFLICT, "agent_computer_placed")
         }
-        StoreError::RouteMissing => error(StatusCode::BAD_REQUEST, "route_not_found"),
-        StoreError::InvalidRoute(_) => error(StatusCode::BAD_REQUEST, "invalid_route"),
+        StoreError::Domain(swarmy_store::DomainError::AgentExists) => {
+            error(StatusCode::CONFLICT, "agent_exists")
+        }
+        StoreError::Domain(swarmy_store::DomainError::AgentMissing) => {
+            error(StatusCode::NOT_FOUND, "agent_not_found")
+        }
+        StoreError::Domain(swarmy_store::DomainError::ImageMissing { .. }) => {
+            error(StatusCode::NOT_FOUND, "image_not_found")
+        }
+        StoreError::Domain(
+            swarmy_store::DomainError::InvalidAgentName | swarmy_store::DomainError::InvalidImage,
+        ) => error(StatusCode::BAD_REQUEST, "invalid_request"),
+        StoreError::Domain(swarmy_store::DomainError::RouteMissing) => {
+            error(StatusCode::BAD_REQUEST, "route_not_found")
+        }
+        StoreError::Domain(swarmy_store::DomainError::InvalidRoute(_)) => {
+            error(StatusCode::BAD_REQUEST, "invalid_route")
+        }
         _ => error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
     }
 }
@@ -885,20 +898,14 @@ async fn set_credential(
     }
     let store = credential_store(&state)?;
     let record = CredentialRecord {
+        bookkeeping: swarmy_core::CredentialBookkeeping {
+            cloud: body.kind == api::CredentialKind::Cloud,
+            label: Some(body.label.clone()),
+            ..Default::default()
+        },
         kind: CredentialKind::ApiKey {
             key: body.secret,
-            extra: std::collections::BTreeMap::from([
-                ("label".into(), body.label.clone()),
-                (
-                    "auth_kind".into(),
-                    if body.kind == api::CredentialKind::Cloud {
-                        "cloud"
-                    } else {
-                        "api-key"
-                    }
-                    .into(),
-                ),
-            ]),
+            extra: std::collections::BTreeMap::new(),
         },
         updated_at: Timestamp::now(),
     };
@@ -1360,4 +1367,32 @@ async fn delete_route(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod store_error_tests {
+    use super::*;
+    use swarmy_store::StoreError;
+
+    #[test]
+    fn placed_agent_is_a_conflict() {
+        let (status, Json(body)) = storage(StoreError::Domain(
+            swarmy_store::DomainError::ActiveSandboxRequirements,
+        ));
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body.code, "agent_computer_placed");
+    }
+
+    #[test]
+    fn only_non_idle_sessions_get_that_code() {
+        let (status, Json(body)) = conversation::session_error(StoreError::Domain(
+            swarmy_store::DomainError::SessionNotIdle,
+        ));
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body.code, "session_not_idle");
+        let (_, Json(body)) = conversation::session_error(StoreError::Domain(
+            swarmy_store::DomainError::InvalidTransition,
+        ));
+        assert_eq!(body.code, "storage_error");
+    }
 }

@@ -613,7 +613,9 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     };
     assert!(matches!(
         f.store.claim_placed_tool(&stale_job).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     f.worker.recover_tools().await.unwrap();
     assert_eq!(current.node_id, f.nodes[1]);
@@ -622,7 +624,9 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     assert_eq!(current.last_change_reason, PlacementChangeReason::Failure);
     assert!(matches!(
         f.complete(&claim).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     // Even a fresh claim at the new node cannot replay the completed old call.
     let new_claim = PlacedToolClaim {
@@ -733,7 +737,9 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     }
     assert!(matches!(
         f.complete(&claim).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     delivery.acknowledge().await.unwrap();
     assert_failure_notice(&f, first, &current, f.manifest).await;
@@ -939,7 +945,9 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
     f.store.delete_computer(f.agent).await.unwrap();
     assert!(matches!(
         f.complete(&claim).await,
-        Err(StoreError::ComputerDeleted)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     f.worker.recover_tools().await.unwrap();
     f.worker.recover_tools().await.unwrap();
@@ -958,7 +966,7 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
         .collect();
     assert_eq!(
         errors,
-        ["This session's computer has been deleted. Create a new session to run tools."]
+        ["this session's computer has been deleted; create a new session to run tools"]
     );
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
@@ -1013,7 +1021,9 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
     assert!(f.store.agent_call_status(f.agent).await.unwrap().is_none());
     assert!(matches!(
         f.store.put_agent_call_status(&status).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
     ));
     f.cleanup().await;
 }

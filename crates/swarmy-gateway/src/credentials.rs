@@ -193,12 +193,19 @@ impl AuthStore for ClusterCredentials {
                     let kind = login
                         .refresh(&current.kind)
                         .await
-                        .map_err(|_| StoreError::CredentialRefresh)?
-                        .ok_or(StoreError::CredentialRefresh)?;
-                    Ok(CredentialRecord {
+                        .map_err(|_| {
+                            StoreError::Domain(swarmy_store::DomainError::CredentialRefresh)
+                        })?
+                        .ok_or(StoreError::Domain(
+                            swarmy_store::DomainError::CredentialRefresh,
+                        ))?;
+                    let mut record = CredentialRecord {
+                        bookkeeping: current.bookkeeping.clone(),
                         kind,
                         updated_at: jiff::Timestamp::now(),
-                    })
+                    };
+                    record.migrate_bookkeeping();
+                    Ok(record)
                 },
             )
             .await
@@ -259,6 +266,15 @@ mod tests {
         record
     }
 
+    async fn assert_refreshed_label(credentials: &swarmy_store::credentials::CredentialStore) {
+        let record = credentials
+            .get_entry(CredentialScope::Cluster, "chatgpt", "default")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.bookkeeping.label.as_deref(), Some("default"));
+    }
+
     #[tokio::test]
     async fn racing_resolvers_refresh_once_and_provider_reloads_imported_store() {
         use futures::TryStreamExt;
@@ -267,8 +283,10 @@ mod tests {
             return;
         };
         let credentials = store.credentials(Keyring::from_bytes([3; 32]));
+        let mut original = imported();
+        original.bookkeeping.label = Some("default".into());
         credentials
-            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &imported())
+            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &original)
             .await
             .unwrap();
         let server = MockServer::start().await;
@@ -294,6 +312,7 @@ mod tests {
             };
             assert_eq!(store.load().await.unwrap().access_token(), "new-access");
         }
+        assert_refreshed_label(&credentials).await;
         let ClientAuth::ChatGpt(provider_store) = first.resolve("chatgpt").await.unwrap().auth
         else {
             unreachable!()
@@ -441,6 +460,7 @@ mod tests {
                 login.provider(),
                 "default",
                 &CredentialRecord {
+                    bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                     kind,
                     updated_at: jiff::Timestamp::now(),
                 },
@@ -465,6 +485,7 @@ mod tests {
 
     fn api_key(key: &str) -> CredentialRecord {
         CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
             kind: CredentialKind::ApiKey {
                 key: key.into(),
                 extra: BTreeMap::new(),

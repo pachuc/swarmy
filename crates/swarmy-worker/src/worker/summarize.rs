@@ -224,7 +224,8 @@ impl Worker {
         let message = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::System,
-            parts: vec![swarmy_core::Part::Text {
+            parts: vec![swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
                 text: format!(
                     "context_pressure: input {input_tokens} tokens at 75 percent of the {threshold} token side-session threshold. Summarization will archive this session soon; push work to keep it safe."
                 ),
@@ -450,9 +451,9 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
     let mut chars = 0;
     for part in &message.parts {
         chars += match part {
-            swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
-                text.len()
-            }
+            swarmy_core::Part::Text { text }
+            | swarmy_core::Part::Reasoning { text, .. }
+            | swarmy_core::Part::Notice { text, .. } => text.len(),
             swarmy_core::Part::ToolCall { tool, input, .. } => {
                 tool.len() + serde_json::to_string(input).map_or(0, |json| json.len())
             }
@@ -550,7 +551,11 @@ pub(super) fn last_tool_round(messages: &[swarmy_core::Message]) -> Option<usize
 pub(super) fn is_pressure_warning(message: &swarmy_core::Message) -> bool {
     message.role == swarmy_core::MessageRole::System
         && message.parts.iter().any(|part| match part {
-            swarmy_core::Part::Text { text } => text.contains("context_pressure"),
+            swarmy_core::Part::Notice {
+                kind: swarmy_core::NoticeKind::ContextPressure,
+                ..
+            } => true,
+            swarmy_core::Part::Text { text } => text.starts_with("context_pressure"),
             _ => false,
         })
 }

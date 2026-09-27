@@ -54,21 +54,16 @@ fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
         ),
         Error::ProviderResponse {
             status,
-            message,
+            reason,
             retry_after,
-        } => {
-            let text = message.to_ascii_lowercase();
-            (
-                *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    || status.is_server_error()
-                    || matches!(status.as_u16(), 408 | 409)
-                    || text.contains("usage_limit")
-                    || text.contains("usage limit")
-                    || text.contains("rate_limit")
-                    || text.contains("rate limit"),
-                *retry_after,
-            )
-        }
+            ..
+        } => (
+            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error()
+                || matches!(status.as_u16(), 408 | 409)
+                || *reason == swarmy_llm::ProviderFailureReason::Quota,
+            *retry_after,
+        ),
         Error::Status(status) => (
             *status == reqwest::StatusCode::TOO_MANY_REQUESTS
                 || status.is_server_error()
@@ -89,9 +84,9 @@ const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
 /// completed part is the first observable content for those turns.
 fn part_has_content(part: &swarmy_core::Part) -> bool {
     match part {
-        swarmy_core::Part::Text { text } | swarmy_core::Part::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
+        swarmy_core::Part::Text { text }
+        | swarmy_core::Part::Reasoning { text, .. }
+        | swarmy_core::Part::Notice { text, .. } => !text.is_empty(),
         swarmy_core::Part::ToolCall { .. } | swarmy_core::Part::Image { .. } => true,
         swarmy_core::Part::ToolResult { .. } => false,
     }
@@ -899,6 +894,7 @@ impl Gateway {
                 error: error.to_string(),
                 retryable: input.retryable,
                 retry_at: input.retry_at,
+                failure_kind: swarmy_core::FailureKind::Provider,
             },
         }
     }
@@ -968,6 +964,7 @@ impl Gateway {
                 .unwrap_or_else(|| "provider temporarily unavailable".into());
             return Ok((
                 Err(swarmy_llm::Error::ProviderResponse {
+                    reason: swarmy_llm::ProviderFailureReason::Other,
                     status: reqwest::StatusCode::TOO_MANY_REQUESTS,
                     message: reason,
                     retry_after: Some(
@@ -1088,7 +1085,10 @@ impl Gateway {
                         .await;
                     break;
                 }
-                Err(swarmy_store::StoreError::StaleSequence { actual, .. }) => {
+                Err(swarmy_store::StoreError::Fence(swarmy_store::FenceError::StaleSequence {
+                    actual,
+                    ..
+                })) => {
                     expected_head = actual;
                 }
                 Err(error) => {
@@ -1244,6 +1244,7 @@ mod retry_tests {
     #[test]
     fn rate_limits_outages_and_permanent_errors_are_distinct() {
         let rate_limit = swarmy_llm::Error::ProviderResponse {
+            reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
             message: "quota exceeded".into(),
             retry_after: Some(Duration::from_secs(2)),
@@ -1253,6 +1254,7 @@ mod retry_tests {
             (true, Some(Duration::from_secs(2)))
         );
         let usage_limit = swarmy_llm::Error::ProviderResponse {
+            reason: swarmy_llm::ProviderFailureReason::Quota,
             status: reqwest::StatusCode::FORBIDDEN,
             message: "usage_limit_reached".into(),
             retry_after: None,
@@ -1262,6 +1264,7 @@ mod retry_tests {
         let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
         assert!(retryable_error(&outage).0);
         let auth = swarmy_llm::Error::ProviderResponse {
+            reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::UNAUTHORIZED,
             message: "invalid token".into(),
             retry_after: None,
@@ -1276,12 +1279,14 @@ mod retry_tests {
     #[test]
     fn only_429_or_retry_after_counts_as_rate_limit() {
         let limited = swarmy_llm::Error::ProviderResponse {
+            reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
             message: "slow down".into(),
             retry_after: None,
         };
         assert!(rate_limited(&limited));
         let delayed = swarmy_llm::Error::ProviderResponse {
+            reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::BAD_GATEWAY,
             message: "outage".into(),
             retry_after: Some(Duration::from_secs(1)),

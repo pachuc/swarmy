@@ -47,7 +47,7 @@ impl Store {
                 .await?
                 .is_some_and(|placement| placement.node_id != record.node_id)
             {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             write(&trx, &self.scratch_key(agent), record)
         })
@@ -178,7 +178,9 @@ impl Store {
         };
         mib.checked_mul(1024 * 1024)
             .filter(|bytes| *bytes > 0)
-            .ok_or(StoreError::InvalidState)
+            .ok_or(StoreError::Domain(
+                crate::DomainError::InvalidMemoryRequirement,
+            ))
     }
 
     /// Committed sandbox memory in bytes; expired placements remain committed.
@@ -223,7 +225,9 @@ impl Store {
                 }
                 total = total
                     .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
-                    .ok_or(StoreError::InvalidState)?;
+                    .ok_or(StoreError::Storage(
+                        crate::StorageError::MemoryCapacityOverflow,
+                    ))?;
                 begin = key;
                 begin.push(0);
             }
@@ -241,37 +245,45 @@ impl Store {
     ) -> Result<()> {
         let registered: NodeRecord = read(trx, &self.node_key(node))
             .await?
-            .ok_or(StoreError::NodeMissing)?;
+            .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(crate::DomainError::NodeNotSandbox));
         }
         let key = self.placement_count_key(node);
         let count: u32 = read(trx, &key).await?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
-            return Err(StoreError::NodeAtCapacity {
+            return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
                     "node {node} hosts {count} of {} sandboxes",
                     registered.capacity.sandboxes
                 ),
-            });
+            }));
         }
         let bytes = self.requirement_bytes(trx, agent).await?;
         let committed = self.committed_bytes_excluding(trx, node, agent).await?;
         if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
-            return Err(StoreError::NodeAtCapacity {
+            return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
                     "agent {agent} needs {bytes} bytes but node {node} has {committed} of {} bytes committed",
                     registered.capacity.memory_bytes
                 ),
-            });
+            }));
         }
         write(trx, &key, &(count + 1))
     }
 
     async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
         let key = self.placement_count_key(node);
-        let count: u32 = read(trx, &key).await?.ok_or(StoreError::Corrupt)?;
-        write(trx, &key, &count.checked_sub(1).ok_or(StoreError::Corrupt)?)
+        let count: u32 = read(trx, &key)
+            .await?
+            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+        write(
+            trx,
+            &key,
+            &count
+                .checked_sub(1)
+                .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?,
+        )
     }
 
     fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
@@ -303,9 +315,9 @@ impl Store {
             &crate::keys::Keys::new(&self.root).placement(expected.agent_id),
         )
         .await?
-        .ok_or(StoreError::LeaseMismatch)?;
+        .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
         if current.node_id != expected.node_id || current.epoch != expected.epoch {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(current)
     }
@@ -316,7 +328,7 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<()> {
         if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(())
     }
@@ -348,13 +360,13 @@ impl Store {
             self.check_computer(&trx, agent).await?;
             let now = self.now();
             if expires_at <= now {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             if read::<PlacementRecord>(&trx, &crate::keys::Keys::new(&self.root).placement(agent))
                 .await?
                 .is_some()
             {
-                return Err(StoreError::PlacementExists);
+                return Err(StoreError::Domain(crate::DomainError::PlacementExists));
             }
             let epoch: u64 = read(
                 &trx,
@@ -366,7 +378,9 @@ impl Store {
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
-                epoch: epoch.checked_add(1).ok_or(StoreError::SequenceOverflow)?,
+                epoch: epoch
+                    .checked_add(1)
+                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
                 expires_at,
                 last_change_reason: if epoch == 0 {
                     PlacementChangeReason::Initial
@@ -400,7 +414,7 @@ impl Store {
             let mut current = self.checked_placement(&trx, expected).await?;
             let now = self.now();
             if current.expires_at <= now || expires_at <= current.expires_at {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             let mut hosting = self
                 .read_placement_hosting(&trx, &current)
@@ -431,7 +445,7 @@ impl Store {
         self.transaction(|trx| async move {
             let current = self.checked_placement(&trx, expected).await?;
             if current.expires_at <= self.now() {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
@@ -460,7 +474,7 @@ impl Store {
             let current = self.checked_placement(&trx, expected).await?;
             let now = self.now();
             if current.expires_at > now || expires_at <= now {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
@@ -482,7 +496,7 @@ impl Store {
                 epoch: current
                     .epoch
                     .checked_add(1)
-                    .ok_or(StoreError::SequenceOverflow)?,
+                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
                 expires_at,
                 last_change_reason: if lost_computer {
                     PlacementChangeReason::Failure

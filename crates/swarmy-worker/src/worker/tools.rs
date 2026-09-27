@@ -23,7 +23,9 @@ impl Worker {
         let display = self.session_display(session).await?;
         for (request_id, call) in pending_tools(events) {
             let result = match self.store.ensure_session_computer(id).await {
-                Err(StoreError::ComputerDeleted) => Err(StoreError::ComputerDeleted.to_string()),
+                Err(StoreError::Domain(swarmy_store::DomainError::ComputerDeleted)) => {
+                    Err(StoreError::Domain(swarmy_store::DomainError::ComputerDeleted).to_string())
+                }
                 Err(error) => return Err(error.into()),
                 Ok(()) if swarmy_tools::is_display_name(&call.tool) && !display => {
                     Err("display tools require a display image".into())
@@ -206,7 +208,10 @@ impl Worker {
                     .map(|()| (Vec::new(), jobs.to_vec())),
             };
             let (events, jobs) = match result {
-                Err(StoreError::LeaseMismatch) if attempt == 0 => {
+                Err(StoreError::Fence(
+                    swarmy_store::FenceError::PlacementMismatch
+                    | swarmy_store::FenceError::LeaseMismatch,
+                )) if attempt == 0 => {
                     self.placements.invalidate(session.agent_id).await;
                     continue;
                 }

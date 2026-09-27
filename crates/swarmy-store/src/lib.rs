@@ -88,20 +88,9 @@ const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SCAN_LIMIT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error("keyring cannot decrypt credential; check SWARMY_KEYRING and the cluster key")]
+pub enum StorageError {
+    #[error("keyring cannot decrypt credential")]
     Keyring,
-    #[error("credential does not exist")]
-    CredentialMissing,
-    #[error("route does not exist")]
-    RouteMissing,
-    #[error("invalid route: {0}")]
-    InvalidRoute(String),
-    #[error("credential refresh failed; login required")]
-    CredentialRefresh,
-    #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
-    InvalidGithubToken,
-
     #[error(transparent)]
     FoundationDb(#[from] foundationdb::FdbError),
     #[error(transparent)]
@@ -110,19 +99,73 @@ pub enum StoreError {
     Encoding(#[from] EncodingError),
     #[error(transparent)]
     Blob(#[from] BlobError),
+    #[error("memory capacity overflow")]
+    MemoryCapacityOverflow,
+    #[error("sequence number overflow")]
+    SequenceOverflow,
+    #[error("metadata or batch exceeds the storage budget")]
+    TooLarge,
+    #[error("stored key or blob is corrupt")]
+    Corrupt,
+    #[error("commit outcome is unknown; read durable state before retrying")]
+    CommitUnknown,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FenceError {
+    #[error("volume head changed since this writer opened it")]
+    VolumeHeadMismatch,
+    #[error("expected head {expected}, found {actual}")]
+    StaleSequence { expected: u64, actual: u64 },
+    #[error("inflight mismatch")]
+    InflightMismatch,
+    #[error("placement agent mismatch")]
+    PlacementAgentMismatch,
+    #[error("session agent mismatch")]
+    SessionAgentMismatch,
+    #[error("tool claim mismatch")]
+    ToolClaimMismatch,
+    #[error("tool job mismatch")]
+    ToolJobMismatch,
+    #[error("lease is absent, expired, or no longer matches")]
+    LeaseMismatch,
+    #[error("placement lease or epoch no longer matches")]
+    PlacementMismatch,
+    #[error("placed tool claim no longer matches")]
+    PlacedToolClaimMismatch,
+    #[error("gc run lease no longer matches")]
+    GcLeaseMismatch,
+    #[error("credential refresh claim no longer matches")]
+    CredentialRefreshMismatch,
+    #[error("volume writer lease no longer matches")]
+    VolumeLeaseMismatch,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DomainError {
+    #[error("credential does not exist")]
+    CredentialMissing,
+    #[error("route does not exist")]
+    RouteMissing,
+    #[error("invalid route: {0}")]
+    InvalidRoute(String),
+    #[error("credential refresh failed")]
+    CredentialRefresh,
+    #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
+    InvalidGithubToken,
     #[error("agent does not exist")]
     AgentMissing,
     #[error("agent id or name already exists")]
     AgentExists,
     #[error("agent name must be nonempty and contain no control characters")]
     InvalidAgentName,
-    #[error("--image cannot be used with a named agent; its pinned image is used")]
+    #[error("named agent has a pinned image")]
     NamedAgentImage,
     #[error("an ephemeral session requires an image")]
     SessionImageRequired,
-    #[error("This session's computer has been deleted. Create a new session to run tools.")]
+    #[error("this session's computer has been deleted; create a new session to run tools")]
     ComputerDeleted,
-    #[error("cannot close an agent main session; use swarmy agent delete to delete the agent")]
+    #[error("cannot close an agent main session")]
     MainSessionClose,
     #[error("main session must be an open session belonging to the agent")]
     InvalidMainSession,
@@ -148,8 +191,6 @@ pub enum StoreError {
     ManifestExists,
     #[error("invalid manifest dimensions")]
     InvalidManifest,
-    #[error("volume head changed since this writer opened it")]
-    VolumeHeadMismatch,
     #[error("session does not exist")]
     SessionMissing,
     #[error("session already exists")]
@@ -158,22 +199,76 @@ pub enum StoreError {
     NothingToInterrupt,
     #[error("session interruption was requested before the turn ended")]
     InterruptPending,
-    #[error("expected head {expected}, found {actual}")]
-    StaleSequence { expected: u64, actual: u64 },
-    #[error("invalid state transition or initial session record")]
-    InvalidState,
-    #[error("lease is absent, expired, or no longer matches")]
-    LeaseMismatch,
-    #[error("sequence number overflow")]
-    SequenceOverflow,
-    #[error("metadata or batch exceeds the storage budget")]
-    TooLarge,
+    #[error("empty tool jobs")]
+    EmptyToolJobs,
+    #[error("invalid inference completion")]
+    InvalidInferenceCompletion,
+    #[error("invalid inference request")]
+    InvalidInferenceRequest,
+    #[error("invalid memory requirement")]
+    InvalidMemoryRequirement,
+    #[error("invalid message role")]
+    InvalidMessageRole,
+    #[error("invalid partition")]
+    InvalidPartition,
+    #[error("invalid retention")]
+    InvalidRetention,
+    #[error("invalid session record")]
+    InvalidSessionRecord,
+    #[error("invalid snapshot")]
+    InvalidSnapshot,
+    #[error("invalid tool call")]
+    InvalidToolCall,
+    #[error("invalid transition")]
+    InvalidTransition,
+    #[error("missing inference wait")]
+    MissingInferenceWait,
+    #[error("missing inflight")]
+    MissingInflight,
+    #[error("missing tool request")]
+    MissingToolRequest,
+    #[error("node not sandbox")]
+    NodeNotSandbox,
+    #[error("session computer exists")]
+    SessionComputerExists,
+    #[error("session not idle")]
+    SessionNotIdle,
+    #[error("unexpected session state")]
+    UnexpectedSessionState,
+    #[error("lease TTL must be greater than zero")]
+    InvalidLeaseTtl,
     #[error("scan limit must be between 1 and 64")]
     InvalidLimit,
-    #[error("stored key or blob is corrupt")]
-    Corrupt,
-    #[error("commit outcome is unknown; read durable state before retrying")]
-    CommitUnknown,
+}
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Fence(#[from] FenceError),
+    #[error(transparent)]
+    Domain(#[from] DomainError),
+}
+
+impl From<foundationdb::FdbError> for StoreError {
+    fn from(error: foundationdb::FdbError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+impl From<FdbBindingError> for StoreError {
+    fn from(error: FdbBindingError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+impl From<EncodingError> for StoreError {
+    fn from(error: EncodingError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+impl From<BlobError> for StoreError {
+    fn from(error: BlobError) -> Self {
+        StorageError::from(error).into()
+    }
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -410,13 +505,15 @@ impl Store {
                 async move {
                     if bool::from(maybe_committed) {
                         return Err(FdbBindingError::new_custom_error(Box::new(
-                            StoreError::CommitUnknown,
+                            StoreError::Storage(crate::StorageError::CommitUnknown),
                         )));
                     }
                     trx.set_option(TransactionOption::Timeout(4_500))?;
                     trx.set_option(TransactionOption::RetryLimit(20))?;
                     operation(trx).await.map_err(|error| match error {
-                        StoreError::FoundationDb(error) => error.into(),
+                        StoreError::Storage(crate::StorageError::FoundationDb(error)) => {
+                            error.into()
+                        }
                         other => FdbBindingError::new_custom_error(Box::new(other)),
                     })
                 }
@@ -425,9 +522,11 @@ impl Store {
         result.map_err(|error| match error {
             FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
                 Ok(error) => *error,
-                Err(error) => StoreError::Binding(FdbBindingError::CustomError(error)),
+                Err(error) => StoreError::Storage(crate::StorageError::Binding(
+                    FdbBindingError::CustomError(error),
+                )),
             },
-            other => StoreError::Binding(other),
+            other => StoreError::Storage(crate::StorageError::Binding(other)),
         })
     }
 
@@ -459,7 +558,7 @@ impl Store {
             StoredValue::Blob(key) => {
                 let bytes = self.blobs.get(&key).await?;
                 if key != format!("blobs/{}", blake3::hash(&bytes).to_hex()) {
-                    return Err(StoreError::Corrupt);
+                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
                 }
                 Ok(decode(&bytes)?)
             }
@@ -554,19 +653,19 @@ impl Store {
         if bytes.first() == Some(&SESSION_RECORD_VERSION) {
             let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
                 if bytes.len() != 20 {
-                    return Err(StoreError::Corrupt);
+                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
                 }
                 let id = keys::session_id(bytes[2..18].to_vec())?;
                 let count = u16::from_be_bytes([bytes[18], bytes[19]]);
                 if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
-                    return Err(StoreError::Corrupt);
+                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
                 }
                 let mut payload = Vec::new();
                 for index in 0..count {
                     let chunk = trx
                         .get(&self.session_chunk_key(id, index), false)
                         .await?
-                        .ok_or(StoreError::Corrupt)?;
+                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
                     payload.extend_from_slice(&chunk);
                 }
                 payload
@@ -609,7 +708,7 @@ impl Store {
             Some(seq) => Ok(Some(
                 trx.get(&self.snapshot_key(session.session_id, seq), false)
                     .await?
-                    .ok_or(StoreError::Corrupt)?
+                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     .to_vec(),
             )),
             None => Ok(None),
@@ -621,7 +720,7 @@ impl Store {
         let bytes = trx
             .get(&self.session_key(id), false)
             .await?
-            .ok_or(StoreError::SessionMissing)?;
+            .ok_or(StoreError::Domain(crate::DomainError::SessionMissing))?;
         self.decode_session_in(trx, &bytes).await
     }
 
@@ -634,7 +733,7 @@ impl Store {
                 .map_err(EncodingError::Payload)?,
         );
         if bytes.len() > SESSION_MAX_BYTES {
-            return Err(StoreError::TooLarge);
+            return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
         let (begin, end) = crate::keys::Keys::new(&self.root)
             .session_chunk_space(session.session_id)
@@ -643,12 +742,13 @@ impl Store {
         if bytes.len() > INLINE_LIMIT {
             let payload = &bytes[1..];
             let count = u16::try_from(payload.len().div_ceil(INLINE_LIMIT))
-                .map_err(|_| StoreError::TooLarge)?;
+                .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?;
             for (index, chunk) in payload.chunks(INLINE_LIMIT).enumerate() {
                 trx.set(
                     &self.session_chunk_key(
                         session.session_id,
-                        u16::try_from(index).map_err(|_| StoreError::TooLarge)?,
+                        u16::try_from(index)
+                            .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?,
                     ),
                     chunk,
                 );
@@ -694,8 +794,10 @@ impl Store {
                     }
                     let mut ids = Vec::new();
                     for (key, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
-                        let (_, bytes): (String, Vec<u8>) =
-                            self.root.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                        let (_, bytes): (String, Vec<u8>) = self
+                            .root
+                            .unpack(&key)
+                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                         ids.push((
                             keys::session_id(bytes)?,
                             value.first() != Some(&SESSION_RECORD_VERSION),
@@ -729,9 +831,11 @@ impl Store {
                     Ok(true) => outcome.migrated += 1,
                     Ok(false) => {}
                     Err(
-                        error @ (StoreError::Encoding(_)
-                        | StoreError::TooLarge
-                        | StoreError::Corrupt),
+                        error @ StoreError::Storage(
+                            crate::StorageError::Encoding(_)
+                            | crate::StorageError::TooLarge
+                            | crate::StorageError::Corrupt,
+                        ),
                     ) => {
                         tracing::warn!(%id, %error, "skipping invalid legacy session");
                         outcome.skipped += 1;
@@ -902,7 +1006,7 @@ impl Store {
         message: &swarmy_core::Message,
     ) -> Result<u64> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         self.append_events_inner(
             id,
@@ -928,18 +1032,18 @@ impl Store {
         key: &str,
     ) -> Result<(u64, bool)> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::InvalidState);
+            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = Event::MessageAppended {
             seq: head,
             message: message.clone(),
         };
         let value = self.prepare(&event).await?;
         if value.len() > MAX_BATCH_BYTES {
-            return Err(StoreError::TooLarge);
+            return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
         let replay_key = crate::keys::Keys::new(&self.root).api_append(key);
         self.transaction(|trx| {
@@ -951,13 +1055,13 @@ impl Store {
                 }
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if session.state != SessionState::Idle {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
                 }
                 trx.set(&self.event_key(id, head), value);
                 write(&trx, &self.turn_key(id), &message.id)?;
@@ -980,8 +1084,11 @@ impl Store {
         wake: bool,
     ) -> Result<u64> {
         let head = expected_head
-            .checked_add(u64::try_from(events.len()).map_err(|_| StoreError::TooLarge)?)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .checked_add(
+                u64::try_from(events.len())
+                    .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?,
+            )
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let mut prepared = Vec::with_capacity(events.len());
         let mut size = 0;
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
@@ -991,7 +1098,7 @@ impl Store {
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
             if size > MAX_BATCH_BYTES {
-                return Err(StoreError::TooLarge);
+                return Err(StoreError::Storage(crate::StorageError::TooLarge));
             }
             prepared.push((key, value));
         }
@@ -1003,13 +1110,13 @@ impl Store {
                 }
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if wake && session.state != SessionState::Idle {
-                    return Err(StoreError::InvalidState);
+                    return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
                 }
                 for (key, value) in prepared {
                     trx.set(key, value);
@@ -1073,10 +1180,10 @@ impl Store {
                 if snapshot.seq > session.head_seq
                     || session.snapshot_seq.is_some_and(|old| old > snapshot.seq)
                 {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: snapshot.seq,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 trx.set(&self.snapshot_key(id, snapshot.seq), value);
                 session.snapshot_seq = Some(snapshot.seq);
@@ -1167,7 +1274,7 @@ async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Opti
 fn write<T: Serialize>(trx: &Transaction, key: &[u8], value: &T) -> Result<()> {
     let bytes = encode(value)?;
     if bytes.len() > INLINE_LIMIT {
-        return Err(StoreError::TooLarge);
+        return Err(StoreError::Storage(crate::StorageError::TooLarge));
     }
     trx.set(key, &bytes);
     Ok(())
@@ -1177,7 +1284,7 @@ fn check_limit(limit: usize) -> Result<()> {
     if (1..=MAX_SCAN_LIMIT).contains(&limit) {
         Ok(())
     } else {
-        Err(StoreError::InvalidLimit)
+        Err(StoreError::Domain(crate::DomainError::InvalidLimit))
     }
 }
 

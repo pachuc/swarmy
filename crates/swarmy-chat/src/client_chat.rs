@@ -530,6 +530,7 @@ impl View {
             .flatten()
             .filter_map(|part| {
                 part.get("text")
+                    .or_else(|| part.get("notice"))
                     .and_then(|v| v.get("text"))
                     .and_then(serde_json::Value::as_str)
             })
