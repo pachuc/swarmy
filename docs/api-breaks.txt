@@ -14,3 +14,6 @@ PUT /v1/events/{connection_id}/subscription removed `subschema #2` from the `cur
 POST /v1/sessions/{id}/messages changes invalid state error code from session_not_idle to storage_error except when session is not idle
 PATCH /v1/cli/agents/{name}/settings changes active placement error code from storage_error to agent_computer_placed
 PATCH /v1/agents/{id} changes active placement error code from storage_error to agent_computer_placed
+
+# 2026-09-27: Inference failure events append a typed failure_kind, while old stored events decode with unknown. Update event readers before writers.
+GET /v1/sessions/{id}/events adds inference_failed/failure_kind to response events

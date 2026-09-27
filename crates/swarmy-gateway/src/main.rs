@@ -899,7 +899,7 @@ impl Gateway {
                 error: error.to_string(),
                 retryable: input.retryable,
                 retry_at: input.retry_at,
-                failure_kind: swarmy_core::FailureKind::Unknown,
+                failure_kind: swarmy_core::FailureKind::Provider,
             },
         }
     }

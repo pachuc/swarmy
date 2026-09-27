@@ -228,6 +228,14 @@ fn failed_completion(
     retry_at: Option<jiff::Timestamp>,
     failure_kind: FailureKind,
 ) -> Event {
+    // Legacy interrupt events had no kind. Classify them once while decoding
+    // so the store never has to make a decision from the display text.
+    let failure_kind = if failure_kind == FailureKind::Unknown && error == "interrupted by operator"
+    {
+        FailureKind::OperatorInterrupted
+    } else {
+        failure_kind
+    };
     Event::InferenceFailed {
         seq,
         request_id,
@@ -630,6 +638,46 @@ mod tests {
             retryable: bool,
             retry_at: Option<jiff::Timestamp>,
         },
+    }
+
+    #[test]
+    fn old_failure_rows_default_kind() {
+        let request_id = crate::RequestId::for_step(
+            crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
+            4,
+        );
+        let old = PreRoutesBinaryEvent::RetryableInferenceFailed {
+            seq: 7,
+            request_id,
+            error: "provider unavailable".into(),
+            retryable: true,
+            retry_at: None,
+        };
+        let bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
+        assert_eq!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                seq: 7,
+                request_id,
+                error: "provider unavailable".into(),
+                retryable: true,
+                retry_at: None,
+                failure_kind: FailureKind::Unknown,
+            }
+        );
+        let interrupt = PreRoutesBinaryEvent::InferenceFailed {
+            seq: 8,
+            request_id,
+            error: "interrupted by operator".into(),
+        };
+        let bytes = postcard::to_extend(&interrupt, vec![crate::STORAGE_VERSION]).unwrap();
+        assert!(matches!(
+            crate::decode::<Event>(&bytes).unwrap(),
+            Event::InferenceFailed {
+                failure_kind: FailureKind::OperatorInterrupted,
+                ..
+            }
+        ));
     }
 
     #[test]
