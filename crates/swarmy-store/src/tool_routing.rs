@@ -224,7 +224,7 @@ impl Store {
             self.transition(trx, session, SessionState::Runnable, Timestamp::now())
                 .await
         } else {
-            write(trx, &self.session_key(job.session_id), &session)
+            self.write_session(trx, &session)
         }
     }
 
@@ -368,7 +368,7 @@ impl Store {
                 })
                 .await?;
             trx.set(&self.event_space(id).pack(&(session.head_seq,)), &event);
-            write(trx, &self.session_key(id), &session)?;
+            self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;
         }
         Ok(())

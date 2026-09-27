@@ -4461,6 +4461,7 @@ dependencies = [
  "futures",
  "jiff",
  "object_store",
+ "postcard",
  "rand 0.9.5",
  "serde",
  "serde_json",

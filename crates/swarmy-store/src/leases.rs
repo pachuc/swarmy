@@ -174,7 +174,7 @@ impl Store {
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
         write(trx, &self.session_state_since_key(id), &Timestamp::now())?;
-        write(trx, &self.session_key(id), &session)?;
+        self.write_session(trx, &session)?;
         Ok((lease, session))
     }
 
@@ -289,7 +289,7 @@ impl Store {
                 },
             )?;
         }
-        write(trx, &self.session_key(session.session_id), &session)
+        self.write_session(trx, &session)
     }
 
     /// Return a page of leases expiring at or before `now`, ordered by expiry/id.

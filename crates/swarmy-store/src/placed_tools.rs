@@ -238,7 +238,7 @@ impl Store {
                     self.transition(&trx, session, SessionState::Runnable, Timestamp::now())
                         .await
                 } else {
-                    write(&trx, &self.session_key(job.session_id), &session)
+                    self.write_session(&trx, &session)
                 }
             }
         })

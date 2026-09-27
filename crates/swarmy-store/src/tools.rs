@@ -177,7 +177,7 @@ impl Store {
             }
             session.head_seq = *seq;
         }
-        write(trx, &self.session_key(id), &session)
+        self.write_session(trx, &session)
     }
 
     /// # Errors

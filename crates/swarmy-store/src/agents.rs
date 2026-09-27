@@ -602,7 +602,7 @@ impl Store {
                 self.create_session_in(&trx, &session, now, None).await?;
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = 1;
-                write(&trx, &self.session_key(id), &created)?;
+                self.write_session(&trx, &created)?;
                 trx.set(&self.event_space(id).pack(&(1_u64,)), opening);
                 trx.set(&self.event_space(old).pack(&(head,)), archived_value);
                 previous.head_seq = head;
@@ -761,7 +761,7 @@ impl Store {
     ) -> Result<()> {
         let mut created = self.session(trx, id).await?;
         created.head_seq = new_head;
-        write(trx, &self.session_key(id), &created)?;
+        self.write_session(trx, &created)?;
         for (index, value) in prepared.iter().enumerate() {
             let seq = u64::try_from(index)
                 .ok()

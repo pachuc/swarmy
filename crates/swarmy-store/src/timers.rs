@@ -146,7 +146,7 @@ impl Store {
             let value = self.prepare(&event).await?;
             trx.set(&self.event_space(id).pack(&(seq,)), &value);
             session.head_seq = seq;
-            write(&trx, &self.session_key(id), &session)?;
+            self.write_session(&trx, &session)?;
             Ok(event)
         })
         .await
