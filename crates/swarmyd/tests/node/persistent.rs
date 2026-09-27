@@ -126,26 +126,13 @@ async fn completed(
     store: &Store,
     job: &ToolJob,
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        loop {
-            if store.tool_completed(job.request_id).await.unwrap() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("persistent tool did not complete");
-    let events = store.read_events(job.session_id, 1, 10).await.unwrap();
-    let Event::ToolCallCompleted {
-        result: ToolResult::Completed { metadata, .. },
-        ..
-    } = &events[0]
-    else {
+    // A takeover records the eviction notice before the result, so find the
+    // completion by request id rather than by position.
+    let ToolResult::Completed { metadata, .. } = tool_result(store, job).await else {
         panic!("missing bash output")
     };
     assert_eq!(metadata["exit_code"], 0, "{metadata:?}");
-    metadata.clone()
+    metadata
 }
 
 fn device(node: &Node, agent: AgentId) -> PathBuf {
