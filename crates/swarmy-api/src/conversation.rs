@@ -41,7 +41,7 @@ fn session_error(failure: swarmy_store::StoreError) -> (StatusCode, Json<api::Ap
             StatusCode::CONFLICT,
             Json(api::ApiError {
                 code: "main_session_close".into(),
-                message: "cannot close an agent main session; use swarmy agent delete to delete the agent".into(),
+                message: "cannot close an agent main session".into(),
                 provider_text: None,
             }),
         ),

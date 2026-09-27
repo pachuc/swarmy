@@ -852,11 +852,19 @@ async fn agent(
             body["github_token"] = json!(github_token.clone());
             body["clear_github_token"] = json!(clear_github_token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let updated = projection(
-                endpoint,
+            let updated = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
                 client.cli_update_agent(&name, &serde_json::from_value(body)?),
             )
-            .await?;
+            .await
+            .context("agent update timed out")?
+            .map_err(|error| match &error {
+                swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
+                    anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+                }
+                _ => swarmy_client::api_client::api_error(&error, endpoint),
+            })?;
+            let updated = serde_json::to_value(updated)?;
             print(
                 &updated,
                 &format!(

@@ -456,6 +456,10 @@ impl Worker {
             error,
             retryable,
             retry_at,
+            failure_kind: match kind {
+                StepFailure::Unserved { .. } => swarmy_core::FailureKind::GatewayUnserved,
+                StepFailure::Publication(_) => swarmy_core::FailureKind::Publication,
+            },
         };
         let committed = self
             .store

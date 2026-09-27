@@ -787,15 +787,6 @@ impl Store {
         Ok(())
     }
 
-    /// Failures from `fail_unserved` carry this prefix. The provider may
-    /// appear on the next gateway advertisement, so the session waits out
-    /// the gateway interval on its current step instead of consuming a
-    /// route step.
-    #[must_use]
-    pub fn is_unserved_error(error: &str) -> bool {
-        error.starts_with("no gateway serves provider ")
-    }
-
     /// Resolve one retryable failure against the session's route and either
     /// advance to the next usable step or park the exhausted chain, in a
     /// single transaction: the snapshot, the step move, and the wait write
@@ -813,6 +804,7 @@ impl Store {
         lease: &Lease,
         seq: u64,
         error: &str,
+        failure_kind: swarmy_core::FailureKind,
         retry_at: Timestamp,
         route_step: u32,
         session_route: Option<&str>,
@@ -857,7 +849,7 @@ impl Store {
                 )
                 .await?;
             let route = snapshot.name.clone();
-            if Self::is_unserved_error(error) {
+            if failure_kind == swarmy_core::FailureKind::GatewayUnserved {
                 self.park_leased_in(
                     &trx,
                     id,

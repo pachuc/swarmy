@@ -1,6 +1,7 @@
 //! Preserve existing postcard discriminants; JSON keeps the public completion name.
 use super::{
-    Event, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord, ToolResult,
+    Event, FailureKind, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord,
+    ToolResult,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -71,6 +72,8 @@ enum HumanEvent {
         retryable: bool,
         #[serde(default)]
         retry_at: Option<jiff::Timestamp>,
+        #[serde(default)]
+        failure_kind: FailureKind,
     },
 }
 
@@ -116,6 +119,8 @@ enum BinaryEvent {
         seq: u64,
         request_id: RequestId,
         error: String,
+        #[serde(default, with = "crate::trailing")]
+        failure_kind: FailureKind,
     },
     MeteredInferenceCompleted {
         seq: u64,
@@ -153,6 +158,8 @@ enum BinaryEvent {
         error: String,
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
+        #[serde(default, with = "crate::trailing")]
+        failure_kind: FailureKind,
     },
 }
 
@@ -219,6 +226,7 @@ fn failed_completion(
     error: String,
     retryable: bool,
     retry_at: Option<jiff::Timestamp>,
+    failure_kind: FailureKind,
 ) -> Event {
     Event::InferenceFailed {
         seq,
@@ -226,6 +234,7 @@ fn failed_completion(
         error,
         retryable,
         retry_at,
+        failure_kind,
     }
 }
 
@@ -353,10 +362,12 @@ impl From<Event> for BinaryEvent {
                 error,
                 retryable: false,
                 retry_at: None,
+                failure_kind: FailureKind::Unknown,
             } => Self::InferenceFailed {
                 seq,
                 request_id,
                 error,
+                failure_kind: FailureKind::Unknown,
             },
             Event::InferenceFailed {
                 seq,
@@ -364,12 +375,14 @@ impl From<Event> for BinaryEvent {
                 error,
                 retryable,
                 retry_at,
+                failure_kind,
             } => Self::RetryableInferenceFailed {
                 seq,
                 request_id,
                 error,
                 retryable,
                 retry_at,
+                failure_kind,
             },
         }
     }
@@ -424,14 +437,16 @@ impl From<BinaryEvent> for Event {
                 seq,
                 request_id,
                 error,
-            } => failed_completion(seq, request_id, error, false, None),
+                failure_kind,
+            } => failed_completion(seq, request_id, error, false, None, failure_kind),
             BinaryEvent::RetryableInferenceFailed {
                 seq,
                 request_id,
                 error,
                 retryable,
                 retry_at,
-            } => failed_completion(seq, request_id, error, retryable, retry_at),
+                failure_kind,
+            } => failed_completion(seq, request_id, error, retryable, retry_at, failure_kind),
             BinaryEvent::MeteredInferenceCompleted {
                 seq,
                 request_id,

@@ -22,10 +22,14 @@ impl Store {
             return Ok(false);
         };
         let event: Event = self.hydrate(&bytes).await?;
-        Ok(
-            matches!(event, Event::InferenceFailed { retryable: false, error, .. }
-            if error == "interrupted by operator"),
-        )
+        Ok(matches!(
+            event,
+            Event::InferenceFailed {
+                retryable: false,
+                failure_kind: swarmy_core::FailureKind::OperatorInterrupted,
+                ..
+            }
+        ))
     }
 
     pub(crate) fn interrupt_key(&self, id: SessionId) -> Vec<u8> {

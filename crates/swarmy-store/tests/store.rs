@@ -1129,6 +1129,7 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
             error: "exhausted".into(),
             retryable: false,
             retry_at: None,
+            failure_kind: swarmy_core::FailureKind::Unknown,
         },
         now: timestamp(12),
     };
@@ -1175,6 +1176,7 @@ async fn assert_completion_published_once(
         error: "must not be published".into(),
         retryable: false,
         retry_at: None,
+        failure_kind: swarmy_core::FailureKind::Unknown,
     };
     assert!(
         !store
@@ -1287,7 +1289,7 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
     };
     assert!(matches!(
         test.store.start_inference(&claim, timestamp(0)).await,
-        Err(StoreError::UnexpectedSessionState)
+        Err(StoreError::MissingInflight)
     ));
     let mut inflight = InflightRecord {
         session_id: SessionId::from_ulid(Ulid::generate()),

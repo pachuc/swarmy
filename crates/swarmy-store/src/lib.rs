@@ -89,7 +89,7 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("keyring cannot decrypt credential; check SWARMY_KEYRING and the cluster key")]
+    #[error("keyring cannot decrypt credential")]
     Keyring,
     #[error("credential does not exist")]
     CredentialMissing,
@@ -97,7 +97,7 @@ pub enum StoreError {
     RouteMissing,
     #[error("invalid route: {0}")]
     InvalidRoute(String),
-    #[error("credential refresh failed; login required")]
+    #[error("credential refresh failed")]
     CredentialRefresh,
     #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
     InvalidGithubToken,
@@ -116,13 +116,13 @@ pub enum StoreError {
     AgentExists,
     #[error("agent name must be nonempty and contain no control characters")]
     InvalidAgentName,
-    #[error("--image cannot be used with a named agent; its pinned image is used")]
+    #[error("named agent has a pinned image")]
     NamedAgentImage,
     #[error("an ephemeral session requires an image")]
     SessionImageRequired,
-    #[error("This session's computer has been deleted. Create a new session to run tools.")]
+    #[error("session computer has been deleted")]
     ComputerDeleted,
-    #[error("cannot close an agent main session; use swarmy agent delete to delete the agent")]
+    #[error("cannot close an agent main session")]
     MainSessionClose,
     #[error("main session must be an open session belonging to the agent")]
     InvalidMainSession,

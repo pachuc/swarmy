@@ -4,6 +4,19 @@ use crate::{
     Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord, ToolResult,
 };
 
+/// Machine-readable cause of a failed inference. Older events default to Unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    #[default]
+    Unknown,
+    OperatorInterrupted,
+    GatewayUnserved,
+    Provider,
+    Publication,
+    WaitExceeded,
+}
+
 /// One immutable entry in a session log. Sequence numbers start at one and are
 /// assigned by the store when appending; they are distinct from request step ids.
 ///
@@ -67,6 +80,7 @@ pub enum Event {
         error: String,
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
+        failure_kind: FailureKind,
     },
 }
 
@@ -110,6 +124,7 @@ pub fn interrupted_event(seq: u64, request_id: crate::RequestId) -> Event {
         error: "interrupted by operator".into(),
         retryable: false,
         retry_at: None,
+        failure_kind: FailureKind::OperatorInterrupted,
     }
 }
 
@@ -179,6 +194,7 @@ mod tests {
                 error: "provider failed".into(),
                 retryable: false,
                 retry_at: None,
+                failure_kind: FailureKind::Unknown,
             },
         ]
     }
@@ -236,6 +252,7 @@ mod tests {
                 error: "old".into(),
                 retryable: false,
                 retry_at: None,
+                failure_kind: FailureKind::Unknown,
             }
         );
         let retry_at = "2026-09-23T01:00:00Z".parse().unwrap();
@@ -245,6 +262,7 @@ mod tests {
             error: "limit reached".into(),
             retryable: true,
             retry_at: Some(retry_at),
+            failure_kind: FailureKind::Unknown,
         };
         assert_round_trip(&event);
     }
