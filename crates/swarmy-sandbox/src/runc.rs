@@ -90,7 +90,7 @@ mod image_environment_tests {
     }
 }
 
-const SCRATCH_PRESSURE_GRACE: Duration = Duration::from_secs(60 * 60);
+const SCRATCH_PRESSURE_GRACE: Duration = Duration::from_hours(1);
 
 // A daemon restart makes every sandbox temporarily inactive. Give recently
 // hosted scratch time to be reattached before pressure can reclaim it.
