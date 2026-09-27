@@ -91,7 +91,9 @@ impl CompletionsProvider {
         if matches!(error, Error::ContextOverflow(_)) {
             return Err(error);
         }
-        if retryable(status) {
+        if retryable(status)
+            || crate::classify_provider_failure(&body) == crate::ProviderFailureReason::Quota
+        {
             return Err(Error::ProviderResponse {
                 status,
                 reason: crate::classify_provider_failure(&body),

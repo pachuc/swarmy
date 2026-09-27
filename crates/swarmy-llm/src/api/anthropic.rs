@@ -149,7 +149,9 @@ impl AnthropicProvider {
         if context_overflow(&body) {
             return Err(Error::ContextOverflow(body));
         }
-        if retryable(status) {
+        if retryable(status)
+            || crate::classify_provider_failure(&body) == crate::ProviderFailureReason::Quota
+        {
             return Err(Error::ProviderResponse {
                 status,
                 reason: crate::classify_provider_failure(&body),
