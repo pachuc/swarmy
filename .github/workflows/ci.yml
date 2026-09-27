@@ -56,12 +56,33 @@ jobs:
       # Gemini, and Azure with a clear error instead of failing to compile.
       - name: Test the inference clients without cloud features
         run: cargo test --locked -p swarmy-llm --no-default-features
-      - name: Run root acceptance suites
-        run: scripts/ci-root-suites.sh
       - name: Run the reduced failure-injection test
         run: scripts/chaos-ci.sh
       - name: Check OpenAPI compatibility
         run: scripts/check-openapi-compat.sh origin/master
+      - name: Stop development services
+        if: always()
+        run: |
+          scripts/dev-stack.sh stop
+          scripts/dev-stack.sh status
+  root-suites:
+    needs: linux
+    runs-on: [self-hosted, swarmy-ci]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report persistent build cache size
+        run: du -sh "$CARGO_TARGET_DIR" || true
+      - name: Start development services
+        run: |
+          scripts/dev-stack.sh start
+          source .dev/env
+          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+      - name: Build test siblings
+        run: cargo build --workspace --locked
+      - name: Run root acceptance suites
+        run: scripts/ci-root-suites.sh
       - name: Stop development services
         if: always()
         run: |
