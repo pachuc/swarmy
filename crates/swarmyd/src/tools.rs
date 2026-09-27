@@ -654,7 +654,7 @@ mod tests {
         );
         let local = PlacementRecord {
             node_id: node,
-            ..dispatched.clone()
+            ..dispatched
         };
         assert_eq!(
             placement_refusal(Some(&dispatched), &local, node)
