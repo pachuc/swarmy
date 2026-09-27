@@ -3,7 +3,7 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    Event, ImageRecord, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState,
+    Event, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState,
     ToolJob, ToolResult, VolumeId, VolumeRecord,
 };
 
@@ -37,7 +37,8 @@ impl Store {
     ) -> Result<VolumeId> {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, placement).await?;
-            if self.session(&trx, session).await?.agent_id != placement.agent_id {
+            let stored = self.session(&trx, session).await?;
+            if stored.agent_id != placement.agent_id {
                 return Err(StoreError::InvalidState);
             }
             let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
@@ -54,15 +55,11 @@ impl Store {
                     return Err(StoreError::LeaseMismatch);
                 }
             } else {
-                let manifest = read::<ImageRecord>(
-                    &trx,
-                    &self
-                        .root
-                        .pack(&("session_image", session.as_ulid().to_bytes().as_slice())),
-                )
-                .await?
-                .ok_or(StoreError::ManifestMissing)?
-                .manifest_id;
+                let manifest = stored
+                    .image
+                    .as_ref()
+                    .ok_or(StoreError::ManifestMissing)?
+                    .manifest_id;
                 write(
                     &trx,
                     &self.volume_key(id),

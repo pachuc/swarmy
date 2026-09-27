@@ -2,7 +2,7 @@
 use foundationdb::Transaction;
 use jiff::Timestamp;
 use swarmy_core::{
-    Event, ImageRecord, Message, MessageId, MessageRole, Part, PlacementChangeReason,
+    Event, Message, MessageId, MessageRole, Part, PlacementChangeReason,
     PlacementRecord, SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord,
     computer_rebuilt_message,
 };
@@ -280,15 +280,11 @@ impl Store {
                 if let Some(volume) = read::<VolumeRecord>(trx, &self.volume_key(volume)).await? {
                     volume.head_manifest
                 } else {
-                    read::<ImageRecord>(
-                        trx,
-                        &self
-                            .root
-                            .pack(&("session_image", id.as_ulid().to_bytes().as_slice())),
-                    )
-                    .await?
-                    .ok_or(StoreError::ManifestMissing)?
-                    .manifest_id
+                    self.session(trx, id)
+                        .await?
+                        .image
+                        .ok_or(StoreError::ManifestMissing)?
+                        .manifest_id
                 };
             // Manifest IDs are time-ordered ULIDs minted for snapshot publication.
             let millis = i64::try_from(manifest.as_ulid().timestamp_ms())
