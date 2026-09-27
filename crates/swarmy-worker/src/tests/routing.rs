@@ -76,9 +76,9 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
         .await
         .unwrap();
     assert_eq!(
-        f.store.transaction_count(),
-        before,
-        "route read on first attempt"
+        f.store.transaction_count() - before,
+        1,
+        "first attempt must only read placement for instructions, not the route"
     );
     assert_eq!(attempt.provider, "fake");
     assert_eq!(attempt.entry, None, "gateway must choose the pool entry");
