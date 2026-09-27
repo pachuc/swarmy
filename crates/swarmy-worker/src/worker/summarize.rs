@@ -61,10 +61,11 @@ impl Worker {
                 return Ok(false);
             }
         }
-        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
-            return Ok(false);
+        let is_main = match self.store.get_agent(session.agent_id).await? {
+            Some(agent) => agent.main_session == Some(session.session_id),
+            None if mid_turn.is_some() => false,
+            None => return Ok(false),
         };
-        let is_main = agent.main_session == Some(session.session_id);
         if mid_turn.is_some() && is_main {
             return Ok(false);
         }
