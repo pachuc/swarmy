@@ -1,8 +1,8 @@
 //! Terminal renderer for the API conversation stream.
 
+use crate::client_conversation::ConversationItem;
 use crate::input::Input;
 use crate::{client_conversation::Conversation, selection_command::SelectionArgs};
-use crate::client_conversation::ConversationItem;
 use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},

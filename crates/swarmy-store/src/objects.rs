@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
 #[cfg(test)]
 use object_store::aws::AmazonS3ConfigKey;
+use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
 use swarmy_config::Settings;
 
 use crate::blob::BlobError;
@@ -119,7 +119,10 @@ mod tests {
             ("AWS_ACCESS_KEY_ID".into(), "hostile-key".into()),
             ("AWS_SECRET_ACCESS_KEY".into(), "hostile-secret".into()),
             ("AWS_SESSION_TOKEN".into(), "hostile-token".into()),
-            ("AWS_ENDPOINT_URL".into(), "https://hostile.example.invalid".into()),
+            (
+                "AWS_ENDPOINT_URL".into(),
+                "https://hostile.example.invalid".into(),
+            ),
             ("AWS_ALLOW_HTTP".into(), "true".into()),
         ])
     }
