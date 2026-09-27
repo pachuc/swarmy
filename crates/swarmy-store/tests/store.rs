@@ -2300,10 +2300,13 @@ async fn legacy_side_rows_migrate_to_one_versioned_session() {
     assert_eq!(fields.14, Some(since));
     test.db
         .run(|trx, _| {
-            let (header, kind, step, interrupt) = (&header, &kind, &step, &interrupt);
+            let (header, kind, step, interrupt, rows) = (&header, &kind, &step, &interrupt, &rows);
             async move {
                 assert_eq!(trx.get(header, false).await?.unwrap()[0], 2);
                 for key in [kind, step, interrupt] {
+                    assert!(trx.get(key, false).await?.is_none());
+                }
+                for (key, _) in rows {
                     assert!(trx.get(key, false).await?.is_none());
                 }
                 Ok(())
