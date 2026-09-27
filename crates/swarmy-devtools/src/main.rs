@@ -1,4 +1,3 @@
-use swarmy_client::api_client;
 mod auth;
 mod auth_command;
 use clap::Parser;
