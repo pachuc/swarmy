@@ -11,6 +11,11 @@ use swarmy_client::{Client, EventStream, StreamItem};
 /// Client-side stream item: server events plus the CLI-synthesized notice
 /// that a summarized session continues elsewhere. The server never sends
 /// the notice, so it lives here rather than in the API contract.
+// The stream variant dwarfs the successor notice, but this enum is
+// short-lived (returned by value from `next` and matched immediately), so
+// padding the notice costs one stack slot per call while boxing would add
+// a heap allocation per streamed event.
+#[allow(clippy::large_enum_variant)]
 pub enum ConversationItem {
     Stream(StreamItem),
     Summarized {
@@ -565,23 +570,13 @@ impl Conversation {
                 }
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
-                    match event.payload {
-                        api::EventPayload::StoreRecord { record } => {
-                            let Ok(value) = serde_json::to_value(&record) else {
-                                continue;
-                            };
-                            if self.record_event(
-                                &value,
-                                sequence,
-                                json,
-                                run,
-                                quiet,
-                                &mut progress,
-                            )? {
-                                return Ok(());
-                            }
+                    if let api::EventPayload::StoreRecord { record } = event.payload {
+                        let Ok(value) = serde_json::to_value(&record) else {
+                            continue;
+                        };
+                        if self.record_event(&value, sequence, json, run, quiet, &mut progress)? {
+                            return Ok(());
                         }
-                        _ => {}
                     }
                 }
                 ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}

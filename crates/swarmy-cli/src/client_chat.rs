@@ -449,77 +449,75 @@ impl View {
                 payload: api::EventPayload::TokenDelta { text, .. },
                 ..
             }) => self.partial.push_str(&text),
-            ConversationItem::Stream(StreamItem::Event(event)) => match event.payload {
-                api::EventPayload::StoreRecord { record } => {
-                    let Ok(record) = serde_json::to_value(&record) else {
-                        return;
-                    };
-                    if let Some(state) = record
-                        .get("state_changed")
-                        .and_then(|s| s.get("to"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        self.state = format!("{}{}", state[..1].to_uppercase(), &state[1..]);
-                        self.ready = state == "idle";
-                        if self.ready {
-                            self.partial.clear();
-                        }
-                    }
-                    if let Some(error) = record
-                        .get("inference_failed")
-                        .and_then(|v| v.get("error"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        self.entries.push(format!("Error: {error}"));
-                    }
-                    if let Some(call) = record
-                        .get("tool_call_requested")
-                        .and_then(|v| v.get("call"))
-                    {
-                        let id = call
-                            .get("call_id")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("unknown")
-                            .to_owned();
-                        if !self.tools.contains_key(&id) {
-                            self.tools.insert(id.clone(), self.entries.len());
-                            self.entries.push(format!(
-                                "Tool: {} [{id}] {} (running)",
-                                call.get("tool")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("tool"),
-                                call.get("arguments").unwrap_or(&serde_json::Value::Null)
-                            ));
-                        }
-                    }
-                    if let Some(completed) = record.get("tool_call_completed") {
-                        if let Some(id) =
-                            completed.get("call_id").and_then(serde_json::Value::as_str)
-                            && let Some(index) = self.tools.get(id).copied()
-                        {
-                            self.entries[index] =
-                                self.entries[index].replace("(running)", "(done)");
-                        }
-                        if let Some(output) = completed
-                            .get("result")
-                            .and_then(|v| v.get("completed"))
-                            .and_then(|v| v.get("output"))
-                            .and_then(serde_json::Value::as_str)
-                        {
-                            self.entries.push(format!("  Result: {output}"));
-                        }
-                    }
-                    if let Some(message) = record
-                        .get("inference_completed")
-                        .or_else(|| record.get("message_appended"))
-                        .and_then(|v| v.get("message"))
-                        && let api::LogId::Session(session_id) = &event.log_id
-                    {
-                        self.message(message, session_id);
+            ConversationItem::Stream(StreamItem::Event(event)) => {
+                let api::EventPayload::StoreRecord { record } = event.payload else {
+                    return;
+                };
+                let Ok(record) = serde_json::to_value(&record) else {
+                    return;
+                };
+                if let Some(state) = record
+                    .get("state_changed")
+                    .and_then(|s| s.get("to"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    self.state = format!("{}{}", state[..1].to_uppercase(), &state[1..]);
+                    self.ready = state == "idle";
+                    if self.ready {
+                        self.partial.clear();
                     }
                 }
-                _ => {}
-            },
+                if let Some(error) = record
+                    .get("inference_failed")
+                    .and_then(|v| v.get("error"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    self.entries.push(format!("Error: {error}"));
+                }
+                if let Some(call) = record
+                    .get("tool_call_requested")
+                    .and_then(|v| v.get("call"))
+                {
+                    let id = call
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    if !self.tools.contains_key(&id) {
+                        self.tools.insert(id.clone(), self.entries.len());
+                        self.entries.push(format!(
+                            "Tool: {} [{id}] {} (running)",
+                            call.get("tool")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool"),
+                            call.get("arguments").unwrap_or(&serde_json::Value::Null)
+                        ));
+                    }
+                }
+                if let Some(completed) = record.get("tool_call_completed") {
+                    if let Some(id) = completed.get("call_id").and_then(serde_json::Value::as_str)
+                        && let Some(index) = self.tools.get(id).copied()
+                    {
+                        self.entries[index] = self.entries[index].replace("(running)", "(done)");
+                    }
+                    if let Some(output) = completed
+                        .get("result")
+                        .and_then(|v| v.get("completed"))
+                        .and_then(|v| v.get("output"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        self.entries.push(format!("  Result: {output}"));
+                    }
+                }
+                if let Some(message) = record
+                    .get("inference_completed")
+                    .or_else(|| record.get("message_appended"))
+                    .and_then(|v| v.get("message"))
+                    && let api::LogId::Session(session_id) = &event.log_id
+                {
+                    self.message(message, session_id);
+                }
+            }
             ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
