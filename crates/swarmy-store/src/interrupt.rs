@@ -147,13 +147,7 @@ impl Store {
             .head_seq
             .checked_add(1)
             .ok_or(StoreError::SequenceOverflow)?;
-        let event = Event::InferenceFailed {
-            seq: head,
-            request_id,
-            error: "interrupted by operator".into(),
-            retryable: false,
-            retry_at: None,
-        };
+        let event = swarmy_core::interrupted_event(head, request_id);
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
         trx.set(&self.event_key(session.session_id, head), &value);
         session.head_seq = head;

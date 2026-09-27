@@ -49,6 +49,42 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
     f.cleanup().await;
 }
 
+#[tokio::test]
+async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = f.session().await;
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert!(!session.needs_route_snapshot(None));
+    // Warm the display cache. Ordinary requests still read placement to
+    // collect repository instructions, but route resolution must add none.
+    f.worker.session_display(&session).await.unwrap();
+    let mut request = swarmy_llm::Request {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        settings: swarmy_llm::GenerationSettings {
+            model: "test-model".into(),
+            ..Default::default()
+        },
+    };
+    let before = f.store.transaction_count();
+    let attempt = f
+        .worker
+        .prepare_request(&session, &mut request, &mut Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.transaction_count() - before,
+        1,
+        "first attempt must only read placement for instructions, not the route"
+    );
+    assert_eq!(attempt.provider, "fake");
+    assert_eq!(attempt.entry, None, "gateway must choose the pool entry");
+    f.cleanup().await;
+}
+
 struct Fixture {
     store: Store,
     bus: Bus,
