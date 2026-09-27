@@ -114,10 +114,24 @@ pub async fn execute(
         placement: placement.clone(),
         expires_at: jiff::Timestamp::now().checked_add(LEASE)?,
     };
-    anyhow::ensure!(
-        store.claim_placed_tool(&claim).await?,
-        "tool call already claimed"
-    );
+    // The transactional claim is the guard. If it rejects a stale placement,
+    // read the current one only to explain the refusal in the node log.
+    let claimed = match store.claim_placed_tool(&claim).await {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            if let Some(current) = store.get_by_agent(placement.agent_id).await?
+                && current.node_id != placement.node_id
+            {
+                anyhow::bail!(
+                    "agent is placed on another node {} at epoch {}",
+                    current.node_id,
+                    current.epoch
+                );
+            }
+            return Err(error.into());
+        }
+    };
+    anyhow::ensure!(claimed, "tool call already claimed");
     let _activity = swarmy_volume::priority::ToolActivity::begin();
     tokio::select! {
         result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
