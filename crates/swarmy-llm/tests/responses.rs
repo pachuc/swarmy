@@ -513,6 +513,9 @@ async fn codex_dispatch_preserves_auth_headers_and_instructions() {
         .await;
     response(client.as_ref(), request("gpt-5.5")).await;
     let body = body(&server).await;
+    // The request is capped (the worker caps its context summary); the Codex
+    // backend rejects the parameter, so it must not be sent.
+    assert!(body.get("max_output_tokens").is_none(), "{body}");
     assert_eq!(body["instructions"], "Be helpful.");
     assert_eq!(body["input"][0]["role"], "user");
     assert_eq!(body["tools"][0]["strict"], false);
