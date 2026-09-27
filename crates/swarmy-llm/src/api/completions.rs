@@ -116,7 +116,7 @@ impl Provider for CompletionsProvider {
                 let quota = crate::quota::openai_remaining(response.headers());
                 let resets = crate::quota::openai_resets(response.headers());
                 let mut bytes = response.bytes_stream();
-                let mut parser = SseParser::new(&provider.provider, &provider.model.id);
+                let mut parser = CompletionsStream::new(&provider.provider, &provider.model.id);
                 parser.set_quota(quota);
                 parser.set_quota_resets(resets);
                 while let Some(chunk) = bytes.next().await {
@@ -495,12 +495,10 @@ enum Output {
 /// Incremental SSE parser. Output indices are allocated on first appearance,
 /// independently of the provider's tool-call indices. Reasoning metadata keeps
 /// the replay array under `openrouter` and its origin under `provider` and `model`.
-pub struct SseParser {
+pub struct CompletionsStream {
     provider: String,
     model: String,
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
+    framing: crate::sse::SseParser,
     completed: bool,
     output: Vec<Output>,
     text: Option<usize>,
@@ -512,15 +510,13 @@ pub struct SseParser {
     quota_resets: BTreeMap<String, u64>,
 }
 
-impl SseParser {
+impl CompletionsStream {
     #[must_use]
     pub fn new(provider: &str, model: &str) -> Self {
         Self {
             provider: provider.into(),
             model: model.into(),
-            line: Vec::new(),
-            data: Vec::new(),
-            previous_cr: false,
+            framing: crate::sse::SseParser::default(),
             completed: false,
             output: Vec::new(),
             text: None,
@@ -551,38 +547,27 @@ impl SseParser {
             if self.completed {
                 break;
             }
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\n' | b'\r') {
-                self.end_line(&mut deltas)?;
-            } else {
-                self.line.push(byte);
-                if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                    return Err(Error::Protocol("SSE event exceeds 8 MiB".into()));
-                }
+            if let Some(frame) = self.framing.push_byte(byte)? {
+                self.frame(frame, &mut deltas)?;
             }
         }
         Ok(deltas)
     }
 
-    fn end_line(&mut self, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() && !self.data.is_empty() {
-            let data = std::mem::take(&mut self.data);
-            if data == b"[DONE]\n" {
-                self.complete(deltas)?;
-            } else {
-                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        match frame {
+            crate::sse::Frame::Data(data) if data == b"[DONE]\n" => self.complete(deltas)?,
+            crate::sse::Frame::Data(data) | crate::sse::Frame::Raw(data) => {
+                if let Ok(value) = serde_json::from_slice::<Value>(&data) {
+                    if value.get("choices").is_some() || value.get("usage").is_some() {
+                        self.event(&value, deltas)?;
+                    } else {
+                        return Err(error_from_json(&value));
+                    }
+                } else {
+                    self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+                }
             }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
-        } else if let Ok(value) = serde_json::from_slice::<Value>(&line) {
-            return Err(error_from_json(&value));
         }
         Ok(())
     }
@@ -593,7 +578,7 @@ impl SseParser {
         if self.completed {
             return Ok(());
         }
-        if let Ok(value) = serde_json::from_slice::<Value>(&self.line) {
+        if let Ok(value) = serde_json::from_slice::<Value>(self.framing.pending_line()) {
             return Err(error_from_json(&value));
         }
         Err(Error::Protocol("stream closed before completion".into()))

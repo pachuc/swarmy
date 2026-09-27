@@ -199,7 +199,7 @@ impl Provider for AnthropicProvider {
             let quota = crate::quota::anthropic_remaining(response.headers());
             let resets = crate::quota::anthropic_resets(response.headers());
             let mut bytes = response.bytes_stream();
-            let mut parser = SseParser::new(&provider.model.id, provider.endpoint.provider());
+            let mut parser = AnthropicStream::new(&provider.model.id, provider.endpoint.provider());
             parser.set_quota(quota);
             parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {
@@ -527,12 +527,10 @@ struct Block {
 
 /// Incremental SSE framing and Anthropic block assembly. No completion is
 /// emitted until `message_stop` confirms that every block has finished.
-pub struct SseParser {
+pub struct AnthropicStream {
     model: String,
     provider: String,
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
+    framing: crate::sse::SseParser,
     started: bool,
     completed: bool,
     blocks: BTreeMap<usize, Block>,
@@ -543,15 +541,13 @@ pub struct SseParser {
     quota_resets: BTreeMap<String, u64>,
 }
 
-impl SseParser {
+impl AnthropicStream {
     #[must_use]
     pub fn new(model: &str, provider: &str) -> Self {
         Self {
             model: model.into(),
             provider: provider.into(),
-            line: Vec::new(),
-            data: Vec::new(),
-            previous_cr: false,
+            framing: crate::sse::SseParser::default(),
             started: false,
             completed: false,
             blocks: BTreeMap::new(),
@@ -581,34 +577,16 @@ impl SseParser {
             if self.completed {
                 break;
             }
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\r' | b'\n') {
-                self.end_line(&mut deltas)?;
-            } else {
-                self.line.push(byte);
-                if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                    return Err(Error::Protocol("SSE event exceeds 8 MiB".into()));
-                }
+            if let Some(frame) = self.framing.push_byte(byte)? {
+                self.frame(frame, &mut deltas)?;
             }
         }
         Ok(deltas)
     }
 
-    fn end_line(&mut self, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if !self.data.is_empty() {
-                let data = std::mem::take(&mut self.data);
-                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
-            }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
+    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let crate::sse::Frame::Data(data) = frame {
+            self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
         }
         Ok(())
     }

@@ -14,7 +14,7 @@ use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult}
 use swarmy_llm::{
     BearerSource, ClientAuth, Delta, Error, GenerationSettings, Provider, ReasoningEffort, Request,
     Response, StopReason, TokenUsage, ToolDefinition,
-    api::anthropic::{AnthropicProvider, Endpoint, SseParser, request_json},
+    api::anthropic::{AnthropicProvider, Endpoint, AnthropicStream as SseParser, request_json},
     catalog::{Catalog, ModelInfo},
     client_for,
     retry::{RetryPolicy, with_retry},

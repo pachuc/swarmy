@@ -9,7 +9,7 @@ use crate::{
     ClientAuth, Error, Provider, ProviderStream, Request,
     auth::{CredentialStore, Credentials, OAuthClient},
     catalog::{Api, Catalog, Compat, ModelInfo, ProviderInfo},
-    responses::{SseParser, is_context_overflow, request_json_for},
+    responses::{ResponsesStream, is_context_overflow, request_json_for},
     retry::{RetryPolicy, with_retry},
 };
 
@@ -200,7 +200,7 @@ impl ResponsesProvider {
             let quota = crate::quota::openai_remaining(response.headers());
             let resets = crate::quota::openai_resets(response.headers());
             let mut bytes = response.bytes_stream();
-            let mut parser = SseParser::with_context(&provider.provider_id, &request.settings.model);
+            let mut parser = ResponsesStream::with_context(&provider.provider_id, &request.settings.model);
             parser.set_quota(quota);
             parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {

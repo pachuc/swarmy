@@ -308,10 +308,8 @@ fn normalize_calls(input: &mut Vec<Value>) {
 /// Incremental SSE parser, including CRLF, multiline data, comments, and UTF-8
 /// split across arbitrary network chunks. Unknown event types are ignored.
 #[derive(Default)]
-pub struct SseParser {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    previous_cr: bool,
+pub struct ResponsesStream {
+    framing: crate::sse::SseParser,
     output: BTreeMap<usize, Vec<Part>>,
     text_content: BTreeMap<usize, BTreeMap<usize, String>>,
     saw_tool_arguments: bool,
@@ -321,7 +319,7 @@ pub struct SseParser {
     quota_resets: BTreeMap<String, u64>,
 }
 
-impl SseParser {
+impl ResponsesStream {
     /// Record provenance for safe reasoning replay. The default parser retains
     /// the legacy metadata shape for callers of the original standalone codec.
     #[must_use]
@@ -370,39 +368,21 @@ impl SseParser {
             if self.completed {
                 break;
             }
-            if byte == b'\n' && self.previous_cr {
-                self.previous_cr = false;
-                continue;
-            }
-            self.previous_cr = byte == b'\r';
-            if matches!(byte, b'\n' | b'\r') {
-                self.end_line(&mut deltas)?;
-            } else {
-                self.line.push(byte);
-                if self.line.len() + self.data.len() > 8 * 1024 * 1024 {
-                    return Err(Error::Protocol("SSE event exceeds 8 MiB".into()));
-                }
+            if let Some(frame) = self.framing.push_byte(byte)? {
+                self.frame(frame, &mut deltas)?;
             }
         }
         Ok(deltas)
     }
 
-    fn end_line(&mut self, deltas: &mut Vec<Delta>) -> Result<(), Error> {
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if !self.data.is_empty() {
-                let data = std::mem::take(&mut self.data);
-                if data == b"[DONE]\n" {
-                    return Err(Error::Protocol(
-                        "stream ended without response.completed".into(),
-                    ));
-                }
-                self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
+    fn frame(&mut self, frame: crate::sse::Frame, deltas: &mut Vec<Delta>) -> Result<(), Error> {
+        if let crate::sse::Frame::Data(data) = frame {
+            if data == b"[DONE]\n" {
+                return Err(Error::Protocol(
+                    "stream ended without response.completed".into(),
+                ));
             }
-        } else if let Some(data) = line.strip_prefix(b"data:") {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
+            self.event(&serde_json::from_slice::<Value>(&data)?, deltas)?;
         }
         Ok(())
     }

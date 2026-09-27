@@ -6,7 +6,7 @@ use swarmy_llm::{
     Delta, GenerationSettings, Provider, ReasoningEffort, Request, Response, StopReason,
     TokenUsage, ToolDefinition,
     fake::FakeProvider,
-    responses::{SseParser, request_json},
+    responses::{ResponsesStream as SseParser, request_json},
 };
 
 fn request() -> Request {

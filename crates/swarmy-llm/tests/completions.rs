@@ -14,7 +14,7 @@ use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult}
 use swarmy_llm::{
     ClientAuth, Delta, Error, GenerationSettings, Provider, ReasoningEffort, Request, Response,
     StopReason, TokenUsage, ToolDefinition,
-    api::completions::{CompletionsProvider, SseParser, request_json},
+    api::completions::{CompletionsProvider, CompletionsStream as SseParser, request_json},
     catalog::{Api, Catalog, ModelInfo, ProviderInfo, ReasoningOptions},
     client_for,
     retry::RetryPolicy,

@@ -11,6 +11,7 @@ pub mod reasoning;
 pub mod responses;
 pub mod retry;
 pub mod selection;
+pub mod sse;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
