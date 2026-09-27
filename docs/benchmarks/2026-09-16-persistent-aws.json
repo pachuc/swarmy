@@ -7,7 +7,7 @@
     "name": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d",
     "prefix": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d/",
     "provider": "aws",
-    "bucket": "swarmy-bench-815638500196",
+    "bucket": "swarmy-bench-<account-id>",
     "project": "swarmy-508717",
     "region": "us-east-1",
     "delete_versions": true,
@@ -17,16 +17,16 @@
     "compute_attempted": true,
     "instances": [
       {
-        "instance_id": "i-0972f1ca1a1bd81dd",
-        "private_ip": "172.31.55.201"
+        "instance_id": "i-<redacted>",
+        "private_ip": "<private-ip>"
       },
       {
-        "instance_id": "i-0efeed68b7df7755b",
-        "private_ip": "172.31.52.169"
+        "instance_id": "i-<redacted>",
+        "private_ip": "<private-ip>"
       }
     ],
-    "instance_id": "i-0972f1ca1a1bd81dd",
-    "private_ip": "172.31.55.201",
+    "instance_id": "i-<redacted>",
+    "private_ip": "<private-ip>",
     "cache_disk": "local NVMe SSD"
   },
   "rehydration": [

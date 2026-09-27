@@ -3,11 +3,11 @@
   "region": "us-east-1",
   "instances": [
     {
-      "instance_id": "i-0d42743c23ae24147",
+      "instance_id": "i-<redacted>",
       "state": "terminated"
     },
     {
-      "instance_id": "i-00abb3ca6ed0c7cd2",
+      "instance_id": "i-<redacted>",
       "state": "terminated"
     }
   ],

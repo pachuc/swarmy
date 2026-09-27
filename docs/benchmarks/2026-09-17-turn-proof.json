@@ -1,15 +1,15 @@
 {
   "network": {
     "date": "2026-09-17T08:18:16+00:00",
-    "remote_instance": "i-005be6a555af2b2a8",
+    "remote_instance": "i-<redacted>",
     "remote_type": "m6id.xlarge",
     "remote_az": "us-east-1a",
-    "remote_private_ip": "172.31.61.155",
+    "remote_private_ip": "<private-ip>",
     "root_volumes": [
       "vol-0e36191684728716d"
     ],
     "launcher_type": "m6i.xlarge",
-    "launcher_private_ip": "172.31.54.8",
+    "launcher_private_ip": "<private-ip>",
     "tcp_22_connect_ms": [
       5.376314,
       0.50088,
@@ -91,21 +91,21 @@
   "firewall_before": "Chain OUTPUT (policy ACCEPT 8 packets, 761 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n       3      180 REJECT     6    --  *      *       0.0.0.0/0            172.31.0.0/16        owner UID match 1000 multiport dports 4500,4222,8333 /* swarmy-turn-proof */ reject-with icmp-port-unreachable\n",
   "firewall_after": "Chain OUTPUT (policy ACCEPT 444566 packets, 138997115 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n       3      180 REJECT     6    --  *      *       0.0.0.0/0            172.31.0.0/16        owner UID match 1000 multiport dports 4500,4222,8333 /* swarmy-turn-proof */ reject-with icmp-port-unreachable\n",
   "remote_client_connections": [
-    "ESTAB 0      236      172.31.54.8:57082  172.31.61.155:22    users:((\"ssh\",pid=102533,fd=3))             "
+    "ESTAB 0      236      <private-ip>:57082  <private-ip>:22    users:((\"ssh\",pid=102533,fd=3))             "
   ],
   "client_clock_after": "Reference ID    : A9FEA97B (169.254.169.123)\nStratum         : 4\nRef time (UTC)  : Thu Sep 17 09:07:27 2026\nSystem time     : 0.000000758 seconds fast of NTP time\nLast offset     : +0.000001157 seconds\nRMS offset      : 0.000000564 seconds\nFrequency       : 17.968 ppm fast\nResidual freq   : +0.000 ppm\nSkew            : 0.007 ppm\nRoot delay      : 0.000400282 seconds\nRoot dispersion : 0.000184921 seconds\nUpdate interval : 16.0 seconds\nLeap status     : Normal\n",
   "cleanup": {
     "queried_at": "2026-09-17T09:08:27+00:00",
     "instances": [
       {
-        "InstanceId": "i-005be6a555af2b2a8",
+        "InstanceId": "i-<redacted>",
         "State": "terminated"
       }
     ],
     "volumes": [],
     "keys": [],
     "commands": [
-      "aws ec2 describe-instances --instance-ids i-005be6a555af2b2a8 --query \"Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}\" --output json",
+      "aws ec2 describe-instances --instance-ids i-<redacted> --query \"Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}\" --output json",
       "aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-benchmark --query \"Volumes[].{VolumeId:VolumeId,State:State}\" --output json",
       "aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-178963 --query \"KeyPairs[].KeyName\" --output json"
     ]

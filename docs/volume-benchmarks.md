@@ -410,7 +410,7 @@ immediate-deletion guarantee in this run.
 
 AWS cleanup completed at `2026-09-15T19:12:30Z`; the empty object listing was
 rechecked afterward. The temporary instance, its boot volume, and imported key
-pair were deleted. The pre-existing bucket `swarmy-bench-815638500196` remains,
+pair were deleted. The pre-existing bucket `swarmy-bench-<account-id>` remains,
 as requested; this run used prefix `swarmy-bench-20260915-183551/`.
 
 Provider verification:
@@ -418,14 +418,14 @@ Provider verification:
 ```sh
 aws ec2 describe-instances --filters Name=tag:Name,Values=swarmy-bench-20260915-183551 \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
-# [{"Id":"i-06974b70859a499d2","State":"terminated"}]
+# [{"Id":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-bench-20260915-183551 \
   --query 'Volumes[].{Id:VolumeId,State:State}'
 # []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-bench-20260915-183551 \
   --query KeyPairs
 # []
-aws s3api list-objects-v2 --bucket swarmy-bench-815638500196 \
+aws s3api list-objects-v2 --bucket swarmy-bench-<account-id> \
   --prefix swarmy-bench-20260915-183551/ --max-keys 1 --no-paginate \
   --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}'
 # {"KeyCount":0,"IsTruncated":false}
@@ -746,22 +746,22 @@ permitted the version-history audit here.
 ```sh
 aws ec2 describe-instances --filters Name=tag:Name,Values=swarmy-flush-20260915-205911 \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
-# [{"Id":"i-0b1dd2396ec6f2bcd","State":"terminated"}]
+# [{"Id":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-flush-20260915-205911 \
   --query 'Volumes[].{Id:VolumeId,State:State}' --output json
 # []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-flush-20260915-205911 \
   --query KeyPairs --output json
 # []
-aws s3api get-bucket-versioning --bucket swarmy-bench-815638500196 \
+aws s3api get-bucket-versioning --bucket swarmy-bench-<account-id> \
   --query '{Status:Status,MFADelete:MFADelete}' --output json
 # {"Status":null,"MFADelete":null}
-aws s3api list-object-versions --bucket swarmy-bench-815638500196 \
+aws s3api list-object-versions --bucket swarmy-bench-<account-id> \
   --prefix swarmy-flush-20260915-205911/ --max-keys 1 --no-paginate \
   --query '{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}' \
   --output json
 # {"Versions":0,"DeleteMarkers":0,"IsTruncated":false}
-aws s3api list-objects-v2 --bucket swarmy-bench-815638500196 \
+aws s3api list-objects-v2 --bucket swarmy-bench-<account-id> \
   --prefix swarmy-flush-20260915-205911/ --max-keys 1 --no-paginate \
   --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}' --output json
 # {"KeyCount":0,"IsTruncated":false}
@@ -939,7 +939,7 @@ AWS verification:
 aws ec2 describe-instances \
   --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
-# [{"Id":"i-0e5ab9e224d7dfacc","State":"terminated"}]
+# [{"Id":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes \
   --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
   --query 'Volumes[].{Id:VolumeId,State:State}' --output json
@@ -948,16 +948,16 @@ aws ec2 describe-key-pairs \
   --filters Name=key-name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
   --query KeyPairs --output json
 # []
-aws s3api list-objects-v2 --bucket swarmy-bench-815638500196 \
+aws s3api list-objects-v2 --bucket swarmy-bench-<account-id> \
   --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
   --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}' --output json
 # {"KeyCount":0,"IsTruncated":false}
-aws s3api list-object-versions --bucket swarmy-bench-815638500196 \
+aws s3api list-object-versions --bucket swarmy-bench-<account-id> \
   --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
   --query '{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}' \
   --output json
 # {"Versions":0,"DeleteMarkers":0,"IsTruncated":false}
-aws s3api list-multipart-uploads --bucket swarmy-bench-815638500196 \
+aws s3api list-multipart-uploads --bucket swarmy-bench-<account-id> \
   --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --query Uploads --output json
 # null
 ```
@@ -1257,11 +1257,11 @@ bucket, or HMAC key was created for this task.
 | Attempt | Run name suffix (after `swarmy-bench-`) | Terminated instance IDs |
 | --- | --- | --- |
 | Storage preflight | `45ef9abfc08a421bb0f687ce5c0108d3` | No compute created |
-| 1 | `d7d1da0331b24c98972a4b2043f7fb15` | `i-0bd907e08df00102f`, `i-0f2a494a715f9f397` |
-| 2 | `4c51eadbbc834e74a49d0bee37c8fb8f` | `i-0b2c57fbf8a5ce0e1`, `i-004183d474de32ce0` |
-| 3 | `9eb83331696b4239b45a60cf1a17f16b` | `i-084e8c1ae01dfd5e6`, `i-0451d92f867fe9692` |
-| 4 | `7579ebdf38b044e0ad9b9bdbb0dcc12e` | `i-00eb5b17b4b134603`, `i-0d65a10f025afa4f0` |
-| 5, successful | `caf60e30a7f74d0cb888f181d1a7751d` | `i-0efeed68b7df7755b`, `i-0972f1ca1a1bd81dd` |
+| 1 | `d7d1da0331b24c98972a4b2043f7fb15` | `i-<redacted>`, `i-<redacted>` |
+| 2 | `4c51eadbbc834e74a49d0bee37c8fb8f` | `i-<redacted>`, `i-<redacted>` |
+| 3 | `9eb83331696b4239b45a60cf1a17f16b` | `i-<redacted>`, `i-<redacted>` |
+| 4 | `7579ebdf38b044e0ad9b9bdbb0dcc12e` | `i-<redacted>`, `i-<redacted>` |
+| 5, successful | `caf60e30a7f74d0cb888f181d1a7751d` | `i-<redacted>`, `i-<redacted>` |
 
 The audit ran these provider queries for every run name above. `IsTruncated`
 was false for each empty storage result; the lifecycle controller also audited
@@ -1541,10 +1541,10 @@ connections, with ephemeral ports retained from the observation:
 
 ```text
 swarmy-worker   127.0.0.1:45408      -> 127.0.0.1:4500
-swarmy-worker   172.31.62.91:60864   -> 172.31.59.242:4500
+swarmy-worker   <private-ip>:60864   -> <private-ip>:4500
 swarmy-worker   127.0.0.1:50880      -> 127.0.0.1:4222
-swarmy-scheduler 172.31.62.91:60850  -> 172.31.59.242:4500
-swarmy-gateway  172.31.62.91:60868   -> 172.31.59.242:4500
+swarmy-scheduler <private-ip>:60850  -> <private-ip>:4500
+swarmy-gateway  <private-ip>:60868   -> <private-ip>:4500
 ```
 
 Thus this run proves operation as an unprivileged same-VPC client. It does not
@@ -1558,7 +1558,7 @@ this limitation instead of treating coordinator reachability as sufficient.
 
 A process-local negative check confirmed this was a dependency, not an unused
 connection. A temporary `LD_PRELOAD` shim intercepted `connect()` and returned
-`ENETUNREACH` only for `172.31.59.242:4500`; localhost and SSH connections were
+`ENETUNREACH` only for `<private-ip>:4500`; localhost and SSH connections were
 unchanged. It was compiled as the ordinary user with `cc -shared -fPIC -Wall
 -Wextra -Werror ... -ldl`, and was not installed or applied to other processes.
 
@@ -1606,11 +1606,11 @@ services: down; remote stack preserved
 $ swarmy remote disconnect no-root-proof
 no-root-proof: disconnected
 $ swarmy remote down no-root-proof
-Terminating i-00f038e52e066a37a
-Confirmed i-00f038e52e066a37a is terminated or absent
+Terminating i-<redacted>
+Confirmed i-<redacted> is terminated or absent
 Deleting key pair swarmy-01M2PC1G1DHJJAQPFFPC1T0W5A
-Terminating i-0cd85e43c2a5e0248
-Confirmed i-0cd85e43c2a5e0248 is terminated or absent
+Terminating i-<redacted>
+Confirmed i-<redacted> is terminated or absent
 Deleting key pair swarmy-01M2PB23J85JBXB7ESRJ6C7AT3
 Removed remote no-root-proof
 ```
@@ -1620,10 +1620,10 @@ and removal of both task-created root volumes and imported keys:
 
 ```bash
 aws ec2 describe-instances --region us-east-1 \
-  --instance-ids i-0cd85e43c2a5e0248 i-00f038e52e066a37a \
+  --instance-ids i-<redacted> i-<redacted> \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
-# [{"Id":"i-00f038e52e066a37a","State":"terminated"},
-#  {"Id":"i-0cd85e43c2a5e0248","State":"terminated"}]
+# [{"Id":"i-<redacted>","State":"terminated"},
+#  {"Id":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --region us-east-1 \
   --filters Name=tag:Name,Values=no-root-proof,no-root-proof-2 \
   --query 'Volumes[].VolumeId'
@@ -1654,7 +1654,7 @@ sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d 172.31.0.0/16 \
 ```
 
 SSH port 22 remained available. Direct probes to all three ports on both
-`172.31.51.83` and `172.31.61.79` failed, incrementing this rule's packet counter
+`<private-ip>` and `<private-ip>` failed, incrementing this rule's packet counter
 six times. Cloud provisioning and the client workflow ran as ubuntu. Image
 construction and systemd administration ran with sudo over SSH on the nodes;
 local privileged acceptance tests ran separately against the local dev stack.
@@ -1705,7 +1705,7 @@ Both bash calls returned exit code zero; SSH verified both files on the joiner.
 
 The primary daemon was restarted. At `2026-09-17T01:36:24.762892Z`, after
 SIGKILL of the joining daemon with automatic restart disabled, the client
-requested termination of `i-0d42743c23ae24147`. After the writer lease expired,
+requested termination of `i-<redacted>`. After the writer lease expired,
 a real PTY `chat` resumed the same session through the profile. It displayed
 exactly one rebuild notice. The recovery bash call returned exit code zero,
 `RECOVERED-FILES`, and the checkpoint manifest ID above. SSH independently
@@ -1796,8 +1796,8 @@ Teardown ran `swarmy dev down`, `swarmy remote disconnect ssh-proof`, and
 
 | Resource | Result |
 | --- | --- |
-| `i-00abb3ca6ed0c7cd2` | terminated |
-| `i-0d42743c23ae24147` | terminated |
+| `i-<redacted>` | terminated |
+| `i-<redacted>` | terminated |
 | Both task EBS volume IDs | no remaining volumes |
 | Both task imported key names | no remaining key pairs |
 
@@ -1823,7 +1823,7 @@ The client, scheduler, worker, and gateway ran as ubuntu on the launcher, an
 AWS `m6i.xlarge` with four vCPUs and 15.3 GiB available RAM. Locally, FoundationDB,
 NATS, SeaweedFS, and root `swarmyd` also ran there, on its EBS root disk. The remote
 run placed those four backing/execution services on `m6id.xlarge`
-`i-005be6a555af2b2a8` in `us-east-1a`, with four vCPUs, 16 GiB RAM, a 100 GiB gp3
+`i-<redacted>` in `us-east-1a`, with four vCPUs, 16 GiB RAM, a 100 GiB gp3
 root disk, and 220.7 GiB instance-store NVMe for computer volumes. Both machines
 used Ubuntu 24.04 and kernel `7.0.0-1012-aws`. Services were FoundationDB 7.3.79,
 NATS 2.14.6, and SeaweedFS 4.47. The binaries were stripped development builds
@@ -2027,7 +2027,7 @@ measure WAN latency, cold image creation, or terminal drawing. Cross-host stage
 timing depends on clock synchronization; end-to-end does not.
 
 AWS teardown completed and was independently queried at `2026-09-17T09:08:27+00:00`.
-The benchmark instance `i-005be6a555af2b2a8` is `terminated`; its tagged
+The benchmark instance `i-<redacted>` is `terminated`; its tagged
 100 GiB root volume query returns `[]`, and the imported key pair
 `swarmy-turn-178963` query returns `[]`. The temporary client firewall rule
 and SSH tunnel were removed. The launcher and existing network resources
@@ -2036,8 +2036,8 @@ were created; the benchmark's SeaweedFS objects disappeared with the node.
 The provider queries and their results were:
 
 ```sh
-aws ec2 describe-instances --instance-ids i-005be6a555af2b2a8 --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}" --output json
-# [{"InstanceId": "i-005be6a555af2b2a8", "State": "terminated"}]
+aws ec2 describe-instances --instance-ids i-<redacted> --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}" --output json
+# [{"InstanceId": "i-<redacted>", "State": "terminated"}]
 aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-benchmark --query "Volumes[].{VolumeId:VolumeId,State:State}" --output json
 # []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-178963 --query "KeyPairs[].KeyName" --output json
@@ -2214,8 +2214,8 @@ case keeps the client, scheduler, worker, and gateway on the launcher and puts
 FoundationDB, NATS, SeaweedFS, and the root sandbox node on an AWS
 `m6id.xlarge` in `us-east-1`, with node volume storage on local NVMe; backing
 service data stays on the root EBS disk. Baseline samples used instance
-`i-0ded0f4e47b5ecab3`. Final samples used a fresh instance of the same type and
-configuration, `i-04aec8f7ccb782c82`, after the baseline node was terminated.
+`i-<redacted>`. Final samples used a fresh instance of the same type and
+configuration, `i-<redacted>`, after the baseline node was terminated.
 For each revision, the same binary hashes run on both hosts. An OUTPUT firewall rule rejects the launcher's
 direct private-subnet connections to ports 4500, 4222, and 8333. The remote
 profile uses SSH forwarding, including local port 4500 for FoundationDB.
@@ -2358,8 +2358,8 @@ and imported key pairs were tagged `managed-by=codex-launcher` at creation.
 The baseline node's final queries at 2026-09-17 10:59:17 UTC returned:
 
 ```text
-aws ec2 describe-instances --instance-ids i-0ded0f4e47b5ecab3
-[{"InstanceId":"i-0ded0f4e47b5ecab3","State":"terminated"}]
+aws ec2 describe-instances --instance-ids i-<redacted>
+[{"InstanceId":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-events-1789638028
 []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-events-1789638028
@@ -2370,8 +2370,8 @@ The final revision's replacement node was also removed. Its queries at
 2026-09-17 11:32:53 UTC returned:
 
 ```text
-aws ec2 describe-instances --instance-ids i-04aec8f7ccb782c82
-[{"InstanceId":"i-04aec8f7ccb782c82","State":"terminated"}]
+aws ec2 describe-instances --instance-ids i-<redacted>
+[{"InstanceId":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --filters Name=tag:Name,Values=swarmy-turn-events-1789644115
 []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-turn-events-1789644115
@@ -2428,7 +2428,7 @@ nudge, and observes the live durable event sequence through SSH.
 
 
 **Real-node measurements.** Both modes used the same release binaries and the
-same AWS `m6id.xlarge`, `i-0030ed4607356cea9`, in us-east-1, with its local NVMe
+same AWS `m6id.xlarge`, `i-<redacted>`, in us-east-1, with its local NVMe
 cache and a 100 GB root disk. Provisioning used the launcher-tagged credentials
 and the supported command:
 
@@ -2576,8 +2576,8 @@ intentionally ignored; no real account credential transfer was performed.
 and `swarmy remote down turn-roundtrips` completed. Final AWS queries returned:
 
 ```text
-aws ec2 describe-instances --instance-ids i-0030ed4607356cea9
-[{"InstanceId":"i-0030ed4607356cea9","State":"terminated"}]
+aws ec2 describe-instances --instance-ids i-<redacted>
+[{"InstanceId":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes --filters Name=volume-id,Values=vol-0f5e6eb21211f2d79
 []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A
@@ -2587,7 +2587,7 @@ gcloud compute instances list --format=json
 ```
 
 The AWS output uses the field projections in the proof artifact. The only
-remaining running AWS instance is the launcher, `i-074ffdebcc7a6968c`.
+remaining running AWS instance is the launcher, `i-<redacted>`.
 This run used SeaweedFS on the terminated node and created no external S3
 objects, GCP buckets, or HMAC keys. The SSH master, network namespace, route
 rejection rules, and NAT rule were removed, and IP forwarding was restored.
@@ -2613,7 +2613,7 @@ sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d 172.31.0.0/16 \
   -p tcp -m multiport --dports 4500,4222,8333 -j REJECT
 ```
 
-Direct probes to all three ports on both `172.31.63.59` and `172.31.56.252`
+Direct probes to all three ports on both `<private-ip>` and `<private-ip>`
 failed and incremented the rule's counter six times. Client commands ran without
 sudo. SSH administration used sudo on the nodes. The raw
 [proof archive](benchmarks/2026-09-18-lifetimes.json.gz) includes the profile,
@@ -2684,7 +2684,7 @@ receiving the first successful tool result was **0.367 seconds**. This single
 sample includes creation, opening chat, cold computer startup, and a bash call
 that wrote a marker and 8 MiB; it excludes provisioning and image construction.
 The primary daemon was stopped before placement, so the computer ran on the
-joining EC2 node `i-0c3f816d5e8346859`.
+joining EC2 node `i-<redacted>`.
 
 Chats `01M2SH9T85DMHM3900B6ADE0PT` and `01M2SH9WAXPRPS0Y1FB6BBKW2Y` shared one
 container and volume. The first wrote `/root/shared`, started a managed Python
@@ -2789,7 +2789,7 @@ absent keys. The audit used the resource IDs saved before teardown:
 
 ```sh
 aws ec2 describe-instances --region us-east-1 \
-  --instance-ids i-0f9891ce3d8441c5e i-0c3f816d5e8346859 \
+  --instance-ids i-<redacted> i-<redacted> \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
 aws ec2 describe-volumes --region us-east-1 \
   --filters Name=volume-id,Values=vol-0f0ef1d924cc5ab81,vol-0f0cf1088b6dee3f4
@@ -2799,8 +2799,8 @@ gcloud compute instances list --project swarmy-508717 --format=json
 ```
 
 ```json
-[{"Id":"i-0f9891ce3d8441c5e","State":"terminated"},
- {"Id":"i-0c3f816d5e8346859","State":"terminated"}]
+[{"Id":"i-<redacted>","State":"terminated"},
+ {"Id":"i-<redacted>","State":"terminated"}]
 {"Volumes":[]}
 {"KeyPairs":[]}
 []

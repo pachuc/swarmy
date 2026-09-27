@@ -455,14 +455,14 @@
   "checkpoint_manifest": "01M2PG1EKV5S2KJ56J0KC5EAN0",
   "kill": {
     "killed_at": "2026-09-17T01:36:24.762892+00:00",
-    "instance_id": "i-0d42743c23ae24147",
+    "instance_id": "i-<redacted>",
     "termination": [
       {
         "CurrentState": {
           "Code": 32,
           "Name": "shutting-down"
         },
-        "InstanceId": "i-0d42743c23ae24147",
+        "InstanceId": "i-<redacted>",
         "PreviousState": {
           "Code": 16,
           "Name": "running"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Usage: root-suites.sh BRANCH  — runs the root-only suites for the worker/store/gateway area on this node.
+set -uo pipefail
+branch=$1
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
+cd ~/chaos
+git fetch -q origin "$branch" && git checkout -q -B suite "origin/$branch" || { echo "checkout failed"; exit 1; }
+echo "== branch $branch at $(git rev-parse --short HEAD)"
+sudo systemctl stop swarmyd swarmy-tunnel
+api_pid=""
+cleanup() { [ -n "$api_pid" ] && kill "$api_pid" 2>/dev/null; sudo systemctl start swarmy-tunnel swarmyd; }
+trap cleanup EXIT
+scripts/dev-stack.sh stop >/dev/null 2>&1 || true
+scripts/dev-stack.sh start 2>&1 | tail -2
+set -a; . .dev/env; set +a
+CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api 2>&1 | tail -1
+# Since the client split (pull request 150) `swarmy image build` goes through
+# the API, so serve one on a loopback port against the dev stack.
+if [ -x ./target/debug/swarmy-api ]; then
+  api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
+  export SWARMY_API_URL="http://127.0.0.1:$api_port"
+  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-api > ~/root-suites-api.log 2>&1 &
+  api_pid=$!
+  for _ in $(seq 1 120); do
+    (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
+    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-api exited; see ~/root-suites-api.log"; break; }
+    sleep 0.5
+  done
+  echo "== api on $SWARMY_API_URL (pid $api_pid)"
+fi
+echo "== image build"
+sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -2
+rc=0
+for suite in "swarmyd --test node" "swarmy-chaos --test bash" "swarmy-chaos --test continuity" "swarmy-chaos --test coding"; do
+  set -- $suite
+  echo "== $suite"
+  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tail -4; then :; else rc=1; fi
+done
+echo "== scripts/chaos-ci.sh"
+sudo -E env PATH="$PATH" bash scripts/chaos-ci.sh 2>&1 | tail -3 || rc=1
+[ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
+scripts/dev-stack.sh stop >/dev/null 2>&1 || true
+echo "SUITES_EXIT=$rc"

@@ -235,3 +235,7 @@ the provider once its legacy record is migrated.
   dev` and `fleet status`.
 - Tear down: `swarmy remote down dev` terminates the instance and deletes
   its key pair. Collect and merge open pull requests first.
+
+## Operator handoff
+
+The method an operator session follows day to day (review loop, merge criteria, root suites on the node, steering workers, rebuilding the laptop CLI) is in [fleet-operator-handoff.md](fleet-operator-handoff.md). The node-side suite scripts are kept in `scripts/node-suites/`.

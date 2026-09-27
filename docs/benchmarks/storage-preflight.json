@@ -47,7 +47,7 @@
       {
         "phase": "run",
         "provider": "aws",
-        "bucket": "swarmy-bench-815638500196",
+        "bucket": "swarmy-bench-<account-id>",
         "prefix": "swarmy-bench-99a9789359a645cdbc17006097b42e41/",
         "retention_allowance": false
       },

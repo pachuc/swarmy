@@ -2,7 +2,7 @@
   "aws": {
     "machine": [
       {
-        "Id": "i-0e5ab9e224d7dfacc",
+        "Id": "i-<redacted>",
         "Image": "ami-025d99823a4caad37",
         "Type": "m6id.xlarge",
         "Zone": "us-east-1a",
@@ -27,7 +27,7 @@
           ],
           "output": [
             {
-              "Id": "i-0e5ab9e224d7dfacc",
+              "Id": "i-<redacted>",
               "State": "terminated"
             }
           ]
@@ -68,7 +68,7 @@
             "s3api",
             "list-objects-v2",
             "--bucket",
-            "swarmy-bench-815638500196",
+            "swarmy-bench-<account-id>",
             "--prefix",
             "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
             "--max-keys",
@@ -91,7 +91,7 @@
             "s3api",
             "list-object-versions",
             "--bucket",
-            "swarmy-bench-815638500196",
+            "swarmy-bench-<account-id>",
             "--prefix",
             "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
             "--max-keys",
@@ -115,7 +115,7 @@
             "s3api",
             "list-multipart-uploads",
             "--bucket",
-            "swarmy-bench-815638500196",
+            "swarmy-bench-<account-id>",
             "--prefix",
             "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
             "--query",
@@ -132,7 +132,7 @@
       {
         "phase": "run",
         "provider": "aws",
-        "bucket": "swarmy-bench-815638500196",
+        "bucket": "swarmy-bench-<account-id>",
         "prefix": "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
         "retention_allowance": false
       },
