@@ -24,7 +24,9 @@ fn keyed_id(key: &str) -> Ulid {
     bytes[6..].copy_from_slice(&hash.as_bytes()[..10]);
     Ulid::from_bytes(bytes)
 }
-fn session_error(failure: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
+pub(super) fn session_error(
+    failure: swarmy_store::StoreError,
+) -> (StatusCode, Json<api::ApiError>) {
     match failure {
         swarmy_store::StoreError::SessionMissing => {
             error(StatusCode::NOT_FOUND, "session_not_found")

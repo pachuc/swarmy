@@ -1364,3 +1364,25 @@ async fn delete_route(
     )
     .await
 }
+
+#[cfg(test)]
+mod store_error_tests {
+    use super::*;
+    use swarmy_store::StoreError;
+
+    #[test]
+    fn placed_agent_is_a_conflict() {
+        let (status, Json(body)) = storage(StoreError::ActiveSandboxRequirements);
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body.code, "agent_computer_placed");
+    }
+
+    #[test]
+    fn only_non_idle_sessions_get_that_code() {
+        let (status, Json(body)) = conversation::session_error(StoreError::SessionNotIdle);
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body.code, "session_not_idle");
+        let (_, Json(body)) = conversation::session_error(StoreError::InvalidTransition);
+        assert_eq!(body.code, "storage_error");
+    }
+}

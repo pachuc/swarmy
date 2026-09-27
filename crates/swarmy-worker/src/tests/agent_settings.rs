@@ -262,50 +262,129 @@ async fn session_selection_routes_and_missing_gateway_waits() {
     let result = std::panic::AssertUnwindSafe(async {
         for available in [false, true] {
             if available {
-                f.store.put_gateway_provider("openai", &swarmy_store::GatewayProvider {
-                    expires_at: Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(),
-                    reason: "credentials resolved".into(),
-                }).await.unwrap();
+                f.store
+                    .put_gateway_provider(
+                        "openai",
+                        &swarmy_store::GatewayProvider {
+                            expires_at: Timestamp::now()
+                                .checked_add(Duration::from_secs(60))
+                                .unwrap(),
+                            reason: "credentials resolved".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
             }
             let id = SessionId::from_ulid(Ulid::generate());
-            f.store.create_agent_session(id, None, Timestamp::now(), Some(AgentSessionOptions { image: Some("fixture:test"), inference: Some(&swarmy_core::InferenceSelection {
-                provider: Some("openai".into()), model: Some("gpt-5.5".into()), effort: Some(ReasoningEffort::Max),
-            }), ..Default::default() })).await.unwrap();
+            f.store
+                .create_agent_session(
+                    id,
+                    None,
+                    Timestamp::now(),
+                    Some(AgentSessionOptions {
+                        image: Some("fixture:test"),
+                        inference: Some(&swarmy_core::InferenceSelection {
+                            provider: Some("openai".into()),
+                            model: Some("gpt-5.5".into()),
+                            effort: Some(ReasoningEffort::Max),
+                        }),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap();
             let job = f.infer(id).await;
             assert_eq!(job.provider, "openai");
             assert_eq!(job.request.settings.model, "gpt-5.5");
             let events = f.store.read_events(id, 0, 64).await.unwrap();
-            let failure = events.iter().find_map(|e| if let Event::InferenceFailed { error, .. } = e { Some(error.as_str()) } else { None });
+            let failure = events.iter().find_map(|e| {
+                if let Event::InferenceFailed { error, .. } = e {
+                    Some(error.as_str())
+                } else {
+                    None
+                }
+            });
             if available {
                 assert!(failure.is_none());
-                assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::WaitingInference);
-                assert_eq!(job.request.settings.reasoning_effort, Some(swarmy_llm::catalog::Catalog::get().model("openai", "gpt-5.5").unwrap().clamp_effort(ReasoningEffort::Max).0));
+                assert_eq!(
+                    f.store.fetch_session(id).await.unwrap().unwrap().state,
+                    SessionState::WaitingInference
+                );
+                assert_eq!(
+                    job.request.settings.reasoning_effort,
+                    Some(
+                        swarmy_llm::catalog::Catalog::get()
+                            .model("openai", "gpt-5.5")
+                            .unwrap()
+                            .clamp_effort(ReasoningEffort::Max)
+                            .0
+                    )
+                );
             } else {
-                assert_eq!(failure, Some("no gateway serves provider openai; run swarmy auth set openai or start a gateway with it"));
-                assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Runnable);
+                assert_eq!(failure, Some("no gateway serves provider openai"));
+                assert_eq!(
+                    f.store.fetch_session(id).await.unwrap().unwrap().state,
+                    SessionState::Runnable
+                );
                 f.work(id).await;
-                assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Sleeping);
+                assert_eq!(
+                    f.store.fetch_session(id).await.unwrap().unwrap().state,
+                    SessionState::Sleeping
+                );
                 assert!(f.store.inference_wait(id).await.unwrap().is_some());
-
             }
         }
         let fake = f.infer(f.session(None).await).await;
         assert_eq!(fake.provider, "fake");
-        let named = f.store.create_agent("selected", "fixture:test", "", Timestamp::now(), Some(CreateAgentOptions { settings: Some(&AgentSettings {
-            provider: Some("openai".into()), model: Some("gpt-5.5".into()), reasoning_effort: Some(ReasoningEffort::High), ..Default::default()
-        }), ..Default::default() })).await.unwrap();
+        let named = f
+            .store
+            .create_agent(
+                "selected",
+                "fixture:test",
+                "",
+                Timestamp::now(),
+                Some(CreateAgentOptions {
+                    settings: Some(&AgentSettings {
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.5".into()),
+                        reasoning_effort: Some(ReasoningEffort::High),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
         let named_job = f.infer(f.session(Some(named.agent_id)).await).await;
         assert_eq!(named_job.provider, "openai");
         assert_eq!(named_job.request.settings.model, "gpt-5.5");
         let side = SessionId::from_ulid(Ulid::generate());
-        f.store.create_agent_session(side, Some(named.agent_id), Timestamp::now(), Some(AgentSessionOptions { inference: Some(&swarmy_core::InferenceSelection {
-            provider: Some("fake".into()), model: Some("session-model".into()), effort: Some(ReasoningEffort::Low)
-        }), ..Default::default() })).await.unwrap();
+        f.store
+            .create_agent_session(
+                side,
+                Some(named.agent_id),
+                Timestamp::now(),
+                Some(AgentSessionOptions {
+                    inference: Some(&swarmy_core::InferenceSelection {
+                        provider: Some("fake".into()),
+                        model: Some("session-model".into()),
+                        effort: Some(ReasoningEffort::Low),
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
         let side_job = f.infer(side).await;
         assert_eq!(side_job.provider, "fake");
         assert_eq!(side_job.request.settings.model, "session-model");
-        assert_eq!(side_job.request.settings.reasoning_effort, Some(ReasoningEffort::Low));
-    }).catch_unwind().await;
+        assert_eq!(
+            side_job.request.settings.reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+    })
+    .catch_unwind()
+    .await;
     cleanup(&f.cluster, &f.url, &f.prefix).await;
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);

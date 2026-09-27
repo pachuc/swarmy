@@ -438,9 +438,7 @@ impl Worker {
                 provider,
                 retryable,
             } => (
-                format!(
-                    "no gateway serves provider {provider}; run swarmy auth set {provider} or start a gateway with it"
-                ),
+                format!("no gateway serves provider {provider}"),
                 retryable,
                 retryable
                     .then(|| now.checked_add(self.config.gateway_wait))
