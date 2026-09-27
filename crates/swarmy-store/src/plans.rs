@@ -60,7 +60,7 @@ impl Store {
                     });
                 }
                 if let Ok(arguments) = parsed {
-                    session.plan = arguments.plan.clone();
+                    session.plan.clone_from(&arguments.plan);
                 }
                 trx.set(&self.event_space(id).pack(&(seq,)), value);
                 session.head_seq = seq;
