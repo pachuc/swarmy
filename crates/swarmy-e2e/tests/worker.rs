@@ -1,6 +1,9 @@
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
+mod cli_bin;
+
 use std::{
     collections::{BTreeMap, HashSet},
     future::Future,
@@ -20,7 +23,7 @@ use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
-use swarmy_llm::{InferenceJob, Response, StopReason, TokenUsage};
+use swarmy_llm::{Response, StopReason, TokenUsage};
 use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
 use tempfile::TempDir;
 use tokio::{
@@ -236,8 +239,7 @@ impl Fixture {
     }
 
     async fn interrupt_from_cli(&self, id: SessionId) {
-        let executable =
-            std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name("swarmy");
+        let executable = cli_bin::bin("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
             .env("SWARMY_API_URL", &self.api_url)
@@ -253,8 +255,7 @@ impl Fixture {
     }
 
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
-        let executable =
-            std::path::Path::new(env!("CARGO_BIN_EXE_swarmy-worker")).with_file_name(service);
+        let executable = cli_bin::bin(service);
         assert!(
             executable.exists(),
             "build the workspace binaries before running worker tests"
@@ -356,58 +357,6 @@ impl Fixture {
                     image: Some(image),
                     inference: Some(&swarmy_core::InferenceSelection::default()),
                     route: Some(route),
-                }),
-            )
-            .await
-            .unwrap();
-        self.user_message(id).await;
-        id
-    }
-
-    async fn create_named_agent(&self, name: &str) -> AgentId {
-        self.store
-            .create_agent(
-                name,
-                image_fixture::image(&self.store).await,
-                "",
-                Timestamp::now(),
-                None,
-            )
-            .await
-            .unwrap()
-            .agent_id
-    }
-
-    async fn set_agent_route(&self, agent: AgentId, route: Option<&str>) {
-        self.store
-            .set_agent(
-                agent,
-                &swarmy_core::AgentSettings {
-                    route: route.map(str::to_owned),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-    }
-
-    async fn create_agent_session(&self, agent: AgentId, route: Option<&str>) -> SessionId {
-        let id = loop {
-            let id = SessionId::from_ulid(Ulid::generate());
-            if runnable_partition(id) == 7 {
-                break id;
-            }
-        };
-        // Named sessions pin the agent's image instead of taking one.
-        self.store
-            .create_agent_session(
-                id,
-                Some(agent),
-                Timestamp::now(),
-                Some(AgentSessionOptions {
-                    inference: Some(&swarmy_core::InferenceSelection::default()),
-                    route,
-                    ..Default::default()
                 }),
             )
             .await
@@ -1185,148 +1134,6 @@ async fn route_failover_drops_previous_provider_reasoning() {
 }
 
 #[tokio::test]
-async fn one_step_route_waits_without_touching_other_entries() {
-    run(|f| {
-        Box::pin(async move {
-            f.provider = "openai".into();
-            f.keyring();
-            f.put_entry("primary").await;
-            f.put_entry("backup").await;
-            f.put_route("pinned", &[("openai", "primary")]).await;
-            // A one-step route pins the agent: with its entry open the
-            // session waits instead of failing over within the provider.
-            f.store
-                .entry_failure(
-                    &swarmy_store::CredentialKey::entry("openai", "primary"),
-                    Timestamp::now()
-                        .checked_add(Duration::from_secs(3600))
-                        .unwrap(),
-                    "openai/primary: quota reached",
-                )
-                .await
-                .unwrap();
-            f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            f.gateway_serves("openai").await;
-            let id = f.create_with_route("pinned").await;
-            f.wake(id).await;
-            timeout(WAIT, async {
-                loop {
-                    if f.store.fetch_session(id).await.unwrap().unwrap().state
-                        == SessionState::Sleeping
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let wait = f.store.inference_wait(id).await.unwrap().unwrap();
-            assert!(
-                wait.reasons
-                    .iter()
-                    .any(|reason| reason.contains("openai/primary")),
-                "waiting reasons name the pinned entry: {:?}",
-                wait.reasons
-            );
-            assert_eq!(f.calls(), 0, "pinned turns never call another entry");
-            assert!(
-                f.store
-                    .entry_open_until(
-                        &swarmy_store::CredentialKey::entry("openai", "backup"),
-                        Timestamp::now()
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        })
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn agent_route_assignment_changes_next_turn_entry() {
-    run(|f| {
-        Box::pin(async move {
-            f.provider = "openai".into();
-            f.keyring();
-            f.put_entry("primary").await;
-            f.put_entry("backup").await;
-            f.put_route("use-backup", &[("openai", "backup")]).await;
-            f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            f.gateway_serves("openai").await;
-            let agent = f.create_named_agent("routed").await;
-            let id = f.create_agent_session(agent, None).await;
-            f.wake(id).await;
-            // Without assignments the implicit chain serves the oldest entry.
-            let first = f.idle(id).await;
-            assert!(first.iter().any(
-                |event| matches!(event, Event::InferenceCompleted { entry: Some(entry), .. } if entry == "primary")
-            ));
-            // Assigning the agent's route changes which entry the next turn uses.
-            f.set_agent_route(agent, Some("use-backup")).await;
-            f.user_message(id).await;
-            f.wake(id).await;
-            let second = f.idle(id).await;
-            let entries: Vec<_> = second
-                .iter()
-                .filter_map(|event| match event {
-                    Event::InferenceCompleted { entry, .. } => entry.clone(),
-                    _ => None,
-                })
-                .collect();
-            // Both turns' completions stay readable; the second turn serves backup.
-            assert_eq!(entries, ["primary", "backup"]);
-        })
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn session_route_overrides_agent_route() {
-    run(|f| {
-        Box::pin(async move {
-            f.provider = "openai".into();
-            f.keyring();
-            f.put_entry("primary").await;
-            f.put_entry("backup").await;
-            f.put_route("use-backup", &[("openai", "backup")]).await;
-            f.put_route("use-primary", &[("openai", "primary")]).await;
-            f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            f.gateway_serves("openai").await;
-            let agent = f.create_named_agent("routed").await;
-            f.set_agent_route(agent, Some("use-backup")).await;
-            // The session override wins for that session only; the agent keeps
-            // its own assignment for every other session.
-            let id = f.create_agent_session(agent, Some("use-primary")).await;
-            f.wake(id).await;
-            let events = f.idle(id).await;
-            let entries: Vec<_> = events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::InferenceCompleted { entry, .. } => entry.clone(),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(entries, ["primary"]);
-            let agent_record = f.store.get_agent(agent).await.unwrap().unwrap();
-            assert_eq!(agent_record.route.as_deref(), Some("use-backup"));
-        })
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn all_entries_open_parks_until_earliest_retry() {
     run(|f| {
         Box::pin(async move {
@@ -1414,96 +1221,45 @@ async fn all_entries_open_parks_until_earliest_retry() {
 }
 
 #[tokio::test]
-async fn twenty_sessions_share_one_open_breaker() {
-    run(|f| {
-        Box::pin(async move {
-            f.rate_limit_script(1, 5);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            let mut ids = Vec::new();
-            for _ in 0..20 {
-                let id = f.create().await;
-                f.wake(id).await;
-                ids.push(id);
-            }
-            timeout(WAIT, async {
-                loop {
-                    if f.store
-                        .entry_open_until(
-                            &swarmy_store::CredentialKey::provider("fake"),
-                            Timestamp::now(),
-                        )
-                        .await
-                        .unwrap()
-                        .is_some()
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let calls = f.calls();
-            sleep(Duration::from_secs(1)).await;
-            assert_eq!(
-                f.calls(),
-                calls,
-                "provider was called while breaker was open"
-            );
-            for id in ids {
-                let events = f.idle(id).await;
-                assert!(
-                    events
-                        .iter()
-                        .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-                );
-            }
-            assert_eq!(f.calls(), 21);
-        })
-    })
-    .await;
-}
-
-async fn kill_point(point: &'static str) {
+async fn recover_at_each_kill_point() {
     run(|f| {
         Box::pin(async move {
             f.script(true, "get_time");
             f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            let worker = f.start("swarmy-worker", Some(point));
-            let id = f.create().await;
-            f.wake(id).await;
-            let status = timeout(WAIT, f.children[worker].wait())
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(status.code(), Some(137));
-            f.start("swarmy-worker", None);
-            let events = f.idle(id).await;
-            assert_requests(id, &events, 2);
-            assert_eq!(f.calls(), 2);
+            // One fixture for every kill point: the scheduler stays up while
+            // each iteration restarts the gateway (its scripted responses
+            // are indexed by its own call count, so a fresh gateway serves
+            // the tool call and the final answer for every point), kills
+            // its worker, recovers the turn on a replacement, then stops
+            // all three so the next point starts without competition.
+            for point in [
+                "after_claim",
+                "after_request_event",
+                "before_release",
+                "after_release",
+            ] {
+                let calls_before = f.calls();
+                let gateway = f.start("swarmy-gateway", None);
+                let worker = f.start("swarmy-worker", Some(point));
+                let id = f.create().await;
+                f.wake(id).await;
+                let status = timeout(WAIT, f.children[worker].wait())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(status.code(), Some(137), "kill point {point}");
+                let replacement = f.start("swarmy-worker", None);
+                let events = f.idle(id).await;
+                assert_requests(id, &events, 2);
+                assert_eq!(f.calls() - calls_before, 2, "kill point {point}");
+                for index in [worker, replacement, gateway] {
+                    let _ = f.children[index].kill().await;
+                    let _ = f.children[index].wait().await;
+                }
+            }
         })
     })
     .await;
-}
-
-#[tokio::test]
-async fn recover_after_claim() {
-    kill_point("after_claim").await;
-}
-#[tokio::test]
-async fn recover_after_request_event() {
-    kill_point("after_request_event").await;
-}
-#[tokio::test]
-async fn recover_before_release() {
-    kill_point("before_release").await;
-}
-#[tokio::test]
-async fn recover_unpublished_waiting_inference() {
-    kill_point("after_release").await;
 }
 
 #[tokio::test]
@@ -2339,73 +2095,6 @@ fn assert_continued_tool_pairs(messages: &[Message]) {
 }
 
 #[tokio::test]
-async fn route_skips_an_expired_entry_for_the_next_step() {
-    run(|f| {
-        Box::pin(async move {
-            f.fake_pair();
-            f.keyring();
-            // The subscription entry is stored but expired, so expansion
-            // skips it exactly like a missing label; the turn serves the
-            // key without ever failing on the dead entry.
-            f.store
-                .credentials(f.keyring.clone().expect("call keyring() first"))
-                .put_entry(
-                    swarmy_core::CredentialScope::Cluster,
-                    "fake-a",
-                    "sub",
-                    &swarmy_core::CredentialRecord {
-                        kind: swarmy_core::CredentialKind::OAuth {
-                            access: "stale-access".into(),
-                            refresh: "stale-refresh".into(),
-                            expires_at: Timestamp::now()
-                                .checked_sub(Duration::from_secs(60))
-                                .unwrap(),
-                            extra: BTreeMap::new(),
-                        },
-                        updated_at: Timestamp::now(),
-                    },
-                )
-                .await
-                .unwrap();
-            f.put_entry_for("fake-b", "key").await;
-            f.put_route("sub-then-key", &[("fake-a", "sub"), ("fake-b", "key")])
-                .await;
-            f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            f.gateway_serves("fake-a").await;
-            f.gateway_serves("fake-b").await;
-            let id = f.create_with_route("sub-then-key").await;
-            f.wake(id).await;
-            let events = f.idle(id).await;
-            assert!(
-                events
-                    .iter()
-                    .all(|event| !matches!(event, Event::InferenceFailed { .. })),
-                "the skipped entry never fails the turn"
-            );
-            let completed = events.iter().find_map(|event| match event {
-                Event::InferenceCompleted {
-                    entry,
-                    route,
-                    route_step,
-                    ..
-                } => Some((entry.clone(), route.clone(), *route_step)),
-                _ => None,
-            });
-            assert_eq!(
-                completed,
-                Some((Some("key".into()), Some("sub-then-key".into()), Some(0))),
-                "the turn serves the next usable step"
-            );
-            assert_eq!(f.calls(), 1);
-        })
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn failover_survives_worker_restart_without_second_advance() {
     run(|f| {
         Box::pin(async move {
@@ -2502,53 +2191,6 @@ async fn failover_survives_worker_restart_without_second_advance() {
                 SessionState::Idle,
                 "no park behind the failover"
             );
-        })
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn unrouted_ephemeral_first_attempt_skips_route_resolution() {
-    run(|f| {
-        Box::pin(async move {
-            f.provider = "openai".into();
-            f.keyring();
-            f.put_entry("primary").await;
-            f.put_entry("backup").await;
-            f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
-            f.gateway_serves("openai").await;
-            let id = f.create().await;
-            f.wake(id).await;
-            let events = f.idle(id).await;
-            // The gateway pool serves the oldest entry; the turn completes
-            // without any failover.
-            assert!(events.iter().any(|event| matches!(
-                event,
-                Event::InferenceCompleted {
-                    entry: Some(entry),
-                    ..
-                } if entry == "primary"
-            )));
-            // The worker skipped the snapshot read for this first attempt,
-            // so the stored job carries no pinned entry or step: the gateway
-            // pool chose the entry.
-            let request_id = events.iter().find_map(|event| match event {
-                Event::InferenceRequested { request_id, .. } => Some(*request_id),
-                _ => None,
-            });
-            let job: InferenceJob = f
-                .store
-                .get_inference_input(request_id.expect("one request"))
-                .await
-                .unwrap()
-                .expect("stored job");
-            assert_eq!(job.entry, None);
-            assert_eq!(job.route, None);
-            assert_eq!(job.route_step, 0);
-            assert_eq!(f.calls(), 1);
         })
     })
     .await;

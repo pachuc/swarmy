@@ -414,12 +414,15 @@ the calling shell's environment.
 
 S3 clients should use path-style bucket addressing with this endpoint. Tests
 requiring a backing system must skip cleanly when its environment variables are
-absent. Run the same checks as CI:
+absent. Build the workspace first, then run the same checks as CI (the end-to-end
+suite runs serially):
 
 ```bash
 source .dev/env
 cargo fmt --all --check
-cargo test --workspace --locked
+cargo build --workspace --locked
+cargo test --workspace --locked --exclude swarmy-e2e
+cargo test --locked -p swarmy-e2e -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 

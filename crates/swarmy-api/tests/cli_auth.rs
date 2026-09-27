@@ -107,7 +107,7 @@ impl Fixture {
         })
     }
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::swarmy());
+        let mut command = Command::new(cli_bin::bin("swarmy"));
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(name);

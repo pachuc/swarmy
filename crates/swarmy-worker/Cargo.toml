@@ -34,7 +34,4 @@ ulid.workspace = true
 swarmy-store = { workspace = true, features = ["test-support"] }
 
 async-nats.workspace = true
-axum.workspace = true
 foundationdb.workspace = true
-swarmy-api.workspace = true
-tempfile.workspace = true

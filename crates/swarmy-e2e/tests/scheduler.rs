@@ -1,6 +1,9 @@
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
+mod cli_bin;
+
 use std::{
     collections::HashSet,
     future::Future,
@@ -57,7 +60,7 @@ impl Fixture {
     }
 
     async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
-        let child = Command::new(env!("CARGO_BIN_EXE_swarmy-scheduler"))
+        let child = Command::new(cli_bin::bin("swarmy-scheduler"))
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
             .env("SWARMY_NATS_URL", &self.url)
             .env("SWARMY_STORE_DIRECTORY", &self.directory)

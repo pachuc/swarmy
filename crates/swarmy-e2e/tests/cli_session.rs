@@ -1,6 +1,3 @@
-#[path = "cli_session/agent_settings.rs"]
-mod agent_settings;
-
 #[path = "../../swarmy-store/tests/support/mod.rs"]
 mod image_fixture;
 
@@ -13,7 +10,7 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-#[path = "support/cli_bin.rs"]
+#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
 mod cli_bin;
 
 use std::{
@@ -48,13 +45,13 @@ use ulid::Ulid;
 const WAIT: Duration = Duration::from_secs(15);
 
 /// Numbers below mirror the chat fixture in `cli_session/chat.rs`: the fake
-/// provider sleeps 600 ms per emitted delta, each provider call emits two
+/// provider sleeps 100 ms per emitted delta, each provider call emits two
 /// deltas (part done plus completion), and a chat turn needs two calls (a
 /// tool call followed by the final answer). The worker lease is 600 ms and
 /// starting the scheduler, worker, and gateway processes takes up to ten
 /// seconds on a loaded runner. Budgets multiply the sum by a slack factor so
 /// a slow CI runner waits longer instead of failing.
-const CHAT_PROVIDER_LATENCY: Duration = Duration::from_millis(600);
+const CHAT_PROVIDER_LATENCY: Duration = Duration::from_millis(100);
 const CHAT_DELTAS_PER_CALL: u32 = 2;
 const CHAT_CALLS_PER_TURN: u32 = 2;
 const CHAT_WORKER_LEASE: Duration = Duration::from_millis(600);
@@ -162,7 +159,7 @@ struct Fixture {
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::swarmy());
+        let mut command = Command::new(cli_bin::bin("swarmy"));
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)

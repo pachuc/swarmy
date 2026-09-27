@@ -4078,7 +4078,6 @@ name = "swarmy-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "async-stream",
  "async-trait",
  "axum",
@@ -4086,10 +4085,8 @@ dependencies = [
  "blake3",
  "foundationdb",
  "futures",
- "futures-util",
  "jiff",
  "object_store",
- "portable-pty",
  "reqwest",
  "serde",
  "serde_json",
@@ -4112,7 +4109,6 @@ dependencies = [
  "unicode-width",
  "utoipa",
  "utoipa-swagger-ui",
- "vt100",
 ]
 
 [[package]]
@@ -4297,11 +4293,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-e2e"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "axum",
+ "blake3",
+ "foundationdb",
+ "futures",
+ "futures-util",
+ "jiff",
+ "object_store",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "swarmy-api",
+ "swarmy-api-types",
+ "swarmy-bus",
+ "swarmy-client",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-harness",
+ "swarmy-llm",
+ "swarmy-store",
+ "swarmy-volume",
+ "tempfile",
+ "tokio",
+ "ulid",
+ "vt100",
+ "wiremock",
+]
+
+[[package]]
 name = "swarmy-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "async-stream",
  "async-trait",
  "blake3",
@@ -4408,12 +4435,8 @@ name = "swarmy-scheduler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
- "foundationdb",
- "futures-util",
  "jiff",
  "object_store",
- "serde_json",
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
@@ -4503,14 +4526,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
- "axum",
  "blake3",
  "foundationdb",
  "futures",
  "jiff",
  "serde",
  "serde_json",
- "swarmy-api",
  "swarmy-api-types",
  "swarmy-bus",
  "swarmy-config",
@@ -4520,7 +4541,6 @@ dependencies = [
  "swarmy-store",
  "swarmy-tools",
  "swarmy-version",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

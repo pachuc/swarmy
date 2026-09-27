@@ -96,23 +96,9 @@ async fn dev_up_run_recover_reconfigure_and_down() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let status = Command::new("cargo")
-        .current_dir(&repo)
-        .args([
-            "build",
-            "--locked",
-            "-p",
-            "swarmy-scheduler",
-            "-p",
-            "swarmy-worker",
-            "-p",
-            "swarmy-gateway",
-            "-p",
-            "swarmy-api",
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
+    // The scheduler, worker, gateway, and API binaries come from a
+    // `cargo build --workspace` step that runs before the suite; tests
+    // never build them.
     let fixture = Fixture {
         files: tempfile::tempdir().unwrap(),
         repo,
