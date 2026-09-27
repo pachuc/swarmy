@@ -722,10 +722,15 @@ async fn write_legacy_row(fixture: &Fixture, provider: &str, record: &Credential
     let bytes = encrypt_legacy_row(&Keyring::from_bytes([7; 32]), SCOPE, provider, record);
     fixture
         .db
-        .run(|trx, _| async move {
-            trx.set(&key, &bytes);
-            trx.set(&lease_key, b"stale-lease");
-            Ok(())
+        .run(|trx, _| {
+            let key = key.clone();
+            let bytes = bytes.clone();
+            let lease_key = lease_key.clone();
+            async move {
+                trx.set(&key, &bytes);
+                trx.set(&lease_key, b"stale-lease");
+                Ok(())
+            }
         })
         .await
         .unwrap();
@@ -735,7 +740,10 @@ async fn raw_row(fixture: &Fixture, table: &str, provider: &str) -> Option<Vec<u
     let key = fixture.root.pack(&(table, SCOPE.to_string(), provider));
     fixture
         .db
-        .run(|trx, _| async move { Ok(trx.get(&key, false).await?.map(|value| value.to_vec())) })
+        .run(|trx, _| {
+            let key = key.clone();
+            async move { Ok(trx.get(&key, false).await?.map(|value| value.to_vec())) }
+        })
         .await
         .unwrap()
 }
@@ -772,7 +780,7 @@ async fn boot_migration_moves_a_legacy_row_to_the_default_entry() {
         .migrate_legacy_credentials()
         .await
         .unwrap();
-    assert!(again == LegacyMigration::default());
+    assert_eq!(again, LegacyMigration::default());
 }
 
 #[tokio::test]
