@@ -508,3 +508,27 @@ mod job_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod provider_failure_reason_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_quota_payload_at_response_boundary() {
+        for payload in [
+            r#"{"error":{"code":"usage_limit_reached"}}"#,
+            r#"{"error":"rate_limit_exceeded"}"#,
+            "usage limit reached",
+            "rate limit exceeded",
+        ] {
+            assert_eq!(
+                classify_provider_failure(payload),
+                ProviderFailureReason::Quota
+            );
+        }
+        assert_eq!(
+            classify_provider_failure(r#"{"error":"invalid token"}"#),
+            ProviderFailureReason::Other
+        );
+    }
+}
