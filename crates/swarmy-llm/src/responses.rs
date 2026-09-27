@@ -165,7 +165,11 @@ fn build_request(request: &Request, context: Option<&RequestContext<'_>>) -> Res
     }) {
         value["text"] = json!({"verbosity": "low"});
     }
-    if let Some(maximum) = request.settings.max_output_tokens {
+    // The ChatGPT Codex backend rejects `max_output_tokens` with a 400, so
+    // a capped request (the worker's context summary) is sent uncapped there.
+    if let Some(maximum) = request.settings.max_output_tokens
+        && !context.is_some_and(|ctx| ctx.codex)
+    {
         value["max_output_tokens"] = json!(maximum);
     }
     if let Some(temperature) = request.settings.temperature {
