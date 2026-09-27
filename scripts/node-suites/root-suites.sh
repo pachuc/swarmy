@@ -17,13 +17,16 @@ trap cleanup EXIT
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 scripts/dev-stack.sh start 2>&1 | tail -2
 set -a; . .dev/env; set +a
+# The chaos harness and chaos-ci.sh build under sudo and leave root-owned
+# files in target/, which makes this build fail with permission errors.
+sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
 # `--tests` builds a package's executable only when it has integration tests,
 # and the scheduler, worker, and gateway have none, while the chaos suites run
 # the service executables from target/debug. Build those explicitly, or the
 # chaos suites run whatever an earlier branch left there.
 CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api > ~/suite-build.log 2>&1 \
   && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api -p swarmyd >> ~/suite-build.log 2>&1 \
-  || { tail -20 ~/suite-build.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 1; }
+  || { tail -20 ~/suite-build.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 2; }
 tail -1 ~/suite-build.log
 # Since the client split (pull request 150) `swarmy image build` goes through
 # the API, so serve one on a loopback port against the dev stack.
