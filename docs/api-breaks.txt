@@ -20,3 +20,9 @@ GET /v1/sessions/{id}/events adds inference_failed/failure_kind to response even
 
 # 2026-09-27: Store errors now report facts rather than CLI commands.
 DELETE /v1/sessions/{id} changes main_session_close error message to omit CLI advice
+
+# 2026-09-27: Worker system notices now carry typed kind markers while keeping their text; old event readers must be upgraded first.
+GET /v1/sessions/{id}/events adds notice part kind to message parts
+
+# 2026-09-27: Credential records append typed bookkeeping; existing records are migrated on startup and string flags cleared.
+POST /v1/credentials adds record/bookkeeping to the credential request payload

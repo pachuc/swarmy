@@ -127,7 +127,9 @@ impl Store {
     pub async fn insert_runnable(&self, entry: &RunnableEntry) -> Result<()> {
         self.transaction(|trx| async move {
             if self.session(&trx, entry.session_id).await?.state != SessionState::Runnable {
-                return Err(StoreError::UnexpectedSessionState);
+                return Err(StoreError::Domain(
+                    crate::DomainError::UnexpectedSessionState,
+                ));
             }
             self.index_runnable(&trx, entry).await
         })
@@ -147,7 +149,7 @@ impl Store {
         if partition >= RUNNABLE_PARTITIONS
             || after.is_some_and(|entry| runnable_partition(entry.session_id) != partition)
         {
-            return Err(StoreError::InvalidPartition);
+            return Err(StoreError::Domain(crate::DomainError::InvalidPartition));
         }
         self.transaction(|trx| async move {
             let space = crate::keys::Keys::new(&self.root).runnable_space(partition);
@@ -158,12 +160,14 @@ impl Store {
             }
             let mut entries = Vec::new();
             for (key, _) in scan(&trx, (begin, end), limit).await? {
-                let (priority, (seconds, nanos), id): (i64, (i64, i32), Vec<u8>) =
-                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (priority, (seconds, nanos), id): (i64, (i64, i32), Vec<u8>) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 entries.push(RunnableEntry {
                     session_id: session_id(id)?,
                     priority,
-                    wake_at: Timestamp::new(seconds, nanos).map_err(|_| StoreError::Corrupt)?,
+                    wake_at: Timestamp::new(seconds, nanos)
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 });
             }
             Ok(entries)
@@ -173,7 +177,9 @@ impl Store {
 }
 
 pub(crate) fn session_id(bytes: Vec<u8>) -> Result<SessionId> {
-    let bytes: [u8; 16] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+    let bytes: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
     Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
 }
 

@@ -193,8 +193,12 @@ impl AuthStore for ClusterCredentials {
                     let kind = login
                         .refresh(&current.kind)
                         .await
-                        .map_err(|_| StoreError::CredentialRefresh)?
-                        .ok_or(StoreError::CredentialRefresh)?;
+                        .map_err(|_| {
+                            StoreError::Domain(swarmy_store::DomainError::CredentialRefresh)
+                        })?
+                        .ok_or(StoreError::Domain(
+                            swarmy_store::DomainError::CredentialRefresh,
+                        ))?;
                     Ok(CredentialRecord {
                         bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                         kind,

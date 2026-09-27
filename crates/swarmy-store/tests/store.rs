@@ -115,7 +115,9 @@ async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
     );
     assert!(matches!(
         f.store.interrupt_session(id).await,
-        Err(StoreError::NothingToInterrupt)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::NothingToInterrupt
+        ))
     ));
     f.cleanup().await;
 }
@@ -173,7 +175,9 @@ async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
     );
     assert!(matches!(
         f.store.claim_lease(id, owner(), timestamp(100)).await,
-        Err(StoreError::InterruptPending)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::InterruptPending
+        ))
     ));
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
     let session = f.store.fetch_session(id).await.unwrap().unwrap();
@@ -506,7 +510,9 @@ async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
         test.store
             .wake_session(SessionId::from_ulid(Ulid::generate()), timestamp(5))
             .await,
-        Err(StoreError::SessionMissing)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::SessionMissing
+        ))
     ));
     test.cleanup().await;
 }
@@ -526,10 +532,10 @@ async fn events_are_contiguous_and_stale_appends_write_nothing() {
     );
     assert!(matches!(
         test.store.append_events(id, 1, &[event("stale")]).await,
-        Err(StoreError::StaleSequence {
+        Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence {
             expected: 1,
             actual: 3
-        })
+        }))
     ));
     let tail = test.store.read_events(id, 0, 64).await.unwrap();
     assert_eq!(tail.iter().map(Event::seq).collect::<Vec<_>>(), [1, 2, 3]);
@@ -574,7 +580,7 @@ async fn concurrent_claims_have_exactly_one_winner() {
     for task in tasks {
         match task.await.unwrap() {
             Ok(_) => winners += 1,
-            Err(StoreError::UnexpectedSessionState) => {}
+            Err(StoreError::Domain(swarmy_store::DomainError::UnexpectedSessionState)) => {}
             other => panic!("unexpected claim: {other:?}"),
         }
     }
@@ -608,7 +614,9 @@ async fn concurrent_appends_do_not_overwrite_events() {
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     assert!(matches!(
         a.err().or(b.err()),
-        Some(StoreError::StaleSequence { .. })
+        Some(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     assert_eq!(test.store.read_events(id, 0, 64).await.unwrap().len(), 1);
     test.cleanup().await;
@@ -775,7 +783,7 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
                 image_fixture::image(&test.store).await
             )
             .await,
-        Err(StoreError::SessionExists)
+        Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
     ));
     test.store
         .append_events(id, 0, &[event("one")])
@@ -986,7 +994,7 @@ async fn oversized_batches_and_invalid_snapshots_preserve_the_session() {
     let events = vec![event(&"x".repeat(79 * 1024)); 110];
     assert!(matches!(
         test.store.append_events(id, 0, &events).await,
-        Err(StoreError::TooLarge)
+        Err(StoreError::Storage(swarmy_store::StorageError::TooLarge))
     ));
     assert_eq!(
         test.store
@@ -1136,13 +1144,15 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
     let response = "large result".repeat(20_000);
     assert!(matches!(
         test.store.complete_inference(&completion, &response).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     completion.claim = rival;
     completion.expected_head = 1;
     assert!(matches!(
         test.store.complete_inference(&completion, &response).await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     assert_inference_pending(&test.store, id, request_id, inflight).await;
     completion.expected_head = 0;
@@ -1289,7 +1299,9 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
     };
     assert!(matches!(
         test.store.start_inference(&claim, timestamp(0)).await,
-        Err(StoreError::MissingInflight)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::MissingInflight
+        ))
     ));
     let mut inflight = InflightRecord {
         session_id: SessionId::from_ulid(Ulid::generate()),
@@ -1303,7 +1315,9 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
         .unwrap();
     assert!(matches!(
         test.store.start_inference(&claim, timestamp(0)).await,
-        Err(StoreError::InflightMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::InflightMismatch
+        ))
     ));
     assert!(
         test.store
@@ -1354,19 +1368,19 @@ async fn worker_writes_are_fenced_after_renewal_expiry_and_replacement() {
             test.store
                 .append_events_leased(id, 0, &[event("stale")], token, now)
                 .await,
-            Err(StoreError::LeaseMismatch)
+            Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
         ));
         assert!(matches!(
             test.store
                 .put_inference_input(id, 0, token, now, &"stale")
                 .await,
-            Err(StoreError::LeaseMismatch)
+            Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
         ));
         assert!(matches!(
             test.store
                 .put_inflight_leased(request_id, &record, token, now)
                 .await,
-            Err(StoreError::LeaseMismatch)
+            Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
         ));
     }
     test.store
@@ -1381,7 +1395,9 @@ async fn worker_writes_are_fenced_after_renewal_expiry_and_replacement() {
         test.store
             .put_inference_input(id, 0, &lease, timestamp(2), &"changed prompt")
             .await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     assert_eq!(
         test.store
@@ -1405,13 +1421,13 @@ async fn worker_writes_are_fenced_after_renewal_expiry_and_replacement() {
         test.store
             .append_events_leased(id, 1, &[event("stale")], &lease, timestamp(22))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         test.store
             .put_inflight_leased(request_id, &record, &lease, timestamp(22))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.store
         .put_inflight_leased(request_id, &record, &replacement, timestamp(22))
@@ -1461,7 +1477,7 @@ async fn inflight_scan_pages_without_skips_or_duplicates() {
     );
     assert!(matches!(
         test.store.scan_inflight(None, 0).await,
-        Err(StoreError::InvalidLimit)
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidLimit))
     ));
 }
 
@@ -1474,7 +1490,7 @@ async fn session_listing_pages_by_id_and_hydrates_snapshots() {
     for limit in [0, swarmy_store::MAX_SCAN_LIMIT + 1] {
         assert!(matches!(
             test.store.list_sessions(None, limit).await,
-            Err(StoreError::InvalidLimit)
+            Err(StoreError::Domain(swarmy_store::DomainError::InvalidLimit))
         ));
     }
     let mut expected = Vec::new();
@@ -1549,11 +1565,15 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
     assert_eq!(test.store.get_image("base", &tag).await.unwrap(), None);
     assert!(matches!(
         test.store.create_volume(volume, manifest).await,
-        Err(StoreError::ManifestMissing)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ManifestMissing
+        ))
     ));
     assert!(matches!(
         test.store.put_image("base", &tag, manifest, None).await,
-        Err(StoreError::ManifestMissing)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ManifestMissing
+        ))
     ));
     test.store.put_manifest(manifest, &header).await.unwrap();
     test.store.put_manifest(manifest, &header).await.unwrap();
@@ -1567,13 +1587,17 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
     };
     assert!(matches!(
         test.store.put_manifest(manifest, &conflicting).await,
-        Err(StoreError::ManifestExists)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ManifestExists
+        ))
     ));
     assert!(matches!(
         test.store
             .put_manifest(manifest_id(), &manifest_header(1))
             .await,
-        Err(StoreError::InvalidManifest)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::InvalidManifest
+        ))
     ));
     test.store
         .put_image("base", &tag, manifest, None)
@@ -1602,11 +1626,11 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
     );
     assert!(matches!(
         test.store.create_volume(volume, manifest).await,
-        Err(StoreError::VolumeExists)
+        Err(StoreError::Domain(swarmy_store::DomainError::VolumeExists))
     ));
     assert!(matches!(
         test.store.clone_volume(volume_id(), volume_id()).await,
-        Err(StoreError::VolumeMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
     test.cleanup().await;
 }
@@ -1672,11 +1696,11 @@ async fn cloning_has_constant_metadata_cost_for_small_and_large_manifests() {
         );
         assert!(matches!(
             test.store.clone_volume(source, destination).await,
-            Err(StoreError::VolumeExists)
+            Err(StoreError::Domain(swarmy_store::DomainError::VolumeExists))
         ));
         assert!(matches!(
             test.store.clone_volume(source, source).await,
-            Err(StoreError::VolumeExists)
+            Err(StoreError::Domain(swarmy_store::DomainError::VolumeExists))
         ));
     }
     assert_eq!(record_sizes[0], record_sizes[1]);
@@ -1705,14 +1729,17 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         (Ok(lease), Err(error)) | (Err(error), Ok(lease)) => (lease, error),
         other => panic!("expected one winner, got {other:?}"),
     };
-    assert!(matches!(loser, StoreError::LeaseMismatch));
+    assert!(matches!(
+        loser,
+        StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)
+    ));
     let mut wrong = winner.clone();
     wrong.owner = owner();
     assert!(matches!(
         test.store
             .release_writer_lease(volume, &wrong, timestamp(2))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.store
         .release_writer_lease(volume, &winner, timestamp(2))
@@ -1738,13 +1765,13 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &winner, timestamp(3))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         test.store
             .release_writer_lease(volume, &next, timestamp(10))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let replacement = test
         .store
@@ -1756,7 +1783,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .release_writer_lease(volume, &next, timestamp(11))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.store
         .release_writer_lease(volume, &replacement, timestamp(11))
@@ -1766,13 +1793,13 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         test.store
             .acquire_writer_lease(volume, owner(), timestamp(12), timestamp(12))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         test.store
             .acquire_writer_lease(volume_id(), owner(), timestamp(12), timestamp(20))
             .await,
-        Err(StoreError::VolumeMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
     test.cleanup().await;
 }
@@ -1831,7 +1858,7 @@ async fn image_listing_pages_by_name_and_tag() {
     );
     assert!(matches!(
         test.store.list_images(None, 0).await,
-        Err(StoreError::InvalidLimit)
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidLimit))
     ));
 }
 
@@ -1868,7 +1895,7 @@ async fn volume_publication_fences_writers_and_preserves_history() {
     };
     assert!(matches!(
         store.advance_volume(id, &wrong, base, next, &header).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert_eq!(store.get_volume(id).await.unwrap(), before);
     assert_eq!(store.get_manifest(next).await.unwrap(), None);
@@ -1886,7 +1913,7 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         .unwrap();
     assert!(matches!(
         store.advance_volume(id, &lease, base, next, &header).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     store
         .advance_volume(id, &renewed, base, next, &header)
@@ -1903,7 +1930,9 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         store
             .advance_volume(id, &renewed, base, stale, &header)
             .await,
-        Err(StoreError::VolumeHeadMismatch)
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeHeadMismatch
+        ))
     ));
     assert_eq!(store.get_manifest(stale).await.unwrap(), None);
     let clone = VolumeId::from_ulid(Ulid::generate());
@@ -1922,7 +1951,7 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         store
             .advance_volume(id, &renewed, next, stale, &header)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;
 }
@@ -2493,7 +2522,9 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
         test.store
             .complete_plan_tool(id, 2, &lease, RequestId::for_step(id, 3), &first)
             .await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     let mut stale = lease.clone();
     stale.owner = owner();
@@ -2501,7 +2532,7 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
         test.store
             .complete_plan_tool(id, 3, &stale, RequestId::for_step(id, 4), &first)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let empty = call(json!({"plan":[]}));
     let result = test

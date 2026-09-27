@@ -69,12 +69,12 @@ impl Scheduler {
                 .store
                 .fetch_session_with_agent(session_id)
                 .await?
-                .ok_or(StoreError::SessionMissing)?;
+                .ok_or(StoreError::Domain(swarmy_store::DomainError::SessionMissing))?;
             if session.state == SessionState::Runnable {
                 if session.interrupt_requested {
                     if self.store.finish_runnable_interrupt(session_id).await? {
                         let head = self.store.fetch_session(session_id).await?
-                            .ok_or(StoreError::SessionMissing)?.head_seq;
+                            .ok_or(StoreError::Domain(swarmy_store::DomainError::SessionMissing))?.head_seq;
                         if let Some(event) = self.store.read_events(session_id, head - 1, 1).await?.pop() {
                             self.bus.publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event).await?;
                         }
@@ -259,7 +259,7 @@ impl Scheduler {
                             .await;
                     }
                     // Another reaper or a renewal can win after the scan.
-                    Err(StoreError::LeaseMismatch) => {}
+                    Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)) => {}
                     Err(error) => tracing::warn!(%session_id, %error, "lease reaping failed"),
                 }
             }
@@ -284,7 +284,9 @@ impl Scheduler {
                 tracing::debug!(%session_id, ?state, "wake left session unchanged");
                 WakeReply::Unchanged(state)
             }
-            Err(StoreError::SessionMissing) => WakeReply::NotFound,
+            Err(StoreError::Domain(swarmy_store::DomainError::SessionMissing)) => {
+                WakeReply::NotFound
+            }
             Err(error) => {
                 tracing::warn!(%session_id, %error, "wake failed");
                 WakeReply::Failed(error.to_string())

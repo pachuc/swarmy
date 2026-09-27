@@ -89,10 +89,18 @@ pub async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<P
             };
             match result {
                 Ok(placement) => return Ok(placement),
-                Err(error @ (StoreError::NodeAtCapacity { .. } | StoreError::NodeMissing)) => {
+                Err(
+                    error @ (StoreError::Domain(swarmy_store::DomainError::NodeAtCapacity {
+                        ..
+                    })
+                    | StoreError::Domain(swarmy_store::DomainError::NodeMissing)),
+                ) => {
                     rejection = Some(error.to_string());
                 }
-                Err(error @ (StoreError::PlacementExists | StoreError::LeaseMismatch)) => {
+                Err(
+                    error @ (StoreError::Domain(swarmy_store::DomainError::PlacementExists)
+                    | StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)),
+                ) => {
                     rejection = Some(error.to_string());
                     break;
                 }

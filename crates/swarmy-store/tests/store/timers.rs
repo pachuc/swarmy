@@ -129,7 +129,9 @@ async fn timer_tools_set_list_cancel_and_fence_retries() {
                 }
             )
             .await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     assert!(matches!(
         invoke(
@@ -269,7 +271,9 @@ async fn failed_append_leaves_no_receipt_and_next_tick_retries() {
         store
             .fire_timer(agent, timer.timer_id, Timestamp::now())
             .await,
-        Err(StoreError::SequenceOverflow)
+        Err(StoreError::Storage(
+            swarmy_store::StorageError::SequenceOverflow
+        ))
     ));
     assert_eq!(
         store

@@ -94,6 +94,7 @@ impl CompletionsProvider {
         if retryable(status) {
             return Err(Error::ProviderResponse {
                 status,
+                reason: crate::classify_provider_failure(&body),
                 message: body,
                 retry_after,
             });

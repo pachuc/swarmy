@@ -131,6 +131,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn old_layout_bookkeeping_migrates() {
+        // Frozen version-one API-key record with three legacy string flags.
+        const BYTES: &[u8] = &[
+            1, 0, 3, 107, 101, 121, 3, 9, 97, 117, 116, 104, 95, 107, 105, 110, 100, 5, 99, 108,
+            111, 117, 100, 5, 108, 97, 98, 101, 108, 4, 119, 111, 114, 107, 11, 110, 101, 101, 100,
+            115, 95, 108, 111, 103, 105, 110, 4, 116, 114, 117, 101, 20, 49, 57, 55, 48, 45, 48,
+            49, 45, 48, 49, 84, 48, 48, 58, 49, 54, 58, 52, 48, 90,
+        ];
+        let mut record: CredentialRecord = crate::decode(BYTES).unwrap();
+        assert!(record.migrate_bookkeeping());
+        assert!(record.bookkeeping.needs_login && record.bookkeeping.cloud);
+        assert_eq!(record.bookkeeping.label.as_deref(), Some("work"));
+        let CredentialKind::ApiKey { extra, .. } = &record.kind else {
+            unreachable!()
+        };
+        assert!(extra.is_empty());
+        assert!(!record.migrate_bookkeeping());
+    }
+
+    #[test]
     fn status_and_refresh_margin() {
         let now = Timestamp::from_second(1000).unwrap();
         for (expiry, status, refresh) in [

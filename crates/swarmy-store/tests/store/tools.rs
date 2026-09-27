@@ -204,20 +204,20 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         store
             .complete_placed_tool(&claim, 3, &result.tool_result())
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         store.renew_placed_tool(&claim, expiry()).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         store.renew_writer_lease(volume, &writer, expiry()).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     check_stale_publication(store, volume, &writer, image).await;
     assert!(matches!(
         store.agent_volume(session, &next).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;
 }
@@ -237,7 +237,7 @@ async fn check_tool_admission(
         store
             .tool_agent(job, NodeId::from_ulid(Ulid::generate()))
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
 }
 
@@ -258,7 +258,7 @@ async fn check_stale_publication(
                 &header
             )
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
 }
 
@@ -293,7 +293,7 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         store
             .dispatch_tool_calls(id, 0, &replaced, &calls, &placement)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let stale = swarmy_core::PlacementRecord {
         epoch: placement.epoch + 1,
@@ -303,13 +303,15 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         store
             .dispatch_tool_calls(id, 0, &lease, &calls, &stale)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         store
             .dispatch_tool_calls(id, 1, &lease, &calls, &placement)
             .await,
-        Err(StoreError::StaleSequence { .. })
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::StaleSequence { .. }
+        ))
     ));
     assert!(store.read_events(id, 0, 64).await.unwrap().is_empty());
     assert!(store.scan_tool_jobs(None, 64).await.unwrap().is_empty());
@@ -335,7 +337,7 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
     }
     assert!(matches!(
         store.release_lease(id, &lease, Timestamp::now()).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;
 }

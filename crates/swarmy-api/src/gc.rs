@@ -105,9 +105,9 @@ pub async fn start(
             // replaying a run id that was never recorded.
             let _ = state.store.remove_api_replay(&replay_key, &reserved).await;
             return Err(match error {
-                swarmy_volume::VolumeError::Store(swarmy_store::StoreError::LeaseMismatch) => {
-                    busy()
-                }
+                swarmy_volume::VolumeError::Store(swarmy_store::StoreError::Fence(
+                    swarmy_store::FenceError::LeaseMismatch,
+                )) => busy(),
                 other => volume(other),
             });
         }

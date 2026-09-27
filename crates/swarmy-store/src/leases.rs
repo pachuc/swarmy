@@ -138,10 +138,12 @@ impl Store {
         let (mut session, ()) =
             futures::try_join!(self.session(trx, id), self.remove_runnable(trx, id),)?;
         if session.state != SessionState::Runnable {
-            return Err(StoreError::UnexpectedSessionState);
+            return Err(StoreError::Domain(
+                crate::DomainError::UnexpectedSessionState,
+            ));
         }
         if session.interrupt_requested {
-            return Err(StoreError::InterruptPending);
+            return Err(StoreError::Domain(crate::DomainError::InterruptPending));
         }
         let lease = Lease {
             owner,
@@ -149,7 +151,7 @@ impl Store {
             seq: session
                 .head_seq
                 .checked_add(1)
-                .ok_or(StoreError::SequenceOverflow)?,
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;
@@ -166,9 +168,9 @@ impl Store {
     ) -> Result<Lease> {
         let lease = read::<Lease>(trx, &self.lease_key(id))
             .await?
-            .ok_or(StoreError::LeaseMismatch)?;
+            .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
         if &lease != expected {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
         }
         Ok(lease)
     }
@@ -186,7 +188,7 @@ impl Store {
         self.transaction(|trx| async move {
             let mut lease = self.verify_lease(&trx, id, expected).await?;
             if lease.expires_at <= now || expires_at <= lease.expires_at {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             self.clear_lease(&trx, id).await?;
             lease.expires_at = expires_at;
@@ -225,15 +227,15 @@ impl Store {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
             if state == SessionState::Leased || !can_transition(session.state, state) {
-                return Err(StoreError::InvalidTransition);
+                return Err(StoreError::Domain(crate::DomainError::InvalidTransition));
             }
             if session.state == SessionState::Leased {
-                let expected = lease.ok_or(StoreError::LeaseMismatch)?;
+                let expected = lease.ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
                 if self.verify_lease(&trx, id, expected).await?.expires_at <= now {
-                    return Err(StoreError::LeaseMismatch);
+                    return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
                 }
             } else if lease.is_some() {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             self.transition(&trx, session, state, now).await
         })
@@ -299,8 +301,9 @@ impl Store {
             }
             let mut leases = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
-                let (_, id): ((i64, i32), Vec<u8>) =
-                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (_, id): ((i64, i32), Vec<u8>) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 leases.push((session_id(id)?, swarmy_core::decode(&value)?));
             }
             Ok(leases)
@@ -316,7 +319,7 @@ impl Store {
             let lease = self.verify_lease(&trx, id, expected).await?;
             let session = self.session(&trx, id).await?;
             if lease.expires_at > now || session.state != SessionState::Leased {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             self.transition(&trx, session, SessionState::Runnable, now)
                 .await
@@ -336,7 +339,7 @@ impl Store {
         let (current, session) =
             futures::try_join!(self.verify_lease(trx, id, lease), self.session(trx, id),)?;
         if current.expires_at <= now || session.state != SessionState::Leased {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
         }
         Ok(())
     }

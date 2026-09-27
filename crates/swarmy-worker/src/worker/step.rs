@@ -587,7 +587,7 @@ impl Worker {
             };
             match result {
                 Ok(event) => break event,
-                Err(StoreError::InterruptPending) => {
+                Err(StoreError::Domain(swarmy_store::DomainError::InterruptPending)) => {
                     events.pop();
                     let request_id = events
                         .iter()

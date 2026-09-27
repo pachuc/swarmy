@@ -96,7 +96,7 @@ async fn put_get_list_delete_and_wrong_key() {
     .credentials(Keyring::from_bytes([8; 32]));
     assert!(matches!(
         wrong.get_entry(SCOPE, "openai", "default").await,
-        Err(StoreError::Keyring)
+        Err(StoreError::Storage(swarmy_store::StorageError::Keyring))
     ));
     f.credentials
         .delete_entry(SCOPE, "openai", "default")
@@ -208,7 +208,10 @@ async fn dead_owner_expires_and_stale_write_is_fenced() {
             },
         )
         .await;
-    assert!(matches!(result, Err(StoreError::LeaseMismatch)));
+    assert!(matches!(
+        result,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
     assert_eq!(
         access(
             &f.credentials
@@ -237,10 +240,16 @@ async fn refresh_failure_keeps_tokens_and_requires_login() {
                 "chatgpt",
                 "default",
                 Duration::from_secs(2),
-                |_| async { Err(StoreError::CredentialRefresh) }
+                |_| async {
+                    Err(StoreError::Domain(
+                        swarmy_store::DomainError::CredentialRefresh,
+                    ))
+                }
             )
             .await,
-        Err(StoreError::CredentialRefresh)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::CredentialRefresh
+        ))
     ));
     let current = f
         .credentials
@@ -263,7 +272,9 @@ async fn refresh_failure_keeps_tokens_and_requires_login() {
                 |_| async { panic!("must not retry a failed rotation") }
             )
             .await,
-        Err(StoreError::CredentialRefresh)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::CredentialRefresh
+        ))
     ));
 }
 
@@ -289,7 +300,10 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
             },
         )
         .await;
-    assert!(matches!(result, Err(StoreError::LeaseMismatch)));
+    assert!(matches!(
+        result,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
     assert_eq!(
         access(
             &f.credentials
@@ -315,7 +329,10 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
             },
         )
         .await;
-    assert!(matches!(result, Err(StoreError::LeaseMismatch)));
+    assert!(matches!(
+        result,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
     assert!(
         f.credentials
             .get_entry(SCOPE, "chatgpt", "default")
@@ -459,7 +476,10 @@ async fn replacing_one_entry_fences_its_refresh_without_touching_another() {
         proceed.notify_one();
     };
     let (result, ()) = tokio::join!(refresh, replace);
-    assert!(matches!(result, Err(StoreError::LeaseMismatch)));
+    assert!(matches!(
+        result,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
     assert_eq!(
         access(
             &f.credentials

@@ -80,10 +80,10 @@ fn service_budget() -> Duration {
 /// one read; the `FoundationDB` retry predicates cover it and its siblings.
 fn is_retryable_store_error(error: &swarmy_store::StoreError) -> bool {
     match error {
-        swarmy_store::StoreError::FoundationDb(error) => {
+        swarmy_store::StoreError::Storage(swarmy_store::StorageError::FoundationDb(error)) => {
             error.code() == 1031 || error.is_retryable()
         }
-        swarmy_store::StoreError::Binding(error) => error
+        swarmy_store::StoreError::Storage(swarmy_store::StorageError::Binding(error)) => error
             .get_fdb_error()
             .is_some_and(|error| error.code() == 1031 || error.is_retryable()),
         _ => false,

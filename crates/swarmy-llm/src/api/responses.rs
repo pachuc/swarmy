@@ -324,6 +324,7 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
     }
     Err(Error::ProviderResponse {
         status,
+        reason: crate::classify_provider_failure(&body),
         message: body,
         retry_after,
     })

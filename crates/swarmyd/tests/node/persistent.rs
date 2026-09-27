@@ -895,7 +895,9 @@ pub(super) async fn deleted_computer(node: &Node, store: &Store, bus: &Bus) {
     assert!(!store.tool_completed(job.request_id).await.unwrap());
     assert!(matches!(
         store.tool_agent(&job, node.id).await,
-        Err(swarmy_store::StoreError::ComputerDeleted)
+        Err(swarmy_store::StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     assert!(
         store
@@ -971,7 +973,9 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
     assert!(store.agent_call_status(agent).await.unwrap().is_none());
     assert!(matches!(
         store.put_agent_call_status(&observation).await,
-        Err(swarmy_store::StoreError::LeaseMismatch)
+        Err(swarmy_store::StoreError::Fence(
+            swarmy_store::FenceError::LeaseMismatch
+        ))
     ));
     eprintln!(
         "shared calls passed: FIFO serialization, separate stdout/stderr, holder handoff, queue depth, idle and released status"

@@ -28,10 +28,10 @@ pub(super) fn session_error(
     failure: swarmy_store::StoreError,
 ) -> (StatusCode, Json<api::ApiError>) {
     match failure {
-        swarmy_store::StoreError::SessionMissing => {
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::SessionMissing) => {
             error(StatusCode::NOT_FOUND, "session_not_found")
         }
-        swarmy_store::StoreError::NothingToInterrupt => (
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::NothingToInterrupt) => (
             StatusCode::CONFLICT,
             Json(api::ApiError {
                 code: "nothing_to_interrupt".into(),
@@ -39,7 +39,7 @@ pub(super) fn session_error(
                 provider_text: None,
             }),
         ),
-        swarmy_store::StoreError::MainSessionClose => (
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::MainSessionClose) => (
             StatusCode::CONFLICT,
             Json(api::ApiError {
                 code: "main_session_close".into(),
@@ -47,8 +47,12 @@ pub(super) fn session_error(
                 provider_text: None,
             }),
         ),
-        swarmy_store::StoreError::SessionNotIdle => error(StatusCode::CONFLICT, "session_not_idle"),
-        swarmy_store::StoreError::StaleSequence { actual, .. } => (
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::SessionNotIdle) => {
+            error(StatusCode::CONFLICT, "session_not_idle")
+        }
+        swarmy_store::StoreError::Fence(swarmy_store::FenceError::StaleSequence {
+            actual, ..
+        }) => (
             StatusCode::CONFLICT,
             Json(api::ApiError {
                 code: "stale_head".into(),
@@ -189,7 +193,7 @@ pub async fn create(
                 )
                 .await
             {
-                Ok(_) | Err(swarmy_store::StoreError::SessionExists) => id,
+                Ok(_) | Err(swarmy_store::StoreError::Domain(swarmy_store::DomainError::SessionExists)) => id,
                 Err(failure) => return Err(storage(failure)),
             }
         };

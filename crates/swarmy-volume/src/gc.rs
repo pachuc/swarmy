@@ -131,7 +131,7 @@ pub async fn complete(
         loop {
             tokio::select! {
                 biased;
-                () = tokio::time::sleep_until(deadline) => break Err(StoreError::LeaseMismatch.into()),
+                () = tokio::time::sleep_until(deadline) => break Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch).into()),
                 _ = renewal.tick() => {
                     let next_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
                     let renewed = tokio::time::timeout_at(deadline, async {
@@ -140,7 +140,7 @@ pub async fn complete(
                     match renewed {
                         Ok(Ok(next)) => { lease = next; deadline = next_deadline; }
                         Ok(Err(error)) => break Err(error),
-                        Err(_) => break Err(StoreError::LeaseMismatch.into()),
+                        Err(_) => break Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch).into()),
                     }
                 }
                 result = &mut work => break result,
@@ -178,10 +178,9 @@ async fn mark(
     references: &mut References,
     id: ManifestId,
 ) -> Result<()> {
-    let header = store
-        .get_manifest(id)
-        .await?
-        .ok_or(StoreError::ManifestMissing)?;
+    let header = store.get_manifest(id).await?.ok_or(StoreError::Domain(
+        swarmy_store::DomainError::ManifestMissing,
+    ))?;
     let manifest = Manifest::load(objects, header).await?;
     for (index, hash) in manifest.leaf_hashes().iter().enumerate() {
         if *hash != ContentHash::ZERO {

@@ -118,7 +118,10 @@ impl Worker {
             .await
         {
             Ok(lease) => lease,
-            Err(StoreError::UnexpectedSessionState | StoreError::InterruptPending) => {
+            Err(
+                StoreError::Domain(swarmy_store::DomainError::UnexpectedSessionState)
+                | StoreError::Domain(swarmy_store::DomainError::InterruptPending),
+            ) => {
                 return Ok(message.acknowledge().await?);
             }
             Err(error) => return Err(error.into()),

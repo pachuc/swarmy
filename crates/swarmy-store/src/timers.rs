@@ -88,7 +88,7 @@ impl Store {
             call.tool.as_str(),
             "set_timer" | "list_timers" | "cancel_timer"
         ) {
-            return Err(StoreError::InvalidToolCall);
+            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
         }
         let timer_id = TimerId::from_ulid(ulid::Ulid::generate());
         let now = self.now();
@@ -96,10 +96,10 @@ impl Store {
             self.check_worker_lease(&trx, id, lease, self.now()).await?;
             let mut session = self.session(&trx, id).await?;
             if session.head_seq != expected_head {
-                return Err(StoreError::StaleSequence {
+                return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                     expected: expected_head,
                     actual: session.head_seq,
-                });
+                }));
             }
             self.check_computer(&trx, session.agent_id).await?;
             let result = if self.read_agent(&trx, session.agent_id).await?.is_some() {
@@ -118,7 +118,7 @@ impl Store {
             };
             let seq = expected_head
                 .checked_add(1)
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             let event = Event::ToolCallCompleted {
                 seq,
                 request_id,
@@ -193,7 +193,9 @@ impl Store {
                 serde_json::to_string(&self.active_timers_in(trx, agent).await?)
             }
         };
-        Ok(Ok(output.map_err(|_| StoreError::Corrupt)?))
+        Ok(Ok(output.map_err(|_| {
+            StoreError::Storage(crate::StorageError::Corrupt)
+        })?))
     }
 
     /// Page due timers without allowing a busy agent to block later timers.
@@ -260,7 +262,7 @@ impl Store {
                 // only means stale state: fall through to the main conversation.
                 let origin_session = match self.session(&trx, origin).await {
                     Ok(session) => Some(session),
-                    Err(crate::StoreError::SessionMissing) => None,
+                    Err(crate::StoreError::Domain(crate::DomainError::SessionMissing)) => None,
                     Err(error) => return Err(error),
                 };
                 if let Some(session) = origin_session
@@ -322,7 +324,7 @@ impl Store {
         let seq = session
             .head_seq
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = Event::MessageAppended {
             seq,
             message: Message {

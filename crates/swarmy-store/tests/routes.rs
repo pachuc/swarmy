@@ -94,11 +94,15 @@ async fn route_crud_validates_names_steps_and_providers() {
         f.store
             .put_route("", &[Fixture::step("openai", "default")])
             .await,
-        Err(StoreError::InvalidRoute(_))
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidRoute(
+            _
+        )))
     ));
     assert!(matches!(
         f.store.put_route("empty", &[]).await,
-        Err(StoreError::InvalidRoute(_))
+        Err(StoreError::Domain(swarmy_store::DomainError::InvalidRoute(
+            _
+        )))
     ));
     assert!(f.store.get_route("missing").await.unwrap().is_none());
     assert!(!f.store.delete_route("missing").await.unwrap());
@@ -565,7 +569,7 @@ async fn session_route_assignment_validates_and_round_trips() {
                 })
             )
             .await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
     let id = routed_session(&f).await;
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
@@ -580,7 +584,7 @@ async fn session_route_assignment_validates_and_round_trips() {
     assert_eq!(record.route, None);
     assert!(matches!(
         f.store.set_session_route(id, Some("missing")).await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
 }
 
@@ -677,7 +681,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 Duration::from_secs(3600),
             )
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     // Success restarts the chain for the next turn.
     f.store.clear_inference_wait(id).await.unwrap();
@@ -703,12 +707,13 @@ async fn agent_and_session_assignment_validate_routes() {
                 },
             )
             .await,
-        Err(StoreError::AgentMissing | StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::AgentMissing)
+            | StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
     let id = SessionId::from_ulid(ulid::Ulid::generate());
     assert!(matches!(
         f.store.set_session_route(id, Some("missing")).await,
-        Err(StoreError::RouteMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::RouteMissing))
     ));
 }
 

@@ -22,13 +22,14 @@ impl Store {
         call: &ToolCallRecord,
     ) -> Result<Event> {
         if call.tool != "update_plan" {
-            return Err(StoreError::InvalidToolCall);
+            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
         }
         let parsed = UpdatePlanArguments::parse(call.arguments.clone());
         let result = match &parsed {
             Ok(arguments) => ToolResult::Completed {
                 title: "update_plan".into(),
-                output: serde_json::to_string(&arguments.plan).map_err(|_| StoreError::Corrupt)?,
+                output: serde_json::to_string(&arguments.plan)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 metadata: std::collections::BTreeMap::new(),
             },
             Err(error) => ToolResult::Error {
@@ -37,7 +38,7 @@ impl Store {
         };
         let seq = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = Event::ToolCallCompleted {
             seq,
             request_id,
@@ -52,10 +53,10 @@ impl Store {
                 self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if let Ok(arguments) = parsed {
                     session.plan.clone_from(&arguments.plan);

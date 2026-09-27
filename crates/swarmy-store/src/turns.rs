@@ -84,11 +84,16 @@ impl Store {
         route: Option<SubmitRouteStep>,
     ) -> Result<Event> {
         let step = expected_head
-            .checked_add(u64::try_from(before.len()).map_err(|_| StoreError::SequenceOverflow)?)
+            .checked_add(
+                u64::try_from(before.len())
+                    .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+            )
             .and_then(|head| head.checked_add(1))
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         if record.seq != step {
-            return Err(StoreError::InvalidInferenceRequest);
+            return Err(StoreError::Domain(
+                crate::DomainError::InvalidInferenceRequest,
+            ));
         }
         let id = record.session_id;
         let request_id = RequestId::for_step(id, step);
@@ -111,7 +116,7 @@ impl Store {
             if !matches!(event, Event::MessageAppended { message, .. }
                 if matches!(message.role, swarmy_core::MessageRole::Tool | swarmy_core::MessageRole::System))
             {
-                return Err(StoreError::InvalidMessageRole);
+                return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
             }
             let mut event = event.clone();
             event.set_seq(seq);
@@ -130,10 +135,10 @@ impl Store {
                     read::<swarmy_core::MessageId>(&trx, &turn_key),
                 )?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if let Some(route) = route {
                     self.write_submit_route_step(&trx, id, &mut session, route, now)
@@ -221,9 +226,9 @@ impl Store {
     ) -> Result<Event> {
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         if snapshot.seq != head {
-            return Err(StoreError::InvalidSnapshot);
+            return Err(StoreError::Domain(crate::DomainError::InvalidSnapshot));
         }
         let event = Event::StateChanged {
             seq: head,
@@ -239,17 +244,17 @@ impl Store {
                 self.check_worker_lease(&trx, id, lease, now).await?;
                 let mut session = self.session(&trx, id).await?;
                 if session.head_seq != expected_head {
-                    return Err(StoreError::StaleSequence {
+                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
                         expected: expected_head,
                         actual: session.head_seq,
-                    });
+                    }));
                 }
                 if session.interrupt_requested
                     && !self
                         .last_event_is_operator_interrupt(&trx, id, expected_head)
                         .await?
                 {
-                    return Err(StoreError::InterruptPending);
+                    return Err(StoreError::Domain(crate::DomainError::InterruptPending));
                 }
                 trx.set(&self.event_key(id, head), value);
                 trx.set(&self.snapshot_key(id, head), reference);

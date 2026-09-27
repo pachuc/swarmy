@@ -145,12 +145,12 @@ impl Store {
             if breaker.probe_until.is_some_and(|until| until > now) {
                 return Ok(Some(
                     now.checked_add(std::time::Duration::from_secs(1))
-                        .map_err(|_| StoreError::Corrupt)?,
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 ));
             }
             breaker.probe_until = Some(
                 now.checked_add(std::time::Duration::from_secs(120))
-                    .map_err(|_| StoreError::Corrupt)?,
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
             );
             write(&trx, &self.breaker_key(key), &breaker)?;
             Ok(None)
@@ -290,7 +290,7 @@ impl Store {
             let limit = wait
                 .since
                 .checked_add(max_wait)
-                .map_err(|_| StoreError::Corrupt)?;
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             if now >= limit {
                 return Ok(false);
             }
@@ -324,7 +324,7 @@ impl Store {
             if session.state != SessionState::Leased
                 || self.verify_lease(&trx, id, lease).await?.expires_at <= now
             {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             self.park_leased_in(&trx, id, session, failure, now, max_wait)
                 .await
@@ -364,7 +364,7 @@ impl Store {
         let limit = wait
             .since
             .checked_add(max_wait)
-            .map_err(|_| StoreError::Corrupt)?;
+            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         if wait.last_failure_seq != 0 {
             trx.clear(&self.wait_due_key(id, wait.wake_at));
         }
@@ -398,8 +398,9 @@ impl Store {
                     .await?
                     .into_iter()
                     .map(|(key, _)| {
-                        let (_, id): ((i64, i32), Vec<u8>) =
-                            space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                        let (_, id): ((i64, i32), Vec<u8>) = space
+                            .unpack(&key)
+                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                         crate::keys::session_id(id)
                     })
                     .collect()

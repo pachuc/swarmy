@@ -429,7 +429,9 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
     let lease = a.or(b).unwrap();
     assert!(matches!(
         collect(&test.store, test.objects.clone(), policy(), false).await,
-        Err(VolumeError::Store(StoreError::LeaseMismatch))
+        Err(VolumeError::Store(StoreError::Fence(
+            swarmy_store::FenceError::LeaseMismatch
+        )))
     ));
     *clock.lock().unwrap() = expires.checked_add(Duration::from_millis(100)).unwrap();
     let next = run_record();
@@ -448,11 +450,11 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
         test.store
             .renew_gc_lease(&lease, replacement.expires_at)
             .await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     assert!(matches!(
         test.store.finish_gc_run(&lease, &first).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let renewed = test
         .store
@@ -562,7 +564,7 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
     );
     assert!(matches!(
         test.store.protect_reused_chunk(old.hash).await,
-        Err(StoreError::LeaseMismatch)
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let uploading = chunks.put_chunk(&data);
     tokio::pin!(uploading);
@@ -739,7 +741,7 @@ async fn deleted_computer_releases_placement_and_collects_all_disk_revisions() {
     assert!(store.get_volume(volume).await.unwrap().is_none());
     assert!(matches!(
         store.volume_snapshots(volume).await,
-        Err(StoreError::VolumeMissing)
+        Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
     let live = store.live_manifests().await.unwrap();
     assert!(roots.iter().all(|root| !live.contains(root)));
@@ -753,17 +755,23 @@ async fn deleted_computer_releases_placement_and_collects_all_disk_revisions() {
                     .unwrap()
             )
             .await,
-        Err(StoreError::ComputerDeleted)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     assert!(matches!(
         store
             .place(agent, placement.node_id, placement.expires_at)
             .await,
-        Err(StoreError::ComputerDeleted)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     assert!(matches!(
         store.create_volume(volume, head).await,
-        Err(StoreError::ComputerDeleted)
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
     ));
     // Capacity was returned exactly once despite repeating deletion.
     store

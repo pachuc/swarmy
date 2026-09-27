@@ -287,6 +287,28 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Provider response classification, independent of diagnostic wording.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProviderFailureReason {
+    #[default]
+    Other,
+    Quota,
+}
+
+/// Classify a provider payload at its HTTP boundary, before it becomes diagnostic text.
+#[must_use]
+pub fn classify_provider_failure(body: &str) -> ProviderFailureReason {
+    let text = body.to_ascii_lowercase();
+    if ["usage_limit", "usage limit", "rate_limit", "rate limit"]
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        ProviderFailureReason::Quota
+    } else {
+        ProviderFailureReason::Other
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unknown catalog model: {provider}/{model}")]
@@ -310,6 +332,7 @@ pub enum Error {
         status: reqwest::StatusCode,
         message: String,
         retry_after: Option<std::time::Duration>,
+        reason: ProviderFailureReason,
     },
     #[error("HTTP request failed with retryable status {status}")]
     Retryable {

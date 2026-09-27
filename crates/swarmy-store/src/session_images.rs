@@ -13,7 +13,7 @@ impl Store {
         self.transaction(|trx| async move {
             match self.session(&trx, id).await {
                 Ok(session) => Ok(session.image),
-                Err(StoreError::SessionMissing) => Ok(None),
+                Err(StoreError::Domain(crate::DomainError::SessionMissing)) => Ok(None),
                 Err(error) => Err(error),
             }
         })
@@ -34,7 +34,7 @@ impl Store {
             .transaction(|trx| async move {
                 match self.session(&trx, id).await {
                     Ok(session) => Ok(session.image.map(|image| image.manifest_id)),
-                    Err(StoreError::SessionMissing) => Ok(None),
+                    Err(StoreError::Domain(crate::DomainError::SessionMissing)) => Ok(None),
                     Err(error) => Err(error),
                 }
             })
@@ -72,13 +72,13 @@ impl Store {
                     .map(|image| format!("{}:{}", image.name, image.tag.0)),
             );
         }
-        Ok(StoreError::ImageMissing {
+        Ok(StoreError::Domain(crate::DomainError::ImageMissing {
             image: image.into(),
             registered: if registered.is_empty() {
                 "(none)".into()
             } else {
                 registered.join(", ")
             },
-        })
+        }))
     }
 }

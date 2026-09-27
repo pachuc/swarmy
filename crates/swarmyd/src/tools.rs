@@ -226,7 +226,9 @@ async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResu
     loop {
         match store.complete_placed_tool(claim, head, result).await {
             Ok(()) => break,
-            Err(StoreError::StaleSequence { actual, .. }) => head = actual,
+            Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence { actual, .. })) => {
+                head = actual
+            }
             Err(error) => return Err(error.into()),
         }
     }

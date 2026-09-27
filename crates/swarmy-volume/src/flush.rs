@@ -151,7 +151,9 @@ impl VolumeWriter {
                         // The immutable id lets a retry recognize a publication
                         // whose commit acknowledgement was lost. Pause between
                         // retries so a flapping database is not hammered.
-                        Err(swarmy_store::StoreError::CommitUnknown) => {
+                        Err(swarmy_store::StoreError::Storage(
+                            swarmy_store::StorageError::CommitUnknown,
+                        )) => {
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                         result => {

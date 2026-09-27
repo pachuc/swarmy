@@ -19,7 +19,7 @@ impl Store {
             || header.size == 0
             || !header.size.is_multiple_of(u64::from(CHUNK_SIZE))
         {
-            return Err(StoreError::InvalidManifest);
+            return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
         }
         self.transaction(|trx| async move {
             let key = self.manifest_key(id);
@@ -27,7 +27,7 @@ impl Store {
                 return if &existing == header {
                     Ok(())
                 } else {
-                    Err(StoreError::ManifestExists)
+                    Err(StoreError::Domain(crate::DomainError::ManifestExists))
                 };
             }
             write(&trx, &key, header)
@@ -115,11 +115,13 @@ impl Store {
     ) -> Result<()> {
         let options = options.unwrap_or_default();
         if options.memory_mib == Some(0) {
-            return Err(StoreError::InvalidMemoryRequirement);
+            return Err(StoreError::Domain(
+                crate::DomainError::InvalidMemoryRequirement,
+            ));
         }
         let key = self.image_key(name, tag);
         if key.len() > 10_000 {
-            return Err(StoreError::TooLarge);
+            return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
         self.transaction(|trx| {
             let key = &key;
@@ -227,8 +229,9 @@ impl Store {
             }
             let mut images = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
-                let (name, tag): (String, String) =
-                    space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
+                let (name, tag): (String, String) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 images.push(ImageRecord {
                     name,
                     tag: ImageTag(tag),
@@ -253,7 +256,7 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<Lease> {
         if expires_at <= now {
-            return Err(StoreError::LeaseMismatch);
+            return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
         }
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
@@ -263,14 +266,14 @@ impl Store {
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at > now)
             {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             let seq_key = self.volume_lease_seq_key(id);
             let seq = read::<u64>(&trx, &seq_key)
                 .await?
                 .unwrap_or(0)
                 .checked_add(1)
-                .ok_or(StoreError::SequenceOverflow)?;
+                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
             let lease = Lease {
                 owner,
                 expires_at,
@@ -296,7 +299,7 @@ impl Store {
         self.transaction(|trx| async move {
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= now {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             volume.writer_lease = None;
             write(&trx, &self.volume_key(id), &volume)
@@ -321,7 +324,7 @@ impl Store {
                 || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
             {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             let lease = Lease {
                 expires_at,
@@ -378,7 +381,7 @@ impl Store {
                 .await?;
             let mut volume = self.volume(&trx, id).await?;
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
-                return Err(StoreError::LeaseMismatch);
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
             let parent_key = self.manifest_parent_key(next);
             if volume.head_manifest == next
@@ -391,19 +394,19 @@ impl Store {
                 return Ok(());
             }
             if volume.head_manifest != previous {
-                return Err(StoreError::VolumeHeadMismatch);
+                return Err(StoreError::Fence(crate::FenceError::VolumeHeadMismatch));
             }
             let old: ManifestHeader = read(&trx, &self.manifest_key(previous))
                 .await?
-                .ok_or(StoreError::ManifestMissing)?;
+                .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
             if header.size != old.size || header.chunk_size != old.chunk_size {
-                return Err(StoreError::InvalidManifest);
+                return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
             }
             if read::<ManifestHeader>(&trx, &self.manifest_key(next))
                 .await?
                 .is_some()
             {
-                return Err(StoreError::ManifestExists);
+                return Err(StoreError::Domain(crate::DomainError::ManifestExists));
             }
             write(&trx, &self.manifest_key(next), header)?;
             write(&trx, &parent_key, &previous)?;
@@ -443,8 +446,12 @@ impl Store {
             }
             let mut volumes = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
-                let (bytes,): (Vec<u8>,) = space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-                let bytes: [u8; 16] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+                let (bytes,): (Vec<u8>,) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let bytes: [u8; 16] = bytes
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                 volumes.push((
                     VolumeId::from_ulid(u128::from_be_bytes(bytes).into()),
                     swarmy_core::decode(&value)?,
@@ -527,10 +534,12 @@ impl Store {
                             live.insert(swarmy_core::decode::<ManifestId>(&value)?);
                         } else {
                             let volume: VolumeRecord = swarmy_core::decode(&value)?;
-                            let (bytes,): (Vec<u8>,) =
-                                space.unpack(&key).map_err(|_| StoreError::Corrupt)?;
-                            let bytes: [u8; 16] =
-                                bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+                            let (bytes,): (Vec<u8>,) = space
+                                .unpack(&key)
+                                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                            let bytes: [u8; 16] = bytes
+                                .try_into()
+                                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                             let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
                             live.extend(
                                 self.snapshots(
@@ -571,14 +580,18 @@ impl Store {
         while snapshots.len() < legacy_limit {
             let Some(parent) = read::<ManifestId>(
                 trx,
-                &self.manifest_parent_key(*snapshots.last().ok_or(StoreError::Corrupt)?),
+                &self.manifest_parent_key(
+                    *snapshots
+                        .last()
+                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?,
+                ),
             )
             .await?
             else {
                 break;
             };
             if snapshots.contains(&parent) {
-                return Err(StoreError::Corrupt);
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
             }
             snapshots.push(parent);
         }
@@ -596,14 +609,14 @@ impl Store {
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
         read::<ManifestHeader>(trx, &self.manifest_key(id))
             .await?
-            .ok_or(StoreError::ManifestMissing)?;
+            .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
         Ok(())
     }
 
     async fn volume(&self, trx: &Transaction, id: VolumeId) -> Result<VolumeRecord> {
         read(trx, &self.volume_key(id))
             .await?
-            .ok_or(StoreError::VolumeMissing)
+            .ok_or(StoreError::Domain(crate::DomainError::VolumeMissing))
     }
 
     async fn insert_volume(
@@ -616,7 +629,7 @@ impl Store {
             .await?;
         let key = self.volume_key(id);
         if read::<VolumeRecord>(trx, &key).await?.is_some() {
-            return Err(StoreError::VolumeExists);
+            return Err(StoreError::Domain(crate::DomainError::VolumeExists));
         }
         write(
             trx,
