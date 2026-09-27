@@ -20,6 +20,7 @@ struct FakeCloud {
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
+    policy_roles: RefCell<Vec<String>>,
     profile_creates: RefCell<Vec<String>>,
     profile_present: Cell<bool>,
     fail_profile_launch_once: Cell<bool>,
@@ -54,6 +55,8 @@ impl Cloud for FakeCloud {
             .node_credentials
             .clone()
             .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
+        // The AWS provider writes the bucket policy to this role even on reuse.
+        self.policy_roles.borrow_mut().push(role.clone());
         if !self.profile_present.replace(true) {
             self.role_creates.borrow_mut().push(role.clone());
             self.profile_creates.borrow_mut().push(role);
