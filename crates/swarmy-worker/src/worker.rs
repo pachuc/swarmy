@@ -106,7 +106,13 @@ impl Worker {
     }
 
     fn kill(&self, point: &str) {
-        if self.config.kill_point.as_deref() == Some(point) {
+        // Production leaves kill_point unset; the chaos harness opts in at runtime.
+        if self
+            .config
+            .kill_point
+            .as_deref()
+            .is_some_and(|configured| configured == point)
+        {
             tracing::warn!(point, "instrumented worker exit");
             std::process::exit(137);
         }
