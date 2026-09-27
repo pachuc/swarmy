@@ -290,7 +290,8 @@ cd /var/lib/swarmy-ci/runner
 sudo -u ci ./config.sh remove --token "$REMOVE_TOKEN"
 unset REMOVE_TOKEN
 sudo rm -f /etc/systemd/system/swarmy-ci-{runner.service,clean.service,clean.timer} \
-  /etc/sudoers.d/swarmy-ci /usr/local/sbin/swarmy-ci-root
+  /etc/sudoers.d/swarmy-ci /usr/local/sbin/swarmy-ci-root \
+  /etc/modules-load.d/swarmy-ci.conf /etc/modprobe.d/swarmy-ci.conf
 sudo systemctl daemon-reload
 sudo rm -rf /var/lib/swarmy-ci
 ```
