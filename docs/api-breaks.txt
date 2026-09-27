@@ -17,3 +17,6 @@ PATCH /v1/agents/{id} changes active placement error code from storage_error to 
 
 # 2026-09-27: Inference failure events append a typed failure_kind, while old stored events decode with unknown. Update event readers before writers.
 GET /v1/sessions/{id}/events adds inference_failed/failure_kind to response events
+
+# 2026-09-27: Store errors now report facts rather than CLI commands.
+DELETE /v1/sessions/{id} changes main_session_close error message to omit CLI advice
