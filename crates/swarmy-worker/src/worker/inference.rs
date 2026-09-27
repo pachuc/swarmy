@@ -6,31 +6,12 @@ pub(super) enum StepFailure<'a> {
 }
 
 /// A resolved route step and its metering identity.
-struct ResolvedAttempt {
+pub(super) struct ResolvedAttempt {
     provider: String,
     entry: Option<String>,
     route: Option<String>,
     route_step: u32,
     snapshot: swarmy_store::RouteSnapshot,
-}
-
-impl Worker {
-    pub(super) async fn route_snapshot(
-        &self,
-        session: &SessionRecord,
-    ) -> Result<swarmy_store::RouteSnapshot> {
-        Ok(self
-            .store
-            .route_snapshot(
-                session.agent_id,
-                session.route.as_deref(),
-                session.inference.provider.as_deref(),
-                self.config.default_route.as_deref(),
-                &self.config.provider,
-                Timestamp::now(),
-            )
-            .await?)
-    }
 }
 
 pub(super) fn warn_on_route_fallback(
@@ -116,7 +97,17 @@ impl Worker {
                 .await;
         }
         let selection = session.inference.resolve(&defaults);
-        let snapshot = self.route_snapshot(session).await?;
+        let snapshot = self
+            .store
+            .route_snapshot(
+                session.agent_id,
+                session.route.as_deref(),
+                session.inference.provider.as_deref(),
+                self.config.default_route.as_deref(),
+                &self.config.provider,
+                Timestamp::now(),
+            )
+            .await?;
         warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
         self.finish_prepare(
             session,
