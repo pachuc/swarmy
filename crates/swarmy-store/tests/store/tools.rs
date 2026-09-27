@@ -216,7 +216,9 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
     ));
     assert!(matches!(
         store.renew_writer_lease(volume, &writer, expiry()).await,
-        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
     ));
     check_stale_publication(store, volume, &writer, image).await;
     assert!(matches!(
@@ -303,9 +305,7 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         store
             .dispatch_tool_calls(id, 0, &replaced, &calls, &placement)
             .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     let stale = swarmy_core::PlacementRecord {
         epoch: placement.epoch + 1,

@@ -199,11 +199,13 @@ impl AuthStore for ClusterCredentials {
                         .ok_or(StoreError::Domain(
                             swarmy_store::DomainError::CredentialRefresh,
                         ))?;
-                    Ok(CredentialRecord {
-                        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
+                    let mut record = CredentialRecord {
+                        bookkeeping: current.bookkeeping.clone(),
                         kind,
                         updated_at: jiff::Timestamp::now(),
-                    })
+                    };
+                    record.migrate_bookkeeping();
+                    Ok(record)
                 },
             )
             .await
@@ -272,8 +274,10 @@ mod tests {
             return;
         };
         let credentials = store.credentials(Keyring::from_bytes([3; 32]));
+        let mut original = imported();
+        original.bookkeeping.label = Some("default".into());
         credentials
-            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &imported())
+            .put_entry(CredentialScope::Cluster, "chatgpt", "default", &original)
             .await
             .unwrap();
         let server = MockServer::start().await;
@@ -299,6 +303,17 @@ mod tests {
             };
             assert_eq!(store.load().await.unwrap().access_token(), "new-access");
         }
+        assert_eq!(
+            credentials
+                .get_entry(CredentialScope::Cluster, "chatgpt", "default")
+                .await
+                .unwrap()
+                .unwrap()
+                .bookkeeping
+                .label
+                .as_deref(),
+            Some("default")
+        );
         let ClientAuth::ChatGpt(provider_store) = first.resolve("chatgpt").await.unwrap().auth
         else {
             unreachable!()

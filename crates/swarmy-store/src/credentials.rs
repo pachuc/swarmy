@@ -839,6 +839,7 @@ impl CredentialStore {
                 ));
             }
         };
+        replacement.migrate_bookkeeping();
         let bytes = if replacement == current {
             observed.ciphertext.clone()
         } else {
