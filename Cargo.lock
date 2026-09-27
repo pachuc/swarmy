@@ -4201,6 +4201,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "crossterm",
  "fs2",
  "futures-util",
  "jiff",
@@ -4223,6 +4224,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "unicode-width",
  "url",
 ]
 
