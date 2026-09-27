@@ -32,6 +32,13 @@ impl ResponsesEndpoint {
         model: &ModelInfo,
         auth: ClientAuth,
     ) -> Result<Self, Error> {
+        // Azure shares the Responses wire protocol but needs its own endpoint
+        // derivation. Refuse it without the feature so slim builds fail with
+        // a clear error instead of reaching misconfigured URLs.
+        #[cfg(not(feature = "azure"))]
+        if provider.id == "azure" {
+            return Err(Error::NotCompiledIn(provider.id.clone()));
+        }
         let codex = model.api.unwrap_or(provider.api) == Api::OpenAiCodexResponses;
         if codex && !matches!(auth, ClientAuth::ChatGpt(_)) {
             return Err(Error::Credentials("ChatGPT requires a credential store"));

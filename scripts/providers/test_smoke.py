@@ -17,7 +17,7 @@ class SmokeTests(unittest.TestCase):
         models = next(ast.literal_eval(node.value) for node in tree.body
                       if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "models" for target in node.targets))
         for provider, model in models:
-            catalog = SCRIPT.parents[2] / "crates/swarmy-llm/catalog" / (provider + ".json")
+            catalog = SCRIPT.parents[2] / "crates/swarmy-catalog/catalog" / (provider + ".json")
             self.assertIn(model, json.loads(catalog.read_text())["models"], provider)
 
     def test_continues_after_failure_skips_absent_and_redacts(self):

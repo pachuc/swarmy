@@ -389,7 +389,7 @@ python3 -m unittest discover -s scripts/models -v
 
 The Python standard-library generator fetches models.dev and OpenRouter's live
 list, retains tool-capable models from the provider allowlist, applies protocol
-quirks, and writes `crates/swarmy-llm/catalog/<provider>.json`. OpenRouter uses its
+quirks, and writes `crates/swarmy-catalog/catalog/<provider>.json`. OpenRouter uses its
 live list; Azure also inherits OpenAI model metadata. The checked-in
 `scripts/models/overrides.json` drops Gemini 2.5 models from Google catalogs
 because new keys cannot use them and prices Azure's Grok 4.6 at its published

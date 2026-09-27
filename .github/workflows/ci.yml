@@ -67,6 +67,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Lint the provisioning client
         run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
+      # The cloud provider gates must not rot: this build refuses Bedrock,
+      # Gemini, and Azure with a clear error instead of failing to compile.
+      - name: Test the inference clients without cloud features
+        run: cargo test --locked -p swarmy-llm --no-default-features
       - name: Run the reduced failure-injection test
         run: scripts/chaos-ci.sh
       - name: Stop development services

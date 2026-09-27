@@ -57,15 +57,18 @@ pub enum ClientAuth {
 /// Construct a client for the catalog's selected wire protocol.
 ///
 /// # Errors
-/// Returns `Unsupported` for protocols awaiting implementation, or a credential
-/// or HTTP configuration error when constructing a client.
+/// Returns `Unsupported` for protocols awaiting implementation,
+/// `NotCompiledIn` when the build disabled the matching provider feature, or
+/// a credential or HTTP configuration error when constructing a client.
 pub fn client_for(
     provider: &ProviderInfo,
     model: &ModelInfo,
     auth: ClientAuth,
 ) -> Result<Arc<dyn Provider>, Error> {
     let api = model.api.unwrap_or(provider.api);
-    // Each protocol implementation owns its dispatch arm.
+    // Each protocol implementation owns its dispatch arm. Arms behind Cargo
+    // features stay exhaustive when the feature is off and refuse with a
+    // clear error instead of failing to compile.
     match api {
         Api::AnthropicMessages => api::anthropic::client_for(provider, model, auth),
         Api::OpenAiResponses | Api::OpenAiCodexResponses => {
@@ -79,13 +82,21 @@ pub fn client_for(
         Api::OpenAiCompletions => Ok(Arc::new(api::completions::CompletionsProvider::new(
             provider, model, auth,
         )?)),
+        #[cfg(feature = "gemini")]
         Api::GoogleGenerativeAi | Api::GoogleVertex => {
             api::gemini::client_for(provider, model, auth)
         }
+        #[cfg(not(feature = "gemini"))]
+        Api::GoogleGenerativeAi | Api::GoogleVertex => {
+            Err(Error::NotCompiledIn(format!("{api:?}")))
+        }
+        #[cfg(feature = "bedrock")]
         Api::BedrockConverse => Ok(Arc::new(api::bedrock::BedrockProvider::new(
             model.clone(),
             auth,
         )?)),
+        #[cfg(not(feature = "bedrock"))]
+        Api::BedrockConverse => Err(Error::NotCompiledIn(format!("{api:?}"))),
         Api::Fake => match auth {
             ClientAuth::Scripted(client) => Ok(client),
             _ => Err(Error::Unsupported(Api::Fake)),
@@ -242,6 +253,10 @@ pub enum Error {
     UnknownModel { provider: String, model: String },
     #[error("unsupported provider API: {0:?}")]
     Unsupported(Api),
+    #[error(
+        "{0} support was not compiled into this build; rebuild with the matching swarmy-llm feature"
+    )]
+    NotCompiledIn(String),
     #[error("credential I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid JSON: {0}")]
@@ -299,9 +314,36 @@ mod job_tests {
         ));
         for provider in catalog.providers() {
             let model = provider.models.values().next().unwrap_or(model);
+            let api = model.api.unwrap_or(provider.api);
+            // Builds without a cloud feature refuse that provider with
+            // NotCompiledIn instead of reaching the credential check.
+            #[cfg(not(feature = "bedrock"))]
+            if matches!(api, Api::BedrockConverse) {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
+            #[cfg(not(feature = "gemini"))]
+            if matches!(api, Api::GoogleGenerativeAi | Api::GoogleVertex) {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
+            #[cfg(not(feature = "azure"))]
+            if provider.id == "azure" {
+                assert!(matches!(
+                    client_for(provider, model, ClientAuth::None),
+                    Err(Error::NotCompiledIn(_))
+                ));
+                continue;
+            }
             // Implemented protocols reject missing credentials before building a client.
             if matches!(
-                model.api.unwrap_or(provider.api),
+                api,
                 Api::AnthropicMessages
                     | Api::BedrockConverse
                     | Api::OpenAiCompletions
@@ -330,6 +372,44 @@ mod job_tests {
         assert!(matches!(
             client_for(router, claude, ClientAuth::None),
             Err(Error::Credentials(_))
+        ));
+    }
+
+    // Each gated provider reports NotCompiledIn when its feature is off, so a
+    // slim build fails with a clear error instead of a compile failure.
+    #[test]
+    #[cfg(not(feature = "bedrock"))]
+    fn bedrock_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("amazon-bedrock").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "gemini"))]
+    fn gemini_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("google").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "azure"))]
+    fn azure_without_feature_reports_not_compiled_in() {
+        let catalog = catalog::Catalog::get();
+        let provider = catalog.provider("azure").unwrap();
+        let model = provider.models.values().next().unwrap();
+        assert!(matches!(
+            client_for(provider, model, ClientAuth::None),
+            Err(Error::NotCompiledIn(_))
         ));
     }
 

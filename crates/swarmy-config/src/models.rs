@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use swarmy_core::ReasoningEffort;
-use swarmy_llm::catalog::{
+use swarmy_catalog::{
     Api, Catalog, Compat, Cost, Limit, ModelInfo, ProviderInfo, ReasoningOptions,
 };
+use swarmy_core::ReasoningEffort;
 
 use crate::{Error, Settings};
 

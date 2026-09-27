@@ -77,6 +77,9 @@ check:
 	# The workspace test and clippy leave the opt-in `remote` feature off;
 	# build the provisioning client once and test and lint it with it on.
 	$(CARGO) test --locked -p swarmy-cli --features remote
+	# The cloud provider gates must not rot: this build refuses Bedrock,
+	# Gemini, and Azure with a clear error instead of failing to compile.
+	$(CARGO) test --locked -p swarmy-llm --no-default-features
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 
