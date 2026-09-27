@@ -76,6 +76,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn response_fixtures_have_stable_frames_at_every_chunk_size() {
+        for (fixture, count) in [
+            (include_str!("../tests/fixtures/text.sse"), 5),
+            (include_str!("../tests/fixtures/function.sse"), 5),
+            (include_str!("../tests/fixtures/reasoning.sse"), 3),
+            (include_str!("../tests/fixtures/error.sse"), 1),
+        ] {
+            for width in [1, 2, 7, 31, fixture.len()] {
+                let mut parser = SseParser::default();
+                let mut events = Vec::new();
+                for chunk in fixture.as_bytes().chunks(width) {
+                    for &byte in chunk {
+                        if let Some(Frame::Data(data)) = parser.push_byte(byte).unwrap() {
+                            events
+                                .push(serde_json::from_slice::<serde_json::Value>(&data).unwrap());
+                        }
+                    }
+                }
+                assert_eq!(events.len(), count);
+            }
+        }
+    }
+
+    #[test]
     fn frames_split_utf8_crlf_multiline_and_comments() {
         let mut parser = SseParser::default();
         let mut frames = Vec::new();

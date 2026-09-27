@@ -476,8 +476,16 @@ impl ResponsesStream {
             "response.completed" | "response.incomplete" => {
                 self.complete_event(event, deltas)?;
             }
-            "response.failed" => return Err(provider_error(&event["response"]["error"])),
-            "error" => return Err(provider_error(event.get("error").unwrap_or(event))),
+            "response.failed" => {
+                return Err(crate::error::response_event_error(
+                    &event["response"]["error"],
+                ));
+            }
+            "error" => {
+                return Err(crate::error::response_event_error(
+                    event.get("error").unwrap_or(event),
+                ));
+            }
             _ => (),
         }
         Ok(())
@@ -489,7 +497,7 @@ impl ResponsesStream {
             return Err(Error::Protocol("missing completed response".into()));
         }
         if response["status"] == "failed" {
-            return Err(provider_error(&response["error"]));
+            return Err(crate::error::response_event_error(&response["error"]));
         }
         // The Codex backend sends an empty output array in the terminal
         // event; the items already collected from output_item.done are
@@ -566,22 +574,6 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     value[key]
         .as_str()
         .ok_or_else(|| Error::Protocol(format!("missing string field {key}")))
-}
-
-fn provider_error(value: &Value) -> Error {
-    let message = format!(
-        "provider error ({}): {}",
-        value["code"]
-            .as_str()
-            .or_else(|| value["type"].as_str())
-            .unwrap_or("unknown"),
-        value["message"].as_str().unwrap_or("request failed")
-    );
-    if is_context_overflow(&message) {
-        Error::ContextOverflow(message)
-    } else {
-        Error::Protocol(message)
-    }
 }
 
 /// Vendor error codes and phrases used for context-window failures.

@@ -34,7 +34,7 @@ pub struct BedrockProvider {
 impl BedrockProvider {
     /// `Ambient` uses the AWS default credential chain. `Bearer` supplies an
     /// explicit token, and `ApiKeyWithExtra` carries a bearer token as the key
-    /// alongside the credential record's `extra` map, such as `region`.
+    /// alongside typed Bedrock region metadata.
     ///
     /// # Errors
     /// Returns an error for an incompatible credential kind.

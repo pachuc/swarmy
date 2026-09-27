@@ -26,3 +26,19 @@ pub fn message_error(message: String) -> Error {
         Error::Protocol(message)
     }
 }
+
+pub(crate) fn response_event_error(value: &Value) -> Error {
+    let message = format!(
+        "provider error ({}): {}",
+        value["code"]
+            .as_str()
+            .or_else(|| value["type"].as_str())
+            .unwrap_or("unknown"),
+        value["message"].as_str().unwrap_or("request failed")
+    );
+    if crate::responses::is_context_overflow(&message) {
+        Error::ContextOverflow(message)
+    } else {
+        Error::Protocol(message)
+    }
+}
