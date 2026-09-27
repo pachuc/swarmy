@@ -107,13 +107,16 @@ pub struct ExpandedChain {
     pub skipped: Vec<String>,
 }
 
+type BreakerKey = (String, Option<String>);
+type BreakerState = (Option<Timestamp>, Option<String>);
+
 /// Per-scheduler-tick cache. Route edits and breaker transitions are observed
 /// on the next tick, while identical sessions share pool and breaker reads.
 #[derive(Default)]
 pub struct RouteCache {
     routes: HashMap<String, Option<RouteRecord>>,
     pools: HashMap<String, Vec<PoolEntry>>,
-    breakers: HashMap<(String, Option<String>), (Option<Timestamp>, Option<String>)>,
+    breakers: HashMap<BreakerKey, BreakerState>,
 }
 
 // Keep route and provider precedence identical for transactional worker reads

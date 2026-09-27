@@ -287,9 +287,9 @@ fn single_hour_range(
     from_hour: i64,
     to_hour: i64,
 ) -> (Vec<u8>, Vec<u8>) {
-    let begin = crate::keys::Keys::new(&root).metering_hour(&(dimension, from_hour));
+    let begin = crate::keys::Keys::new(root).metering_hour(&(dimension, from_hour));
     let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
-    let end = crate::keys::Keys::new(&root).metering_hour(&(dimension, end_hour));
+    let end = crate::keys::Keys::new(root).metering_hour(&(dimension, end_hour));
     (begin, end)
 }
 
@@ -303,13 +303,13 @@ fn owner_hour_range(
     hours: Option<(i64, i64)>,
 ) -> (Vec<u8>, Vec<u8>) {
     let Some((from_hour, to_hour)) = hours else {
-        return crate::keys::Keys::new(&root)
+        return crate::keys::Keys::new(root)
             .metering_hour_space(&(dimension, owner))
             .range();
     };
-    let begin = crate::keys::Keys::new(&root).metering_hour(&(dimension, owner, from_hour));
+    let begin = crate::keys::Keys::new(root).metering_hour(&(dimension, owner, from_hour));
     let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
-    let end = crate::keys::Keys::new(&root).metering_hour(&(dimension, owner, end_hour));
+    let end = crate::keys::Keys::new(root).metering_hour(&(dimension, owner, end_hour));
     (begin, end)
 }
 
