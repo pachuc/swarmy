@@ -159,6 +159,23 @@ fn usable_labels(pool: &[PoolEntry]) -> Vec<String> {
 }
 
 impl RouteSnapshot {
+    /// An unrouted ephemeral first attempt leaves credential selection to the
+    /// gateway pool and does not need a route transaction.
+    #[must_use]
+    pub fn implicit_single(provider: String, model: String) -> Self {
+        Self {
+            name: None,
+            steps: vec![RouteStepStatus {
+                provider,
+                label: None,
+                model: Some(model),
+                open_until: None,
+                reason: None,
+            }],
+            skipped: Vec::new(),
+        }
+    }
+
     /// First usable step at or after the session's attempt position, wrapping
     /// to the first usable step from the start when every later step is open.
     /// A recovered earlier step serves the next attempt instead of parking

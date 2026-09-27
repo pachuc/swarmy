@@ -63,18 +63,11 @@ impl HeldLease {
 }
 
 struct HeldLeaseGuard<'a>(tokio::sync::MutexGuard<'a, Option<Lease>>);
-impl std::ops::Deref for HeldLeaseGuard<'_> {
-    type Target = Option<Lease>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl std::ops::DerefMut for HeldLeaseGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 impl HeldLeaseGuard<'_> {
+    fn as_ref(&self) -> Option<&Lease> {
+        self.0.as_ref()
+    }
+
     fn release(&mut self) {
         self.0.take();
     }

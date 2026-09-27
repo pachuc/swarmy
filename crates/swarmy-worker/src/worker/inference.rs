@@ -98,18 +98,26 @@ impl Worker {
                 .await;
         }
         let selection = session.inference.resolve(&defaults);
-        let snapshot = self
-            .store
-            .route_snapshot(
-                session.agent_id,
-                session.route.as_deref(),
-                session.inference.provider.as_deref(),
-                self.config.default_route.as_deref(),
-                &self.config.provider,
-                Timestamp::now(),
+        let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
+            let snapshot = self
+                .store
+                .route_snapshot(
+                    session.agent_id,
+                    session.route.as_deref(),
+                    session.inference.provider.as_deref(),
+                    self.config.default_route.as_deref(),
+                    &self.config.provider,
+                    Timestamp::now(),
+                )
+                .await?;
+            warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
+            snapshot
+        } else {
+            swarmy_store::RouteSnapshot::implicit_single(
+                selection.provider.clone(),
+                selection.model.clone(),
             )
-            .await?;
-        warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
+        };
         self.finish_prepare(
             session,
             request,
