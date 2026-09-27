@@ -455,7 +455,7 @@ impl Store {
         crate::check_limit(limit)?;
         let values = self
             .transaction(|trx| async move {
-                let space = crate::keys::Keys::new(&self.root).inflight_space(&());
+                let space = crate::keys::Keys::new(&self.root).inflight_space();
                 let mut begin = space.range().0;
                 if let Some(id) = after {
                     begin = crate::keys::Keys::new(&self.root).inflight(id);

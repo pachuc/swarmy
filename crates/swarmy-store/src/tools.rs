@@ -6,8 +6,7 @@ type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
     pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
-        crate::keys::Keys::new(&self.root)
-            .session_tools_space(&(id.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).session_tools_space(id)
     }
 
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
@@ -182,9 +181,7 @@ impl Store {
     ) -> Result<Vec<ToolJob>> {
         let values = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .tool_job_space(&())
-                    .range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root).tool_job_space().range();
                 if let Some(id) = after {
                     begin = crate::keys::Keys::new(&self.root).tool_job(id);
                     begin.push(0);

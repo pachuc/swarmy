@@ -116,7 +116,7 @@ impl Store {
     /// dropped at upgrade; a stale one only costs one probe.
     pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
         crate::keys::Keys::new(&self.root)
-            .inference_breaker(&(key.provider.as_str(), key.label.as_deref().unwrap_or("")))
+            .inference_breaker(key.provider.as_str(), key.label.as_deref().unwrap_or(""))
     }
 
     pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
@@ -124,10 +124,7 @@ impl Store {
     }
 
     pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait_due(&(
-            (at.as_second(), at.subsec_nanosecond()),
-            id.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).inference_wait_due(at, id)
     }
 
     /// Grant one entry probe after the open period, or return the next eligible time.
@@ -388,9 +385,9 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scan_due_inference_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
-        let space = crate::keys::Keys::new(&self.root).inference_wait_due_space(&());
+        let space = crate::keys::Keys::new(&self.root).inference_wait_due_space_root();
         let end = crate::keys::Keys::new(&self.root)
-            .inference_wait_due_space(&((now.as_second(), now.subsec_nanosecond()),))
+            .inference_wait_due_space(now)
             .range()
             .1;
         self.transaction(|trx| {

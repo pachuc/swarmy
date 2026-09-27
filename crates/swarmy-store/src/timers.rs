@@ -11,41 +11,28 @@ use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read, scan, write};
 
 impl Store {
     fn timer_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer(&(
-            agent.as_ulid().to_bytes().as_slice(),
-            timer.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).timer(agent, timer)
     }
 
     fn active_timers(&self, agent: AgentId) -> Subspace {
-        crate::keys::Keys::new(&self.root)
-            .timer_active_space(&(agent.as_ulid().to_bytes().as_slice()))
+        crate::keys::Keys::new(&self.root).timer_active_space(agent)
     }
 
     fn timer_due_key(&self, timer: &TimerRecord) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer_due(&(
-            timer.due_at.as_millisecond(),
-            timer.agent_id.as_ulid().to_bytes().as_slice(),
-            timer.timer_id.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).timer_due(timer.due_at, timer.agent_id, timer.timer_id)
     }
 
     /// The session whose worker set the timer. Timers stay agent-scoped so a
     /// summarized or closed origin cannot strand a note, but delivery prefers
     /// this idle session over the main conversation.
     fn timer_origin_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer_origin(&(
-            agent.as_ulid().to_bytes().as_slice(),
-            timer.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).timer_origin(agent, timer)
     }
 
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
         write(trx, &self.timer_key(timer.agent_id, timer.timer_id), timer)?;
-        let active = crate::keys::Keys::new(&self.root).timer_active(&(
-            timer.agent_id.as_ulid().to_bytes().as_slice(),
-            timer.timer_id.as_ulid().to_bytes().as_slice(),
-        ));
+        let active =
+            crate::keys::Keys::new(&self.root).timer_active(timer.agent_id, timer.timer_id);
         if timer.status == TimerStatus::Pending {
             write(trx, &active, timer)?;
             write(trx, &self.timer_due_key(timer), timer)?;
@@ -217,14 +204,14 @@ impl Store {
         now: Timestamp,
         after: Option<&TimerRecord>,
     ) -> Result<Vec<TimerRecord>> {
-        let space = crate::keys::Keys::new(&self.root).timer_due_space(&());
+        let space = crate::keys::Keys::new(&self.root).timer_due_space_root();
         let (mut begin, _) = space.range();
         if let Some(after) = after {
             begin = self.timer_due_key(after);
             begin.push(0);
         }
         let end = crate::keys::Keys::new(&self.root)
-            .timer_due_space(&(now.as_millisecond(),))
+            .timer_due_space(now)
             .range()
             .1;
         self.transaction(|trx| {

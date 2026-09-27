@@ -1403,26 +1403,15 @@ fn assemble_turn(
 
 impl Store {
     fn turn_summary_key(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_metrics(&(
-            session.as_ulid().to_bytes().as_slice(),
-            turn.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).turn_metrics(session, turn)
     }
 
     fn turn_inference_key(&self, session: SessionId, turn: MessageId, request_id: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_inference(&(
-            session.as_ulid().to_bytes().as_slice(),
-            turn.as_ulid().to_bytes().as_slice(),
-            request_id.as_bytes(),
-        ))
+        crate::keys::Keys::new(&self.root).turn_inference(session, turn, request_id)
     }
 
     fn turn_tool_key(&self, session: SessionId, turn: MessageId, call_id: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_tool(&(
-            session.as_ulid().to_bytes().as_slice(),
-            turn.as_ulid().to_bytes().as_slice(),
-            call_id.as_bytes(),
-        ))
+        crate::keys::Keys::new(&self.root).turn_tool(session, turn, call_id)
     }
 
     /// Merge one independent observation after its boundary has completed.
@@ -1672,16 +1661,10 @@ impl Store {
         turn: MessageId,
     ) -> Result<(Vec<StoredTurnInferenceV2>, Vec<StoredToolMetricV2>)> {
         let (inference_begin, inference_end) = crate::keys::Keys::new(&self.root)
-            .turn_inference_space(&(
-                session.as_ulid().to_bytes().as_slice(),
-                turn.as_ulid().to_bytes().as_slice(),
-            ))
+            .turn_inference_space(session, turn)
             .range();
         let (tool_begin, tool_end) = crate::keys::Keys::new(&self.root)
-            .turn_tool_space(&(
-                session.as_ulid().to_bytes().as_slice(),
-                turn.as_ulid().to_bytes().as_slice(),
-            ))
+            .turn_tool_space(session, turn)
             .range();
         let mut inference = Vec::new();
         let mut after: Option<Vec<u8>> = None;
@@ -1812,13 +1795,10 @@ impl Store {
         let raw = self
             .transaction(|trx| async move {
                 let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
+                    .turn_metrics_space(session)
                     .range();
                 if let Some(turn) = after {
-                    begin = crate::keys::Keys::new(&self.root).turn_metrics(&(
-                        session.as_ulid().to_bytes().as_slice(),
-                        turn.as_ulid().to_bytes().as_slice(),
-                    ));
+                    begin = crate::keys::Keys::new(&self.root).turn_metrics(session, turn);
                     begin.push(0);
                 }
                 scan(&trx, (begin, end), limit).await
@@ -1867,21 +1847,18 @@ impl Store {
     ) -> Result<Vec<StoredTurnSummaryV2>> {
         let mut summaries = Vec::new();
         let mut end = crate::keys::Keys::new(&self.root)
-            .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
+            .turn_metrics_space(session)
             .range()
             .1;
         let begin = match since {
             Some(turn) => {
-                let mut key = crate::keys::Keys::new(&self.root).turn_metrics(&(
-                    session.as_ulid().to_bytes().as_slice(),
-                    turn.as_ulid().to_bytes().as_slice(),
-                ));
+                let mut key = crate::keys::Keys::new(&self.root).turn_metrics(session, turn);
                 key.push(0);
                 key
             }
             None => {
                 crate::keys::Keys::new(&self.root)
-                    .turn_metrics_space(&(session.as_ulid().to_bytes().as_slice()))
+                    .turn_metrics_space(session)
                     .range()
                     .0
             }

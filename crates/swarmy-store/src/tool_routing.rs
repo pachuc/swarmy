@@ -268,10 +268,8 @@ impl Store {
         }
         // Retain each observed epoch's explanation, even after later snapshots or
         // placement changes. Sessions have independent delivery cursors.
-        let key = crate::keys::Keys::new(&self.root).computer_notice(&(
-            placement.agent_id.as_ulid().to_bytes().as_slice(),
-            placement.epoch,
-        ));
+        let key =
+            crate::keys::Keys::new(&self.root).computer_notice(placement.agent_id, placement.epoch);
         let message = if let Some(message) = read::<Message>(trx, &key).await? {
             message
         } else {
@@ -315,7 +313,7 @@ impl Store {
         // session present at delivery receives the same epoch atomically. Include
         // the caller for legacy sessions created before the index existed.
         let (mut begin, end) = crate::keys::Keys::new(&self.root)
-            .session_by_agent_space(&(placement.agent_id.as_ulid().to_bytes().as_slice(),))
+            .session_by_agent_space(placement.agent_id)
             .range();
         self.append_computer_notice(trx, id, placement.epoch, &message)
             .await?;
@@ -342,8 +340,7 @@ impl Store {
         epoch: u64,
         message: &Message,
     ) -> Result<()> {
-        let delivered = crate::keys::Keys::new(&self.root)
-            .computer_notice_delivered(&(id.as_ulid().to_bytes().as_slice(), epoch));
+        let delivered = crate::keys::Keys::new(&self.root).computer_notice_delivered(id, epoch);
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
             session.head_seq = session

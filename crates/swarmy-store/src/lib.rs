@@ -547,8 +547,7 @@ impl Store {
     }
 
     fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
-            .session_chunk(&(id.as_ulid().to_bytes().as_slice(), index))
+        crate::keys::Keys::new(&self.root).session_chunk(id, index)
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
@@ -638,7 +637,7 @@ impl Store {
             return Err(StoreError::TooLarge);
         }
         let (begin, end) = crate::keys::Keys::new(&self.root)
-            .session_chunk_space(&(session.session_id.as_ulid().to_bytes().as_slice(),))
+            .session_chunk_space(session.session_id)
             .range();
         trx.clear_range(&begin, &end);
         if bytes.len() > INLINE_LIMIT {
@@ -687,9 +686,8 @@ impl Store {
         loop {
             let page: Vec<(SessionId, bool)> = self
                 .transaction(|trx| async move {
-                    let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                        .session_space(&())
-                        .range();
+                    let (mut begin, end) =
+                        crate::keys::Keys::new(&self.root).session_space().range();
                     if let Some(id) = after {
                         begin = self.session_key(id);
                         begin.push(0);
@@ -844,9 +842,7 @@ impl Store {
         check_limit(limit)?;
         let stored = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .session_space(&())
-                    .range();
+                let (mut begin, end) = crate::keys::Keys::new(&self.root).session_space().range();
                 if let Some(id) = after {
                     begin = self.session_key(id);
                     begin.push(0);
@@ -945,7 +941,7 @@ impl Store {
         if value.len() > MAX_BATCH_BYTES {
             return Err(StoreError::TooLarge);
         }
-        let replay_key = crate::keys::Keys::new(&self.root).api_append(&(key));
+        let replay_key = crate::keys::Keys::new(&self.root).api_append(key);
         self.transaction(|trx| {
             let replay_key = &replay_key;
             let value = &value;
@@ -1091,7 +1087,7 @@ impl Store {
     }
 
     fn snapshot_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).snapshot(&(id.as_ulid().to_bytes().as_slice(), seq))
+        crate::keys::Keys::new(&self.root).snapshot(id, seq)
     }
 
     /// # Errors

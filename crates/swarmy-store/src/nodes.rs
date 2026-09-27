@@ -44,7 +44,7 @@ impl Store {
     ) -> Result<(Vec<NodeRecord>, Option<NodeId>)> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = crate::keys::Keys::new(&self.root).node_space(&()).range();
+            let (mut begin, end) = crate::keys::Keys::new(&self.root).node_space().range();
             if let Some(id) = after {
                 begin = self.node_key(id);
                 begin.push(0);

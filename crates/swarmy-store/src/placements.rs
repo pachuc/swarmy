@@ -156,10 +156,7 @@ impl Store {
     }
 
     fn placement_node_key(&self, node: NodeId, agent: AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).placement_by_node(&(
-            node.as_ulid().to_bytes().as_slice(),
-            agent.as_ulid().to_bytes().as_slice(),
-        ))
+        crate::keys::Keys::new(&self.root).placement_by_node(node, agent)
     }
 
     fn placement_count_key(&self, node: NodeId) -> Vec<u8> {
@@ -210,7 +207,7 @@ impl Store {
         exclude: AgentId,
     ) -> Result<u64> {
         let (start, end) = crate::keys::Keys::new(&self.root)
-            .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
+            .placement_by_node_space(node)
             .range();
         let mut begin = start;
         let mut total: u64 = 0;
@@ -533,7 +530,7 @@ impl Store {
         check_limit(limit)?;
         self.transaction(|trx| async move {
             let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                .placement_by_node_space(&(node.as_ulid().to_bytes().as_slice()))
+                .placement_by_node_space(node)
                 .range();
             if let Some(agent) = after {
                 begin = self.placement_node_key(node, agent);

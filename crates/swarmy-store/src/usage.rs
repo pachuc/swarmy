@@ -127,8 +127,7 @@ impl Store {
         // Secondary index for bounded pruning, written in the same transaction.
         let hour = crate::metering::hour_floor(attribution.recorded_at.as_second());
         trx.set(
-            &crate::keys::Keys::new(&self.root)
-                .usage_record_by_time(&(hour, attribution.request.as_bytes().as_slice())),
+            &crate::keys::Keys::new(&self.root).usage_record_by_time(hour, attribution.request),
             &[],
         );
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {

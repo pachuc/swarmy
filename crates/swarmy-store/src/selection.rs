@@ -31,7 +31,7 @@ impl Store {
         self.transaction(|trx| async move {
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
+                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
                 record,
             )
         })
@@ -50,7 +50,7 @@ impl Store {
         self.transaction(|trx| async move {
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider_entry(&(provider, label)),
+                &crate::keys::Keys::new(&self.root).gateway_provider_entry(provider, label),
                 record,
             )
         })
@@ -67,7 +67,7 @@ impl Store {
         self.transaction(|trx| async move {
             read(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider_entry(&(provider, label)),
+                &crate::keys::Keys::new(&self.root).gateway_provider_entry(provider, label),
             )
             .await
         })
@@ -83,7 +83,7 @@ impl Store {
         self.transaction(|trx| async move {
             read(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
+                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
             )
             .await
         })
@@ -97,7 +97,7 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read::<GatewayProvider>(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(&(provider)),
+                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
             )
             .await?
             .is_some_and(|record| record.expires_at > self.now()))
