@@ -26,4 +26,3 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 swarmy-store = { workspace = true, features = ["test-support"] }
-
