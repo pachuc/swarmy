@@ -1876,6 +1876,60 @@ async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
     })).await;
 }
 
+async fn seed_no_head_history(f: &Fixture, id: SessionId) {
+    let call_id = ToolCallId("large".into());
+    f.store
+        .append_events(
+            id,
+            0,
+            &[
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::User,
+                        parts: vec![Part::Text {
+                            text: format!(
+                                "{}## Goal\nContinue{}",
+                                swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                                swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+                            ),
+                        }],
+                    },
+                },
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Assistant,
+                        parts: vec![Part::ToolCall {
+                            call_id: call_id.clone(),
+                            tool: "get_time".into(),
+                            input: serde_json::json!({}),
+                        }],
+                    },
+                },
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Tool,
+                        parts: vec![Part::ToolResult {
+                            call_id,
+                            result: ToolResult::Completed {
+                                output: "x".repeat(128 * 1024),
+                                title: String::new(),
+                                metadata: BTreeMap::new(),
+                            },
+                        }],
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn no_head_to_compact_omits_truncated_tool_attempt() {
     run(|f| {
@@ -1910,57 +1964,7 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            let call_id = ToolCallId("large".into());
-            f.store
-                .append_events(
-                    id,
-                    0,
-                    &[
-                        Event::MessageAppended {
-                            seq: 0,
-                            message: Message {
-                                id: MessageId::from_ulid(Ulid::generate()),
-                                role: MessageRole::User,
-                                parts: vec![Part::Text {
-                                    text: format!(
-                                        "{}## Goal\nContinue{}",
-                                        swarmy_harness::COMPACTION_SUMMARY_PREFIX,
-                                        swarmy_harness::COMPACTION_SUMMARY_SUFFIX
-                                    ),
-                                }],
-                            },
-                        },
-                        Event::MessageAppended {
-                            seq: 0,
-                            message: Message {
-                                id: MessageId::from_ulid(Ulid::generate()),
-                                role: MessageRole::Assistant,
-                                parts: vec![Part::ToolCall {
-                                    call_id: call_id.clone(),
-                                    tool: "get_time".into(),
-                                    input: serde_json::json!({}),
-                                }],
-                            },
-                        },
-                        Event::MessageAppended {
-                            seq: 0,
-                            message: Message {
-                                id: MessageId::from_ulid(Ulid::generate()),
-                                role: MessageRole::Tool,
-                                parts: vec![Part::ToolResult {
-                                    call_id,
-                                    result: ToolResult::Completed {
-                                        output: "x".repeat(128 * 1024),
-                                        title: String::new(),
-                                        metadata: BTreeMap::new(),
-                                    },
-                                }],
-                            },
-                        },
-                    ],
-                )
-                .await
-                .unwrap();
+            seed_no_head_history(f, id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);
