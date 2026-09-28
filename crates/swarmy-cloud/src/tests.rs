@@ -19,7 +19,10 @@ struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
     teardown: RefCell<Vec<String>>,
     absent: Cell<bool>,
+    absent_bucket: Cell<bool>,
     untagged: Cell<bool>,
+    untagged_profile: Cell<bool>,
+    untagged_role: Cell<bool>,
     tagged: RefCell<Vec<String>>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
@@ -116,7 +119,7 @@ impl Cloud for FakeCloud {
         std::future::ready(Ok(()))
     }
     fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
-        std::future::ready(Ok(if self.absent.get() {
+        std::future::ready(Ok(if self.absent.get() || self.absent_bucket.get() {
             Ownership::Absent
         } else if self.untagged.get() {
             Ownership::Unmanaged
@@ -129,14 +132,19 @@ impl Cloud for FakeCloud {
         _: &str,
         _: &str,
     ) -> impl Future<Output = Result<(Ownership, Ownership)>> {
-        let status = if self.absent.get() {
-            Ownership::Absent
-        } else if self.untagged.get() {
-            Ownership::Unmanaged
-        } else {
-            Ownership::Owned
+        let status = |untagged: bool| {
+            if self.absent.get() {
+                Ownership::Absent
+            } else if self.untagged.get() || untagged {
+                Ownership::Unmanaged
+            } else {
+                Ownership::Owned
+            }
         };
-        std::future::ready(Ok((status, status)))
+        std::future::ready(Ok((
+            status(self.untagged_profile.get()),
+            status(self.untagged_role.get()),
+        )))
     }
     fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         self.tagged.borrow_mut().push(format!("bucket {name}"));
@@ -1717,6 +1725,55 @@ async fn down_leaves_untagged_resources_and_removes_state() {
             .iter()
             .any(|call| call.starts_with("bucket ") || call.starts_with("role "))
     );
+}
+
+#[tokio::test]
+async fn down_keeps_mixed_ownership_iam_pairs() {
+    for untagged_profile in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::open(dir.path()).unwrap();
+        let cloud = FakeCloud::default();
+        observe_running(&cloud);
+        up::run(
+            &cloud,
+            &FakeHost::default(),
+            &state,
+            &RemoteSettings {
+                bucket: Some("test-bucket".into()),
+                ..settings()
+            },
+            up::NewNode {
+                name: "cleanup",
+                sandboxes: 0,
+            },
+            None.into(),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        let node = state.require("cleanup").unwrap();
+        cloud.untagged_profile.set(untagged_profile);
+        cloud.untagged_role.set(!untagged_profile);
+        // A missing bucket must not make a partially owned IAM pair deletable.
+        cloud.absent_bucket.set(true);
+        assert!(
+            down::confirm(&cloud, &state, &node, false, false, true)
+                .await
+                .is_ok()
+        );
+        cloud.observations.borrow_mut().push_back(None);
+        down::run(&cloud, &state, &node, Duration::ZERO, false)
+            .await
+            .unwrap();
+        assert!(
+            !cloud
+                .teardown
+                .borrow()
+                .iter()
+                .any(|call| call.starts_with("role "))
+        );
+        assert!(state.read("cleanup").unwrap().is_none());
+    }
 }
 
 #[tokio::test]

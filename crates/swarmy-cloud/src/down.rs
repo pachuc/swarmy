@@ -59,8 +59,10 @@ pub async fn confirm(
         !state.bucket_shared(&node.name, bucket)? && bucket_status == Ownership::Owned;
     let (profile, role_status) = cloud.role_ownership(&role, &node.name).await?;
     let iam_safe = bucket_owned || bucket_status == Ownership::Absent;
-    let profile_owned = iam_safe && profile == Ownership::Owned;
-    let role_owned = iam_safe && role_status == Ownership::Owned && profile != Ownership::Unmanaged;
+    let iam_owned =
+        iam_safe && profile != Ownership::Unmanaged && role_status != Ownership::Unmanaged;
+    let profile_owned = iam_owned && profile == Ownership::Owned;
+    let role_owned = iam_owned && role_status == Ownership::Owned;
     if !bucket_owned && !profile_owned && !role_owned {
         return Ok(());
     }
