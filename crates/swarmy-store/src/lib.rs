@@ -31,6 +31,7 @@ pub use services::{
 mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 pub mod metering;
+mod queued;
 pub mod quota;
 pub use metering::{DimensionTotal, MeteringDimension, UsageGroup, UsageGroupBy};
 pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
@@ -233,6 +234,8 @@ pub enum DomainError {
     SessionComputerExists,
     #[error("session not idle")]
     SessionNotIdle,
+    #[error("queued input arrived before the turn could finish")]
+    QueuedInputPending,
     #[error("unexpected session state")]
     UnexpectedSessionState,
     #[error("lease TTL must be greater than zero")]

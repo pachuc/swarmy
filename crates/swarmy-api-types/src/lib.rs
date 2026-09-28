@@ -434,6 +434,8 @@ pub struct CreateMessage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AppendMessage {
     pub idempotency_key: String,
+    #[serde(default)]
+    pub queue: bool,
     pub expected_head: u64,
     pub text: String,
 }

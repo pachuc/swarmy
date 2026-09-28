@@ -2863,6 +2863,9 @@
           "idempotency_key": {
             "type": "string"
           },
+          "queue": {
+            "type": "boolean"
+          },
           "text": {
             "type": "string"
           }

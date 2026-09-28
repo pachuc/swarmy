@@ -166,6 +166,7 @@ async fn measure(f: &BenchFixture, id: SessionId, via_api: bool, turn: usize) ->
             .post(format!("{}/v1/sessions/{id}/messages", f.base))
             .bearer_auth("bench-token")
             .json(&AppendMessage {
+                queue: false,
                 idempotency_key: format!("turn-{turn}"),
                 expected_head: head,
                 text: "swarmy bench turn no_tool".into(),
@@ -239,6 +240,7 @@ async fn drive_agent_turn(
         .post(format!("{}/v1/sessions/{session}/messages", fixture.base))
         .bearer_auth("bench-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: Ulid::generate().to_string(),
             expected_head: head,
             text: "swarmy bench turn no_tool".into(),

@@ -46,7 +46,7 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         if (root / 'interrupted').exists():
             count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
             (root / 'ls_count').write_text(str(count + 1))
-            state = 'idle' if count else 'sleeping'
+            state = 'runnable' if os.environ.get('PENDING_QUEUE') else ('idle' if count else 'sleeping')
         else:
             state = 'sleeping'
         state = os.environ.get('SESSION_STATE', state)
@@ -93,6 +93,9 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
             value = os.environ.get('FLEET_COST_MONTH', '0.2500')
         print(json.dumps({'total': {'cost_dollars': value}}))
     elif rest[:3] == ['session', 'interrupt', '01AAAA']:
+        if os.environ.get('IDLE_INTERRUPT'):
+            print('nothing to interrupt', file=sys.stderr)
+            sys.exit(1)
         (root / 'interrupted').write_text('yes')
     else:
         print('{}')
@@ -166,6 +169,26 @@ class FleetTests(unittest.TestCase):
         resume = self.call("resume", "EWR2HD", "Please address review")
         self.assertEqual(resume.returncode, 0, resume.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Please address review")
+        self.assertIn('--queue', self.calls()[-1])
+        interrupted = self.call("resume", "EWR2HD", "Stop and review", "--interrupt")
+        self.assertEqual(interrupted.returncode, 0, interrupted.stderr)
+        self.assertEqual((self.root / "followup").read_text(), "Stop and review")
+        self.assertTrue(any(call[-3:] == ["session", "interrupt", "01AAAA"] for call in self.calls()))
+        self.assertIn('--queue', self.calls()[-1])
+        idle = self.call("resume", "EWR2HD", "Idle follow-up", "--interrupt",
+                         env=dict(self.env, IDLE_INTERRUPT="1", SESSION_STATE="idle"))
+        self.assertEqual(idle.returncode, 0, idle.stderr)
+        self.assertEqual((self.root / "followup").read_text(), "Idle follow-up")
+        calls_before = len(self.calls())
+        pending = self.call("resume", "EWR2HD", "New urgent text", "--interrupt",
+                            env=dict(self.env, PENDING_QUEUE="1"))
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        self.assertIn("--queue", self.calls()[-1])
+        pending_calls = self.calls()[calls_before:]
+        interrupt_at = next(i for i, call in enumerate(pending_calls)
+                            if call[-3:] == ["session", "interrupt", "01AAAA"])
+        self.assertFalse(any(call[2:5] == ["session", "ls", "--json"]
+                             for call in pending_calls[interrupt_at + 1:]))
         open_env = dict(self.env, PR_STATE="OPEN")
         self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")

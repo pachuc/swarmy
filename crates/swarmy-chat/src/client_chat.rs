@@ -506,19 +506,24 @@ impl View {
                         self.entries.push(format!("  Result: {output}"));
                     }
                 }
+                if let Some(message) = record.get("message_queued").and_then(|v| v.get("message"))
+                    && let api::LogId::Session(session_id) = &event.log_id
+                {
+                    self.message(message, session_id, true);
+                }
                 if let Some(message) = record
                     .get("inference_completed")
                     .or_else(|| record.get("message_appended"))
                     .and_then(|v| v.get("message"))
                     && let api::LogId::Session(session_id) = &event.log_id
                 {
-                    self.message(message, session_id);
+                    self.message(message, session_id, false);
                 }
             }
             ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
-    fn message(&mut self, message: &serde_json::Value, session_id: &str) {
+    fn message(&mut self, message: &serde_json::Value, session_id: &str, queued: bool) {
         let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else {
             return;
         };
@@ -537,7 +542,10 @@ impl View {
             .collect::<String>();
         match role {
             Some("user") if self.users.insert(id.into()) => {
-                self.entries.push(format!("You: {text}"));
+                self.entries.push(format!(
+                    "You{}: {text}",
+                    if queued { " (queued)" } else { "" }
+                ));
             }
             Some("system") if self.systems.insert(id.into()) => {
                 self.entries
@@ -571,6 +579,18 @@ mod tests {
             state: "Runnable".into(),
             selection: "fake/test low".into(),
         }
+    }
+
+    #[test]
+    fn delivered_queued_input_has_a_transcript_marker_once() {
+        let mut view = view_busy();
+        let message = serde_json::json!({
+            "id": "queued-id", "role": "user",
+            "parts": [{"text": {"text": "push when ready"}}]
+        });
+        view.message(&message, "session", true);
+        view.message(&message, "session", false);
+        assert_eq!(view.entries, ["You (queued): push when ready"]);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

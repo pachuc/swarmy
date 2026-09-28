@@ -75,6 +75,11 @@ enum HumanEvent {
         #[serde(default)]
         failure_kind: FailureKind,
     },
+    MessageQueued {
+        seq: u64,
+        message: Message,
+        queued_at: jiff::Timestamp,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -160,6 +165,11 @@ enum BinaryEvent {
         retry_at: Option<jiff::Timestamp>,
         #[serde(default, with = "crate::trailing")]
         failure_kind: FailureKind,
+    },
+    MessageQueued {
+        seq: u64,
+        message: Message,
+        queued_at: jiff::Timestamp,
     },
 }
 
@@ -308,6 +318,15 @@ impl From<Event> for BinaryEvent {
     fn from(event: Event) -> Self {
         match event {
             Event::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
+            Event::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            } => Self::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            },
             Event::InferenceRequested {
                 seq,
                 request_id,
@@ -407,6 +426,15 @@ impl From<BinaryEvent> for Event {
     fn from(event: BinaryEvent) -> Self {
         match event {
             BinaryEvent::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
+            BinaryEvent::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            } => Self::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            },
             BinaryEvent::InferenceRequested {
                 seq,
                 request_id,
@@ -695,6 +723,26 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn queued_event_has_frozen_binary_layout() {
+        let event = Event::MessageQueued {
+            seq: 1,
+            message: Message {
+                id: crate::MessageId::from_ulid(ulid::Ulid::from_bytes([0; 16])),
+                role: crate::MessageRole::User,
+                parts: vec![],
+            },
+            queued_at: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let bytes = crate::encode(&event).unwrap();
+        let mut expected = vec![1, 10, 1, 26];
+        expected.extend_from_slice(b"00000000000000000000000000");
+        expected.extend_from_slice(&[1, 0, 20]);
+        expected.extend_from_slice(b"1970-01-01T00:00:00Z");
+        assert_eq!(bytes, expected);
+        assert_eq!(crate::decode::<Event>(&bytes).unwrap(), event);
     }
 
     #[test]

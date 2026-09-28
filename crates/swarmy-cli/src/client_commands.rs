@@ -15,6 +15,7 @@ pub async fn run(
     agent: Option<String>,
     new: bool,
     session: Option<ulid::Ulid>,
+    queue: bool,
     selection: SelectionArgs,
     json: bool,
 ) -> Result<()> {
@@ -31,7 +32,19 @@ pub async fn run(
     .await?;
     announce(&conversation, json);
     report_followed(&conversation, json);
-    conversation.send(prompt).await?;
+    let busy = conversation.session.state != api::SessionState::Idle;
+    conversation.send_with_queue(prompt, queue).await?;
+    if queue && busy {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"event":"message_queued","session_id":conversation.id})
+            );
+        } else {
+            eprintln!("Message queued for next step boundary.");
+        }
+        return Ok(());
+    }
     let result = conversation.until_idle(json, true, false).await;
     if json {
         match &result {

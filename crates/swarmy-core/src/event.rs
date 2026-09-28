@@ -83,6 +83,13 @@ pub enum Event {
         retry_at: Option<jiff::Timestamp>,
         failure_kind: FailureKind,
     },
+    /// Recorded at delivery with the original enqueue time; the following
+    /// `MessageAppended` is the user input seen by inference.
+    MessageQueued {
+        seq: u64,
+        message: Message,
+        queued_at: jiff::Timestamp,
+    },
 }
 
 impl Event {
@@ -96,7 +103,8 @@ impl Event {
             | Self::ToolCallCompleted { seq, .. }
             | Self::StateChanged { seq, .. }
             | Self::SnapshotWritten { seq, .. }
-            | Self::InferenceFailed { seq, .. } => *seq = value,
+            | Self::InferenceFailed { seq, .. }
+            | Self::MessageQueued { seq, .. } => *seq = value,
         }
     }
 
@@ -110,7 +118,8 @@ impl Event {
             | Self::ToolCallCompleted { seq, .. }
             | Self::StateChanged { seq, .. }
             | Self::SnapshotWritten { seq, .. }
-            | Self::InferenceFailed { seq, .. } => *seq,
+            | Self::InferenceFailed { seq, .. }
+            | Self::MessageQueued { seq, .. } => *seq,
         }
     }
 }

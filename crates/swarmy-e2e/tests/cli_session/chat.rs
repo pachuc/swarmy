@@ -311,6 +311,7 @@ async fn read_last_events(fixture: &Fixture, id: SessionId) -> Result<Vec<Event>
 fn event_name(event: &Event) -> &'static str {
     match event {
         Event::MessageAppended { .. } => "message_appended",
+        Event::MessageQueued { .. } => "message_queued",
         Event::ToolCallRequested { .. } => "tool_call_requested",
         Event::ToolCallCompleted { .. } => "tool_call_completed",
         Event::InferenceRequested { .. } => "inference_requested",

@@ -203,11 +203,21 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let work = worker.handle(&delivery);
     tokio::pin!(work);
     let mut expiries = BTreeSet::new();
+    let mut queued = false;
     timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 result = &mut work => { result.unwrap(); break; }
                 () = sleep(Duration::from_millis(50)) => {
+                    if !queued && calls.load(Ordering::SeqCst) > 0 {
+                        let message = Message {
+                            id: MessageId::from_ulid(Ulid::generate()),
+                            role: MessageRole::User,
+                            parts: vec![Part::Text { text: "Please push after the tool".into() }],
+                        };
+                        assert!(!store.queue_user_message_idempotent(id, &message, "during-tool").await.unwrap().2);
+                        queued = true;
+                    }
                     let now = Timestamp::now();
                     assert!(store.scan_expired_leases(now, None, 64).await.unwrap().is_empty(), "slow tool lost its lease");
                     for (_, lease) in store.scan_expired_leases(now.checked_add(Duration::from_secs(10)).unwrap(), None, 64).await.unwrap() {
@@ -218,7 +228,13 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
             }
         }
     }).await.unwrap();
+    assert!(queued, "tool never reached the queue point");
     assert!(expiries.len() >= 3, "lease was not renewed repeatedly");
+    assert_queued_tool_round(&store, id, &calls).await;
+    cleanup(&cluster, &url, &prefix).await;
+}
+
+async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUsize) {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -243,7 +259,54 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
         store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::WaitingInference
     );
-    cleanup(&cluster, &url, &prefix).await;
+    let request_id = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        })
+        .unwrap();
+    let job: swarmy_llm::InferenceJob = store
+        .get_inference_input(request_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let request = serde_json::to_string(&job.request).unwrap();
+    assert!(
+        request.contains("Please push after the tool"),
+        "queued input missing: {request}"
+    );
+    assert!(request.contains("done"), "tool result missing: {request}");
+    let folded = events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageAppended { seq, message } if message.role == MessageRole::Tool => {
+                Some(*seq)
+            }
+            _ => None,
+        })
+        .expect("tool reply was not folded");
+    let delivered = events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageAppended { seq, message } if message.role == MessageRole::User => {
+                Some(*seq)
+            }
+            _ => None,
+        })
+        .expect("queued input was not delivered");
+    assert!(
+        folded < delivered,
+        "tool reply must precede queued user input"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::MessageQueued { .. }))
+            .count(),
+        1
+    );
 }
 
 async fn cleanup(cluster: &str, url: &str, prefix: &str) {
