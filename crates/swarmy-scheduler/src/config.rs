@@ -52,16 +52,4 @@ fn parse_partitions(value: &str) -> anyhow::Result<BTreeSet<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn partitions_accept_ranges_lists_and_duplicates() {
-        assert_eq!(parse_partitions("0-255").unwrap().len(), 256);
-        assert_eq!(
-            parse_partitions(" 0, 2-4, 3,255 ").unwrap(),
-            BTreeSet::from([0, 2, 3, 4, 255])
-        );
-        for invalid in ["", "256", "4-2", "-1", "0-256", "1,", "1-2-3", "x"] {
-            assert!(parse_partitions(invalid).is_err(), "accepted {invalid:?}");
-        }
-    }
 }

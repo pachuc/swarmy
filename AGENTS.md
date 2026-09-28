@@ -198,8 +198,7 @@ agents, model selection flags.
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
-Every pull request must pass the following checks. Build the workspace before
-running its tests so end-to-end tests can find sibling binaries:
+CI runs the full per-pull-request list below. Workers run `cargo test --locked -p <each crate changed>` while iterating, then merge `origin/master` before the final check and run the complete list once with output saved to a file and attached to the pull request. Name the crates tested in the pull request. Before any command expected to take more than ten minutes, run `git add -A && git commit -m "WIP" && git push`. Build the workspace before running end-to-end tests so they can find sibling binaries:
 
 ```sh
 cargo fmt --all --check

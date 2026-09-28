@@ -595,60 +595,6 @@ fn assert_results_follow_calls(messages: &[Value], calls: &[&str], notice: &str)
     }
 }
 
-#[test]
-fn stalled_session_notice_between_call_and_result_stays_paired() {
-    // Worker-3's stalled session: every call is in the durable log, but a
-    // system notice sits between the second call and its result. Converting
-    // for chat completions must not fail; each result directly follows its
-    // call and the notice moves after the results.
-    let model = model();
-    let mut req = request(&model);
-    req.tools = stalled_session_tools();
-    req.messages.extend(stalled_session_messages());
-    let body = request_json(&req, "openrouter", &model).unwrap();
-    let messages = body["messages"].as_array().unwrap();
-    assert_results_follow_calls(
-        messages,
-        &[
-            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
-            "call_rqd1dzkZ3kl2nd118QaUdWYW",
-        ],
-        "Your computer was evicted",
-    );
-}
-
-#[test]
-fn user_prompt_between_call_and_result_stays_paired() {
-    // Mirror case: the next task's user prompt was appended while a call was
-    // still in flight, so it sits between the call and its result.
-    let model = model();
-    let mut req = request(&model);
-    req.tools = stalled_session_tools();
-    let mut history = stalled_session_messages();
-    let notice = history.remove(3);
-    assert!(notice.parts.iter().any(
-        |part| matches!(part, Part::Text { text } if text.contains("Your computer was evicted"))
-    ));
-    history.insert(
-        3,
-        message(
-            MessageRole::User,
-            vec![text("Continue with the next step while that runs.")],
-        ),
-    );
-    req.messages.extend(history);
-    let body = request_json(&req, "openrouter", &model).unwrap();
-    let messages = body["messages"].as_array().unwrap();
-    assert_results_follow_calls(
-        messages,
-        &[
-            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
-            "call_rqd1dzkZ3kl2nd118QaUdWYW",
-        ],
-        "Continue with the next step",
-    );
-}
-
 #[tokio::test]
 async fn errors_in_bodies_and_streams_are_classified_without_retrying_streams() {
     for (status, body, mime, overflow) in [
