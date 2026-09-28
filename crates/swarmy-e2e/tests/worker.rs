@@ -1688,6 +1688,39 @@ async fn check_overflow_recovery(second_overflow: bool) {
 }
 
 #[tokio::test]
+async fn clean_tool_completion_reenables_overflow_recovery() {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nFinish the work";
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {
+                "1": side_response(summary.into(), 20),
+                "2": side_tool_response("clock-after-retry", 20, false),
+                "4": side_response(summary.into(), 20),
+                "5": side_response("Recovered again".into(), 20)
+            },
+            "failures": {
+                "0": {"status": 400, "message": "context overflow"},
+                "3": {"status": 400, "message": "context overflow after tool"}
+            }
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("clean-reset", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let first = wait_successor(f, id).await;
+        let second = wait_successor(f, first).await;
+        let events = f.idle(second).await;
+        assert_eq!(f.calls(), 6, "a clean tool reply resets the recovery guard");
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
+    })).await;
+}
+
+#[tokio::test]
 async fn new_user_turn_reenables_overflow_recovery() {
     run(|f| Box::pin(async move {
         let summary = "## Goal\nKeep working";
