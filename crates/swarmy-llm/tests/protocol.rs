@@ -299,7 +299,9 @@ fn empty_output_in_the_terminal_event_falls_back_to_streamed_items() {
 
 #[test]
 fn image_request_body_for_each_protocol() {
-    use swarmy_llm::api::{anthropic, completions, gemini};
+    #[cfg(feature = "gemini")]
+    use swarmy_llm::api::gemini;
+    use swarmy_llm::api::{anthropic, completions};
     use swarmy_llm::catalog::Catalog;
     let image = Part::Image {
         media_type: "image/png".into(),
@@ -322,9 +324,15 @@ fn image_request_body_for_each_protocol() {
         },
     )
     .unwrap();
+    #[cfg(feature = "gemini")]
     let gemini_model = catalog.model("google", "gemini-3-flash-preview").unwrap();
+    #[cfg(feature = "gemini")]
     let mut gemini_req = req.clone();
-    gemini_req.settings.model = gemini_model.id.clone();
+    #[cfg(feature = "gemini")]
+    {
+        gemini_req.settings.model = gemini_model.id.clone();
+    }
+    #[cfg(feature = "gemini")]
     let gemini = gemini::request_json(&gemini_req, "google", gemini_model).unwrap();
     let completions_model = catalog
         .provider("openrouter")
@@ -346,6 +354,7 @@ fn image_request_body_for_each_protocol() {
             anthropic["messages"][0]["content"][0]["source"].clone(),
             json!({"type":"base64", "media_type":"image/png", "data":"AQID"}),
         ),
+        #[cfg(feature = "gemini")]
         (
             gemini["contents"][0]["parts"][0].clone(),
             json!({"inlineData":{"mimeType":"image/png", "data":"AQID"}}),
