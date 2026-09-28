@@ -211,7 +211,7 @@ Resuming an existing session keeps its pinned image.
 The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
 `s3_access_key`, `s3_secret_key`, `s3_bucket`, `s3_prefix`, and `s3_region`.
 `s3_prefix` defaults to empty. Use it to select a namespace within the bucket;
-see the [namespace and migration rules](ARCHITECTURE.md#durable-data-model). Additional settings
+see the [namespace and migration rules](../crates/swarmy-store/src/objects.rs). Additional settings
 are `scheduler_scan_interval_ms`, `scheduler_resend_interval_ms`,
 `worker_lease_ms`, `worker_recovery_interval_ms`, `bus_ack_wait_ms`,
 `bus_max_deliver`, `gateway_concurrency`, and `system_prompt`. The optional

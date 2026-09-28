@@ -14,9 +14,6 @@ The local machine needs `ssh`,
 provides the `remote` subcommands below; `make install-client` enables it,
 while a plain `cargo build` leaves it out for the slimmer node binary and
 such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
-The current FoundationDB client additionally connects to the advertised private
-address on TCP 4500; the client machine needs a route to it. The SSH coordinator
-forward alone does not establish an external-laptop deployment.
 The subnet must provide outbound internet access and the security group must
 allow SSH from your machine and between group members. All backing services
 bind to loopback. FoundationDB advertises `127.0.0.1:4500`, and every client,
