@@ -1691,16 +1691,22 @@ async fn check_overflow_recovery(second_overflow: bool) {
 async fn clean_tool_completion_reenables_overflow_recovery() {
     run(|f| Box::pin(async move {
         let summary = "## Goal\nFinish the work";
+        let mut large_tool = side_tool_response("clock-next", 20, false);
+        large_tool.parts.push(Part::Reasoning {
+            text: "thinking ".repeat(13_000),
+            metadata: std::collections::BTreeMap::new(),
+        });
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {
                 "1": side_response(summary.into(), 20),
                 "2": side_tool_response("clock-after-retry", 20, false),
-                "4": side_response(summary.into(), 20),
-                "5": side_response("Recovered again".into(), 20)
+                "3": large_tool,
+                "5": side_response(summary.into(), 20),
+                "6": side_response("Recovered again".into(), 20)
             },
             "failures": {
                 "0": {"status": 400, "message": "context overflow"},
-                "3": {"status": 400, "message": "context overflow after tool"}
+                "4": {"status": 400, "message": "context overflow after tool"}
             }
         })).unwrap()).unwrap();
         let image = image_fixture::image(&f.store).await;
@@ -1715,7 +1721,7 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
         let first = wait_successor(f, id).await;
         let second = wait_successor(f, first).await;
         let events = f.idle(second).await;
-        assert_eq!(f.calls(), 6, "a clean tool reply resets the recovery guard");
+        assert_eq!(f.calls(), 7, "a clean tool reply resets the recovery guard");
         assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
     })).await;
 }
@@ -2137,7 +2143,7 @@ fn successor_messages(events: &[Event]) -> Vec<Message> {
 async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
     run(|f| {
         Box::pin(async move {
-            f.summarize_at_tokens = 6000;
+            f.summarize_at_tokens = 5999;
             let summary = "## Goal
 Finish the task
 
@@ -2188,7 +2194,7 @@ Finish the task
 #[tokio::test]
 async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
     run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 6000;
+        f.summarize_at_tokens = 5999;
         let prefix = "## Original Request\nFinish the task\n\n## Progress So Far\n- Tools used\n\n## Context Needed to Continue\n- Verify";
         write_fleet_side_script(f, prefix, true);
         let image = image_fixture::image(&f.store).await;
@@ -2239,7 +2245,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
 async fn side_summary_markdown_continues() {
     run(|f| {
         Box::pin(async move {
-            f.summarize_at_tokens = 6000;
+            f.summarize_at_tokens = 5999;
             let summary =
                 "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
             write_fleet_side_script(f, summary, false);

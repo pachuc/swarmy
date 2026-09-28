@@ -600,6 +600,55 @@ impl Worker {
             .await
     }
 
+    async fn without_failed_checkpoint_replies(
+        &self,
+        session: &SessionRecord,
+        events: &[Event],
+        mut replayed: Snapshot,
+        skip_compaction: bool,
+    ) -> Result<Snapshot> {
+        if !(skip_compaction || self.summary_completed(session, events).await?) {
+            return Ok(replayed);
+        }
+
+        let mut prior_completion = None;
+        let mut summary_replies = Vec::new();
+        let mut recovery_replies = Vec::new();
+        for event in events.iter() {
+            let request_id = match event {
+                Event::InferenceCompleted { request_id, .. }
+                | Event::InferenceFailed { request_id, .. } => *request_id,
+                _ => continue,
+            };
+            if let Some(job) = self
+                .store
+                .get_inference_input::<InferenceJob>(request_id)
+                .await?
+                && job.summary
+            {
+                if let Event::InferenceCompleted { message, .. } = event {
+                    summary_replies.push(message.id);
+                }
+                if job.summary_recovery
+                    && let Some(id) = prior_completion
+                {
+                    recovery_replies.push(id);
+                }
+            } else if let Event::InferenceCompleted { message, .. } = event {
+                prior_completion = Some(message.id);
+            } else {
+                prior_completion = None;
+            }
+        }
+        for id in summary_replies.into_iter().chain(recovery_replies) {
+            replayed = replayed.without_message(id);
+        }
+        if skip_compaction && let Some(id) = prior_completion {
+            replayed = replayed.without_message(id);
+        }
+        Ok(replayed)
+    }
+
     async fn finish_inner(
         &self,
         session: &mut SessionRecord,
@@ -627,46 +676,9 @@ impl Worker {
                 from: SessionState::Leased,
                 to: SessionState::Idle,
             });
-            let mut replayed = snapshot.replay(events);
-            // Keep rejected checkpoint replies and failed recovery attempts in
-            // the audit log, but never replay them in a later prompt.
-            if skip_compaction || self.summary_completed(session, events).await? {
-                let mut prior_completion = None;
-                let mut summary_replies = Vec::new();
-                let mut recovery_replies = Vec::new();
-                for event in events.iter() {
-                    let request_id = match event {
-                        Event::InferenceCompleted { request_id, .. }
-                        | Event::InferenceFailed { request_id, .. } => *request_id,
-                        _ => continue,
-                    };
-                    if let Some(job) = self
-                        .store
-                        .get_inference_input::<InferenceJob>(request_id)
-                        .await?
-                        && job.summary
-                    {
-                        if let Event::InferenceCompleted { message, .. } = event {
-                            summary_replies.push(message.id);
-                        }
-                        if job.summary_recovery
-                            && let Some(id) = prior_completion
-                        {
-                            recovery_replies.push(id);
-                        }
-                    } else if let Event::InferenceCompleted { message, .. } = event {
-                        prior_completion = Some(message.id);
-                    } else {
-                        prior_completion = None;
-                    }
-                }
-                for id in summary_replies.into_iter().chain(recovery_replies) {
-                    replayed = replayed.without_message(id);
-                }
-                if skip_compaction && let Some(id) = prior_completion {
-                    replayed = replayed.without_message(id);
-                }
-            }
+            let replayed = self
+                .without_failed_checkpoint_replies(session, events, replayed, skip_compaction)
+                .await?;
             let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
                 object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
