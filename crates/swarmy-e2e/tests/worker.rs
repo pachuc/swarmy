@@ -1824,8 +1824,25 @@ async fn second_length_stop_fails_with_notice() {
 }
 
 #[tokio::test]
-async fn empty_summary_preserves_session() {
-    rejected_summary_preserves_session("", StopReason::EndTurn).await;
+async fn empty_successful_summary_rolls_over() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 100;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": side_response("Original answer".into(), 101), "1": side_response(String::new(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("empty-summary", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let next = wait_successor(f, id).await;
+        assert_ne!(next, id);
+        assert_eq!(f.calls(), 2);
+    })).await;
 }
 
 #[tokio::test]
