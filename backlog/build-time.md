@@ -39,11 +39,22 @@ leave the CLI tests to CI.
 6. Scoped checks in the fleet prompt: a task that touches one crate runs
    that crate's tests; the full `make check` belongs in CI.
 
+## Status after cleanup
+
+The September discussion is resolved for the common build path: PR #172
+made cloud provisioning opt-in and pinned rustls to ring; PR #179 extracted
+cloud provisioning, and PR #193 parallelized CI. The measured outcome is in
+[the October cleanup result](../docs/proofs/cleanup-result-2026-10.md), next
+to [the September baseline](../docs/proofs/cleanup-baseline-2026-09.md).
+The remaining discussion is narrower: optional remote-feature builds still
+include the AWS SDK, and a shared compile cache or warm image could help
+fresh workers. Evaluate those against the new measurements before investing.
+
 ## Why not now
 
-The user wants to discuss the approach first (2026-09-26). Items 5 and 6
-are configuration and can happen with the dev2 fleet move; items 1 and 2
-are the ones that change the picture and deserve a decision.
+The common-path dependency decision has been made. Shared caching, warm
+images, and worker sizing need measurements on the target fleet shape; the
+baseline and result use different sandbox memory and CPU allocations.
 
 ## Baseline
 
