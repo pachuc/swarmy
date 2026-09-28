@@ -202,7 +202,7 @@ pub struct Settings {
     pub bus_max_deliver: i64,
     pub gateway_concurrency: usize,
     pub system_prompt: String,
-    /// Override the default three quarters of `model_context_window_tokens`.
+    /// Override the default `model_context_window_tokens` minus 16,384.
     pub summarize_at_tokens: Option<std::num::NonZeroU64>,
     pub model_context_window_tokens: Option<std::num::NonZeroU64>,
     pub memory_dir: String,

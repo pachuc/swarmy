@@ -59,7 +59,7 @@ pub struct ModelInfo {
     #[serde(default)]
     pub compat: Compat,
     /// Optional per-model summarization threshold in input tokens.
-    /// When absent, three quarters of the context window applies.
+    /// When absent, the context window minus 16,384 tokens applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarize_at: Option<u64>,
 }
@@ -443,7 +443,7 @@ mod tests {
         let model = catalog.model("openai", "gpt-5.5").unwrap();
         assert_eq!(
             model.summarize_at_tokens(),
-            model.limit.context - model.limit.context / 4
+            model.limit.context.saturating_sub(16_384)
         );
         assert_eq!(
             catalog.summarize_at("openai", "gpt-5.5"),

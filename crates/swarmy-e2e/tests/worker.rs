@@ -1649,6 +1649,40 @@ async fn check_overflow_recovery(second_overflow: bool) {
     })).await;
 }
 
+#[tokio::test]
+async fn empty_summary_preserves_session() {
+    rejected_summary_preserves_session("", StopReason::EndTurn).await;
+}
+
+#[tokio::test]
+async fn length_stopped_summary_preserves_session() {
+    rejected_summary_preserves_session("## Goal\nPartial", StopReason::MaxOutputTokens).await;
+}
+
+async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: StopReason) {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 100;
+        let mut summary_response = side_response(summary.into(), 20);
+        summary_response.stop_reason = stop_reason;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let events = f.idle(id).await;
+        assert_eq!(f.calls(), 2);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer")))));
+    })).await;
+}
+
 fn side_id() -> SessionId {
     loop {
         let id = SessionId::from_ulid(Ulid::generate());
