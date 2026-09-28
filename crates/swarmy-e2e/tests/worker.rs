@@ -2363,6 +2363,38 @@ Finish the task
 }
 
 #[tokio::test]
+async fn refused_split_prefix_reply_is_not_in_next_prompt() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 5999;
+        write_fleet_side_script(f, "REFUSED_PREFIX_REPLY", true);
+        let path = f.files.path().join("script.json");
+        let mut script: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut refused = side_response("REFUSED_PREFIX_REPLY".into(), 6200);
+        refused.stop_reason = StopReason::MaxOutputTokens;
+        script["responses"]["41"] = serde_json::to_value(refused).unwrap();
+        script["responses"]["42"] = serde_json::to_value(side_response("Next answer".into(), 20)).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&script).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("refused-prefix", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 42);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        let prompt = f.histories().pop().unwrap();
+        assert!(!prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "## Goal\nEarlier work" || text == "REFUSED_PREFIX_REPLY"))));
+    })).await;
+}
+
+#[tokio::test]
 async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
     run(|f| Box::pin(async move {
         f.summarize_at_tokens = 5999;
