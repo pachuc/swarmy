@@ -745,3 +745,13 @@ fn image_request_body() {
         json!({"type":"base64", "media_type":"image/png", "data":"AQID"})
     );
 }
+
+#[test]
+fn summary_request_never_marks_cache_write_boundaries() {
+    let mut input = request("claude-sonnet-4-5");
+    let cached = request_json(&input, &model("claude-sonnet-4-5"), &direct()).unwrap();
+    assert!(cached.to_string().contains("cache_control"));
+    input.no_cache = true;
+    let uncached = request_json(&input, &model("claude-sonnet-4-5"), &direct()).unwrap();
+    assert!(!uncached.to_string().contains("cache_control"));
+}

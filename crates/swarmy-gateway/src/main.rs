@@ -152,7 +152,6 @@ fn permanent_error(error: &swarmy_llm::Error) -> bool {
         error,
         Error::UnknownModel { .. }
             | Error::Unsupported(_)
-            | Error::ContextOverflow(_)
             | Error::Credentials(_)
             | Error::NeedsLogin(_)
     ) || matches!(error, Error::ProviderResponse { status, .. } | Error::Status(status)
@@ -756,6 +755,9 @@ impl Gateway {
                 if !blocked
                     && !permanent_error(&error)
                     && !retryable_error(&error).0
+                    // The worker, not the transport queue, owns the single
+                    // compact-and-retry attempt for context overflow.
+                    && !matches!(error, swarmy_llm::Error::ContextOverflow(_))
                     && message.delivery_count()? < self.max_deliver =>
             {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
@@ -1111,6 +1113,10 @@ impl Gateway {
         job: &InferenceJob,
         completion: &InferenceCompletion,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
+        // The worker must validate and archive a summary before the turn idles.
+        if job.summary {
+            return Ok(None);
+        }
         // Named sessions need a worker step to decide whether to summarize.
         // Main sessions always take the slow path. Side sessions take it only
         // once the completion reaches the pressure level, so text-only turns
@@ -1261,7 +1267,7 @@ mod retry_tests {
         };
         assert!(!retryable_error(&auth).0);
         assert!(permanent_error(&auth));
-        assert!(permanent_error(&swarmy_llm::Error::ContextOverflow(
+        assert!(!permanent_error(&swarmy_llm::Error::ContextOverflow(
             "too long".into()
         )));
     }

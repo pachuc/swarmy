@@ -33,3 +33,5 @@ POST /v1/sessions/{id}/interrupt changes MissingInferenceWait error code from se
 
 # 2026-09-28: Summary inference jobs and requests append flags for explicit job identity and cache policy. Successor openings are user-role Markdown rather than system-role JSON; old system openings still read. Upgrade workers and gateways together; older binaries cannot read new job encodings.
 GET /v1/sessions/{id}/events changes successor opening from system JSON to user Markdown
+# 2026-09-28: Obsolete context warning notices retain their binary discriminant but render as legacy_context_notice in old event JSON; no new warning is emitted.
+GET /v1/sessions/{id}/events changes legacy notice kind text to legacy_context_notice
