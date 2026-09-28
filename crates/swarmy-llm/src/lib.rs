@@ -486,6 +486,52 @@ mod job_tests {
     }
 
     #[test]
+    fn masters_inference_job_layout_still_decodes() {
+        // The request was the fourth field on master. A new field inside it
+        // would consume the provider byte and misalign every following field.
+        #[derive(Serialize)]
+        struct OldRequest {
+            system_prompt: String,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            settings: GenerationSettings,
+        }
+        #[derive(Serialize)]
+        struct OldJob {
+            session_id: SessionId,
+            step: u64,
+            request_id: RequestId,
+            request: OldRequest,
+            provider: String,
+            entry: Option<String>,
+            route: Option<String>,
+            route_step: u32,
+        }
+        let id = SessionId::from_ulid(ulid::Ulid::nil());
+        let bytes = swarmy_core::encode(&OldJob {
+            session_id: id,
+            step: 2,
+            request_id: RequestId::for_step(id, 2),
+            request: OldRequest {
+                system_prompt: "old".into(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+        })
+        .unwrap();
+        let job: InferenceJob = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(job.request.system_prompt, "old");
+        assert_eq!(job.provider, "fake");
+        assert!(!job.summary);
+        assert!(!job.request.no_cache);
+    }
+
+    #[test]
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
