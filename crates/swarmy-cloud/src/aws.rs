@@ -420,6 +420,209 @@ impl Cloud for Aws {
         }
     }
 
+    async fn delete_bucket(&self, name: &str) -> Result<bool> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+        let mut count = 0usize;
+        // Re-read the first page after every deletion. Markers would skip keys
+        // when the page just deleted changes the listing beneath the cursor.
+        loop {
+            let page = match self
+                .s3
+                .list_object_versions()
+                .bucket(name)
+                .max_keys(1000)
+                .send()
+                .await
+            {
+                Ok(page) => page,
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchBucket") =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error).context("s3:ListBucketVersions"),
+            };
+            let objects: Vec<_> = page
+                .versions()
+                .iter()
+                .map(|object| {
+                    ObjectIdentifier::builder()
+                        .key(object.key().unwrap_or_default())
+                        .set_version_id(object.version_id().map(str::to_owned))
+                        .build()
+                })
+                .chain(page.delete_markers().iter().map(|object| {
+                    ObjectIdentifier::builder()
+                        .key(object.key().unwrap_or_default())
+                        .set_version_id(object.version_id().map(str::to_owned))
+                        .build()
+                }))
+                .collect::<std::result::Result<_, _>>()?;
+            if objects.is_empty() {
+                break;
+            }
+            let size = objects.len();
+            let result = self
+                .s3
+                .delete_objects()
+                .bucket(name)
+                .delete(Delete::builder().set_objects(Some(objects)).build()?)
+                .send()
+                .await
+                .context("s3:DeleteObjects")?;
+            anyhow::ensure!(
+                result.errors().is_empty(),
+                "s3:DeleteObjects failed for {} objects",
+                result.errors().len()
+            );
+            count += size;
+            if count / 10_000 != (count - size) / 10_000 {
+                println!("Deleted {count} objects from bucket {name}");
+            }
+        }
+        match self.s3.delete_bucket().bucket(name).send().await {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchBucket") =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error).context("s3:DeleteBucket"),
+        }
+    }
+
+    async fn delete_node_role(&self, name: &str) -> Result<bool> {
+        let profile = match self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+        {
+            Ok(output) => output.instance_profile,
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                None
+            }
+            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+        };
+        let mut removed = profile.is_some();
+        if let Some(profile) = profile {
+            for role in profile.roles() {
+                match self
+                    .iam
+                    .remove_role_from_instance_profile()
+                    .instance_profile_name(name)
+                    .role_name(role.role_name())
+                    .send()
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(error)
+                        if error
+                            .as_service_error()
+                            .and_then(ProvideErrorMetadata::code)
+                            == Some("NoSuchEntity") => {}
+                    Err(error) => return Err(error).context("iam:RemoveRoleFromInstanceProfile"),
+                }
+            }
+            match self
+                .iam
+                .delete_instance_profile()
+                .instance_profile_name(name)
+                .send()
+                .await
+            {
+                Ok(_) => {}
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchEntity") => {}
+                Err(error) => return Err(error).context("iam:DeleteInstanceProfile"),
+            }
+        }
+        let role = match self.iam.get_role().role_name(name).send().await {
+            Ok(output) => output.role,
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                None
+            }
+            Err(error) => return Err(error).context("iam:GetRole"),
+        };
+        if role.is_some() {
+            removed = true;
+            loop {
+                let policies = self
+                    .iam
+                    .list_role_policies()
+                    .role_name(name)
+                    .send()
+                    .await
+                    .context("iam:ListRolePolicies")?;
+                if policies.policy_names().is_empty() {
+                    break;
+                }
+                for policy in policies.policy_names() {
+                    self.iam
+                        .delete_role_policy()
+                        .role_name(name)
+                        .policy_name(policy)
+                        .send()
+                        .await
+                        .context("iam:DeleteRolePolicy")?;
+                }
+            }
+            loop {
+                let policies = self
+                    .iam
+                    .list_attached_role_policies()
+                    .role_name(name)
+                    .send()
+                    .await
+                    .context("iam:ListAttachedRolePolicies")?;
+                if policies.attached_policies().is_empty() {
+                    break;
+                }
+                for policy in policies.attached_policies() {
+                    if let Some(arn) = policy.policy_arn() {
+                        self.iam
+                            .detach_role_policy()
+                            .role_name(name)
+                            .policy_arn(arn)
+                            .send()
+                            .await
+                            .context("iam:DetachRolePolicy")?;
+                    }
+                }
+            }
+            match self.iam.delete_role().role_name(name).send().await {
+                Ok(_) => {}
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchEntity") => {}
+                Err(error) => return Err(error).context("iam:DeleteRole"),
+            }
+        }
+        Ok(removed)
+    }
+
     async fn delete_ssh_key(&self, name: &str) -> Result<()> {
         let keys = self
             .ec2

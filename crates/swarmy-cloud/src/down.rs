@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    io::{self, IsTerminal, Write},
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 use swarmy_config::RemoteNode;
@@ -33,11 +36,32 @@ fn permission<'a>(error: &anyhow::Error, default: &'a str, alternate: &'a str) -
     }
 }
 
+pub fn confirm(keep_bucket: bool, yes: bool, json: bool) -> Result<()> {
+    if keep_bucket || yes {
+        return Ok(());
+    }
+    if json {
+        bail!("remote down --json requires --yes unless --keep-bucket is set");
+    }
+    if !io::stdin().is_terminal() {
+        bail!("remote down requires --yes without a terminal");
+    }
+    print!("Permanently delete remote bucket and all its objects? [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if answer.trim() != "y" && answer.trim() != "yes" {
+        bail!("remote down cancelled");
+    }
+    Ok(())
+}
+
 pub async fn run(
     cloud: &impl Cloud,
     state: &State,
     node: &RemoteNode,
     delay: Duration,
+    keep_bucket: bool,
 ) -> Result<()> {
     let mut pending = vec![node];
     let mut nodes = Vec::new();
@@ -62,10 +86,6 @@ pub async fn run(
             );
         }
     }
-    // The instance role and profile stay with the bucket they guard. Deleting
-    // and recreating them within seconds of a launch attached an instance to a
-    // stale profile whose role no longer existed, and its credentials were
-    // rejected until the instance was replaced.
     report.print();
     if !report.live.is_empty() {
         bail!(
@@ -73,17 +93,28 @@ pub async fn run(
             report.live.join(", ")
         );
     }
+    if let Some(bucket) = node.bucket() {
+        let role = format!("swarmy-{}", node.name);
+        if keep_bucket {
+            println!("Kept bucket {bucket} and guarding role and instance profile {role}");
+        } else {
+            let removed = cloud.delete_bucket(bucket).await?;
+            println!(
+                "Bucket {bucket}: {}",
+                if removed { "removed" } else { "absent" }
+            );
+            let removed = cloud.delete_node_role(&role).await?;
+            println!(
+                "Role and instance profile {role}: {}",
+                if removed { "removed" } else { "absent" }
+            );
+        }
+    }
     for current in nodes {
         state.remove_key(current)?;
     }
     state.remove(node)?;
     println!("Removed remote {}", node.name);
-    if let Some(bucket) = node.bucket() {
-        println!(
-            "Bucket {bucket} and its objects were kept, with the swarmy-{} role and instance profile",
-            node.name
-        );
-    }
     Ok(())
 }
 

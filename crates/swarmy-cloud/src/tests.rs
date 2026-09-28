@@ -17,6 +17,7 @@ use super::{
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
+    teardown: RefCell<Vec<String>>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
@@ -109,6 +110,14 @@ impl Cloud for FakeCloud {
         }
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
+    }
+    fn delete_bucket(&self, name: &str) -> impl Future<Output = Result<bool>> {
+        self.teardown.borrow_mut().push(format!("bucket {name}"));
+        std::future::ready(Ok(true))
+    }
+    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<bool>> {
+        self.teardown.borrow_mut().push(format!("role {name}"));
+        std::future::ready(Ok(true))
     }
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>> {
         self.key_delete_attempts.borrow_mut().push(name.into());
@@ -364,7 +373,7 @@ async fn configured_image_and_failed_provision_leave_recoverable_state() {
         Some(instance("shutting-down")),
         Some(instance("terminated")),
     ]);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert_eq!(*cloud.terminated.borrow(), ["i-test"]);
@@ -399,7 +408,7 @@ async fn down_removes_state_when_key_deletion_is_denied() {
     .unwrap();
     let node = state.read("demo").unwrap().unwrap();
     cloud.fail_delete.set(true);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert_eq!(cloud.key_delete_attempts.borrow().len(), 1);
@@ -433,7 +442,7 @@ async fn down_recovers_launch_before_instance_id_was_saved() {
     let mut node = state.read("demo").unwrap().unwrap();
     node.instance_id.clear();
     state.save(&node).unwrap();
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert_eq!(
@@ -505,7 +514,7 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
     let node = state.read("demo").unwrap().unwrap();
     cloud.fail_terminate.set(true);
     assert!(
-        down::run(&cloud, &state, &node, Duration::ZERO)
+        down::run(&cloud, &state, &node, Duration::ZERO, true)
             .await
             .is_err()
     );
@@ -594,7 +603,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         node.private_ip
     );
     cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert_eq!(*cloud.terminated.borrow(), ["i-second", "i-test"]);
@@ -652,7 +661,7 @@ async fn failed_join_retains_child_for_cleanup() {
     assert!(!node.nodes[0].instance_id.is_empty());
     cloud.fail_terminate.set(true);
     assert!(
-        down::run(&cloud, &state, &node, Duration::ZERO)
+        down::run(&cloud, &state, &node, Duration::ZERO, true)
             .await
             .is_err()
     );
@@ -660,7 +669,7 @@ async fn failed_join_retains_child_for_cleanup() {
     assert!(node.key_path.exists());
     cloud.fail_terminate.set(false);
     cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
 }
@@ -961,7 +970,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(profile.s3_region.as_deref(), Some("us-east-1"));
     assert!(profile.s3_endpoint.is_empty());
     cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     // The role and profile stay with the bucket; a later up reuses them.
@@ -1261,7 +1270,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
         "m6i.large"
     );
     cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &saved, Duration::ZERO)
+    down::run(&cloud, &state, &saved, Duration::ZERO, true)
         .await
         .unwrap();
     assert!(state.read("demo").unwrap().is_none());
@@ -1460,7 +1469,7 @@ async fn bucket_profile_is_kept_when_key_deletion_is_denied() {
     let node = state.require("demo").unwrap();
     cloud.fail_delete.set(true);
     cloud.observations.borrow_mut().push_back(None);
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert_eq!(&*cloud.terminated.borrow(), &["i-test"]);
@@ -1483,7 +1492,7 @@ async fn never_launched_record_is_removed_without_cloud_calls() {
     .unwrap();
     state.save(&node).unwrap();
     let cloud = FakeCloud::default();
-    down::run(&cloud, &state, &node, Duration::ZERO)
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
     assert!(state.read("demo").unwrap().is_none());

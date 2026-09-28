@@ -143,7 +143,7 @@ pub struct Machine {
 
 /// Provider-neutral description of the object bucket backing a remote.
 ///
-/// The bucket survives `remote down`; the node credentials guard it.
+/// The node credentials guard this bucket until teardown.
 #[derive(Clone, Debug)]
 pub struct ObjectBucket {
     /// Bucket name.
@@ -184,6 +184,10 @@ pub trait Cloud {
     /// Terminate a machine; already-terminated or missing machines are
     /// success.
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
+    /// Empty and delete a bucket; return false if it was already absent.
+    fn delete_bucket(&self, name: &str) -> impl Future<Output = Result<bool>>;
+    /// Delete the instance profile and its role; return false if both were absent.
+    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<bool>>;
     /// Delete an SSH key; missing keys are success.
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>>;
 }
@@ -281,7 +285,12 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             )
             .await
         }
-        Command::Down { name } => {
+        Command::Down {
+            name,
+            keep_bucket,
+            yes,
+        } => {
+            down::confirm(keep_bucket, yes, json)?;
             let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
                 println!("No remote node named {name}");
@@ -290,7 +299,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;
-            down::run(&cloud, &state, &node, Duration::from_secs(5)).await
+            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await
         }
         Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
         Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
