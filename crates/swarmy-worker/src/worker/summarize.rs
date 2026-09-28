@@ -119,30 +119,23 @@ impl Worker {
         let stopped_on_length = matches!(last, Event::InferenceCompleted { .. });
         if self.recovery_already_attempted(session).await? {
             if stopped_on_length {
-                // Pi agent-session.ts:2671-2690 fails the second truncated
-                // attempt rather than accepting its partial assistant reply.
-                let notice = swarmy_core::Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: swarmy_core::MessageRole::System,
-                    parts: vec![swarmy_core::Part::Text {
-                        text: "Truncated response recovery failed after one compact-and-retry attempt.".into(),
-                    }],
-                };
-                self.append(
+                // Pi agent-session.ts:2671-2690 keeps the second truncated reply.
+                self.recovery_notice(
                     session,
                     lease,
+                    snapshot,
                     events,
-                    &[Event::MessageAppended {
-                        seq: 0,
-                        message: notice,
-                    }],
+                    turn,
+                    (
+                        "Truncated response recovery failed after one compact-and-retry attempt.",
+                        false,
+                    ),
                 )
                 .await?;
-                self.finish_failed_recovery(session, lease, snapshot, events, turn, false)
-                    .await?;
                 return Ok(true);
             }
-            self.recovery_notice(session, lease, snapshot, events, turn, "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.").await?;
+            self.recovery_notice(session, lease, snapshot, events, turn,
+                ("Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.", false)).await?;
             return Ok(true);
         }
         if self
@@ -158,21 +151,7 @@ impl Worker {
         } else {
             "Context overflow recovery could not compact this turn."
         };
-        self.append(
-            session,
-            lease,
-            events,
-            &[Event::MessageAppended {
-                seq: 0,
-                message: swarmy_core::Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: swarmy_core::MessageRole::System,
-                    parts: vec![swarmy_core::Part::Text { text: text.into() }],
-                },
-            }],
-        )
-        .await?;
-        self.finish_failed_recovery(session, lease, snapshot, events, turn, true)
+        self.recovery_notice(session, lease, snapshot, events, turn, (text, true))
             .await?;
         Ok(true)
     }
@@ -184,8 +163,9 @@ impl Worker {
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
-        text: &str,
+        notice: (&str, bool),
     ) -> Result<()> {
+        let (text, omit_attempt) = notice;
         self.append(
             session,
             lease,
@@ -200,7 +180,7 @@ impl Worker {
             }],
         )
         .await?;
-        self.finish_failed_recovery(session, lease, snapshot, events, turn, false)
+        self.finish_failed_recovery(session, lease, snapshot, events, turn, omit_attempt)
             .await
     }
 
