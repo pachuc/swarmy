@@ -436,35 +436,29 @@ impl Fixture {
             .unwrap()
             .unwrap()
             .head_seq;
-        self.store
-            .append_events(
-                id,
-                head,
-                &[
-                    Event::MessageAppended {
-                        seq: 0,
-                        message: Message {
-                            id: MessageId::from_ulid(Ulid::generate()),
-                            role: MessageRole::User,
-                            parts: vec![Part::Text {
-                                text: "previous context ".repeat(7_000),
-                            }],
-                        },
-                    },
-                    Event::MessageAppended {
-                        seq: 0,
-                        message: Message {
-                            id: MessageId::from_ulid(Ulid::generate()),
-                            role: MessageRole::Assistant,
-                            parts: vec![Part::Text {
-                                text: "Previous turn completed.".into(),
-                            }],
-                        },
-                    },
-                ],
-            )
-            .await
-            .unwrap();
+        let mut history = vec![Event::MessageAppended {
+            seq: 0,
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text {
+                    text: "Previous task".into(),
+                }],
+            },
+        }];
+        for _ in 0..30 {
+            history.push(Event::MessageAppended {
+                seq: 0,
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts: vec![Part::Text {
+                        text: "x".repeat(3_000),
+                    }],
+                },
+            });
+        }
+        self.store.append_events(id, head, &history).await.unwrap();
         self.user_message(id).await;
     }
 
