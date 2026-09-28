@@ -205,19 +205,21 @@ cargo fmt --all --check
 cargo build --locked -p swarmy-cli --no-default-features
 cargo build --workspace --locked
 cargo test --workspace --locked --exclude swarmy-e2e
-cargo test --locked -p swarmy-e2e -- --test-threads=1
+cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
+cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --locked -p swarmy-cloud --features remote
-cargo test --locked -p swarmy-cli --features remote
+cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
 cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 cargo test --locked -p swarmy-llm --no-default-features
 scripts/chaos-ci.sh
 ```
 
-The feature-enabled commands run when a change touches `crates/swarmy-cloud/`
-or the CLI remote dispatch file; the provisioning client is an opt-in feature
-that the workspace commands leave off.
+The feature-enabled commands always run in CI: the provisioning client is an
+opt-in feature that the workspace commands leave off. The CLI remote step skips
+the self-managed dev-stack test already covered by the workspace step. The e2e
+binaries run serially within each of two parallel CI jobs.
 
 Clippy runs with the `pedantic` group denied, so write code that satisfies it
 rather than silencing it. If a lint is genuinely wrong for a piece of code,
