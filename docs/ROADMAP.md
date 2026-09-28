@@ -41,4 +41,22 @@ allowances were:
 | Up to 256 MiB | 3 s | 25 s |
 | Up to 1 GiB | 12 s | 90 s |
 
+The former warm-turn allocation was a total per turn, including both
+inference passes for the trivial bash shape:
+
+| Work | Local allowance | Remote allowance |
+|---|---:|---:|
+| Submit and commit user append | 10 ms | R + 10 ms |
+| Wake, scheduler nudges, and lease claims | 15 ms | R + 15 ms |
+| Build and deliver inference requests | 15 ms | 15 ms |
+| Fake provider streams | 10 ms | 10 ms |
+| Dispatch bash and receive fenced completion | 20 ms | R + 20 ms |
+| Commit results, fold, snapshot, and idle | 20 ms | 20 ms |
+| Render final text and enable input | 5 ms | 5 ms |
+| Total | 95 ms | 3R + 95 ms |
+
+Here R is the measured client-to-node round trip. Neither the timing target
+nor historical tool-boundary allowances are guarantees. The default scheduler
+and client timers measured in the dated benchmark did not meet this target.
+
 The rationale and raw samples remain in [volume benchmarks](volume-benchmarks.md#2026-09-15-instrumented-release-flush-and-tool-boundary-budget).

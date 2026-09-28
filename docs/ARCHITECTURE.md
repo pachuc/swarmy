@@ -98,7 +98,8 @@ use postcard serialization, with large data redirected to object storage
 [blob.rs](../crates/swarmy-store/src/blob.rs)). Treat family names as internal
 schema, not an API. Postcard encodes structs positionally: append stored fields
 only at the end via [swarmy_core::trailing](../crates/swarmy-core/src/encoding.rs),
-with fixed-byte compatibility tests there. When a format changes or is retired,
+with fixed-byte compatibility tests in
+[store/lib.rs](../crates/swarmy-store/src/lib.rs). When a format changes or is retired,
 migrate and clear old rows rather than refusing to start; record one-way
 changes in [api-breaks.txt](api-breaks.txt) (see
 [store migration](../crates/swarmy-store/src/lib.rs)).

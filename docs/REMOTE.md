@@ -9,8 +9,9 @@ NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
 `images/base-ubuntu` as root with `/etc/swarmy/node.env` and registers
 `base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
 the image build duration is printed separately from the total provisioning time.
-The local machine needs `ssh`,
-`ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
+The default laptop-services mode runs scheduler, worker, and gateway on the
+client, while `--services node` runs them under systemd on the control node.
+The local machine needs `ssh`, `ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
 provides the `remote` subcommands below; `make install-client` enables it,
 while a plain `cargo build` leaves it out for the slimmer node binary and
 such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
@@ -520,6 +521,11 @@ See the state and service contract above.
 ### Tunnel and profile reference
 
 
+Only one remote tunnel can be active on the laptop: FoundationDB requires
+its local port 4500 and rejects a remapped coordinator. Disconnect the old
+remote before connecting another; the remote workers continue running while
+the laptop is disconnected.
+
 `swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
 SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
 defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
@@ -703,6 +709,16 @@ latency results and the remaining round trips. Node services are a development
 mode on one backing-store node, without replicated storage or high availability.
 
 
+
+### Agent memory files
+
+The worker includes memory files in named-agent inference, including side
+sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to
+`/home/agent/memory`, and `memory_max_bytes` (`SWARMY_MEMORY_MAX_BYTES`)
+defaults to 32768. The node reads regular files in filename order and notes
+when the byte budget truncates content; it skips directories, symlinks, and
+special files. Use an absolute directory without symlink components. See
+[worker memory handling](../crates/swarmy-worker/src/worker.rs).
 
 ## Fleet-specific node operations
 
