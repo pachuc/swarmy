@@ -1,5 +1,6 @@
 //! Partition selection shared by the worker and scheduler.
 use std::collections::BTreeSet;
+use swarmy_core::RUNNABLE_PARTITIONS;
 
 /// Parse a comma-separated list of partition numbers and inclusive ranges.
 /// The runnable partition space is fixed at 256 entries.
@@ -16,8 +17,11 @@ pub fn parse_partitions(value: &str) -> Result<BTreeSet<u16>, String> {
                 .map_err(|_| format!("invalid partition component: {component}"))
         };
         let (first, last) = (parse(first)?, parse(last)?);
-        if first > last || last >= 256 {
-            return Err("partitions must be in 0-255 with ascending ranges".into());
+        if first > last || last >= RUNNABLE_PARTITIONS {
+            return Err(format!(
+                "{value}: partitions must be in 0-{} with ascending ranges",
+                RUNNABLE_PARTITIONS - 1
+            ));
         }
         partitions.extend(first..=last);
     }

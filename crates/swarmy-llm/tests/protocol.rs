@@ -572,12 +572,18 @@ fn user_prompt_between_call_and_result_pairs_in_both_protocols() {
     );
     assert_responses_paired(
         &responses_input(&req),
-        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
         "Continue with the next step",
     );
     assert_completions_paired(
         &completions_messages(&req),
-        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
         "Continue with the next step",
     );
 }

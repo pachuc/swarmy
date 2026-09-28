@@ -386,6 +386,7 @@ mod tests {
         )
         .unwrap();
         // The sub-table wins when both spellings are present.
+        assert_eq!(settings.remote.aws.instance_type, "m6id.4xlarge");
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-nested"));
         // Flat keys still fill fields the sub-table leaves unset.
         assert_eq!(settings.remote.aws.image.as_deref(), Some("ami-flat"));

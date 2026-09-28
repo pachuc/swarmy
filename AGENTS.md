@@ -202,6 +202,7 @@ CI runs the full per-pull-request list below. Workers run `cargo test --locked -
 
 ```sh
 cargo fmt --all --check
+cargo build --locked -p swarmy-cli --no-default-features
 cargo build --workspace --locked
 cargo test --workspace --locked --exclude swarmy-e2e
 cargo test --locked -p swarmy-e2e -- --test-threads=1
@@ -210,6 +211,8 @@ cargo test --locked -p swarmy-cloud --features remote
 cargo test --locked -p swarmy-cli --features remote
 cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
+cargo test --locked -p swarmy-llm --no-default-features
+scripts/chaos-ci.sh
 ```
 
 The feature-enabled commands run when a change touches `crates/swarmy-cloud/`

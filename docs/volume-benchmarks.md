@@ -1091,11 +1091,10 @@ marker and the SHA-256 digest of its 8 MiB file. This grace setting is specific
 to a quiescent test namespace and is not a deployment recommendation.
 
 The reduced CI path in `scripts/chaos-ci.sh` retains seeded service kills and
-runs production worker tests for failure/eviction routing and durable notices,
-plus the real subprocess registry test. These checks require no root. They
-exercise the constituent contracts separately; they do not claim NBD, container,
-or physical-machine coverage. The root bash acceptance runs the integrated
-persistent scenarios. The CI workflow itself is unchanged.
+uses already-built service binaries to exercise seeded service kills. The
+workspace test step separately runs worker and subprocess registry tests. These
+checks require no root and do not claim NBD, container, or physical-machine
+coverage. The root bash acceptance runs the integrated persistent scenarios.
 
 ### Design finding
 

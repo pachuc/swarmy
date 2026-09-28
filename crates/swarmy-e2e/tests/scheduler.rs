@@ -278,7 +278,7 @@ async fn next(observer: &mut async_nats::Subscriber) -> SessionId {
 }
 
 #[tokio::test]
-async fn runnable_is_nudged_within_one_scan_and_resent_after_the_interval() {
+async fn runnable_is_nudged_and_resent_after_the_interval() {
     run(|f| async move {
         let mut observer = f.observe(&f.prefix).await;
         f.start("7", &f.prefix).await;
