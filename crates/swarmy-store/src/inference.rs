@@ -314,7 +314,8 @@ impl Store {
             trx.clear(&crate::keys::Keys::new(&self.root).inference_request(claim.request_id));
             trx.clear(&claim_key);
             session.head_seq = head;
-            let interrupt_requested = session.interrupt_requested;
+            let interrupt_requested =
+                session.interrupt_requested || self.has_queued_in(&trx, claim.session_id).await?;
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {

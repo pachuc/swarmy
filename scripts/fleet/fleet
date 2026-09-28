@@ -562,7 +562,11 @@ def resume(task_id, message, config, *, interrupt=False):
     # and braces against an archived id.
     session_id = current_session(config, data["session_id"])
     if interrupt:
-        command(swarmy(config, "session", "interrupt", session_id))
+        try:
+            command(swarmy(config, "session", "interrupt", session_id))
+        except RuntimeError as exc:
+            if "nothing to interrupt" not in str(exc).lower():
+                raise
         # The old path waits for idle before submitting another turn.
         deadline = time.monotonic() + 60
         while True:

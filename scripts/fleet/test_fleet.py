@@ -93,6 +93,9 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
             value = os.environ.get('FLEET_COST_MONTH', '0.2500')
         print(json.dumps({'total': {'cost_dollars': value}}))
     elif rest[:3] == ['session', 'interrupt', '01AAAA']:
+        if os.environ.get('IDLE_INTERRUPT'):
+            print('nothing to interrupt', file=sys.stderr)
+            sys.exit(1)
         (root / 'interrupted').write_text('yes')
     else:
         print('{}')
@@ -172,6 +175,10 @@ class FleetTests(unittest.TestCase):
         self.assertEqual((self.root / "followup").read_text(), "Stop and review")
         self.assertTrue(any(call[-3:] == ["session", "interrupt", "01AAAA"] for call in self.calls()))
         self.assertNotIn('--queue', self.calls()[-1])
+        idle = self.call("resume", "EWR2HD", "Idle follow-up", "--interrupt",
+                         env=dict(self.env, IDLE_INTERRUPT="1", SESSION_STATE="idle"))
+        self.assertEqual(idle.returncode, 0, idle.stderr)
+        self.assertEqual((self.root / "followup").read_text(), "Idle follow-up")
         open_env = dict(self.env, PR_STATE="OPEN")
         self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")

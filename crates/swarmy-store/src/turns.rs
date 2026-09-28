@@ -269,8 +269,12 @@ impl Store {
                 session.interrupt_requested = false;
                 // Turn end restarts the route chain with the next turn.
                 session.route_step = 0;
-                self.transition(&trx, session, SessionState::Idle, now)
-                    .await
+                let state = if self.has_queued_in(&trx, id).await? {
+                    SessionState::Runnable
+                } else {
+                    SessionState::Idle
+                };
+                self.transition(&trx, session, state, now).await
             }
         })
         .await?;
