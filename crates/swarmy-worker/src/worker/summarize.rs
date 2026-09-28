@@ -277,11 +277,6 @@ impl Worker {
                 history.push(message.clone());
             }
         }
-        let tail = select_side_tail(&history);
-        let cut = tail
-            .first()
-            .and_then(|first| history.iter().position(|message| message.id == first.id))
-            .unwrap_or(history.len());
         // A failed attempt is not part of the context that Pi retries.
         if recovery {
             if let Some(Event::InferenceCompleted { message, .. }) =
@@ -295,7 +290,19 @@ impl Worker {
                 history.retain(|kept| kept.id != message.id);
             }
         }
-        let cut = cut.min(history.len());
+        let tail = select_side_tail(&history);
+        let mut cut = tail
+            .first()
+            .and_then(|first| history.iter().position(|message| message.id == first.id))
+            .unwrap_or(history.len());
+        if recovery {
+            if let Some(last_user) = history
+                .iter()
+                .rposition(|message| message.role == swarmy_core::MessageRole::User)
+            {
+                cut = cut.min(last_user);
+            }
+        }
         if cut == 0 {
             return Ok(false);
         }
@@ -438,8 +445,19 @@ impl Worker {
         history: &[swarmy_core::Message],
         summary: &swarmy_core::Message,
     ) -> Vec<swarmy_core::Message> {
-        let mut tail = select_side_tail(history);
-        tail.retain(|kept| kept.id != summary.id);
+        let history = history
+            .iter()
+            .filter(|kept| kept.id != summary.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut tail = select_side_tail(&history);
+        if let Some(last_user) = history
+            .iter()
+            .rposition(|message| message.role == swarmy_core::MessageRole::User)
+            && !tail.iter().any(|kept| kept.id == history[last_user].id)
+        {
+            tail = history[last_user..].to_vec();
+        }
         tail
     }
 
@@ -552,9 +570,6 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
     let mut cut = start;
     while cut < messages.len() && !is_safe_tail_cut(messages, cut) {
         cut += 1;
-    }
-    if cut == 0 && messages.len() > 1 && is_safe_tail_cut(messages, 1) {
-        cut = 1;
     }
     // The budget bounds what comes before the last round, never the round
     // itself: a single oversized tool result still travels with its assistant
