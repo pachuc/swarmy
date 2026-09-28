@@ -51,8 +51,9 @@ ad hoc against the local API with `--remote local`.
 - Use `fleet resume TASK "text"` to queue a follow-up for the next step boundary
   without cancelling a build or tool call. Use `fleet resume TASK --interrupt
   "text"` only when the current turn must stop before the new instruction.
-  Queued input after an interrupt wakes the session before any later input,
-  so it cannot be overtaken by a new turn. An idle interrupt is harmless.
+  After an interrupt, the replacement text is queued rather than waiting for
+  idle: pending queued messages can keep the session runnable. They are delivered
+  in order before the replacement text. An idle interrupt is harmless.
   Direct CLI callers can use `swarmy run --session ID --queue "text"`.
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
   model, state and its age, task elapsed time, and cost. A recent wait can show

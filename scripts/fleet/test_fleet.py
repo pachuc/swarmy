@@ -179,10 +179,13 @@ class FleetTests(unittest.TestCase):
                          env=dict(self.env, IDLE_INTERRUPT="1", SESSION_STATE="idle"))
         self.assertEqual(idle.returncode, 0, idle.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Idle follow-up")
+        calls_before = len(self.calls())
         pending = self.call("resume", "EWR2HD", "New urgent text", "--interrupt",
                             env=dict(self.env, PENDING_QUEUE="1"))
         self.assertEqual(pending.returncode, 0, pending.stderr)
         self.assertIn("--queue", self.calls()[-1])
+        self.assertFalse(any(call[2:5] == ["session", "ls", "--json"]
+                             for call in self.calls()[calls_before:]))
         open_env = dict(self.env, PR_STATE="OPEN")
         self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")
