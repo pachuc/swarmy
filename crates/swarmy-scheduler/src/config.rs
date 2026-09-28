@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use anyhow::{Context, bail, ensure};
-use swarmy_store::RUNNABLE_PARTITIONS;
+use anyhow::ensure;
 
 pub struct Config {
     pub partitions: BTreeSet<u16>,
@@ -16,7 +15,8 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
         Ok(Self {
-            partitions: parse_partitions(&settings.scheduler_partitions)?,
+            partitions: swarmy_config::parse_partitions(&settings.scheduler_partitions)
+                .map_err(anyhow::Error::msg)?,
             scan_interval: interval(settings.scheduler_scan_interval_ms)?,
             resend_interval: interval(settings.scheduler_resend_interval_ms)?,
             provider: settings.provider,
@@ -29,27 +29,4 @@ impl Config {
 fn interval(millis: u64) -> anyhow::Result<Duration> {
     ensure!(millis > 0, "scheduler interval must be positive");
     Ok(Duration::from_millis(millis))
-}
-
-fn parse_partitions(value: &str) -> anyhow::Result<BTreeSet<u16>> {
-    let mut partitions = BTreeSet::new();
-    for component in value.split(',').map(str::trim) {
-        let (first, last) = component.split_once('-').unwrap_or((component, component));
-        let parse = |value: &str| {
-            value.trim().parse::<u16>().with_context(|| {
-                format!("invalid SWARMY_SCHEDULER_PARTITIONS component: {component}")
-            })
-        };
-        let (first, last) = (parse(first)?, parse(last)?);
-        if first > last || last >= RUNNABLE_PARTITIONS {
-            bail!("SWARMY_SCHEDULER_PARTITIONS must be in 0-255 with ascending ranges");
-        }
-        partitions.extend(first..=last);
-    }
-    Ok(partitions)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 }

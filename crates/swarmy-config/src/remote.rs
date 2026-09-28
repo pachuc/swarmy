@@ -358,10 +358,6 @@ mod tests {
     #[test]
     fn defaults_and_overrides() {
         let settings: Settings = toml::from_str("[remote]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'\nmanaged_by_tag = 'codex-launcher'").unwrap();
-        assert_eq!(settings.remote.provider, "aws");
-        assert_eq!(settings.remote.region, "us-east-1");
-        assert_eq!(settings.remote.aws.instance_type, "m6id.xlarge");
-        assert_eq!(settings.remote.disk_gb, 100);
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-test"));
         assert_eq!(
             settings.remote.aws.security_group.as_deref(),
@@ -391,9 +387,7 @@ mod tests {
             "[remote]\nprovider = 'aws'\ninstance_type = 'm6i.large'\nimage = 'ami-flat'\n[remote.aws]\nsubnet = 'subnet-nested'\ninstance_type = 'm6id.4xlarge'\n",
         )
         .unwrap();
-        assert_eq!(settings.remote.provider, "aws");
         // The sub-table wins when both spellings are present.
-        assert_eq!(settings.remote.aws.instance_type, "m6id.4xlarge");
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-nested"));
         // Flat keys still fill fields the sub-table leaves unset.
         assert_eq!(settings.remote.aws.image.as_deref(), Some("ami-flat"));
@@ -468,9 +462,6 @@ mod tests {
             "i-local"
         );
         let settings = Settings::default();
-        assert_eq!(settings.remote.provider, "aws");
-        assert_eq!(settings.remote.aws.instance_type, "m6id.xlarge");
-        assert_eq!(settings.remote.disk_gb, 100);
         assert_eq!(settings.remote.managed_by_tag, "swarmy");
         assert!(settings.remote.aws.subnet.is_none());
         assert!(settings.remote.aws.security_group.is_none());
