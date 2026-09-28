@@ -190,6 +190,21 @@ pub async fn run(
             report.live.join(", ")
         );
     }
+    cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
+    for current in nodes {
+        state.remove_key(current)?;
+    }
+    state.remove(node)?;
+    println!("Removed remote {}", node.name);
+    Ok(())
+}
+
+async fn cleanup_bucket_and_role(
+    cloud: &impl Cloud,
+    state: &State,
+    node: &RemoteNode,
+    keep_bucket: bool,
+) -> Result<()> {
     if let Some(bucket) = node.bucket() {
         let role = node
             .cloud_settings()
@@ -258,11 +273,6 @@ pub async fn run(
             }
         }
     }
-    for current in nodes {
-        state.remove_key(current)?;
-    }
-    state.remove(node)?;
-    println!("Removed remote {}", node.name);
     Ok(())
 }
 
