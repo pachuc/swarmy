@@ -1928,3 +1928,44 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
             .any(|call| call == "role swarmy-cleanup")
     );
 }
+
+#[tokio::test]
+async fn tag_refuses_cloud_resources_owned_by_another_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    cloud.foreign_bucket.set(true);
+    assert!(
+        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+            .await
+            .is_err()
+    );
+    assert!(cloud.tagged.borrow().is_empty());
+    cloud.foreign_bucket.set(false);
+    cloud.foreign_role.set(true);
+    assert!(
+        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+            .await
+            .is_err()
+    );
+    assert_eq!(*cloud.tagged.borrow(), ["bucket test-bucket"]);
+}
