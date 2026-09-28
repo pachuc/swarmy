@@ -53,6 +53,13 @@ impl Snapshot {
         self
     }
 
+    /// A failed recovery ends the turn even when a system notice was appended.
+    #[must_use]
+    pub fn end_turn(mut self) -> Self {
+        self.phase = Phase::EndTurn;
+        self
+    }
+
     /// Replays an ordered tail without changing the input snapshot or events.
     /// State and snapshot bookkeeping events do not change conversation decisions.
     #[must_use]

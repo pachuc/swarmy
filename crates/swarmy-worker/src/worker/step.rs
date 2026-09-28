@@ -648,6 +648,9 @@ impl Worker {
         if omit_attempt && let Some(id) = prior_completion {
             replayed = replayed.without_message(id);
         }
+        if skip_compaction {
+            replayed = replayed.end_turn();
+        }
         Ok(replayed)
     }
 

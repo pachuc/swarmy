@@ -65,10 +65,20 @@ impl Worker {
             return Ok(false);
         };
         if let Some(last_seq) = events.iter().rev().find_map(|event| match event {
-            Event::InferenceCompleted { seq, .. } | Event::InferenceFailed { seq, .. } => Some(*seq),
+            Event::InferenceCompleted { seq, .. } | Event::InferenceFailed { seq, .. } => {
+                Some(*seq)
+            }
             _ => None,
-        }) && events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.role == swarmy_core::MessageRole::User)) {
-            return Ok(false);
+        }) {
+            if events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.role == swarmy_core::MessageRole::User)) {
+                return Ok(false);
+            }
+            // A failed attempt with no compactable head has no summary job.
+            // Its durable notice is the one-attempt guard until new input.
+            if events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text == "Context overflow recovery could not compact this turn." || text == "Truncated response recovery could not compact this turn.")))) {
+                self.finish_failed_recovery(session, lease, snapshot, events, turn, false).await?;
+                return Ok(true);
+            }
         }
         let job = match last {
             Event::InferenceFailed {
@@ -143,13 +153,26 @@ impl Worker {
         }
         // Pi omits the failed attempt before trying to compact. Even if no
         // head remains, never execute a truncated tool call or replay it.
-        let cleaned = match last {
-            Event::InferenceCompleted { message, .. } => {
-                snapshot.clone().without_message(message.id)
-            }
-            _ => snapshot.clone(),
+        let text = if stopped_on_length {
+            "Truncated response recovery could not compact this turn."
+        } else {
+            "Context overflow recovery could not compact this turn."
         };
-        self.finish_failed_recovery(session, lease, &cleaned, events, turn, true)
+        self.append(
+            session,
+            lease,
+            events,
+            &[Event::MessageAppended {
+                seq: 0,
+                message: swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::System,
+                    parts: vec![swarmy_core::Part::Text { text: text.into() }],
+                },
+            }],
+        )
+        .await?;
+        self.finish_failed_recovery(session, lease, snapshot, events, turn, true)
             .await?;
         Ok(true)
     }
