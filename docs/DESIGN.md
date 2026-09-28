@@ -107,10 +107,12 @@ The worker checks after tool results and before the next inference request, and
 also at the end of a completed turn. The trigger is the model context window
 minus a 16,384-token reserve (an explicit model or stack threshold may override
 it). Unknown windows do not trigger usage compaction; provider overflow can
-still start recovery. Every successor retains approximately 20,000 recent
-context tokens in complete tool rounds, for both main and side sessions. The
-summary goes in a user opening, followed by the retained tail. Mid-turn work
-resumes from the tool results without an invented continue instruction.
+still start recovery. Main and side successors retain approximately 20,000
+recent context tokens in complete tool rounds; a single oversized round may
+exceed that budget. When there is no head before the kept tail, compaction
+is skipped. The summary goes in a user opening, followed by exactly the tail
+that the summary request omitted. Mid-turn work resumes from the tool results
+without an invented continue instruction.
 
 Swarmy ports Pi's summarizer system prompt (`badlogic/pi-mono`,
 `packages/coding-agent/src/core/compaction/utils.ts:156-158`), Markdown
@@ -119,9 +121,16 @@ prompt (`compaction.ts:964-978`), and user summary envelope
 (`packages/coding-agent/src/core/messages.ts:11-16`). The old context is
 serialized as one user message under `<conversation>`, not sent as live chat
 history (`utils.ts:109-149`, with tool output truncated at 2,000 characters).
-Previous checkpoints are carried in `<previous-summary>`. Read and modified
+Previous checkpoints are carried in `<previous-summary>`. When the cut splits
+the active user turn, a separate request with Pi's turn-prefix prompt and a
+half-reserve output cap summarizes the omitted part of that turn; its result
+is merged under `**Turn Context (split turn):**` (`compaction.ts:1016-1054,
+1101-1140`). Read and modified
 file paths from explicit file-tool calls are appended cumulatively as Pi does
-(`utils.ts:25-94`, `compaction.ts:1079-1080`). The one-off request has no
+(`utils.ts:25-94`, `compaction.ts:1079-1080`). Swarmy counts UTF-8 bytes
+for its token estimate and serde_json retains sorted object keys; Pi estimates
+UTF-16 character counts and preserves argument insertion order. The one-off
+request has no
 tools or cache writes, uses the conversation's reasoning effort, and caps
 output at min(0.8 times reserve, model output limit)
 (`compaction.ts:728-790`). Length-stopped, empty, failed, or tool-calling
@@ -136,8 +145,10 @@ the summary. This also means that a summary is never re-parsed into a local
 JSON schema. OpenCode's output handling and auto-continue are separate designs:
 the 4,096-token cap was swarmy's own choice, not a general OpenCode rule.
 Pi retries transient summarization transport failures according to its shared
-retry policy, but does not accept a length-stopped summary or retry that
-truncated text as a valid checkpoint.
+retry policy (`compaction.ts:636-660`), but does not accept a length-stopped
+summary or retry that truncated text as a valid checkpoint. Swarmy additionally
+rejects empty summaries and checks `summary_fits` against the model window
+before submitting. A permanent summary failure leaves an explanatory notice.
 
 Memory files live on the agent's home volume, by default under
 `/home/agent/memory`, configured with `SWARMY_MEMORY_DIR`. Agents use the file tools
