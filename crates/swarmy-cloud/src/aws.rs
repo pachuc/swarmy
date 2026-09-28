@@ -41,12 +41,7 @@ impl Aws {
         owner: &str,
         existing: Vec<aws_sdk_s3::types::Tag>,
     ) -> Result<()> {
-        let mut tags: Vec<_> = existing
-            .into_iter()
-            .filter(|tag| tag.key() != "managed-by" && tag.key() != "swarmy-remote")
-            .collect();
-        tags.push(s3_tag("managed-by", "swarmy"));
-        tags.push(s3_tag("swarmy-remote", owner));
+        let tags = merged_bucket_tags(existing, owner);
         self.s3
             .put_bucket_tagging()
             .bucket(name)
@@ -301,6 +296,19 @@ fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
         .value(value)
         .build()
         .expect("tag fields")
+}
+
+fn merged_bucket_tags(
+    existing: Vec<aws_sdk_s3::types::Tag>,
+    owner: &str,
+) -> Vec<aws_sdk_s3::types::Tag> {
+    let mut tags: Vec<_> = existing
+        .into_iter()
+        .filter(|tag| tag.key() != "managed-by" && tag.key() != "swarmy-remote")
+        .collect();
+    tags.push(s3_tag("managed-by", "swarmy"));
+    tags.push(s3_tag("swarmy-remote", owner));
+    tags
 }
 
 fn ensure_not_another_remote<'a>(
@@ -975,7 +983,24 @@ mod tests {
 
 #[cfg(test)]
 mod ownership_tag_tests {
-    use super::{ensure_not_another_remote, s3_tag};
+    use super::{ensure_not_another_remote, merged_bucket_tags, s3_tag};
+
+    #[test]
+    fn adoption_preserves_unrelated_bucket_tags() {
+        let tags = merged_bucket_tags(
+            vec![s3_tag("purpose", "backup"), s3_tag("managed-by", "legacy")],
+            "mine",
+        );
+        assert_eq!(tags.len(), 3);
+        assert!(
+            tags.iter()
+                .any(|tag| tag.key() == "purpose" && tag.value() == "backup")
+        );
+        assert!(
+            tags.iter()
+                .any(|tag| tag.key() == "swarmy-remote" && tag.value() == "mine")
+        );
+    }
 
     #[test]
     fn adoption_rejects_foreign_owner_even_without_managed_by() {

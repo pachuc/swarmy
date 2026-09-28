@@ -24,6 +24,8 @@ struct FakeCloud {
     untagged_profile: Cell<bool>,
     untagged_role: Cell<bool>,
     tagged: RefCell<Vec<String>>,
+    foreign_bucket: Cell<bool>,
+    foreign_role: Cell<bool>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
@@ -147,10 +149,16 @@ impl Cloud for FakeCloud {
         )))
     }
     fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+        if self.foreign_bucket.get() {
+            return std::future::ready(Err(anyhow::anyhow!("bucket belongs to another remote")));
+        }
         self.tagged.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+        if self.foreign_role.get() {
+            return std::future::ready(Err(anyhow::anyhow!("role belongs to another remote")));
+        }
         self.tagged
             .borrow_mut()
             .push(format!("role and profile {name}"));
