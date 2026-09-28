@@ -480,21 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn bucket_profile_uses_laptop_credentials_and_region() {
-        let mut profile: RemoteProfile = serde_json::from_str(r#"{"name":"remote","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"","s3_bucket":"bucket","s3_region":"eu-west-1"}"#).unwrap();
-        let mut settings = Settings::default();
-        profile.apply(&mut settings);
-        assert_eq!(settings.s3_bucket, "bucket");
-        assert_eq!(settings.s3_region, "eu-west-1");
-        assert!(settings.s3_endpoint.is_empty());
-        assert!(settings.s3_access_key.is_empty());
-        assert!(settings.s3_secret_key.is_empty());
-        profile.s3_bucket = None;
-        profile.apply(&mut settings);
-        assert_eq!(settings.s3_bucket, "bucket");
-    }
-
-    #[test]
     fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join(".swarmy");

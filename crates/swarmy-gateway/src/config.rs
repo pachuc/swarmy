@@ -286,8 +286,3 @@ fn ensure(condition: bool, reason: &'static str) -> Result<()> {
         Err(Error::Configuration(reason))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}

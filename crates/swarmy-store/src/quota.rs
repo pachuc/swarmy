@@ -281,8 +281,3 @@ fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
         .map(|(_, value)| *value)
         .min()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
