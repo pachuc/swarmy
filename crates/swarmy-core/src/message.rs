@@ -75,7 +75,7 @@ pub enum Part {
 pub enum NoticeKind {
     EffortClamped,
     /// Legacy notice discriminant retained for old logs; never emitted.
-    #[serde(rename = "context_pressure")]
+    #[serde(rename = "legacy_context_notice")]
     LegacyContextNotice,
 }
 

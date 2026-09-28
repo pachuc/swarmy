@@ -118,7 +118,12 @@ impl Worker {
             return Ok(false);
         }
         if let Some(previous) = self.store.previous_session(session.session_id).await? {
-            let prior = self.store.read_events(previous, 0, 10_000).await?;
+            let previous_record = self
+                .store
+                .fetch_session(previous)
+                .await?
+                .context("missing predecessor session")?;
+            let prior = self.tail(previous, 0, previous_record.head_seq).await?;
             if prior.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))) {
                 tracing::warn!(session_id = %session.session_id, "context overflow recovery failed after one attempt");
                 return Ok(false);
@@ -323,26 +328,17 @@ impl Worker {
             .get_agent(session.agent_id)
             .await?
             .is_some_and(|agent| agent.main_session == Some(session.session_id));
-        let valid = !text.trim().is_empty()
-            && !message
-                .parts
-                .iter()
-                .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
-            && if let Some(id) = events.iter().rev().find_map(|event| match event {
-                Event::InferenceCompleted { request_id, .. } => Some(*request_id),
-                _ => None,
-            }) {
-                self.store
-                    .get_inference_result::<Result<swarmy_llm::Response, String>>(id)
-                    .await?
-                    .is_some_and(|response| {
-                        response.is_ok_and(|response| {
-                            response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
-                        })
-                    })
-            } else {
-                false
-            };
+        let response = if let Some(id) = events.iter().rev().find_map(|event| match event {
+            Event::InferenceCompleted { request_id, .. } => Some(*request_id),
+            _ => None,
+        }) {
+            self.store
+                .get_inference_result::<Result<swarmy_llm::Response, String>>(id)
+                .await?
+        } else {
+            None
+        };
+        let valid = valid_summary(&text, message, response.as_ref());
         if !valid {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
@@ -457,6 +453,24 @@ impl Worker {
         }
     }
 }
+/// Pi utils.ts:607-622 rejects failed or length-stopped checkpoints.
+fn valid_summary(
+    text: &str,
+    message: &swarmy_core::Message,
+    response: Option<&Result<swarmy_llm::Response, String>>,
+) -> bool {
+    !text.trim().is_empty()
+        && !message
+            .parts
+            .iter()
+            .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
+        && response.is_some_and(|response| {
+            response.as_ref().is_ok_and(|response| {
+                response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
+            })
+        })
+}
+
 /// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
@@ -519,7 +533,7 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
     while cut < messages.len() && !is_safe_tail_cut(messages, cut) {
         cut += 1;
     }
-    if cut == 0 && messages.len() > 1 && messages[1].role == Assistant {
+    if cut == 0 && messages.len() > 1 && is_safe_tail_cut(messages, 1) {
         cut = 1;
     }
     // The budget bounds what comes before the last round, never the round
@@ -547,12 +561,11 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
     messages[cut..].to_vec()
 }
 
-/// A tail cut is safe at the start, or between a completed tool result and
-/// the next assistant message. Cuts never land between a tool call and its
-/// result, and never inside an assistant message that carries reasoning.
+/// Pi compaction.ts:453-508 cuts at user or assistant messages, never at
+/// tool results. A tool call stays attached to the result that follows it.
 pub(super) fn is_safe_tail_cut(messages: &[swarmy_core::Message], cut: usize) -> bool {
-    use swarmy_core::MessageRole::{Assistant, Tool};
-    cut == 0 || (messages[cut - 1].role == Tool && messages[cut].role == Assistant)
+    use swarmy_core::MessageRole::{Assistant, User};
+    cut == 0 || matches!(messages[cut].role, Assistant | User)
 }
 
 /// Start of the last complete tool round, if any: the latest assistant
@@ -589,13 +602,34 @@ pub(super) fn summary_request(
             .unwrap_or(u64::MAX)
             .min(SUMMARY_RESERVE_TOKENS * 4 / 5),
     );
+    let prompt = summary_prompt(messages);
+    swarmy_llm::Request {
+        system_prompt: swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.into(),
+        messages: vec![swarmy_core::Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text { text: prompt }],
+        }],
+        tools: Vec::new(),
+        settings,
+        no_cache: true,
+    }
+}
+
+fn summary_prompt(messages: &[swarmy_core::Message]) -> String {
     let previous = messages
         .first()
         .and_then(|message| message.parts.first())
         .and_then(|part| match part {
             swarmy_core::Part::Text { text } => text
                 .strip_prefix(swarmy_harness::COMPACTION_SUMMARY_PREFIX)
-                .and_then(|text| text.strip_suffix(swarmy_harness::COMPACTION_SUMMARY_SUFFIX)),
+                .and_then(|text| text.strip_suffix(swarmy_harness::COMPACTION_SUMMARY_SUFFIX))
+                // Old successors began with a system message containing JSON.
+                // Carry that checkpoint opaquely; never parse or rewrite it.
+                .or_else(|| {
+                    text.starts_with("Conversation summarized. Previous session:")
+                        .then_some(text.as_str())
+                }),
             _ => None,
         });
     let conversation = serialize_conversation(if previous.is_some() {
@@ -616,17 +650,7 @@ pub(super) fn summary_request(
     } else {
         swarmy_harness::SUMMARIZATION_PROMPT
     });
-    swarmy_llm::Request {
-        system_prompt: swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.into(),
-        messages: vec![swarmy_core::Message {
-            id: MessageId::from_ulid(Ulid::generate()),
-            role: swarmy_core::MessageRole::User,
-            parts: vec![swarmy_core::Part::Text { text: prompt }],
-        }],
-        tools: Vec::new(),
-        settings,
-        no_cache: true,
-    }
+    prompt
 }
 
 /// Pi utils.ts:109-149: serialize old context as data, never as live chat turns.
@@ -683,7 +707,12 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
                             ToolResult::Completed { output, .. } => output,
                             ToolResult::Error { error } => error,
                         };
-                        let truncated: String = output.chars().take(2_000).collect();
+                        let mut truncated: String = output.chars().take(2_000).collect();
+                        let omitted = output.chars().count().saturating_sub(2_000);
+                        if omitted > 0 {
+                            write!(truncated, "\n\n[... {omitted} more characters truncated]")
+                                .expect("write to String");
+                        }
                         lines.push(format!("[Tool result]: {truncated}"));
                     }
                 }
@@ -772,4 +801,114 @@ fn file_lists(messages: &[swarmy_core::Message]) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod pi_compaction_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use swarmy_core::{Message, MessageRole, Part, ToolCallId};
+    use swarmy_llm::{Response, StopReason};
+
+    fn text(role: MessageRole, value: &str) -> Message {
+        Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role,
+            parts: vec![Part::Text { text: value.into() }],
+        }
+    }
+
+    fn answer(stop_reason: StopReason) -> Response {
+        Response {
+            parts: vec![Part::Text {
+                text: "## Goal\nFinish".into(),
+            }],
+            stop_reason,
+            usage: swarmy_core::TokenUsage::default(),
+            quota_remaining: BTreeMap::default(),
+            quota_resets: BTreeMap::default(),
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_empty_and_tool_calling_summaries() {
+        let message = text(MessageRole::Assistant, "## Goal\nFinish");
+        assert!(!valid_summary(
+            "## Goal\nFinish",
+            &message,
+            Some(&Ok(answer(StopReason::MaxOutputTokens)))
+        ));
+        assert!(!valid_summary(
+            " \n ",
+            &message,
+            Some(&Ok(answer(StopReason::EndTurn)))
+        ));
+        assert!(!valid_summary(
+            "## Goal\nFinish",
+            &message,
+            Some(&Err("provider failed".into()))
+        ));
+        assert!(!valid_summary("## Goal\nFinish", &message, None));
+        let mut tool = message.clone();
+        tool.parts.push(Part::ToolCall {
+            call_id: ToolCallId("read-1".into()),
+            tool: "read".into(),
+            input: serde_json::json!({"path": "src/main.rs"}),
+        });
+        assert!(!valid_summary(
+            "## Goal\nFinish",
+            &tool,
+            Some(&Ok(answer(StopReason::EndTurn)))
+        ));
+        assert!(valid_summary(
+            "## Goal\nFinish",
+            &message,
+            Some(&Ok(answer(StopReason::EndTurn)))
+        ));
+    }
+
+    #[test]
+    fn serializes_old_messages_as_data_and_truncates_tool_results() {
+        let mut assistant = text(MessageRole::Assistant, "Working");
+        assistant.parts.push(Part::ToolCall {
+            call_id: ToolCallId("read-1".into()),
+            tool: "read".into(),
+            input: serde_json::json!({"path": "src/main.rs"}),
+        });
+        let tool = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: ToolCallId("read-1".into()),
+                result: swarmy_core::ToolResult::Completed {
+                    output: "x".repeat(2_100),
+                    title: String::new(),
+                    metadata: BTreeMap::default(),
+                },
+            }],
+        };
+        let serialized =
+            serialize_conversation(&[text(MessageRole::User, "Start"), assistant, tool]);
+        assert!(serialized.starts_with("[User]: Start\n\n[Assistant]: Working"));
+        assert!(serialized.contains("[Assistant tool calls]: read(path=\"src/main.rs\")"));
+        assert!(serialized.contains(&format!("[Tool result]: {}", "x".repeat(2_000))));
+        assert!(!serialized.contains(&"x".repeat(2_001)));
+        assert!(serialized.contains("[... 100 more characters truncated]"));
+    }
+
+    #[test]
+    fn update_prompt_carries_previous_checkpoint_without_replaying_it() {
+        let previous = text(
+            MessageRole::User,
+            &format!(
+                "{}## Goal\nOld{}",
+                swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+            ),
+        );
+        let prompt = summary_prompt(&[previous, text(MessageRole::User, "New task")]);
+        assert!(prompt.contains("<conversation>\n[User]: New task\n</conversation>"));
+        assert!(prompt.contains("<previous-summary>\n## Goal\nOld\n</previous-summary>"));
+        assert!(prompt.contains(swarmy_harness::UPDATE_SUMMARIZATION_PROMPT));
+    }
 }
