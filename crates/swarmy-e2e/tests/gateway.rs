@@ -268,6 +268,7 @@ impl Fixture {
         let request_id = RequestId::for_step(session_id, lease.seq);
         let job = InferenceJob {
             summary: false,
+            summary_prefix: false,
             provider: "fake".into(),
             entry: None,
             route: None,

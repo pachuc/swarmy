@@ -1552,6 +1552,7 @@ mod retry_tests {
         let step = 1;
         swarmy_llm::InferenceJob {
             summary: false,
+            summary_prefix: false,
             session_id,
             step,
             request_id: swarmy_core::RequestId::for_step(session_id, step),

@@ -1948,16 +1948,31 @@ fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
         }
         responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
     }
-    responses.insert(
-        "40".into(),
-        serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
-    );
+    if split_turn {
+        responses.insert(
+            "40".into(),
+            serde_json::to_value(side_response("## Goal\nEarlier work".into(), 6200)).unwrap(),
+        );
+        responses.insert(
+            "41".into(),
+            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
+        );
+    } else {
+        responses.insert(
+            "40".into(),
+            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
+        );
+    }
+    let offset = u64::from(split_turn);
     for round in 41..45_u64 {
         let response = side_tool_response(&format!("clock-{round}"), 12, round % 5 == 0);
-        responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
+        responses.insert(
+            (round + offset).to_string(),
+            serde_json::to_value(response).unwrap(),
+        );
     }
     responses.insert(
-        "45".into(),
+        (45 + offset).to_string(),
         serde_json::to_value(side_response("Finished; nothing remains.".into(), 12)).unwrap(),
     );
     std::fs::write(
@@ -2054,7 +2069,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         let agent = f.store.create_agent("split-turn", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
@@ -2067,22 +2082,29 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
             _ => None,
         });
         let mut found_prefix = false;
+        let mut found_history = false;
         for event in &old {
             if let Event::InferenceRequested { request_id, .. } = event {
                 let job: swarmy_llm::InferenceJob = f.store.get_inference_input(*request_id).await.unwrap().unwrap();
                 if job.summary {
-                    found_prefix = true;
-                    assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
-                    let Part::Text { text } = &job.request.messages[0].parts[0] else { panic!("prefix prompt missing") };
-                    assert!(text.starts_with("# Conversation\n"));
-                    assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+                    let Part::Text { text } = &job.request.messages[0].parts[0] else { panic!("summary prompt missing") };
+                    if job.summary_prefix {
+                        found_prefix = true;
+                        assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
+                        assert!(text.starts_with("# Conversation\n"));
+                        assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+                    } else {
+                        found_history = true;
+                        assert!(text.contains("Previous task"));
+                        assert!(!text.contains("What time is it?"));
+                    }
                 }
             }
         }
-        assert!(summary_id.is_some() && found_prefix);
+        assert!(summary_id.is_some() && found_history && found_prefix);
         let events = read_all_events(f, successor).await;
         let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
-        assert!(matches!(&message.parts[0], Part::Text { text } if text.contains("**Turn Context (split turn):**") && text.contains(prefix)));
+        assert!(matches!(&message.parts[0], Part::Text { text } if text.contains("**Turn Context (split turn):**") && text.contains(prefix) && text.contains("## Goal\nEarlier work")));
         assert_continued_tool_pairs(&successor_messages(&events));
     })).await;
 }
