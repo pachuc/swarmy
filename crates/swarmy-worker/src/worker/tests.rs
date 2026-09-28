@@ -328,7 +328,7 @@ mod side_tail_tests {
     fn mid_turn_fast_path_needs_no_store_reads() {
         use super::super::summarize::last_side_usage;
         use swarmy_core::{Event, RequestId, SessionId, TokenUsage};
-        // Folds below pressure decide from the events the worker already
+        // Folds below the compaction threshold decide from the events the worker already
         // holds: zero transactions, zero store reads. This test pins that by
         // deciding without a `Store` at all.
         let session = SessionId::from_ulid(Ulid::generate());

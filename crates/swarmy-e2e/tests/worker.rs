@@ -1868,7 +1868,7 @@ fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Respons
 fn write_fleet_side_script(fixture: &Fixture, summary: &str) {
     // Forty tool rounds with input usage ramping past the 6000-token
     // threshold at round 39, so the summary request lands mid-turn at call
-    // 40. The summary response reports usage above the pressure level so the
+    // 40. The summary response reports usage above the compaction threshold so the
     // gateway sends it down the slow path to archival. The remaining rounds
     // run small in the successor and finish the task there.
     let mut responses = serde_json::Map::new();
