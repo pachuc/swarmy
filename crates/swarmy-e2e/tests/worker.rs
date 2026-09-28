@@ -1681,7 +1681,9 @@ async fn check_overflow_recovery(second_overflow: bool) {
         assert_eq!(f.store.previous_session(successor).await.unwrap(), Some(id));
         assert!(f.store.next_session(successor).await.unwrap().is_none());
         assert_eq!(events.iter().filter(|event| matches!(event, Event::InferenceFailed { .. })).count(), usize::from(second_overflow));
-        if !second_overflow {
+        if second_overflow {
+            assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."))));
+        } else {
             assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
         }
     })).await;
