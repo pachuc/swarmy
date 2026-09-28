@@ -199,7 +199,7 @@ clippy-warm	2	0	0
 clippy-touch	2	57	0
 ```
 
-The baseline did not time cold clippy, core-touch tests, or a full all-in test separately. The cold `--no-run` build plus the immediately following execution gives a comparable split. Runs and return codes are recorded in the measurement log; cold/cached/core-touch are not conflated.
+The baseline did not time cold clippy, core-touch tests, or a full all-in test separately. The cold `--no-run` build plus the immediately following execution gives a comparable split. The baseline's 414 s "cached clippy" was actually its *first clippy invocation after a test build*, whereas the 0 s row above is an unchanged rerun of clippy itself. Those are different caches and **the -100% figure must not be interpreted as an improvement**. A separate paired measurement below reproduces the baseline ordering. The execution-only runs still fail, but at a different point: 3 of 5 `swarmy-api` `cli_auth` tests pass and 2 fail because `swarmy-auth` was not installed in the sandbox. The helper was installed after the timing matrix for subsequent validation. The historical run failed all 5 on its target-triple heuristic. Exit codes are kept with the timings rather than implying a successful suite.
 
 ### API fake first-token latency
 
