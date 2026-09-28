@@ -35,6 +35,54 @@ impl Aws {
         }
     }
 
+    async fn delete_role_policies(&self, name: &str) -> Result<()> {
+        loop {
+            let policies = self
+                .iam
+                .list_role_policies()
+                .role_name(name)
+                .send()
+                .await
+                .context("iam:ListRolePolicies")?;
+            if policies.policy_names().is_empty() {
+                break;
+            }
+            for policy in policies.policy_names() {
+                self.iam
+                    .delete_role_policy()
+                    .role_name(name)
+                    .policy_name(policy)
+                    .send()
+                    .await
+                    .context("iam:DeleteRolePolicy")?;
+            }
+        }
+        loop {
+            let policies = self
+                .iam
+                .list_attached_role_policies()
+                .role_name(name)
+                .send()
+                .await
+                .context("iam:ListAttachedRolePolicies")?;
+            if policies.attached_policies().is_empty() {
+                break;
+            }
+            for policy in policies.attached_policies() {
+                if let Some(arn) = policy.policy_arn() {
+                    self.iam
+                        .detach_role_policy()
+                        .role_name(name)
+                        .policy_arn(arn)
+                        .send()
+                        .await
+                        .context("iam:DetachRolePolicy")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn ensure_bucket_exists(&self, bucket: &str, region: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
         let mut created = false;
@@ -565,50 +613,7 @@ impl Cloud for Aws {
             Err(error) => return Err(error).context("iam:GetRole"),
         };
         if role.is_some() {
-            loop {
-                let policies = self
-                    .iam
-                    .list_role_policies()
-                    .role_name(name)
-                    .send()
-                    .await
-                    .context("iam:ListRolePolicies")?;
-                if policies.policy_names().is_empty() {
-                    break;
-                }
-                for policy in policies.policy_names() {
-                    self.iam
-                        .delete_role_policy()
-                        .role_name(name)
-                        .policy_name(policy)
-                        .send()
-                        .await
-                        .context("iam:DeleteRolePolicy")?;
-                }
-            }
-            loop {
-                let policies = self
-                    .iam
-                    .list_attached_role_policies()
-                    .role_name(name)
-                    .send()
-                    .await
-                    .context("iam:ListAttachedRolePolicies")?;
-                if policies.attached_policies().is_empty() {
-                    break;
-                }
-                for policy in policies.attached_policies() {
-                    if let Some(arn) = policy.policy_arn() {
-                        self.iam
-                            .detach_role_policy()
-                            .role_name(name)
-                            .policy_arn(arn)
-                            .send()
-                            .await
-                            .context("iam:DetachRolePolicy")?;
-                    }
-                }
-            }
+            self.delete_role_policies(name).await?;
             match self.iam.delete_role().role_name(name).send().await {
                 Ok(_) => {}
                 Err(error)
