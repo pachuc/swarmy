@@ -102,11 +102,18 @@ impl Worker {
         }
         // Pi agent-session.ts:901,952 resets the one-shot recovery guard on
         // new input or a successful assistant reply, not on every rollover.
-        let history = snapshot.replay(events);
-        let new_user = history.messages().iter().skip(1).any(|message| {
-            message.role == swarmy_core::MessageRole::User
-            && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)))
+        // The successor starts with a user-role summary and may replay the
+        // active user request. Neither is a new user turn. Only messages
+        // appended after its first inference reset the recovery guard.
+        let first_inference = events.iter().find_map(|event| match event {
+            Event::InferenceRequested { seq, .. } => Some(*seq),
+            _ => None,
         });
+        let new_user = first_inference.is_some_and(|first| events.iter().any(|event| {
+            matches!(event, Event::MessageAppended { seq, message }
+                if *seq > first && message.role == swarmy_core::MessageRole::User
+                    && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX))))
+        }));
         let mut successful_reply = false;
         if !new_user {
             for event in events {
@@ -612,8 +619,6 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
         total += estimate_message_tokens(message);
         start = index;
         if total >= SIDE_TAIL_BUDGET_TOKENS {
-            // The message that crosses the budget belongs to the head.
-            start = index.saturating_add(1);
             break;
         }
     }
