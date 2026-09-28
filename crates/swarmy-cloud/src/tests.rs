@@ -20,6 +20,7 @@ struct FakeCloud {
     teardown: RefCell<Vec<String>>,
     absent: Cell<bool>,
     deny_tag_read: Cell<bool>,
+    deny_create_tags: Cell<bool>,
     deny_version_list: Cell<bool>,
     absent_bucket: Cell<bool>,
     untagged: Cell<bool>,
@@ -66,6 +67,10 @@ impl Cloud for FakeCloud {
             .node_credentials
             .clone()
             .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
+        // Creation succeeds even when the account denies ownership tags.
+        if self.deny_create_tags.get() {
+            self.untagged.set(true);
+        }
         // The AWS provider writes the bucket policy to this role even on reuse.
         self.policy_roles.borrow_mut().push(role.clone());
         if !self.profile_present.replace(true) {
@@ -2019,4 +2024,48 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
         .unwrap_err();
     assert!(format!("{error:#}").contains("s3:ListBucketVersions"));
     assert!(state.read("cleanup").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud.deny_create_tags.set(true);
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    assert!(
+        down::confirm(&cloud, &state, &node, false, false, true)
+            .await
+            .is_ok()
+    );
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(state.read("cleanup").unwrap().is_none());
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|item| item.starts_with("bucket ") || item.starts_with("role "))
+    );
 }
