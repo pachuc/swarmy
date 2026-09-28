@@ -121,20 +121,29 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
    running CI until a merge commit is pushed. Trial-merge in a scratch
    worktree (`git worktree add`) to see the conflicts, then either resolve
    and push yourself for trivial ones or write a rebase round for the worker.
-5. Root suites (worker, store, gateway, scheduler, bus, sandbox, volume,
-   image changes) run on the suite node dev2-2, which hosts no workers, so
-   stopping its node daemon for a run affects nothing else. The scripts are
+5. Root suites run on the suite node dev2-2, which hosts no workers, so
+   stopping its node daemon for a run affects nothing else. They are serial
+   and slow (a full `--plus` run takes forty to sixty minutes), so run only
+   what the change can break, and nothing for docs, CLI-only, test-only,
+   fleet-script, or fixture-covered provider changes: the node suite for
+   swarmyd, sandbox, placement, and hosting; the chaos suites for worker,
+   scheduler, gateway, and bus paths the chaos harness kills; image, vol,
+   and nbd for those crates; stored-format changes for every suite that
+   reads them. State in one line which suite a change could break before
+   queueing. The scripts are
    in `scripts/node-suites/`; copy them to the node's home directory after
    changing them. Queue a run detached:
-   `setsid nohup bash ~/suite-queue.sh --plus swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
+   `setsid nohup bash ~/suite-queue.sh --at COMMIT --chaos swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
    (`--plus` adds the image, vol, and nbd suites to the default node and chaos
-   set; `--node` runs the node suite alone; `--only "PACKAGE TEST"` reruns one
-   suite with full output). Every run takes `~/suite.lock`, so queued runs
+   set; `--node` runs the node suite alone; `--chaos` runs the three chaos
+   suites and `chaos-ci.sh`; `--only "PACKAGE TEST"` runs one suite;
+   `--at COMMIT` pins the commit, because the branch head is read when the
+   run starts and a worker still pushing can leave it uncompilable). Every run takes `~/suite.lock`, so queued runs
    wait for each other however they were started. Each branch appends
    `QUEUE_DONE <branch> <mode> SUITES_EXIT=<0|1>` to `~/suite-queue.log`, with
    the run log at `~/suite-logs/<suffix>-<mode>.log` and each suite's full
-   output at `~/suite-logs/<suffix>-<package>-<test>.log`. A full `--plus` run
-   takes about forty minutes. `swarmy image build` needs an API, which
+   output at `~/suite-logs/<suffix>-<package>-<test>.log`.
+   `swarmy image build` and the chaos suites need an API, which
    `root-suites.sh` serves on a loopback port.
 
    The chaos suites run the service executables (scheduler, worker, gateway,
