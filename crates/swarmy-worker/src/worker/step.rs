@@ -584,7 +584,7 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        self.finish_inner(session, lease, snapshot, events, turn, false)
+        self.finish_inner(session, lease, snapshot, events, turn, false, false)
             .await
     }
 
@@ -595,8 +595,9 @@ impl Worker {
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
+        omit_attempt: bool,
     ) -> Result<()> {
-        self.finish_inner(session, lease, snapshot, events, turn, true)
+        self.finish_inner(session, lease, snapshot, events, turn, true, omit_attempt)
             .await
     }
 
@@ -606,6 +607,7 @@ impl Worker {
         events: &[Event],
         mut replayed: Snapshot,
         skip_compaction: bool,
+        omit_attempt: bool,
     ) -> Result<Snapshot> {
         if !(skip_compaction || self.summary_completed(session, events).await?) {
             return Ok(replayed);
@@ -643,7 +645,7 @@ impl Worker {
         for id in summary_replies.into_iter().chain(recovery_replies) {
             replayed = replayed.without_message(id);
         }
-        if skip_compaction && let Some(id) = prior_completion {
+        if omit_attempt && let Some(id) = prior_completion {
             replayed = replayed.without_message(id);
         }
         Ok(replayed)
@@ -657,6 +659,7 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
         skip_compaction: bool,
+        omit_attempt: bool,
     ) -> Result<()> {
         if !skip_compaction
             && !session.interrupt_requested
@@ -682,6 +685,7 @@ impl Worker {
                     events,
                     snapshot.replay(events),
                     skip_compaction,
+                    omit_attempt,
                 )
                 .await?;
             let bytes = encode(&replayed)?;

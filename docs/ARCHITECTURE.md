@@ -144,8 +144,23 @@ changes in [api-breaks.txt](api-breaks.txt) (see
   [tools.rs](../crates/swarmy-store/src/tools.rs),
   [api_idempotency.rs](../crates/swarmy-store/src/api_idempotency.rs)).
 
-Conversation compaction summarizes older history into a successor session; see
-[worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs).
+### Context compaction
+
+The worker compacts a named conversation when total context tokens exceed the
+model window minus a 16,384-token reserve, or after a recoverable overflow or
+early length stop. It serializes the head of the history into a Pi-style
+Markdown checkpoint, keeps a recent tail of about 20,000 tokens, and creates
+a successor session whose first user message contains that checkpoint. If the
+cut splits a turn, a second checkpoint summarizes the turn prefix separately.
+An unsuccessful checkpoint leaves the original session available. A recovery
+attempt is limited to one compact-and-retry per turn; a second failure is
+reported as a session notice, where Pi emits a compaction event. Swarmy retains
+its successor-session rollover instead of Pi's in-session compaction.
+
+The prompts and cut handling come from Pi's
+`packages/coding-agent/src/core/compaction/compaction.ts` and `utils.ts`;
+see [worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs) and
+[harness prompts](../crates/swarmy-harness/src/lib.rs) for the implementation.
 
 ## What runs where
 

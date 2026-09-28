@@ -115,7 +115,7 @@ impl Worker {
                     id: MessageId::from_ulid(Ulid::generate()),
                     role: swarmy_core::MessageRole::System,
                     parts: vec![swarmy_core::Part::Text {
-                        text: "Truncated response recovery failed".into(),
+                        text: "Truncated response recovery failed after one compact-and-retry attempt.".into(),
                     }],
                 };
                 self.append(
@@ -128,13 +128,56 @@ impl Worker {
                     }],
                 )
                 .await?;
-                self.finish_failed_recovery(session, lease, snapshot, events, turn)
+                self.finish_failed_recovery(session, lease, snapshot, events, turn, false)
                     .await?;
                 return Ok(true);
             }
-            return Ok(false);
+            self.recovery_notice(session, lease, snapshot, events, turn, "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.").await?;
+            return Ok(true);
         }
-        self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
+        if self
+            .issue_summary(session, lease, snapshot, events, &job, (&[], true))
+            .await?
+        {
+            return Ok(true);
+        }
+        // Pi omits the failed attempt before trying to compact. Even if no
+        // head remains, never execute a truncated tool call or replay it.
+        let cleaned = match last {
+            Event::InferenceCompleted { message, .. } => {
+                snapshot.clone().without_message(message.id)
+            }
+            _ => snapshot.clone(),
+        };
+        self.finish_failed_recovery(session, lease, &cleaned, events, turn, true)
+            .await?;
+        Ok(true)
+    }
+
+    async fn recovery_notice(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+        text: &str,
+    ) -> Result<()> {
+        self.append(
+            session,
+            lease,
+            events,
+            &[Event::MessageAppended {
+                seq: 0,
+                message: swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::System,
+                    parts: vec![swarmy_core::Part::Text { text: text.into() }],
+                },
+            }],
+        )
+        .await?;
+        self.finish_failed_recovery(session, lease, snapshot, events, turn, false)
             .await
     }
 
@@ -182,40 +225,15 @@ impl Worker {
                 .await?
                 .context("missing predecessor session")?;
             let prior = self.tail(previous, 0, previous_record.head_seq).await?;
-            for event in prior.iter().rev() {
-                match event {
-                    Event::InferenceFailed {
-                        failure_kind: swarmy_core::FailureKind::ContextOverflow,
-                        ..
-                    } => {
-                        tracing::warn!(session_id = %session.session_id, "context recovery failed after one attempt");
-                        return Ok(true);
-                    }
-                    Event::InferenceCompleted { request_id, .. } => {
-                        if let Some(prior_job) = self
-                            .store
-                            .get_inference_input::<InferenceJob>(*request_id)
-                            .await?
-                        {
-                            if prior_job.summary {
-                                continue;
-                            }
-                            if let Some(Ok(response)) = self
-                                .store
-                                .get_inference_result::<Result<swarmy_llm::Response, String>>(
-                                    *request_id,
-                                )
-                                .await?
-                                && self.recoverable_length(&prior_job, &response)
-                            {
-                                tracing::warn!(session_id = %session.session_id, "length-stop recovery failed after one attempt");
-                                return Ok(true);
-                            }
-                        }
-                        break;
-                    }
-                    _ => {}
-                }
+            if let Some(request_id) = prior.iter().rev().find_map(|event| match event {
+                Event::InferenceRequested { request_id, .. } => Some(*request_id),
+                _ => None,
+            }) {
+                return Ok(self
+                    .store
+                    .get_inference_input::<InferenceJob>(request_id)
+                    .await?
+                    .is_some_and(|job| job.summary_recovery));
             }
         }
         Ok(false)
@@ -246,7 +264,7 @@ impl Worker {
             return Ok(false);
         }
         if mid_turn.is_some() {
-            let Some((mut provider, mut model, input)) = last_side_usage(events) else {
+            let Some((mut provider, mut model, tokens)) = last_side_usage(events) else {
                 return Ok(false);
             };
             if provider.is_empty() {
@@ -263,7 +281,7 @@ impl Worker {
                     .clone()
                     .unwrap_or_else(|| self.config.harness.settings.model.clone());
             }
-            if input <= self.config.side_summarization_threshold(&provider, &model) {
+            if tokens <= self.config.side_summarization_threshold(&provider, &model) {
                 return Ok(false);
             }
         }
@@ -308,8 +326,11 @@ impl Worker {
             // The stored job may reflect a newer agent model than the event
             // used to gate the mid-turn fast path.
             let threshold = self.config.side_summarization_threshold(provider, model);
-            let input = response.usage.input_tokens;
-            if input <= threshold {
+            let tokens = response
+                .usage
+                .input_tokens
+                .saturating_add(response.usage.output_tokens);
+            if tokens <= threshold {
                 return Ok(false);
             }
         }
@@ -783,9 +804,7 @@ const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
 const SUMMARY_RESERVE_TOKENS: u64 = 16_384;
 
-/// Rough token estimate for one message, chars divided by four like the Pi
-/// and `OpenCode` heuristics. Images count as a fixed 4,800 chars.
-/// Most recent completion usage, read from the in-memory event tail.
+/// Most recent completion's total usage from the in-memory event tail.
 pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
     events.iter().rev().find_map(|event| match event {
         Event::InferenceCompleted {
@@ -793,7 +812,11 @@ pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)>
             model,
             usage,
             ..
-        } => Some((provider.clone(), model.clone(), usage.input_tokens)),
+        } => Some((
+            provider.clone(),
+            model.clone(),
+            usage.input_tokens.saturating_add(usage.output_tokens),
+        )),
         _ => None,
     })
 }
@@ -818,8 +841,7 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
     chars.div_ceil(4) as u64
 }
 
-/// Keep complete tool rounds in the side successor tail, even when the last
-/// round alone exceeds the budget.
+/// Select the first safe cut after the recent-token budget is reached.
 pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Message> {
     if messages.is_empty() {
         return Vec::new();
