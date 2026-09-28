@@ -21,7 +21,7 @@ use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, NoticeKind, Nudge, Part, RequestId, SessionId,
+    AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::{Response, StopReason, TokenUsage};
@@ -427,6 +427,40 @@ impl Fixture {
             .unwrap();
         self.user_message(id).await;
         id
+    }
+
+    async fn compactable_user_message(&self, id: SessionId) {
+        let head = self
+            .store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        let mut history = vec![Event::MessageAppended {
+            seq: 0,
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text {
+                    text: "Previous task".into(),
+                }],
+            },
+        }];
+        for _ in 0..30 {
+            history.push(Event::MessageAppended {
+                seq: 0,
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts: vec![Part::Text {
+                        text: "x".repeat(3_000),
+                    }],
+                },
+            });
+        }
+        self.store.append_events(id, head, &history).await.unwrap();
+        self.user_message(id).await;
     }
 
     async fn user_message(&self, id: SessionId) {
@@ -1550,10 +1584,15 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
 async fn main_summary_atomically_archives_and_links_a_fresh_session() {
     run(|f| Box::pin(async move {
         f.summarize_at_tokens = 100;
-        let summary = serde_json::json!({
-            "goals": "Fix the tests", "state_of_work": "Parser fixed",
-            "open_questions": "Which release?", "facts_to_keep": "Repository is /home/agent/project"
-        }).to_string();
+        let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify".to_owned();
         let response = |text: String, input_tokens| Response {
             parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
             usage: TokenUsage { input_tokens, ..Default::default() },
@@ -1571,7 +1610,7 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
         };
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.store.set_main_session(agent.agent_id, id).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
@@ -1591,19 +1630,432 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
         assert_eq!(fresh.agent_id, agent.agent_id);
         let opening = f.store.read_events(new, 0, 64).await.unwrap();
         let Event::MessageAppended { message, .. } = &opening[0] else { panic!("opening missing") };
-        assert_eq!(message.role, MessageRole::System);
+        assert_eq!(message.role, MessageRole::User);
         let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        assert_eq!(serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(&summary).unwrap());
-        assert!(text.contains(&id.to_string()));
+        assert!(text.contains(&summary));
         let old = f.store.read_events(id, 0, 64).await.unwrap();
         assert_requests(id, &old, 2);
         assert_eq!(f.calls(), 2);
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
         // A duplicate, unfenced rollover cannot create a third session or move the pointer.
         let stale = swarmy_core::Lease { owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()), seq: 1, expires_at: Timestamp::now() };
-        assert!(f.store.summarize_main_session(id, 0, &stale, message).await.is_err());
+        assert!(f.store.summarize_main_session(id, 0, &stale, message, &[]).await.is_err());
         assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
+    })).await;
+}
+
+#[tokio::test]
+async fn context_overflow_compacts_and_retries_once() {
+    check_overflow_recovery(false).await;
+}
+
+#[tokio::test]
+async fn second_context_overflow_ends_the_turn() {
+    check_overflow_recovery(true).await;
+}
+
+async fn check_overflow_recovery(second_overflow: bool) {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nFinish the work\n\n## Next Steps\n1. Retry";
+        let mut failures = serde_json::json!({"0": {"status": 400, "message": "context overflow"}});
+        if second_overflow {
+            failures["2"] = serde_json::json!({"status": 400, "message": "context overflow again"});
+        }
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)},
+            "failures": failures
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("overflow-agent", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        let events = f.idle(successor).await;
+        assert_eq!(f.calls(), 3, "overflow, summary, and one retried request");
+        assert_eq!(f.store.previous_session(successor).await.unwrap(), Some(id));
+        assert!(f.store.next_session(successor).await.unwrap().is_none());
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::InferenceFailed { .. })).count(), usize::from(second_overflow));
+        if second_overflow {
+            assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."))));
+        } else {
+            assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+        }
+    })).await;
+}
+
+#[tokio::test]
+async fn clean_tool_completion_reenables_overflow_recovery() {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nFinish the work";
+        let mut large_tool = side_tool_response("clock-next", 20, false);
+        large_tool.parts.push(Part::Reasoning {
+            text: "thinking ".repeat(13_000),
+            metadata: std::collections::BTreeMap::new(),
+        });
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {
+                "1": side_response(summary.into(), 20),
+                "2": side_tool_response("clock-after-retry", 20, false),
+                "3": large_tool,
+                "5": side_response(summary.into(), 20),
+                "6": side_response("## Original Request\nContinue".into(), 20),
+                "7": side_response("Recovered again".into(), 20)
+            },
+            "failures": {
+                "0": {"status": 400, "message": "context overflow"},
+                "4": {"status": 400, "message": "context overflow after tool"}
+            }
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("clean-reset", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let first = wait_successor(f, id).await;
+        let second = wait_successor(f, first).await;
+        let events = f.idle(second).await;
+        assert_eq!(f.calls(), 8, "a clean tool reply resets the recovery guard");
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
+    })).await;
+}
+
+#[tokio::test]
+async fn new_user_turn_reenables_overflow_recovery() {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nKeep working";
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {
+                "1": side_response(summary.into(), 20),
+                "2": side_response("First recovered reply".into(), 20),
+                "4": side_response(summary.into(), 20),
+                "5": side_response("Second recovered reply".into(), 20)
+            },
+            "failures": {
+                "0": {"status": 400, "message": "context overflow"},
+                "3": {"status": 400, "message": "context overflow"}
+            }
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("reset-recovery", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let first = wait_successor(f, id).await;
+        f.idle(first).await;
+        let head = f.store.fetch_session(first).await.unwrap().unwrap().head_seq;
+        f.store.append_events(first, head, &[Event::MessageAppended {
+            seq: 0,
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text { text: "Next request ".repeat(9_000) }],
+            },
+        }]).await.unwrap();
+        f.wake(first).await;
+        let second = wait_successor(f, first).await;
+        let events = f.idle(second).await;
+        assert_eq!(f.calls(), 6, "each turn has one overflow, summary, and retry");
+        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Second recovered reply"))));
+    })).await;
+}
+
+#[tokio::test]
+async fn early_length_stop_compacts_without_replaying_truncated_reply() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.keyring();
+        f.put_entry("primary").await;
+        let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
+        truncated.stop_reason = StopReason::MaxOutputTokens;
+        truncated.usage.output_tokens = 1;
+        let summary = "## Goal\nFinish the work\n\n## Next Steps\n- Retry";
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": truncated, "1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("length-agent", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        let events = f.idle(successor).await;
+        assert_eq!(f.calls(), 3);
+        assert!(read_all_events(f, id).await.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT")))));
+        assert!(!successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("TRUNCATED_ATTEMPT")))));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+    })).await;
+}
+
+#[tokio::test]
+async fn second_length_stop_fails_with_notice() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.keyring();
+        f.put_entry("primary").await;
+        let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
+        truncated.stop_reason = StopReason::MaxOutputTokens;
+        truncated.usage.output_tokens = 1;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": truncated, "1": side_response("## Goal\nRetry".into(), 20), "2": truncated, "3": side_response("After retry limit".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("length-twice", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        let events = f.idle(successor).await;
+        assert_eq!(f.calls(), 3);
+        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery failed after one compact-and-retry attempt."))));
+        assert_eq!(successor_messages(&events).iter().filter(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))).count(), 1);
+        f.user_message(successor).await;
+        f.wake(successor).await;
+        f.idle(successor).await;
+        let prompt = f.histories().pop().unwrap();
+        assert!(prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))));
+    })).await;
+}
+
+#[tokio::test]
+async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.keyring();
+        f.put_entry("primary").await;
+        let mut truncated = side_response("UNUSABLE_TRUNCATION".into(), 20);
+        truncated.stop_reason = StopReason::MaxOutputTokens;
+        truncated.usage.output_tokens = 1;
+        let mut refused = side_response("REFUSED_CHECKPOINT".into(), 20);
+        refused.stop_reason = StopReason::MaxOutputTokens;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": truncated, "1": refused, "2": side_response("Next answer".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("refused-recovery", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 2);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 2, "idle wake must not reissue refused checkpoint");
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 3);
+        let prompt = f.histories().pop().unwrap();
+        assert!(!prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "UNUSABLE_TRUNCATION" || text == "REFUSED_CHECKPOINT"))));
+    })).await;
+}
+
+async fn seed_no_head_history(f: &Fixture, id: SessionId) {
+    let call_id = ToolCallId("large".into());
+    f.store
+        .append_events(
+            id,
+            0,
+            &[
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::User,
+                        parts: vec![Part::Text {
+                            text: format!(
+                                "{}## Goal\nContinue{}",
+                                swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                                swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+                            ),
+                        }],
+                    },
+                },
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Assistant,
+                        parts: vec![Part::ToolCall {
+                            call_id: call_id.clone(),
+                            tool: "get_time".into(),
+                            input: serde_json::json!({}),
+                        }],
+                    },
+                },
+                Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Tool,
+                        parts: vec![Part::ToolResult {
+                            call_id,
+                            result: ToolResult::Completed {
+                                output: "x".repeat(128 * 1024),
+                                title: String::new(),
+                                metadata: BTreeMap::new(),
+                            },
+                        }],
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn no_head_to_compact_omits_truncated_tool_attempt() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            let mut truncated = side_response("partial".into(), 20);
+            truncated.parts = vec![Part::ToolCall {
+                call_id: ToolCallId("abandoned".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            }];
+            truncated.stop_reason = StopReason::MaxOutputTokens;
+            truncated.usage.output_tokens = 1;
+            std::fs::write(
+                f.files.path().join("script.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "responses": {"0": truncated, "1": side_response("Next answer".into(), 20)}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("no-head-recovery", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            seed_no_head_history(f, id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert_eq!(f.calls(), 1);
+            assert!(f.store.next_session(id).await.unwrap().is_none());
+            assert!(
+                !successor_messages(&events)
+                    .iter()
+                    .any(|message| message.parts.iter().any(|part| match part {
+                        Part::Text { text } => text.contains("recovery could not compact"),
+                        _ => false,
+                    }))
+            );
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(
+                f.calls(),
+                1,
+                "an idle wake must not retry an omitted attempt"
+            );
+            f.user_message(id).await;
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(f.calls(), 2);
+            let prompt = f.histories().pop().unwrap();
+            assert!(!prompt.iter().any(|message| message.parts.iter().any(
+                |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
+            )));
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn empty_successful_summary_rolls_over() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 100;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": side_response("Original answer".into(), 101), "1": side_response(String::new(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("empty-summary", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let next = wait_successor(f, id).await;
+        assert_ne!(next, id);
+        assert_eq!(f.calls(), 2);
+    })).await;
+}
+
+#[tokio::test]
+async fn length_stopped_summary_preserves_session() {
+    rejected_summary_preserves_session("## Goal\nPartial", StopReason::MaxOutputTokens).await;
+}
+
+async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: StopReason) {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 100;
+        let mut summary_response = side_response(summary.into(), 20);
+        summary_response.stop_reason = stop_reason;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response,
+                "2": side_response("Next answer".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let events = f.idle(id).await;
+        assert_eq!(f.calls(), 2);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer")))));
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 3);
+        let next_prompt = f.histories().pop().expect("next inference prompt");
+        assert!(next_prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer"))));
+        assert!(!next_prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == summary))));
     })).await;
 }
 
@@ -1629,21 +2081,6 @@ fn side_response(text: String, input_tokens: u64) -> Response {
     }
 }
 
-fn write_side_script(fixture: &Fixture, summary: &str) {
-    let responses = serde_json::json!({
-        "0": side_response("Working on the task".into(), 80),
-        "1": side_response("Still working".into(), 150),
-        "2": side_response(summary.to_owned(), 120),
-        "3": side_response("Done in the successor".into(), 12),
-        "4": side_response("Done in the successor".into(), 12),
-    });
-    std::fs::write(
-        fixture.files.path().join("script.json"),
-        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
-    )
-    .unwrap();
-}
-
 async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
     timeout(WAIT, async {
         loop {
@@ -1657,83 +2094,21 @@ async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
     .unwrap()
 }
 
-fn is_pressure_message(message: &Message) -> bool {
-    message.role == MessageRole::System
-        && message.parts.iter().any(|part| {
-            matches!(
-                part,
-                Part::Notice {
-                    kind: NoticeKind::ContextPressure,
-                    ..
-                }
-            )
-        })
-}
-
-fn has_pressure_marker(events: &[Event]) -> bool {
-    events.iter().any(|event| {
-        matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
-    })
-}
-
-async fn wait_pressure(fixture: &Fixture, id: SessionId) {
-    timeout(WAIT, async {
-        loop {
-            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-            if has_pressure_marker(&events) {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn side_pressure_warns_at_75_percent_without_archiving() {
-    run(|f| {
-        Box::pin(async move {
-            f.summarize_at_tokens = 100;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
-            write_side_script(f, &summary);
-            let image = image_fixture::image(&f.store).await;
-            let agent = f
-                .store
-                .create_agent("sidekick", image, "", Timestamp::now(), None)
-                .await
-                .unwrap();
-            let id = side_id();
-            f.store
-                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
-                .await
-                .unwrap();
-            f.user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
-            f.wake(id).await;
-            wait_pressure(f, id).await;
-            assert!(f.store.next_session(id).await.unwrap().is_none());
-        })
-    })
-    .await;
-}
-
 #[tokio::test]
 async fn side_summary_archives_with_tail_and_continues_small() {
     run(|f| {
         Box::pin(async move {
             f.summarize_at_tokens = 100;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
+            let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify"
+                .to_owned();
             write_direct_trigger_script(f, &summary);
             let image = image_fixture::image(&f.store).await;
             let agent = f
@@ -1746,7 +2121,7 @@ async fn side_summary_archives_with_tail_and_continues_small() {
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            f.user_message(id).await;
+            f.compactable_user_message(id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);
@@ -1772,7 +2147,7 @@ async fn side_summary_archives_with_tail_and_continues_small() {
                 .unwrap();
             let job: swarmy_llm::InferenceJob =
                 f.store.get_inference_input(request).await.unwrap().unwrap();
-            assert!(job.request.messages.len() <= 12);
+            assert!(job.request.messages.len() <= 35);
         })
     })
     .await;
@@ -1833,15 +2208,11 @@ async fn check_side_successor(
     let Event::MessageAppended { message, .. } = &opening[0] else {
         panic!("opening missing")
     };
-    assert_eq!(message.role, MessageRole::System);
+    assert_eq!(message.role, MessageRole::User);
     let Part::Text { text } = &message.parts[0] else {
         panic!("summary missing")
     };
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
-        serde_json::from_str::<serde_json::Value>(summary).unwrap()
-    );
-    assert!(text.contains(&id.to_string()));
+    assert!(text.contains(summary));
     assert!(opening.len() >= 2);
 }
 
@@ -1870,28 +2241,49 @@ fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Respons
     }
 }
 
-fn write_fleet_side_script(fixture: &Fixture, summary: &str) {
+fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
     // Forty tool rounds with input usage ramping past the 6000-token
     // threshold at round 39, so the summary request lands mid-turn at call
-    // 40. The summary response reports usage above the pressure level so the
+    // 40. The summary response reports usage above the compaction threshold so the
     // gateway sends it down the slow path to archival. The remaining rounds
     // run small in the successor and finish the task there.
     let mut responses = serde_json::Map::new();
     for round in 0..40_u64 {
-        let response =
+        let mut response =
             side_tool_response(&format!("clock-{round}"), 150 + round * 150, round % 5 == 0);
+        if split_turn {
+            response.parts.push(Part::Reasoning {
+                text: "working ".repeat(500),
+                metadata: BTreeMap::new(),
+            });
+        }
         responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
     }
-    responses.insert(
-        "40".into(),
-        serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
-    );
+    if split_turn {
+        responses.insert(
+            "40".into(),
+            serde_json::to_value(side_response("## Goal\nEarlier work".into(), 6200)).unwrap(),
+        );
+        responses.insert(
+            "41".into(),
+            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
+        );
+    } else {
+        responses.insert(
+            "40".into(),
+            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
+        );
+    }
+    let offset = u64::from(split_turn);
     for round in 41..45_u64 {
         let response = side_tool_response(&format!("clock-{round}"), 12, round % 5 == 0);
-        responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
+        responses.insert(
+            (round + offset).to_string(),
+            serde_json::to_value(response).unwrap(),
+        );
     }
     responses.insert(
-        "45".into(),
+        (45 + offset).to_string(),
         serde_json::to_value(side_response("Finished; nothing remains.".into(), 12)).unwrap(),
     );
     std::fs::write(
@@ -1914,15 +2306,6 @@ async fn read_all_events(fixture: &Fixture, id: SessionId) -> Vec<Event> {
     events
 }
 
-fn count_pressure(events: &[Event]) -> usize {
-    events
-        .iter()
-        .filter(|event| {
-            matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
-        })
-        .count()
-}
-
 fn successor_messages(events: &[Event]) -> Vec<Message> {
     events
         .iter()
@@ -1939,13 +2322,18 @@ fn successor_messages(events: &[Event]) -> Vec<Message> {
 async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
     run(|f| {
         Box::pin(async move {
-            f.summarize_at_tokens = 6000;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
-            write_fleet_side_script(f, &summary);
+            f.summarize_at_tokens = 5999;
+            let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify"
+                .to_owned();
+            write_fleet_side_script(f, &summary, false);
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store
@@ -1957,7 +2345,7 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            f.user_message(id).await;
+            f.compactable_user_message(id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);
@@ -1973,12 +2361,6 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
             f.idle(new).await;
             let new_events = read_all_events(f, new).await;
             assert_mid_turn_links(f, id, new).await;
-            let old_events = read_all_events(f, id).await;
-            assert_eq!(
-                count_pressure(&old_events) + count_pressure(&new_events),
-                1,
-                "pressure warns exactly once across the rollover"
-            );
             let messages = successor_messages(&new_events);
             assert_successor_opening(&new_events, &summary);
             assert_successor_request_small(f, &new_events).await;
@@ -1989,53 +2371,119 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
 }
 
 #[tokio::test]
-async fn side_summary_fenced_array_continues() {
-    check_nonstandard_side_summary(
-        "```json\n{\"goals\":[\"Finish the routes task\"],\"state_of_work\":\"Handler done\"}\n```",
-        "[\"Finish the routes task\"]",
-        "Handler done",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn side_summary_prose_continues() {
-    check_nonstandard_side_summary(
-        "Handler done. Finish the routes task.",
-        "",
-        "Handler done. Finish the routes task.",
-    )
-    .await;
-}
-
-async fn check_nonstandard_side_summary(
-    reply: &'static str,
-    goals: &'static str,
-    state: &'static str,
-) {
+async fn refused_split_prefix_reply_is_not_in_next_prompt() {
     run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 6000;
-        write_fleet_side_script(f, reply);
+        f.summarize_at_tokens = 5999;
+        write_fleet_side_script(f, "REFUSED_PREFIX_REPLY", true);
+        let path = f.files.path().join("script.json");
+        let mut script: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut refused = side_response("REFUSED_PREFIX_REPLY".into(), 6200);
+        refused.stop_reason = StopReason::MaxOutputTokens;
+        script["responses"]["41"] = serde_json::to_value(refused).unwrap();
+        script["responses"]["42"] = serde_json::to_value(side_response("Next answer".into(), 20)).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&script).unwrap()).unwrap();
         let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("sidekick", image, "", Timestamp::now(), None).await.unwrap();
+        let agent = f.store.create_agent("refused-prefix", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
         f.wake(id).await;
-        let new = wait_successor(f, id).await;
-        f.idle(new).await;
-        assert_mid_turn_links(f, id, new).await;
-        let events = read_all_events(f, new).await;
-        let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
-        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        let summary: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-        assert_eq!(summary["goals"], goals);
-        assert_eq!(summary["state_of_work"], state);
-        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Finished; nothing remains."))), "successor did not reach final answer");
+        f.idle(id).await;
+        assert_eq!(f.calls(), 42);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        let prompt = f.histories().pop().unwrap();
+        assert!(!prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "## Goal\nEarlier work" || text == "REFUSED_PREFIX_REPLY"))));
     })).await;
+}
+
+#[tokio::test]
+async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 5999;
+        let prefix = "## Original Request\nFinish the task\n\n## Progress So Far\n- Tools used\n\n## Context Needed to Continue\n- Verify";
+        write_fleet_side_script(f, prefix, true);
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("split-turn", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        f.idle(successor).await;
+        let old = read_all_events(f, id).await;
+        let summary_id = old.iter().find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        });
+        let mut found_prefix = false;
+        let mut found_history = false;
+        for event in &old {
+            if let Event::InferenceRequested { request_id, .. } = event {
+                let job: swarmy_llm::InferenceJob = f.store.get_inference_input(*request_id).await.unwrap().unwrap();
+                if job.summary {
+                    let Part::Text { text } = &job.request.messages[0].parts[0] else { panic!("summary prompt missing") };
+                    if job.summary_prefix {
+                        found_prefix = true;
+                        assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
+                        assert!(text.starts_with("# Conversation\n"));
+                        assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+                    } else {
+                        found_history = true;
+                        assert!(text.contains("Previous task"));
+                        assert!(!text.contains("What time is it?"));
+                    }
+                }
+            }
+        }
+        assert!(summary_id.is_some() && found_history && found_prefix);
+        let events = read_all_events(f, successor).await;
+        let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
+        assert!(matches!(&message.parts[0], Part::Text { text } if text.contains("**Turn Context (split turn):**") && text.contains(prefix) && text.contains("## Goal\nEarlier work")));
+        assert_continued_tool_pairs(&successor_messages(&events));
+    })).await;
+}
+
+#[tokio::test]
+async fn side_summary_markdown_continues() {
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 5999;
+            let summary =
+                "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
+            write_fleet_side_script(f, summary, false);
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("sidekick", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            f.compactable_user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            f.idle(new).await;
+            assert_mid_turn_links(f, id, new).await;
+            let events = read_all_events(f, new).await;
+            assert_successor_opening(&events, summary);
+        })
+    })
+    .await;
 }
 
 async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId) {
@@ -2065,32 +2513,28 @@ async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId)
 }
 
 fn assert_successor_opening(new_events: &[Event], summary: &str) {
-    // The successor opens with the summary and carries a continue note,
-    // proving the rollover happened mid-task.
+    // The successor opens with the summary as a user message.
     let Event::MessageAppended { message, .. } = &new_events[0] else {
         panic!("opening missing")
     };
-    assert_eq!(message.role, MessageRole::System);
+    assert_eq!(message.role, MessageRole::User);
     let Part::Text { text } = &message.parts[0] else {
         panic!("summary missing")
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
-        serde_json::from_str::<serde_json::Value>(summary).unwrap()
+        text,
+        &format!(
+            "{}{}{}",
+            "The conversation history before this point was compacted into the following summary:\n\n<summary>\n",
+            &format!("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n{summary}"),
+            "\n</summary>"
+        )
     );
-    let continued = successor_messages(new_events)
-        .iter()
-        .flat_map(|message| &message.parts)
-        .any(|part| match part {
-            Part::Text { text } => text.contains("Continue the summarized task"),
-            _ => false,
-        });
-    assert!(continued, "mid-task successor needs its continue note");
 }
 
 async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event]) {
-    // The successor's first request stays under the threshold that
-    // archived its predecessor.
+    // The successor keeps approximately 20k recent context tokens,
+    // even when a fixture overrides the usage trigger to 6k.
     let request = new_events
         .iter()
         .find_map(|event| match event {
@@ -2106,7 +2550,7 @@ async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event])
         .unwrap();
     let request_chars = serde_json::to_string(&job.request.messages).unwrap().len();
     assert!(
-        request_chars / 4 < 6000,
+        request_chars / 4 < 25_000,
         "successor request too large: {request_chars} chars"
     );
 }

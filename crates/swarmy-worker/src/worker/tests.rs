@@ -14,6 +14,7 @@ mod image_tests {
     fn display_image_controls_tool_schema_and_prompt() {
         use swarmy_llm::ToolDefinition;
         let request = || swarmy_llm::Request {
+            no_cache: false,
             system_prompt: "Base prompt".into(),
             messages: Vec::new(),
             tools: ["bash", "browser_snapshot", "screen_screenshot"]
@@ -46,6 +47,7 @@ mod image_tests {
     #[test]
     fn unsupported_model_gets_a_note_instead_of_image_bytes() {
         let mut request = swarmy_llm::Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: vec![Message {
                 id: MessageId::from_ulid(Ulid::nil()),
@@ -224,7 +226,7 @@ mod side_tail_tests {
 
     #[test]
     fn tail_cuts_between_tool_result_and_assistant() {
-        // A short history fits the budget whole.
+        // With less than 20k tokens there is nothing to summarize.
         let history = vec![
             text(MessageRole::User, "launch"),
             assistant_calls("a", false),
@@ -290,40 +292,6 @@ mod side_tail_tests {
     }
 
     #[test]
-    fn tail_drops_stale_pressure_warnings() {
-        let warning = Message {
-            id: MessageId::from_ulid(Ulid::generate()),
-            role: MessageRole::System,
-            parts: vec![Part::Notice {
-                kind: swarmy_core::NoticeKind::ContextPressure,
-                text: "context_pressure: input 150 tokens at 75 percent".into(),
-            }],
-        };
-        let legacy_warning = text(
-            MessageRole::System,
-            "context_pressure: input 150 tokens at 75 percent",
-        );
-        assert!(super::summarize::is_pressure_warning(&legacy_warning));
-        let history = vec![
-            text(MessageRole::User, "launch"),
-            assistant_calls("a", false),
-            tool_result("a"),
-            legacy_warning,
-            warning,
-            assistant_calls("b", false),
-            tool_result("b"),
-        ];
-        let tail = select_side_tail(&history);
-        assert!(
-            tail.iter()
-                .all(|message| message.role != MessageRole::System)
-        );
-        for id in call_ids(&tail) {
-            assert!(result_ids(&tail).contains(&id), "call {id} lost its result");
-        }
-    }
-
-    #[test]
     fn tail_falls_back_to_last_assistant_without_rounds() {
         let history = vec![
             text(MessageRole::User, "launch"),
@@ -357,10 +325,23 @@ mod side_tail_tests {
     }
 
     #[test]
+    fn tail_skips_oversized_tool_round_when_followed_by_assistant() {
+        let history = vec![
+            text(MessageRole::User, "launch"),
+            assistant_calls("huge", false),
+            tool_result_sized("huge", 128 * 1024),
+            text(MessageRole::Assistant, "done"),
+        ];
+        let tail = select_side_tail(&history);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].role, MessageRole::Assistant);
+    }
+
+    #[test]
     fn mid_turn_fast_path_needs_no_store_reads() {
         use super::super::summarize::last_side_usage;
         use swarmy_core::{Event, RequestId, SessionId, TokenUsage};
-        // Folds below pressure decide from the events the worker already
+        // Folds below the compaction threshold decide from the events the worker already
         // holds: zero transactions, zero store reads. This test pins that by
         // deciding without a `Store` at all.
         let session = SessionId::from_ulid(Ulid::generate());
@@ -374,6 +355,7 @@ mod side_tail_tests {
             effort_used: None,
             usage: TokenUsage {
                 input_tokens: 10,
+                output_tokens: 3,
                 ..Default::default()
             },
             cost_micros: 0,
@@ -388,10 +370,8 @@ mod side_tail_tests {
         };
         assert_eq!(provider, "fake");
         assert_eq!(model, "base");
-        assert_eq!(input, 10);
-        // The default side threshold is 400k with pressure at 300k: an input
-        // of 10 stays on the fast path, which returns before any store read.
-        // Transaction count: 0. Store read count: 0.
-        assert!(input < 300_000);
+        assert_eq!(input, 13);
+        // A low-usage completion stays on the fast path without a store read.
+        assert!(input < 16_384);
     }
 }

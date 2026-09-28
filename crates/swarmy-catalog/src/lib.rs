@@ -59,7 +59,7 @@ pub struct ModelInfo {
     #[serde(default)]
     pub compat: Compat,
     /// Optional per-model summarization threshold in input tokens.
-    /// When absent, three quarters of the context window applies.
+    /// When absent, the context window minus 16,384 tokens applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarize_at: Option<u64>,
 }
@@ -167,12 +167,11 @@ const EFFORTS: [ReasoningEffort; 7] = [
 
 impl ModelInfo {
     /// Summarization threshold in input tokens for this model.
-    /// An explicit per-model value wins; otherwise three quarters of the
-    /// context window keeps long tasks well under the provider limit.
+    /// An explicit per-model value wins; otherwise reserve 16,384 tokens.
     #[must_use]
     pub fn summarize_at_tokens(&self) -> u64 {
         self.summarize_at
-            .unwrap_or_else(|| self.limit.context - self.limit.context / 4)
+            .unwrap_or_else(|| self.limit.context.saturating_sub(16_384))
     }
 
     /// Efforts in ascending order. Budgets and toggles expose the ordinary
@@ -444,7 +443,7 @@ mod tests {
         let model = catalog.model("openai", "gpt-5.5").unwrap();
         assert_eq!(
             model.summarize_at_tokens(),
-            model.limit.context - model.limit.context / 4
+            model.limit.context.saturating_sub(16_384)
         );
         assert_eq!(
             catalog.summarize_at("openai", "gpt-5.5"),

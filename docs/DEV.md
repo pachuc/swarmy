@@ -554,24 +554,18 @@ costs and node troubleshooting. For fleet-driver commands see
 ### Conversation summaries and memory
 
 Named agents keep a chain of main sessions. At the end of a turn the worker
-compares the latest provider input plus output token count with
-`summarize_at_tokens` (`SWARMY_SUMMARIZE_AT_TOKENS`). When omitted, the threshold
-is three quarters of `model_context_window_tokens`
-(`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS`, default 400000 for the default model).
-Set the window when selecting a model with a different context capacity.
-Side sessions use the same mechanism with an input-token threshold: an
-explicit `SWARMY_SUMMARIZE_AT_TOKENS`, else three quarters of a
-`SWARMY_MODEL_CONTEXT_WINDOW_TOKENS` override, else the catalog's per-model
-or per-provider `summarize_at`, else 400000 input tokens. Ephemeral sessions are not summarized automatically.
-At 75 percent of the side threshold the worker appends a `context_pressure`
-system warning once per session; at the threshold it summarizes.
+compares the latest provider input plus output token count with the model
+context window minus a 16,384-token reserve (or the configured threshold).
+Side sessions check the latest total token usage after tool results; both main and
+side sessions keep recent context through compaction. Unknown windows do not
+trigger usage compaction, but a provider context overflow may still recover.
+Ephemeral sessions do not compact automatically.
 
-The summary is a normal durable inference job with no tools. Its JSON contains
-goals, state of work, open questions, and facts worth keeping. A successful
-summary creates an idle main session with that opening context and a reference
-to the previous session, or an idle side session with that opening plus the
-last few turns. Creation, archival, links, and pointer replacement
-commit in one fenced transaction. Provider failure or invalid summary JSON
+The summary is a normal durable inference job with no tools or cache writes.
+It asks the model for a Pi-format Markdown checkpoint. A successful summary
+archives the old session and creates a successor with a user-role summary
+opening and recent context. Creation, archival, links, and main pointer
+replacement commit in one fenced transaction. A failed or truncated summary
 keeps the existing session. `session list` and `agent show` identify archived
 sessions; `session show ID` still reads their full logs. Open chats display a
 notice and follow the chain, including after a missed live notification.

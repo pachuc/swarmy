@@ -970,9 +970,11 @@ async fn named_chat_resumes_main_and_new_preserves_the_pointer() {
                 .count(),
             1
         );
-        assert!(text.lines().any(
-            |line| line.starts_with(&main.unwrap().to_string()) && line.ends_with("main=true")
-        ));
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with(&main.unwrap().to_string())
+                    && line.contains(" main=true previous_session="))
+        );
     })
     .await;
 }

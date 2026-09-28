@@ -11,6 +11,7 @@ use swarmy_llm::{
 
 fn request() -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be helpful.".into(),
         messages: vec![],
         tools: vec![],

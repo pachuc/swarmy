@@ -65,9 +65,6 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         else:
             if not (root / 'interrupted').exists() and not os.environ.get('SUCCESSOR'):
                 print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}))
-            if os.environ.get('PRESSURE', '') == '1':
-                print(json.dumps({'message_appended': {'message': {'role':'system',
-                    'parts':[{'text':{'text':'context_pressure: input 80 tokens at 75 percent'}}]}}}))
             if os.environ.get('SUCCESSOR') and sid == '01AAAA':
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
@@ -605,14 +602,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertIn("https://github.com/pachuc/swarmy/pull/42", collect.stdout)
 
-    def test_status_shows_context_pressure_warning(self):
-        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
-        env = dict(self.env, PRESSURE="1", SESSION_STATE="sleeping")
-        status = self.call("status", env=env)
-        self.assertEqual(status.returncode, 0, status.stderr)
-        self.assertIn("context_pressure", status.stdout)
-
-    def test_resolve_helpers_follow_chain_and_pressure(self):
+    def test_resolve_helpers_follow_chain(self):
         import importlib.util
         spec = importlib.util.spec_from_loader("fleetmod", loader=None)
         import types
@@ -626,19 +616,6 @@ class FleetTests(unittest.TestCase):
         }
         self.assertEqual(mod.current_session({}, "01AAAA", sessions), "01BBBB")
         self.assertEqual(mod.current_session({}, "01BBBB", sessions), "01BBBB")
-        warning = {"message_appended": {"message": {"role": "system",
-                   "parts": [{"text": {"text": "context_pressure: input 80 tokens"}}]}}}
-        tool_output = {"message_appended": {"message": {"role": "tool",
-                       "parts": [{"tool_result": {"result": {"completed": {"output": "docs say context_pressure"}}}}]}}}
-        user_text = {"message_appended": {"message": {"role": "user",
-                     "parts": [{"text": {"text": "context_pressure in a prompt"}}]}}}
-        typed_warning = {"message_appended": {"message": {"role": "system",
-                         "parts": [{"notice": {"kind": "context_pressure",
-                                                "text": "Context is nearly full"}}]}}}
-        self.assertTrue(mod.has_pressure([warning]))
-        self.assertTrue(mod.has_pressure([typed_warning]))
-        self.assertFalse(mod.has_pressure([tool_output, user_text]))
-        self.assertFalse(mod.has_pressure([{"message_appended": {"text": "hello"}}]))
 
 if __name__ == "__main__":
     unittest.main()

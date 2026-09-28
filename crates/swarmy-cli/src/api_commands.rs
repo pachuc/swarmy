@@ -315,7 +315,7 @@ async fn session(
                     print(
                         &row,
                         &format!(
-                            "{id} {} {}/{} route={} kind={kind} agent={name} head={} computer_deleted={} archived={} main={}",
+                            "{id} {} {}/{} route={} kind={kind} agent={name} head={} computer_deleted={} archived={} main={} previous_session={}",
                             display_state(&row),
                             str_field(selection, "provider"),
                             str_field(selection, "model"),
@@ -323,7 +323,8 @@ async fn session(
                             row["head_seq"],
                             row["computer_deleted"],
                             row["archived"],
-                            row["main"]
+                            row["main"],
+                            text_value_or_dash(&row["previous_session"])
                         ),
                         json,
                     );

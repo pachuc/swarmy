@@ -97,7 +97,7 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   drops only the in-flight tool call. `fleet kill` removes the launch record,
   so use it only when abandoning a task. Session logs:
   `swarmy --remote dev2 --json session show ID` (one JSON event per line).
-- `fleet status` marks `context_pressure` from the worker's system message.
+- `fleet status` follows the current session after compaction.
   Workers poll long builds with one inference per minute; that is normal and
   cheap on Muse, less so on the subscription.
 

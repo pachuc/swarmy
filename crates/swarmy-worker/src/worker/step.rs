@@ -5,6 +5,7 @@ use super::{
     Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
     encode,
 };
+use swarmy_llm::InferenceJob;
 
 /// State carried from claim through the final fenced write. The lease remains
 /// owned here while the heartbeat holds a clone of its handle.
@@ -261,6 +262,12 @@ impl Worker {
             || self
                 .handle_inference_wait(session, turn, lease, &snapshot, events)
                 .await?
+        {
+            return Ok(None);
+        }
+        if self
+            .recover_context_overflow(session, lease, &snapshot, events, turn)
+            .await?
         {
             return Ok(None);
         }
@@ -577,7 +584,88 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        if !session.interrupt_requested
+        self.finish_inner(session, lease, snapshot, events, turn, (false, false))
+            .await
+    }
+
+    pub(super) async fn finish_failed_recovery(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+        omit_attempt: bool,
+    ) -> Result<()> {
+        self.finish_inner(session, lease, snapshot, events, turn, (true, omit_attempt))
+            .await
+    }
+
+    async fn without_failed_checkpoint_replies(
+        &self,
+        session: &SessionRecord,
+        events: &[Event],
+        mut replayed: Snapshot,
+        skip_compaction: bool,
+        omit_attempt: bool,
+    ) -> Result<Snapshot> {
+        if !(skip_compaction || self.summary_completed(session, events).await?) {
+            return Ok(replayed);
+        }
+
+        let mut prior_completion = None;
+        let mut summary_replies = Vec::new();
+        let mut recovery_replies = Vec::new();
+        for event in events {
+            let request_id = match event {
+                Event::InferenceCompleted { request_id, .. }
+                | Event::InferenceFailed { request_id, .. } => *request_id,
+                _ => continue,
+            };
+            if let Some(job) = self
+                .store
+                .get_inference_input::<InferenceJob>(request_id)
+                .await?
+                && job.summary
+            {
+                if let Event::InferenceCompleted { message, .. } = event {
+                    summary_replies.push(message.id);
+                }
+                if job.summary_recovery
+                    && let Some(id) = prior_completion
+                {
+                    recovery_replies.push(id);
+                }
+            } else if let Event::InferenceCompleted { message, .. } = event {
+                prior_completion = Some(message.id);
+            } else {
+                prior_completion = None;
+            }
+        }
+        for id in summary_replies.into_iter().chain(recovery_replies) {
+            replayed = replayed.without_message(id);
+        }
+        if omit_attempt && let Some(id) = prior_completion {
+            replayed = replayed.without_message(id);
+        }
+        if skip_compaction || self.summary_completed(session, events).await? {
+            replayed = replayed.end_turn();
+        }
+        Ok(replayed)
+    }
+
+    async fn finish_inner(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+        recovery: (bool, bool),
+    ) -> Result<()> {
+        let (skip_compaction, omit_attempt) = recovery;
+        if !skip_compaction
+            && !session.interrupt_requested
             && self
                 .summarize(session, lease, snapshot, events, None)
                 .await?
@@ -594,7 +682,16 @@ impl Worker {
                 from: SessionState::Leased,
                 to: SessionState::Idle,
             });
-            let bytes = encode(&snapshot.replay(events))?;
+            let replayed = self
+                .without_failed_checkpoint_replies(
+                    session,
+                    events,
+                    snapshot.replay(events),
+                    skip_compaction,
+                    omit_attempt,
+                )
+                .await?;
+            let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
                 object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
                 seq: head,

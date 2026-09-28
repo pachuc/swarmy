@@ -186,13 +186,13 @@ async fn due_timer_retries_busy_append_and_follows_summary_after_reopening_store
     );
     let opening = Message {
         id: MessageId::from_ulid(Ulid::generate()),
-        role: MessageRole::System,
+        role: MessageRole::User,
         parts: vec![Part::Text {
             text: "summary".into(),
         }],
     };
     let (main, _) = store
-        .summarize_main_session(id, 1, &lease, &opening)
+        .summarize_main_session(id, 1, &lease, &opening, &[])
         .await
         .unwrap();
     // The fresh main is idle, so only the due-time fence can prevent early delivery.

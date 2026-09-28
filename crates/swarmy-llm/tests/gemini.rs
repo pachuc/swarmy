@@ -38,6 +38,7 @@ fn message(role: MessageRole, parts: Vec<Part>) -> Message {
 }
 fn request(id: &str) -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be helpful".into(),
         messages: vec![message(
             MessageRole::User,

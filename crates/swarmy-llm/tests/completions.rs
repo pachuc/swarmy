@@ -39,6 +39,7 @@ fn provider_info(server: &MockServer) -> ProviderInfo {
 
 fn request(model: &ModelInfo) -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be helpful.".into(),
         messages: vec![message(MessageRole::User, vec![text("Hello")])],
         tools: vec![],

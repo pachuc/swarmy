@@ -36,6 +36,36 @@ impl Snapshot {
         &self.messages
     }
 
+    /// Discard an unusable checkpoint reply while preserving the durable log.
+    #[must_use]
+    pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {
+        let removed_tool_call = self.messages.iter().any(|message| {
+            message.id == id
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::ToolCall { .. }))
+        });
+        self.messages.retain(|message| message.id != id);
+        if removed_tool_call {
+            self.phase = self
+                .messages
+                .last()
+                .map_or(Phase::Wait, |message| match message.role {
+                    MessageRole::Assistant => model_phase(message),
+                    MessageRole::User | MessageRole::Tool | MessageRole::System => Phase::Ready,
+                });
+        }
+        self
+    }
+
+    /// A failed recovery ends the turn even when a system notice was appended.
+    #[must_use]
+    pub fn end_turn(mut self) -> Self {
+        self.phase = Phase::EndTurn;
+        self
+    }
+
     /// Replays an ordered tail without changing the input snapshot or events.
     /// State and snapshot bookkeeping events do not change conversation decisions.
     #[must_use]
@@ -161,5 +191,63 @@ fn model_phase(message: &Message) -> Phase {
             expected: calls,
             requested: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use swarmy_core::MessageId;
+    use ulid::Ulid;
+
+    #[test]
+    fn removing_tool_call_recomputes_phase() {
+        let user = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::User,
+            parts: vec![Part::Text { text: "run".into() }],
+        };
+        let call = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::ToolCall {
+                call_id: swarmy_core::ToolCallId("one".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            }],
+        };
+        let snapshot = Snapshot {
+            messages: vec![user.clone(), call.clone()],
+            phase: model_phase(&call),
+        };
+        let retained = snapshot.without_message(call.id);
+        assert_eq!(retained.messages(), &[user]);
+        assert!(matches!(retained.phase, Phase::Ready));
+    }
+
+    #[test]
+    fn rejected_checkpoint_reply_is_not_replayed_from_next_snapshot() {
+        let original = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::Text {
+                text: "answer".into(),
+            }],
+        };
+        let rejected = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::Text {
+                text: "partial checkpoint".into(),
+            }],
+        };
+        let snapshot = Snapshot {
+            messages: vec![original.clone(), rejected.clone()],
+            phase: Phase::EndTurn,
+        };
+        let retained = snapshot.without_message(rejected.id);
+        assert_eq!(retained.messages(), std::slice::from_ref(&original));
+        assert!(matches!(retained.phase, Phase::EndTurn));
+        assert_eq!(retained.replay(&[]).messages(), &[original]);
     }
 }

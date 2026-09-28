@@ -175,6 +175,7 @@ async fn run_probe(
     let client = swarmy_llm::client_for(provider, model, auth)
         .map_err(|failure| provider_failure(failure.to_string()))?;
     let mut request = Request {
+        no_cache: false,
         system_prompt: "Follow the user's instructions precisely.".into(),
         messages: vec![Message {
             id: MessageId::from_ulid(ulid::Ulid::generate()),
