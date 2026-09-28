@@ -255,12 +255,13 @@ pub async fn append(
         role: MessageRole::User,
         parts: vec![Part::Text { text: body.text }],
     };
-    let (sequence, fresh) = state
-        .store
-        .append_user_message_idempotent(session_id, body.expected_head, &message, &scoped)
-        .await
-        .map_err(session_error)?;
-    if fresh {
+    let (sequence, fresh, started) = if body.queue {
+        state.store.queue_user_message_idempotent(session_id, &message, &scoped).await.map_err(session_error)?
+    } else {
+        let (sequence, fresh) = state.store.append_user_message_idempotent(session_id, body.expected_head, &message, &scoped).await.map_err(session_error)?;
+        (sequence, fresh, true)
+    };
+    if fresh && started {
         let submitted = Bus::turn_event(session_id, turn, TurnStage::Submitted, None);
         let appended = Bus::turn_event(session_id, turn, TurnStage::Appended, None);
         state.bus.record_turn(&submitted).await;

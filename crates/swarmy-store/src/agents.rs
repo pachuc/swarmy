@@ -571,6 +571,7 @@ impl Store {
                     SessionSettings::new(id),
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
+                self.transfer_queued(&trx, old, id).await?;
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = new_head;
                 self.write_session(&trx, &created)?;
@@ -667,6 +668,7 @@ impl Store {
                     settings,
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
+                self.transfer_queued(&trx, old, id).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
                     .await?;
                 previous.head_seq = expected_head

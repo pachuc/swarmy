@@ -555,13 +555,24 @@ def collect(task_id, config):
     print(url)
 
 
-def resume(task_id, message, config):
+def resume(task_id, message, config, *, interrupt=False):
     _, data = assignment(config, task_id)
     # A follow-up on the task's own conversation continues it. Resolve the
     # newest successor first; run --session also follows, so this is a belt
     # and braces against an archived id.
     session_id = current_session(config, data["session_id"])
-    args = swarmy(config, "run", "--session", session_id, "--json", message)
+    if interrupt:
+        command(swarmy(config, "session", "interrupt", session_id))
+        # The old path waits for idle before submitting another turn.
+        deadline = time.monotonic() + 60
+        while True:
+            sessions = records(command(swarmy(config, "session", "ls", "--json")))
+            if any(item.get("session_id") == session_id and item.get("state") == "idle" for item in sessions):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("interrupted session did not become idle")
+            time.sleep(0.1)
+    args = swarmy(config, "run", "--session", session_id, "--json", *([] if interrupt else ["--queue"]), message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)
@@ -1085,6 +1096,7 @@ def main():
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
     resume_parser.add_argument("task_id")
     resume_parser.add_argument("message")
+    resume_parser.add_argument("--interrupt", action="store_true", help="stop the current turn before sending")
     release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once the task's pull request is merged")
     release_parser.add_argument("task_id")
     release_parser.add_argument("--force", action="store_true", help="free the worker even without a merged pull request")
@@ -1124,7 +1136,7 @@ def main():
         elif args.action == "collect":
             collect(args.task_id, config)
         elif args.action == "resume":
-            resume(args.task_id, args.message, config)
+            resume(args.task_id, args.message, config, interrupt=args.interrupt)
         elif args.action in ("release", "rm"):
             release(args.task_id, config, force=args.force)
         elif args.action == "kill":

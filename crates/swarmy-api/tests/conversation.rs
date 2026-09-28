@@ -120,6 +120,7 @@ async fn create_append_replay_wait_interrupt_close() {
     assert!(f.store.session_image(id).await.unwrap().is_some());
     assert_ephemeral_selection(&f).await;
     let body = AppendMessage {
+        queue: false,
         idempotency_key: "turn-one".into(),
         expected_head: 0,
         text: "hello".into(),
@@ -322,6 +323,7 @@ async fn conversation_routes_require_authentication() {
         f.client
             .post(format!("{url}/messages"))
             .json(&AppendMessage {
+                queue: false,
                 idempotency_key: "a".into(),
                 expected_head: 0,
                 text: "hi".into(),
@@ -373,6 +375,7 @@ async fn invalid_selection_empty_message_and_stale_head_are_distinct() {
         .post(&url)
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "empty".into(),
             expected_head: 0,
             text: "  ".into(),
@@ -382,6 +385,7 @@ async fn invalid_selection_empty_message_and_stale_head_are_distinct() {
         .unwrap();
     assert_eq!(empty.status(), reqwest::StatusCode::BAD_REQUEST);
     let valid = AppendMessage {
+        queue: false,
         idempotency_key: "first".into(),
         expected_head: 0,
         text: "first".into(),
@@ -402,6 +406,7 @@ async fn invalid_selection_empty_message_and_stale_head_are_distinct() {
         .post(&url)
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "second".into(),
             expected_head: 0,
             text: "second".into(),
@@ -428,6 +433,7 @@ async fn close_runnable_session_returns_completed_and_prevents_append() {
         .post(format!("{url}/messages"))
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "first".into(),
             expected_head: 0,
             text: "hello".into(),
@@ -457,6 +463,7 @@ async fn close_runnable_session_returns_completed_and_prevents_append() {
         .post(format!("{url}/messages"))
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "later".into(),
             expected_head: 1,
             text: "later".into(),
@@ -495,6 +502,7 @@ async fn wait_idle_wakes_from_live_transition() {
         .post(format!("{}/v1/sessions/{id}/messages", f.base))
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "turn".into(),
             expected_head: 0,
             text: "hello".into(),
@@ -648,6 +656,7 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
         .post(format!("{}/v1/sessions/{session}/messages", f.base))
         .bearer_auth("test-token")
         .json(&AppendMessage {
+            queue: false,
             idempotency_key: "metrics-turn".into(),
             expected_head: 0,
             text: "hello".into(),

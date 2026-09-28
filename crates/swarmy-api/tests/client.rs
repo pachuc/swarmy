@@ -282,6 +282,7 @@ async fn client_round_trips_real_routes() {
         .append_message(
             &session.id,
             &api::AppendMessage {
+                queue: false,
                 idempotency_key: "append".into(),
                 expected_head: session.head_sequence,
                 text: "hello".into(),
@@ -297,6 +298,7 @@ async fn client_round_trips_real_routes() {
         .append_message(
             &session.id,
             &api::AppendMessage {
+                queue: false,
                 idempotency_key: "append".into(),
                 expected_head: session.head_sequence,
                 text: "hello".into(),

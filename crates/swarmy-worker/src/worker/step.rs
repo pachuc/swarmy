@@ -162,6 +162,20 @@ impl Worker {
             {
                 return Ok(());
             }
+            // A leased boundary after completed tools is the first point where
+            // queued user input can affect the next inference without dropping a
+            // tool result or changing an already submitted request.
+            if pending_inference(events).is_none() && pending_tools(events).is_empty() {
+                let delivered = {
+                    let token = lease.lock().await;
+                    self.store.deliver_queued(id, session.head_seq, token.as_ref().context("lease released")?).await?
+                };
+                if !delivered.is_empty() {
+                    session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");
+                    self.publish_events(id, &delivered).await?;
+                    events.extend(delivered);
+                }
+            }
             let message_id = fold_id(
                 id,
                 session

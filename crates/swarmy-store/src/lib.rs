@@ -32,6 +32,7 @@ mod keys;
 pub use inference::{InferenceClaim, InferenceCompletion};
 pub mod metering;
 pub mod quota;
+mod queued;
 pub use metering::{DimensionTotal, MeteringDimension, UsageGroup, UsageGroupBy};
 pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
