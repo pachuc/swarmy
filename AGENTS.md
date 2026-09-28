@@ -214,6 +214,7 @@ cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warn
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 cargo test --locked -p swarmy-llm --no-default-features
 scripts/chaos-ci.sh
+scripts/check-openapi-compat.sh origin/master
 ```
 
 The feature-enabled commands always run in CI: the provisioning client is an

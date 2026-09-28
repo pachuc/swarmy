@@ -7,9 +7,9 @@ and [REMOTE.md](REMOTE.md). Each section names its implementation entry points.
 ## Crate map and dependency direction
 
 The workspace membership and shared dependencies are in [Cargo.toml](../Cargo.toml).
-The intended tiers run from libraries through storage and services to clients;
-cloud provisioning is a client-side leaf. Tests and development helpers are
-separate leaves. The individual manifests in `crates/*/Cargo.toml` are the
+These are descriptive tiers, not strict acyclic boundaries: sandbox uses store
+and volume; chat and devtools use the HTTP client; harness is shared by
+production tools, gateway, and worker as well as tests. The individual manifests in `crates/*/Cargo.toml` are the
 source of truth for edges; this is a layering rule, not a claim that every
 crate in a tier depends on every lower tier.
 
@@ -30,12 +30,12 @@ crate in a tier depends on every lower tier.
 - **swarmy-tools** defines and executes sandbox-facing tools
   ([source](../crates/swarmy-tools/src/lib.rs)).
 - **swarmy-sandbox** starts and manages runc containers through the sandbox
-  interface ([source](../crates/swarmy-sandbox/src/lib.rs)).
-- **swarmy-chat** renders conversation events for interactive clients
+  interface and uses store and volume ([source](../crates/swarmy-sandbox/src/lib.rs)).
+- **swarmy-chat** renders conversation events using swarmy-client for interactive clients
   ([source](../crates/swarmy-chat/src/lib.rs)).
 - **swarmy-image** builds and registers images from recipes
   ([source](../crates/swarmy-image/src/lib.rs)).
-- **swarmy-devtools** supports standalone provider login and credential import
+- **swarmy-devtools** uses swarmy-client for standalone provider login and credential import
   ([source](../crates/swarmy-devtools/src/main.rs)).
 
 ### Storage and transport
@@ -70,20 +70,21 @@ crate in a tier depends on every lower tier.
 - **swarmy-cloud** implements the opt-in EC2 remote provisioning feature;
   it is not a server dependency ([source](../crates/swarmy-cloud/src/lib.rs)).
 
-### Test leaves
+### Shared harness and test leaves
 
-- **swarmy-harness** provides integration-test fixtures
-  ([source](../crates/swarmy-harness/src/lib.rs)).
+- **swarmy-harness** provides fixtures used as normal dependencies by tools,
+  gateway, and worker ([source](../crates/swarmy-harness/src/lib.rs),
+  [manifests](../crates/swarmy-tools/Cargo.toml)).
 - **swarmy-e2e** owns the real-binary integration suites
   ([manifest](../crates/swarmy-e2e/Cargo.toml)).
 - **swarmy-chaos** tests crashes and restart continuity
   ([manifest](../crates/swarmy-chaos/Cargo.toml)).
 
-Library types may be consumed by storage and services; storage and transport
-are consumed by services; the CLI consumes the HTTP client, and remote
-provisioning is isolated to the cloud/client feature. The workspace dependency
-rules and exclusions are checked in [Cargo.toml](../Cargo.toml) and
-[the CI workflow](../.github/workflows/ci.yml).
+Dependency direction is an intention rather than a CI-enforced rule: most
+services consume storage and transport, while clients normally consume the
+HTTP client. Cloud provisioning is an opt-in CLI feature. The actual edges are
+in the [crate manifests](../crates/swarmy-cli/Cargo.toml) and
+[workspace manifest](../Cargo.toml).
 
 ## Durable data model
 
@@ -95,7 +96,12 @@ strings; event sequence and epoch components are tuple integers. Stored values
 use postcard serialization, with large data redirected to object storage
 ([lib.rs](../crates/swarmy-store/src/lib.rs),
 [blob.rs](../crates/swarmy-store/src/blob.rs)). Treat family names as internal
-schema, not an API.
+schema, not an API. Postcard encodes structs positionally: append stored fields
+only at the end via [swarmy_core::trailing](../crates/swarmy-core/src/encoding.rs),
+with fixed-byte compatibility tests there. When a format changes or is retired,
+migrate and clear old rows rather than refusing to start; record one-way
+changes in [api-breaks.txt](api-breaks.txt) (see
+[store migration](../crates/swarmy-store/src/lib.rs)).
 
 - **Sessions and events.** `session` holds session state; `event` is indexed
   by `(session, seq)` and read as an append-only log. `turn`, `request_turn`,
@@ -105,7 +111,7 @@ schema, not an API.
   ([keys.rs](../crates/swarmy-store/src/keys.rs),
   [turns.rs](../crates/swarmy-store/src/turns.rs)).
 - **Agents and computers.** `agent`, `agent_by_name`, `volume`, `manifest`,
-  `snapshot`, `computer_notice`, and `session_chain` relate durable identity,
+  `snapshot`, `image`, `image_display`, `computer_notice`, and `session_chain` relate durable identity,
   disk state and conversations. Ephemeral sessions own disposable computers;
   named agents share a persistent computer
   ([agents.rs](../crates/swarmy-store/src/agents.rs),
@@ -129,11 +135,16 @@ schema, not an API.
   are defined in [metering.rs](../crates/swarmy-store/src/metering.rs) and
   [metrics.rs](../crates/swarmy-store/src/metrics.rs).
 
-Conversation compaction is implemented by
+- **Timers, collection and tool completion.** `timer`, `timer_active`, `timer_due`, `timer_origin`,
+  `gc_run`, `gc_lease`, `gc_deleting`, `tool_job`, `tool_done`, and `api_idempotency`
+  track scheduled wakes, collection progress, durable tool execution, and
+  deduplicated API writes ([keys.rs](../crates/swarmy-store/src/keys.rs),
+  [timers.rs](../crates/swarmy-store/src/timers.rs),
+  [tools.rs](../crates/swarmy-store/src/tools.rs),
+  [api_idempotency.rs](../crates/swarmy-store/src/api_idempotency.rs)).
+
+Conversation compaction summarizes older history into a successor session; see
 [worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs).
-It records a free-form summary for continued context rather than treating
-old event text as a new user turn; consult that file for the overflow retry and
-parent-to-successor linkage while the implementation evolves.
 
 ## What runs where
 

@@ -15,3 +15,30 @@ features formerly presented as shipped in the old design draft.
 | `deploy/` manifests/tree | Not built; current deployment uses [remote provisioning](../scripts/remote-provision.sh) and [operations guide](REMOTE.md). |
 | Browser/screen and GPU sandboxes | Draft goal, not current capability; see [AGENTS.md](../AGENTS.md#the-plan-september-2026). |
 | Provider pools, failover and quota views | Draft goal, not a promise of current behavior; see [AGENTS.md](../AGENTS.md#the-plan-september-2026). |
+
+## Historical proposed latency budgets
+
+The former design proposed a warm zero-delay fake-provider turn under 100 ms
+locally and under three client-to-node round trips plus 100 ms remotely, for
+text and one trivial bash call. Cold boot, image building, real provider
+latency, and nontrivial tools were outside that budget. This is a target, not
+a claim that measurements satisfy it; see [turn measurements](volume-benchmarks.md).
+
+The former slice-2 tool-boundary budget targeted added p95 publication latency
+from a tool finishing to acknowledgement of its durable manifest. It was a
+proposal, not measured compliance; the persistent computer model now publishes
+through periodic snapshots and explicit checkpoints. For an unstaged change
+with warm base cache and at most two manifest leaves plus a root, the historical
+allowances were:
+
+| Changed 256 KiB chunk coverage | AWS | GCP |
+|---|---:|---:|
+| No dirty chunks | 250 ms | 250 ms |
+| Up to 256 KiB | 500 ms | 3 s |
+| Up to 1 MiB | 500 ms | 3 s |
+| Up to 16 MiB | 750 ms | 4 s |
+| Up to 64 MiB | 1.25 s | 8 s |
+| Up to 256 MiB | 3 s | 25 s |
+| Up to 1 GiB | 12 s | 90 s |
+
+The rationale and raw samples remain in [volume benchmarks](volume-benchmarks.md#2026-09-15-instrumented-release-flush-and-tool-boundary-budget).
