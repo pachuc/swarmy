@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Ownership, key_name, state::State};
