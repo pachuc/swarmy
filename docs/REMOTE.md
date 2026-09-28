@@ -249,12 +249,64 @@ through the provisioning SDK. `swarmy doctor --remote NAME` reads node and servi
 metadata, and credentials through the API; it does not check the bucket. Image
 builds and chunk operations use S3 through the node services.
 
-Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
-`s3:PutEncryptionConfiguration`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`, `s3:DeleteBucket`,
-`iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`, `iam:DetachRolePolicy`, `iam:DeleteRolePolicy`,
-`iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
-`iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
-`iam:DeleteInstanceProfile`, `iam:TagRole`, `iam:TagInstanceProfile`, `s3:GetBucketTagging`, `s3:PutBucketTagging`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+The laptop identity needs the following permissions for bucket-backed remotes,
+scoped to the `swarmy-*` resources it manages. The example covers S3 and IAM;
+EC2, SSM, and host provisioning permissions are separate. Grant tagging before
+`remote up` when possible. If tagging is denied during creation, `up` warns and
+continues, but `down` will retain the untagged resource. After granting the
+missing permission, run `swarmy remote tag NAME` interactively to adopt it.
+An AccessDenied on an ownership read or version listing stops `down` or `tag`
+with local state intact; grant the named permission and retry.
+
+- `remote up`: create/configure the bucket and IAM role/profile, tag new resources,
+  and pass the role to EC2.
+- `remote tag`: read and write bucket tags, read role/profile tags, and tag both.
+- `remote down`: read ownership and bucket versions, empty/delete the bucket,
+  detach/delete the role's policies, and remove the profile and role.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:GetBucketLocation", "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration", "s3:PutBucketPublicAccessBlock",
+        "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:GetBucketVersioning",
+        "s3:ListBucket", "s3:ListBucketVersions", "s3:DeleteBucket"
+      ],
+      "Resource": "arn:aws:s3:::swarmy-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion"],
+      "Resource": "arn:aws:s3:::swarmy-*/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:GetRole", "iam:PutRolePolicy", "iam:TagRole",
+        "iam:ListRoleTags", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+        "iam:DetachRolePolicy", "iam:DeleteRolePolicy", "iam:DeleteRole", "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::<account-id>:role/swarmy-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateInstanceProfile", "iam:GetInstanceProfile",
+        "iam:TagInstanceProfile", "iam:ListInstanceProfileTags",
+        "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::<account-id>:instance-profile/swarmy-*"
+    }
+  ]
+}
+```
+
+Existing remotes without a bucket continue using SeaweedFS.
 
 ## Costs and recovery
 

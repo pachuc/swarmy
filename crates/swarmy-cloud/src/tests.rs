@@ -19,6 +19,8 @@ struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
     teardown: RefCell<Vec<String>>,
     absent: Cell<bool>,
+    deny_tag_read: Cell<bool>,
+    deny_version_list: Cell<bool>,
     absent_bucket: Cell<bool>,
     untagged: Cell<bool>,
     untagged_profile: Cell<bool>,
@@ -121,6 +123,9 @@ impl Cloud for FakeCloud {
         std::future::ready(Ok(()))
     }
     fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
+        if self.deny_tag_read.get() {
+            return std::future::ready(Err(anyhow::anyhow!("s3:GetBucketTagging: AccessDenied")));
+        }
         std::future::ready(Ok(if self.absent.get() || self.absent_bucket.get() {
             Ownership::Absent
         } else if self.untagged.get() {
@@ -165,6 +170,9 @@ impl Cloud for FakeCloud {
         std::future::ready(Ok(()))
     }
     fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
+        if self.deny_version_list.get() {
+            return std::future::ready(Err(anyhow::anyhow!("s3:ListBucketVersions: AccessDenied")));
+        }
         self.teardown.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(!self.absent.get()))
     }
@@ -1968,4 +1976,47 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
             .is_err()
     );
     assert_eq!(*cloud.tagged.borrow(), ["bucket test-bucket"]);
+}
+
+#[tokio::test]
+async fn denied_ownership_and_version_reads_retain_state_and_explain_permission() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    cloud.deny_tag_read.set(true);
+    let error = down::confirm(&cloud, &state, &node, false, false, false)
+        .await
+        .map_err(down::actionable_error)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("s3:GetBucketTagging"));
+    assert!(format!("{error:#}").contains("local remote state is retained"));
+    assert!(state.read("cleanup").unwrap().is_some());
+    cloud.deny_tag_read.set(false);
+    cloud.deny_version_list.set(true);
+    cloud.observations.borrow_mut().push_back(None);
+    let error = down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .map_err(down::actionable_error)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("s3:ListBucketVersions"));
+    assert!(state.read("cleanup").unwrap().is_some());
 }

@@ -137,7 +137,9 @@ impl Aws {
                     .await
                     .context("s3:CreateBucket (bucket may belong to another account)")?;
                 created = true;
-                self.write_bucket_tags(bucket, owner, Vec::new()).await?;
+                if let Err(error) = self.write_bucket_tags(bucket, owner, Vec::new()).await {
+                    warn_tag_denied(&error, "s3:PutBucketTagging", bucket, owner)?;
+                }
             }
             Err(error) => {
                 return Err(error)
@@ -217,11 +219,25 @@ impl Aws {
             {
                 return Err(error).context("iam:GetRole");
             }
-            self.iam.create_role().role_name(role)
-                .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
+            let request = self.iam.create_role().role_name(role)
+                .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#);
+            if let Err(error) = request
+                .clone()
                 .tags(iam_tag("managed-by", "swarmy"))
                 .tags(iam_tag("swarmy-remote", owner))
-                .send().await.context("iam:CreateRole")?;
+                .send()
+                .await
+            {
+                if !access_denied(&error.to_string()) {
+                    return Err(error).context("iam:CreateRole");
+                }
+                // IAM can reject tags on CreateRole separately from role creation.
+                request
+                    .send()
+                    .await
+                    .context("iam:CreateRole (without tags)")?;
+                warn_untagged("iam:TagRole", role, owner);
+            }
             created = true;
         }
         let policy = bucket_policy(bucket);
@@ -249,14 +265,26 @@ impl Aws {
                     .and_then(ProvideErrorMetadata::code)
                     == Some("NoSuchEntity") =>
             {
-                self.iam
+                let request = self
+                    .iam
                     .create_instance_profile()
-                    .instance_profile_name(role)
+                    .instance_profile_name(role);
+                if let Err(error) = request
+                    .clone()
                     .tags(iam_tag("managed-by", "swarmy"))
                     .tags(iam_tag("swarmy-remote", owner))
                     .send()
                     .await
-                    .context("iam:CreateInstanceProfile")?;
+                {
+                    if !access_denied(&error.to_string()) {
+                        return Err(error).context("iam:CreateInstanceProfile");
+                    }
+                    request
+                        .send()
+                        .await
+                        .context("iam:CreateInstanceProfile (without tags)")?;
+                    warn_untagged("iam:TagInstanceProfile", role, owner);
+                }
                 created = true;
                 false
             }
@@ -280,6 +308,29 @@ impl Aws {
         }
         Ok(())
     }
+}
+
+fn access_denied(message: &str) -> bool {
+    message.contains("AccessDenied") || message.contains("Access denied")
+}
+
+fn warn_untagged(permission: &str, resource: &str, owner: &str) {
+    eprintln!(
+        "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission} and run swarmy remote tag {owner} later."
+    );
+}
+
+fn warn_tag_denied(
+    error: &anyhow::Error,
+    permission: &str,
+    resource: &str,
+    owner: &str,
+) -> Result<()> {
+    if !access_denied(&format!("{error:#}")) {
+        return Err(anyhow::anyhow!("{error:#}"));
+    }
+    warn_untagged(permission, resource, owner);
+    Ok(())
 }
 
 fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
@@ -1010,6 +1061,33 @@ mod ownership_tag_tests {
         );
         assert!(
             ensure_not_another_remote(tags.iter().map(|t| (t.key(), t.value())), "other").is_ok()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tag_denial_tests {
+    use super::warn_tag_denied;
+
+    #[test]
+    fn denied_tagging_does_not_abort_creation_but_other_errors_do() {
+        assert!(
+            warn_tag_denied(
+                &anyhow::anyhow!("s3:PutBucketTagging: AccessDenied"),
+                "s3:PutBucketTagging",
+                "swarmy-NAME",
+                "NAME"
+            )
+            .is_ok()
+        );
+        assert!(
+            warn_tag_denied(
+                &anyhow::anyhow!("s3:PutBucketTagging: network failure"),
+                "s3:PutBucketTagging",
+                "swarmy-NAME",
+                "NAME"
+            )
+            .is_err()
         );
     }
 }

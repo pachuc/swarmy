@@ -321,15 +321,21 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;
-            down::confirm(&cloud, &state, &node, keep_bucket, yes, json).await?;
-            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await
+            down::confirm(&cloud, &state, &node, keep_bucket, yes, json)
+                .await
+                .map_err(down::actionable_error)?;
+            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket)
+                .await
+                .map_err(down::actionable_error)
         }
         Command::Tag { name } => {
             let _lock = state.lock()?;
             let node = state.require(&name)?;
             let mut settings = node.cloud_settings();
             settings.region.clone_from(&node.region);
-            down::tag(&for_settings(&settings).await?, &state, &node).await
+            down::tag(&for_settings(&settings).await?, &state, &node)
+                .await
+                .map_err(down::actionable_error)
         }
         Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
         Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,

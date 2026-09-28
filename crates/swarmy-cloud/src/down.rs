@@ -3,10 +3,19 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Ownership, key_name, state::State};
+
+pub(crate) fn actionable_error(error: anyhow::Error) -> anyhow::Error {
+    let message = format!("{error:#}");
+    if message.contains("AccessDenied") || message.contains("Access denied") {
+        error.context("AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained")
+    } else {
+        error
+    }
+}
 
 #[derive(Default)]
 struct Report {
