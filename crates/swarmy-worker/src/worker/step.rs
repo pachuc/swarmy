@@ -584,7 +584,7 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        self.finish_inner(session, lease, snapshot, events, turn, false, false)
+        self.finish_inner(session, lease, snapshot, events, turn, (false, false))
             .await
     }
 
@@ -597,7 +597,7 @@ impl Worker {
         turn: Option<MessageId>,
         omit_attempt: bool,
     ) -> Result<()> {
-        self.finish_inner(session, lease, snapshot, events, turn, true, omit_attempt)
+        self.finish_inner(session, lease, snapshot, events, turn, (true, omit_attempt))
             .await
     }
 
@@ -658,9 +658,9 @@ impl Worker {
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
-        skip_compaction: bool,
-        omit_attempt: bool,
+        recovery: (bool, bool),
     ) -> Result<()> {
+        let (skip_compaction, omit_attempt) = recovery;
         if !skip_compaction
             && !session.interrupt_requested
             && self
