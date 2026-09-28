@@ -256,6 +256,12 @@ impl Store {
                 {
                     return Err(StoreError::Domain(crate::DomainError::InterruptPending));
                 }
+                // A queue write races the snapshot upload without changing
+                // the log head. Conflict on the queue key here so the worker
+                // can deliver the message before closing this turn.
+                if !session.interrupt_requested && self.has_queued_in(&trx, id).await? {
+                    return Err(StoreError::Domain(crate::DomainError::QueuedInputPending));
+                }
                 trx.set(&self.event_key(id, head), value);
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;

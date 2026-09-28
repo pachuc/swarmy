@@ -234,6 +234,8 @@ pub enum DomainError {
     SessionComputerExists,
     #[error("session not idle")]
     SessionNotIdle,
+    #[error("queued input arrived before the turn could finish")]
+    QueuedInputPending,
     #[error("unexpected session state")]
     UnexpectedSessionState,
     #[error("lease TTL must be greater than zero")]

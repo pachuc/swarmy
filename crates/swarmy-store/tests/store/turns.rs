@@ -538,7 +538,23 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         (1, false, false)
     );
     assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
-    let delivered = store.deliver_queued(id, 1, &lease).await.unwrap();
+    assert!(matches!(
+        store
+            .finish_turn(
+                id,
+                1,
+                &lease,
+                &SnapshotRef {
+                    seq: 2,
+                    object_key: "checkpoint".into()
+                }
+            )
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::QueuedInputPending
+        ))
+    ));
+    let delivered = store.deliver_queued(id, 1, &lease, &[]).await.unwrap();
     assert!(matches!(
         &delivered[..],
         [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
@@ -546,7 +562,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
     assert_eq!(&store.read_events(id, 1, 10).await.unwrap(), &delivered);
     assert!(
         store
-            .deliver_queued(id, 3, &lease)
+            .deliver_queued(id, 3, &lease, &[])
             .await
             .unwrap()
             .is_empty()

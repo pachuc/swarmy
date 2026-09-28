@@ -79,7 +79,8 @@ impl Store {
         .await
     }
 
-    /// Commit all waiting messages at this step boundary under the held lease.
+    /// Commit a completed tool message and waiting input together at the step
+    /// boundary under the held lease.
     /// Removing the queue and appending the log are one transaction, including
     /// after an uncertain commit or a worker restart.
     /// # Errors
@@ -91,6 +92,7 @@ impl Store {
         id: SessionId,
         head: u64,
         lease: &Lease,
+        before: &[Event],
     ) -> Result<Vec<Event>> {
         let key = self.queued_key(id);
         self.transaction(|trx| {
@@ -107,7 +109,15 @@ impl Store {
                 let queue = read::<Vec<QueuedMessage>>(&trx, key)
                     .await?
                     .unwrap_or_default();
-                let mut events = Vec::with_capacity(queue.len() * 2);
+                let mut events = Vec::with_capacity(before.len() + queue.len() * 2);
+                for event in before {
+                    if !matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::Tool) {
+                        return Err(StoreError::Domain(DomainError::InvalidMessageRole));
+                    }
+                    let mut event = event.clone();
+                    event.set_seq(head + u64::try_from(events.len()).expect("batch bounded") + 1);
+                    events.push(event);
+                }
                 for item in queue {
                     let seq = head + u64::try_from(events.len()).expect("queue bounded") + 1;
                     events.push(Event::MessageQueued {
@@ -141,16 +151,18 @@ impl Store {
     /// # Errors
     /// Returns storage failures.
     pub async fn has_queued(&self, id: SessionId) -> Result<bool> {
-        let key = self.queued_key(id);
-        self.transaction(|trx| {
-            let key = &key;
-            async move {
-                Ok(read::<Vec<QueuedMessage>>(&trx, key)
-                    .await?
-                    .is_some_and(|queue| !queue.is_empty()))
-            }
-        })
-        .await
+        self.transaction(|trx| async move { self.has_queued_in(&trx, id).await })
+            .await
+    }
+
+    pub(crate) async fn has_queued_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+    ) -> Result<bool> {
+        Ok(read::<Vec<QueuedMessage>>(trx, &self.queued_key(id))
+            .await?
+            .is_some_and(|queue| !queue.is_empty()))
     }
 
     pub(crate) async fn transfer_queued(

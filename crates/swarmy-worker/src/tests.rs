@@ -278,6 +278,28 @@ async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUs
         "queued input missing: {request}"
     );
     assert!(request.contains("done"), "tool result missing: {request}");
+    let folded = events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageAppended { seq, message } if message.role == MessageRole::Tool => {
+                Some(*seq)
+            }
+            _ => None,
+        })
+        .expect("tool reply was not folded");
+    let delivered = events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageAppended { seq, message } if message.role == MessageRole::User => {
+                Some(*seq)
+            }
+            _ => None,
+        })
+        .expect("queued input was not delivered");
+    assert!(
+        folded < delivered,
+        "tool reply must precede queued user input"
+    );
     assert_eq!(
         events
             .iter()
