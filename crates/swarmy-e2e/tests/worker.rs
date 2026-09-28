@@ -428,6 +428,46 @@ impl Fixture {
         id
     }
 
+    async fn compactable_user_message(&self, id: SessionId) {
+        let head = self
+            .store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        self.store
+            .append_events(
+                id,
+                head,
+                &[
+                    Event::MessageAppended {
+                        seq: 0,
+                        message: Message {
+                            id: MessageId::from_ulid(Ulid::generate()),
+                            role: MessageRole::User,
+                            parts: vec![Part::Text {
+                                text: "previous context ".repeat(7_000),
+                            }],
+                        },
+                    },
+                    Event::MessageAppended {
+                        seq: 0,
+                        message: Message {
+                            id: MessageId::from_ulid(Ulid::generate()),
+                            role: MessageRole::Assistant,
+                            parts: vec![Part::Text {
+                                text: "Previous turn completed.".into(),
+                            }],
+                        },
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        self.user_message(id).await;
+    }
+
     async fn user_message(&self, id: SessionId) {
         let head = self
             .store
@@ -1572,7 +1612,7 @@ Finish the task
         };
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.store.set_main_session(agent.agent_id, id).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
@@ -1632,7 +1672,7 @@ async fn check_overflow_recovery(second_overflow: bool) {
         let agent = f.store.create_agent("overflow-agent", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
@@ -1671,7 +1711,7 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
         let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.user_message(id).await;
+        f.compactable_user_message(id).await;
         f.start("swarmy-scheduler", None);
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
@@ -1745,7 +1785,7 @@ Finish the task
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            f.user_message(id).await;
+            f.compactable_user_message(id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);
@@ -1948,7 +1988,7 @@ Finish the task
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            f.user_message(id).await;
+            f.compactable_user_message(id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);
@@ -1992,7 +2032,7 @@ async fn side_summary_markdown_continues() {
                 .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
                 .await
                 .unwrap();
-            f.user_message(id).await;
+            f.compactable_user_message(id).await;
             f.start("swarmy-scheduler", None);
             f.start("swarmy-worker", None);
             f.start("swarmy-gateway", None);

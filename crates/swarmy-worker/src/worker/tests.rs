@@ -226,7 +226,7 @@ mod side_tail_tests {
 
     #[test]
     fn tail_cuts_between_tool_result_and_assistant() {
-        // Retain the latest assistant turn; the earlier user request is summarized.
+        // With less than 20k tokens there is nothing to summarize.
         let history = vec![
             text(MessageRole::User, "launch"),
             assistant_calls("a", false),
@@ -237,7 +237,7 @@ mod side_tail_tests {
             text(MessageRole::Assistant, "summary output"),
         ];
         let tail = select_side_tail(&history);
-        assert_eq!(tail.len(), history.len() - 1);
+        assert_eq!(tail.len(), history.len());
         // A long history cuts at a tool-result boundary and keeps pairs.
         let mut long = vec![text(MessageRole::User, "launch")];
         for round in 0..30 {
