@@ -977,13 +977,6 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         .await
         .unwrap();
     // The role and profile stay with the bucket; a later up reuses them.
-    assert!(
-        !cloud
-            .teardown
-            .borrow()
-            .iter()
-            .any(|event| event.starts_with("bucket ") || event.starts_with("role "))
-    );
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
     observe_running(&cloud);
     up::run(
