@@ -554,7 +554,23 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
             swarmy_store::DomainError::QueuedInputPending
         ))
     ));
-    let delivered = store.deliver_queued(id, 1, &lease, &[]).await.unwrap();
+    // Simulate a worker exit and a new claim before the queued input is drained.
+    store
+        .release_lease(id, &lease, Timestamp::now())
+        .await
+        .unwrap();
+    let (new_lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(lease, new_lease);
+    let delivered = store.deliver_queued(id, 1, &new_lease, &[]).await.unwrap();
     assert!(matches!(
         &delivered[..],
         [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
@@ -562,7 +578,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
     assert_eq!(&store.read_events(id, 1, 10).await.unwrap(), &delivered);
     assert!(
         store
-            .deliver_queued(id, 3, &lease, &[])
+            .deliver_queued(id, 3, &new_lease, &[])
             .await
             .unwrap()
             .is_empty()
@@ -649,7 +665,7 @@ async fn queued_rows_do_not_corrupt_session_listing_and_large_bodies_use_blobs()
         .unwrap();
     assert!(
         store
-            .list_sessions(None, 100)
+            .list_sessions(None, 64)
             .await
             .unwrap()
             .iter()
@@ -669,5 +685,43 @@ async fn queued_rows_do_not_corrupt_session_listing_and_large_bodies_use_blobs()
     assert!(
         matches!(&delivered[1], Event::MessageAppended { message: next, .. } if next == &message)
     );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn queued_input_survives_an_interrupt_before_newer_input() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let Event::MessageAppended { message, .. } = event("before interrupt") else {
+        unreachable!()
+    };
+    store
+        .queue_user_message_idempotent(id, &message, "before-interrupt")
+        .await
+        .unwrap();
+    store.interrupt_session(id).await.unwrap();
+    assert!(store.finish_runnable_interrupt(id).await.unwrap());
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    let (lease, session, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let events = store
+        .deliver_queued(id, session.head_seq, &lease, &[])
+        .await
+        .unwrap();
+    assert!(matches!(&events[1], Event::MessageAppended { message: next, .. } if next == &message));
     test.cleanup().await;
 }

@@ -216,7 +216,11 @@ mod tests {
             queued_at: jiff::Timestamp::UNIX_EPOCH,
         };
         let bytes = crate::encode(&value).unwrap();
-        assert_eq!(bytes, vec![]);
+        let mut expected = vec![1, 26];
+        expected.extend_from_slice(b"00000000000000000000000000");
+        expected.extend_from_slice(&[1, 0, 20]);
+        expected.extend_from_slice(b"1970-01-01T00:00:00Z");
+        assert_eq!(bytes, expected);
         let decoded: QueuedMessage = crate::decode(&bytes).unwrap();
         assert_eq!(decoded.message, value.message);
         assert_eq!(decoded.queued_at, value.queued_at);
