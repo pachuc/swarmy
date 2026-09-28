@@ -387,7 +387,7 @@ fn request_input(request: &Request, model: &ModelInfo) -> Result<ConverseStreamI
     let mut system = Vec::new();
     if !request.system_prompt.trim().is_empty() {
         system.push(SystemContentBlock::Text(request.system_prompt.clone()));
-        if supports_cache(model) {
+        if !request.no_cache && supports_cache(model) {
             system.push(SystemContentBlock::CachePoint(
                 sdk::CachePointBlock::builder()
                     .r#type(sdk::CachePointType::Default)

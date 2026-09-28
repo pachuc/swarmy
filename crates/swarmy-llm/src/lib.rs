@@ -164,7 +164,7 @@ pub struct InferenceJob {
     #[serde(default)]
     pub route_step: u32,
     /// Compaction job marker, independent of its system prompt.
-    #[serde(default)]
+    #[serde(default, with = "swarmy_core::trailing")]
     pub summary: bool,
 }
 
@@ -182,6 +182,8 @@ pub struct InferenceJobRef {
     pub route: Option<String>,
     #[serde(default)]
     pub route_step: u32,
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary: bool,
 }
 
 impl From<&InferenceJob> for InferenceJobRef {
@@ -195,6 +197,7 @@ impl From<&InferenceJob> for InferenceJobRef {
             entry: job.entry.clone(),
             route: job.route.clone(),
             route_step: job.route_step,
+            summary: job.summary,
         }
     }
 }
@@ -207,7 +210,7 @@ pub struct Request {
     pub tools: Vec<ToolDefinition>,
     pub settings: GenerationSettings,
     /// Disable provider prompt-cache writes for one-off summarization.
-    #[serde(default)]
+    #[serde(skip)]
     pub no_cache: bool,
 }
 
