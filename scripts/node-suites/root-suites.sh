@@ -4,7 +4,8 @@
 # SUITES="swarmyd --test node" for the node suite alone. Each suite's full output goes to
 # ~/suite-logs/<branch suffix>-<package>-<test>.log; the console gets the tail.
 # REV pins the commit to test (a branch head moves while a worker is still
-# pushing); SKIP_CHAOS_CI=1 leaves out scripts/chaos-ci.sh.
+# pushing); SKIP_CHAOS_CI=1 leaves out scripts/chaos-ci.sh; TEST_ARGS adds test
+# harness arguments, for example --nocapture for a benchmark that prints.
 set -uo pipefail
 branch=$1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
@@ -56,7 +57,7 @@ for suite in "${suites[@]}"; do
   echo "== $suite"
   bash "$here/nbd-orphans.sh"
   full=~/suite-logs/${branch##*/}-$1-$3.log
-  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -12; then :; else rc=1; fi
+  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 ${TEST_ARGS:-} 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -12; then :; else rc=1; fi
 done
 if [ "${SKIP_CHAOS_CI:-0}" != 1 ]; then
   echo "== scripts/chaos-ci.sh"
