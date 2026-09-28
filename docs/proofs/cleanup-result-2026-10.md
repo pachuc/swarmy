@@ -217,10 +217,10 @@ All six clippy executions exited 0. The preceding test builds took 1153 and 1152
 
 | Measure | Baseline on suite node (`380adde`) | Master on same node (`350ec17`) | Change |
 | --- | ---: | ---: | ---: |
-| First-token p50 | **PENDING operator measurement** | **PENDING operator measurement** | pending |
-| First-token p95 | **PENDING operator measurement** | **PENDING operator measurement** | pending |
+| First-token p50 | not measured | not measured | n/a |
+| First-token p95 | not measured | not measured | n/a |
 
-The opt-in `SWARMY_TEST_IMAGE=NAME:TAG SWARMY_API_FAKE_BENCH=1 cargo test --locked -p swarmy-api --test latency -- --nocapture` requires root/NBD and a registered image. This fleet sandbox cannot run it. The operator is collecting both revisions on the suite node; these rows must be filled when the results arrive.
+The opt-in benchmark (`SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_API_FAKE_BENCH=1 cargo test --locked -p swarmy-api --test latency -- --test-threads=1 --nocapture`) needs root, NBD, a registered image, and the fake development stack, so the operator ran it on the suite node with `swarmy dev up`. It produced no numbers at either revision. At `350ec17`, `fake_turn_records_first_token_metrics` passed but the benchmark itself failed with "fake provider did not emit a token" (around `latency.rs` line 369): it never saw a token delta for its turn on the live feed. At `380adde`, both tests failed while loading settings (`latency.rs` line 58). The benchmark has not produced a number since pull request 123 added it. Making it run is tasky task 01M3KY8ER5133GQHNGWC0Q3QWT.
 
 ## Master CI history
 
