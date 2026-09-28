@@ -168,7 +168,13 @@ impl Worker {
             if pending_inference(events).is_none() && pending_tools(events).is_empty() {
                 let delivered = {
                     let token = lease.lock().await;
-                    self.store.deliver_queued(id, session.head_seq, token.as_ref().context("lease released")?).await?
+                    self.store
+                        .deliver_queued(
+                            id,
+                            session.head_seq,
+                            token.as_ref().context("lease released")?,
+                        )
+                        .await?
                 };
                 if !delivered.is_empty() {
                     session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");

@@ -318,7 +318,15 @@ impl From<Event> for BinaryEvent {
     fn from(event: Event) -> Self {
         match event {
             Event::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
-            Event::MessageQueued { seq, message, queued_at } => Self::MessageQueued { seq, message, queued_at },
+            Event::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            } => Self::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            },
             Event::InferenceRequested {
                 seq,
                 request_id,
@@ -418,7 +426,15 @@ impl From<BinaryEvent> for Event {
     fn from(event: BinaryEvent) -> Self {
         match event {
             BinaryEvent::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
-            BinaryEvent::MessageQueued { seq, message, queued_at } => Self::MessageQueued { seq, message, queued_at },
+            BinaryEvent::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            } => Self::MessageQueued {
+                seq,
+                message,
+                queued_at,
+            },
             BinaryEvent::InferenceRequested {
                 seq,
                 request_id,

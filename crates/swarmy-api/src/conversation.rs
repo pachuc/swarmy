@@ -256,9 +256,17 @@ pub async fn append(
         parts: vec![Part::Text { text: body.text }],
     };
     let (sequence, fresh, started) = if body.queue {
-        state.store.queue_user_message_idempotent(session_id, &message, &scoped).await.map_err(session_error)?
+        state
+            .store
+            .queue_user_message_idempotent(session_id, &message, &scoped)
+            .await
+            .map_err(session_error)?
     } else {
-        let (sequence, fresh) = state.store.append_user_message_idempotent(session_id, body.expected_head, &message, &scoped).await.map_err(session_error)?;
+        let (sequence, fresh) = state
+            .store
+            .append_user_message_idempotent(session_id, body.expected_head, &message, &scoped)
+            .await
+            .map_err(session_error)?;
         (sequence, fresh, true)
     };
     if fresh && started {

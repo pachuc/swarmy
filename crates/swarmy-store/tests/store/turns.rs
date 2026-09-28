@@ -486,3 +486,67 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
         now,
     }
 }
+
+#[tokio::test]
+async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let session = session();
+    let id = session.session_id;
+    store
+        .create_session(
+            &session,
+            Timestamp::now(),
+            image_fixture::image(store).await,
+        )
+        .await
+        .unwrap();
+    let Event::MessageAppended { message: first, .. } = event("first") else {
+        unreachable!()
+    };
+    store.append_user_message(id, 0, &first).await.unwrap();
+    let (lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let Event::MessageAppended { message, .. } = event("queued") else {
+        unreachable!()
+    };
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(id, &message, "queued-once")
+            .await
+            .unwrap(),
+        (1, true, false)
+    );
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(id, &message, "queued-once")
+            .await
+            .unwrap(),
+        (1, false, false)
+    );
+    assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
+    let delivered = store.deliver_queued(id, 1, &lease).await.unwrap();
+    assert!(matches!(
+        &delivered[..],
+        [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
+    ));
+    assert_eq!(&store.read_events(id, 1, 10).await.unwrap(), &delivered);
+    assert!(
+        store
+            .deliver_queued(id, 3, &lease)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.cleanup().await;
+}

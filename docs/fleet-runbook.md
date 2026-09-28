@@ -48,6 +48,10 @@ ad hoc against the local API with `--remote local`.
   conversation is unused. On a metered provider this keeps every turn's
   billed context to the current task instead of the worker's whole history.
   `fleet resume` and `fleet kill` address the task's own session.
+- Use `fleet resume TASK "text"` to queue a follow-up for the next step boundary
+  without cancelling a build or tool call. Use `fleet resume TASK --interrupt
+  "text"` only when the current turn must stop before the new instruction.
+  Direct CLI callers can use `swarmy run --session ID --queue "text"`.
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
   model, state and its age, task elapsed time, and cost. A recent wait can show
   `waiting_inference 2m; waiting for inference: ...`. A session in

@@ -36,7 +36,10 @@ pub async fn run(
     conversation.send_with_queue(prompt, queue).await?;
     if queue && busy {
         if json {
-            println!("{}", serde_json::json!({"event":"message_queued","session_id":conversation.id}));
+            println!(
+                "{}",
+                serde_json::json!({"event":"message_queued","session_id":conversation.id})
+            );
         } else {
             eprintln!("Message queued for next step boundary.");
         }
