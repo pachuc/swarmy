@@ -124,9 +124,9 @@ use distinct wording about the final checkpoint.
 
 ## Tests and kill points
 
-`SWARMY_WORKER_KILL_POINT` exits the worker with status 137 at `after_claim`,
+`SWARMY_WORKER_KILL_POINT` kills the worker with SIGKILL at `after_claim`,
 `after_request_event`, or `before_release`. `after_release` additionally tests the
-waiting-inference publication gap. An instrumented process exits at its first
+waiting-inference publication gap. An instrumented process dies at its first
 matching point; restart it without the variable to resume processing.
 
 Build sibling binaries with `cargo build --workspace --locked`, then run
