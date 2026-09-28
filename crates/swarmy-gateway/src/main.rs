@@ -450,7 +450,7 @@ impl Gateway {
             "stored inference selection differs from delivery"
         );
         let stored = InferenceJob {
-            summary: request.no_cache,
+            summary: job.summary,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,
@@ -489,6 +489,7 @@ impl Gateway {
     ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
+        request.no_cache = job.summary;
         let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
@@ -892,7 +893,11 @@ impl Gateway {
                 error: error.to_string(),
                 retryable: input.retryable,
                 retry_at: input.retry_at,
-                failure_kind: swarmy_core::FailureKind::Provider,
+                failure_kind: if matches!(error, swarmy_llm::Error::ContextOverflow(_)) {
+                    swarmy_core::FailureKind::ContextOverflow
+                } else {
+                    swarmy_core::FailureKind::Provider
+                },
             },
         }
     }
@@ -1053,7 +1058,7 @@ impl Gateway {
                 quota_remaining: attribution.quota_remaining.clone(),
                 quota_resets: attribution.quota_resets.clone(),
             };
-            let snapshot = match self.terminal_snapshot(job, &completion).await {
+            let snapshot = match self.terminal_snapshot(job, &completion, result).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     warn!(%error, "retrying terminal snapshot upload");
@@ -1112,6 +1117,7 @@ impl Gateway {
         &self,
         job: &InferenceJob,
         completion: &InferenceCompletion,
+        result: &std::result::Result<Response, String>,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
         // The worker must validate and archive a summary before the turn idles.
         if job.summary {
@@ -1119,7 +1125,7 @@ impl Gateway {
         }
         // Named sessions need a worker step to decide whether to summarize.
         // Main sessions always take the slow path. Side sessions take it only
-        // once the completion reaches the pressure level, so text-only turns
+        // once the completion reaches the compaction threshold, so text-only turns
         // below that keep the single-transaction fast path instead of paying
         // for a scheduler nudge, a worker lease, and a snapshot upload.
         if let Some(session) = self.store.fetch_session(job.session_id).await?
@@ -1143,6 +1149,10 @@ impl Gateway {
                 Event::InferenceFailed { .. } => return Ok(None),
                 _ => 0,
             };
+            if matches!(&completion.event, Event::InferenceCompleted { usage, .. } if usage.output_tokens < self.providers.catalog.model(provider, &job.request.settings.model).and_then(|model| model.limit.output).unwrap_or(0) && matches!(result, Ok(response) if response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens))
+            {
+                return Ok(None);
+            }
             if input >= self.side_summarization_threshold(provider, &job.request.settings.model) {
                 return Ok(None);
             }

@@ -65,10 +65,10 @@ impl Worker {
         let request_id = match last {
             Event::InferenceFailed {
                 request_id,
-                error,
+                failure_kind: swarmy_core::FailureKind::ContextOverflow,
                 retryable: false,
                 ..
-            } if error.to_ascii_lowercase().contains("context overflow") => *request_id,
+            } => *request_id,
             Event::InferenceCompleted { request_id, .. } => {
                 let Some(job) = self
                     .store
@@ -85,19 +85,11 @@ impl Worker {
                     response.is_ok_and(|response| {
                         response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens
                             && response.usage.output_tokens
-                                < job
-                                    .request
-                                    .settings
-                                    .max_output_tokens
-                                    .or_else(|| {
-                                        self.config
-                                            .catalog
-                                            .model(
-                                                self.job_provider(&job),
-                                                &job.request.settings.model,
-                                            )
-                                            .and_then(|model| model.limit.output)
-                                    })
+                                < self
+                                    .config
+                                    .catalog
+                                    .model(self.job_provider(&job), &job.request.settings.model)
+                                    .and_then(|model| model.limit.output)
                                     .unwrap_or(0)
                     })
                 }) {
@@ -124,7 +116,15 @@ impl Worker {
                 .await?
                 .context("missing predecessor session")?;
             let prior = self.tail(previous, 0, previous_record.head_seq).await?;
-            if prior.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))) {
+            if prior.iter().rev().any(|event| {
+                matches!(
+                    event,
+                    Event::InferenceFailed {
+                        failure_kind: swarmy_core::FailureKind::ContextOverflow,
+                        ..
+                    }
+                )
+            }) {
                 tracing::warn!(session_id = %session.session_id, "context overflow recovery failed after one attempt");
                 return Ok(false);
             }
@@ -282,7 +282,20 @@ impl Worker {
             .first()
             .and_then(|first| history.iter().position(|message| message.id == first.id))
             .unwrap_or(history.len());
-        let cut = if recovery { history.len() } else { cut };
+        // A failed attempt is not part of the context that Pi retries.
+        if recovery {
+            if let Some(Event::InferenceCompleted { message, .. }) =
+                events.iter().rev().find(|event| {
+                    matches!(
+                        event,
+                        Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
+                    )
+                })
+            {
+                history.retain(|kept| kept.id != message.id);
+            }
+        }
+        let cut = cut.min(history.len());
         if cut == 0 {
             return Ok(false);
         }
@@ -356,8 +369,19 @@ impl Worker {
             }],
         };
         let tail = Self::successor_tail(snapshot, events, message);
-        let should_wake = tail.last().is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
-            || (tail.is_empty() && events.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))));
+        let should_wake = tail
+            .last()
+            .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
+            || (tail.is_empty()
+                && events.iter().any(|event| {
+                    matches!(
+                        event,
+                        Event::InferenceFailed {
+                            failure_kind: swarmy_core::FailureKind::ContextOverflow,
+                            ..
+                        }
+                    )
+                }));
         let mut token = lease.lock().await;
         let (successor, archived) = if is_main {
             self.store
@@ -405,10 +429,6 @@ impl Worker {
         events: &[Event],
         summary: &swarmy_core::Message,
     ) -> Vec<swarmy_core::Message> {
-        // On overflow the old context cannot be replayed unchanged.
-        if events.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))) {
-            return Vec::new();
-        }
         Self::side_successor_tail(snapshot.replay(events).messages(), summary)
     }
 
@@ -670,12 +690,22 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
         match message.role {
             MessageRole::User if !text.is_empty() => lines.push(format!("[User]: {text}")),
             MessageRole::Assistant => {
-                for part in &message.parts {
-                    if let Part::Reasoning { text, .. } = part {
-                        lines.push(format!("[Assistant thinking]: {text}"));
-                    }
+                let thinking = message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::Reasoning { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !thinking.is_empty() {
+                    lines.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
                 }
-                if !text.is_empty() {
+                if message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Text { .. }))
+                {
                     lines.push(format!("[Assistant]: {text}"));
                 }
                 let calls = message
@@ -713,7 +743,9 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
                             write!(truncated, "\n\n[... {omitted} more characters truncated]")
                                 .expect("write to String");
                         }
-                        lines.push(format!("[Tool result]: {truncated}"));
+                        if !output.is_empty() {
+                            lines.push(format!("[Tool result]: {truncated}"));
+                        }
                     }
                 }
             }
