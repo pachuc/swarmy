@@ -1899,7 +1899,7 @@ fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Respons
     }
 }
 
-fn write_fleet_side_script(fixture: &Fixture, summary: &str) {
+fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
     // Forty tool rounds with input usage ramping past the 6000-token
     // threshold at round 39, so the summary request lands mid-turn at call
     // 40. The summary response reports usage above the compaction threshold so the
@@ -1907,8 +1907,14 @@ fn write_fleet_side_script(fixture: &Fixture, summary: &str) {
     // run small in the successor and finish the task there.
     let mut responses = serde_json::Map::new();
     for round in 0..40_u64 {
-        let response =
+        let mut response =
             side_tool_response(&format!("clock-{round}"), 150 + round * 150, round % 5 == 0);
+        if split_turn {
+            response.parts.push(Part::Reasoning {
+                text: "working ".repeat(500),
+                metadata: BTreeMap::new(),
+            });
+        }
         responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
     }
     responses.insert(
@@ -1970,7 +1976,7 @@ Finish the task
 ## Next Steps
 1. Verify"
                 .to_owned();
-            write_fleet_side_script(f, &summary);
+            write_fleet_side_script(f, &summary, false);
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store
@@ -2008,13 +2014,56 @@ Finish the task
 }
 
 #[tokio::test]
+async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
+    run(|f| Box::pin(async move {
+        f.summarize_at_tokens = 6000;
+        let prefix = "## Original Request\nFinish the task\n\n## Progress So Far\n- Tools used\n\n## Context Needed to Continue\n- Verify";
+        write_fleet_side_script(f, prefix, true);
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("split-turn", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        f.idle(successor).await;
+        let old = read_all_events(f, id).await;
+        let summary_id = old.iter().find_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        });
+        let mut found_prefix = false;
+        for event in &old {
+            if let Event::InferenceRequested { request_id, .. } = event {
+                let job: swarmy_llm::InferenceJob = f.store.get_inference_input(*request_id).await.unwrap().unwrap();
+                if job.summary {
+                    found_prefix = true;
+                    assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
+                    let Part::Text { text } = &job.request.messages[0].parts[0] else { panic!("prefix prompt missing") };
+                    assert!(text.starts_with("# Conversation\n"));
+                    assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+                }
+            }
+        }
+        assert!(summary_id.is_some() && found_prefix);
+        let events = read_all_events(f, successor).await;
+        let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
+        assert!(matches!(&message.parts[0], Part::Text { text } if text.contains("**Turn Context (split turn):**") && text.contains(prefix)));
+        assert_continued_tool_pairs(&successor_messages(&events));
+    })).await;
+}
+
+#[tokio::test]
 async fn side_summary_markdown_continues() {
     run(|f| {
         Box::pin(async move {
             f.summarize_at_tokens = 6000;
             let summary =
                 "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
-            write_fleet_side_script(f, summary);
+            write_fleet_side_script(f, summary, false);
             let image = image_fixture::image(&f.store).await;
             let agent = f
                 .store

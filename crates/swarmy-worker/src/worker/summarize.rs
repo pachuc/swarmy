@@ -1124,6 +1124,61 @@ mod pi_compaction_tests {
     }
 
     #[test]
+    fn split_turn_gets_a_separate_half_reserve_prompt() {
+        let mut history = vec![
+            text(MessageRole::User, "Earlier turn"),
+            text(MessageRole::Assistant, "Done"),
+            text(MessageRole::User, "Keep working"),
+        ];
+        for _ in 0..35 {
+            history.push(text(MessageRole::Assistant, &"x".repeat(3_000)));
+        }
+        let cut = raw_cut(&history);
+        let start = split_turn_start(&history, cut).expect("cut must split the active turn");
+        assert_eq!(start, 2);
+        assert!(cut > start);
+        let settings = swarmy_llm::GenerationSettings::default();
+        let config = crate::config::Config::from_env().unwrap();
+        let prefix = prefix_summary_request(&config, "fake", &history[start..cut], settings);
+        assert_eq!(prefix.settings.max_output_tokens, Some(8_192));
+        let Part::Text { text } = &prefix.messages[0].parts[0] else {
+            panic!("prefix text")
+        };
+        assert!(text.starts_with("# Conversation\n[User]: Keep working"));
+        assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+        assert!(prefix.tools.is_empty() && prefix.no_cache);
+    }
+
+    #[test]
+    fn serialization_keeps_empty_assistant_text_and_joins_thinking() {
+        let mut assistant = text(MessageRole::Assistant, "");
+        assistant.parts.push(Part::Reasoning {
+            text: "first".into(),
+            metadata: BTreeMap::new(),
+        });
+        assistant.parts.push(Part::Reasoning {
+            text: "second".into(),
+            metadata: BTreeMap::new(),
+        });
+        let empty_result = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: ToolCallId("empty".into()),
+                result: swarmy_core::ToolResult::Completed {
+                    output: String::new(),
+                    title: String::new(),
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        };
+        assert_eq!(
+            serialize_conversation(&[assistant, empty_result]),
+            "[Assistant thinking]: first\nsecond\n\n[Assistant]: "
+        );
+    }
+
+    #[test]
     fn update_prompt_carries_previous_checkpoint_without_replaying_it() {
         let previous = text(
             MessageRole::User,
