@@ -282,7 +282,19 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &HeldLease,
         preceding: &[Event],
+        request: swarmy_llm::Request,
+    ) -> Result<()> {
+        self.build_inference_with_prefix(session, lease, preceding, request, false)
+            .await
+    }
+
+    pub(super) async fn build_inference_with_prefix(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        preceding: &[Event],
         mut request: swarmy_llm::Request,
+        summary_prefix: bool,
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
         let attempt = self
@@ -328,6 +340,7 @@ impl Worker {
             step,
             request_id: RequestId::for_step(id, step),
             summary: request.no_cache,
+            summary_prefix,
             request,
         };
         self.kill("before_release");

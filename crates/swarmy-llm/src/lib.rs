@@ -166,6 +166,9 @@ pub struct InferenceJob {
     /// Compaction job marker, independent of its system prompt.
     #[serde(default, with = "swarmy_core::trailing")]
     pub summary: bool,
+    /// The second checkpoint of a split turn uses Pi's prefix prompt.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_prefix: bool,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -546,6 +549,7 @@ mod job_tests {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
             summary: false,
+            summary_prefix: false,
             provider: "fake".into(),
             entry: Some("primary".into()),
             route: Some("fallback".into()),

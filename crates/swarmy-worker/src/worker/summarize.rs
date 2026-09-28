@@ -49,7 +49,7 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &HeldLease,
         snapshot: &Snapshot,
-        events: &[Event],
+        events: &mut Vec<Event>,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
@@ -62,13 +62,17 @@ impl Worker {
         }) else {
             return Ok(false);
         };
-        let request_id = match last {
+        let job = match last {
             Event::InferenceFailed {
                 request_id,
                 failure_kind: swarmy_core::FailureKind::ContextOverflow,
                 retryable: false,
                 ..
-            } => *request_id,
+            } => {
+                self.store
+                    .get_inference_input::<InferenceJob>(*request_id)
+                    .await?
+            }
             Event::InferenceCompleted { request_id, .. } => {
                 let Some(job) = self
                     .store
@@ -86,21 +90,39 @@ impl Worker {
                 }) {
                     return Ok(false);
                 }
-                *request_id
+                Some(job)
             }
             _ => return Ok(false),
         };
-        let Some(job) = self
-            .store
-            .get_inference_input::<InferenceJob>(request_id)
-            .await?
-        else {
-            return Ok(false);
-        };
+        let Some(job) = job else { return Ok(false) };
         if job.summary {
             return Ok(false);
         }
+        let stopped_on_length = matches!(last, Event::InferenceCompleted { .. });
         if self.recovery_already_attempted(session, events).await? {
+            if stopped_on_length {
+                // Pi agent-session.ts:2671-2690 fails the second truncated
+                // attempt rather than accepting its partial assistant reply.
+                let notice = swarmy_core::Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: swarmy_core::MessageRole::System,
+                    parts: vec![swarmy_core::Part::Text {
+                        text: "Truncated response recovery failed".into(),
+                    }],
+                };
+                self.append(
+                    session,
+                    lease,
+                    events,
+                    &[Event::MessageAppended {
+                        seq: 0,
+                        message: notice,
+                    }],
+                )
+                .await?;
+                self.finish(session, lease, snapshot, events, None).await?;
+                return Ok(true);
+            }
             return Ok(false);
         }
         self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
@@ -248,11 +270,8 @@ impl Worker {
             if mid_turn.is_some() {
                 return Ok(false);
             }
-            if !is_prefix_job(&job) {
-                let mut history = snapshot.replay(events).messages().to_vec();
-                if let Some(message) = message.as_ref() {
-                    history.retain(|kept| kept.id != message.id);
-                }
+            if !job.summary_prefix {
+                let (history, _) = self.compaction_history(snapshot, events).await?;
                 let cut = raw_cut(&history);
                 if let Some(start) = split_turn_start(&history, cut) {
                     if !message.as_ref().is_some_and(|message| {
@@ -269,7 +288,8 @@ impl Worker {
                     if !summary_fits(&self.config, &request, self.job_provider(&job)) {
                         return Ok(false);
                     }
-                    self.build_inference(session, lease, &[], request).await?;
+                    self.build_inference_with_prefix(session, lease, &[], request, true)
+                        .await?;
                     return Ok(true);
                 }
             }
@@ -386,8 +406,9 @@ impl Worker {
         if cut == 0 {
             return Ok(false);
         }
-        let request = if let Some(start) = split_turn_start(&history, cut) {
-            if start == 0 {
+        let split_start = split_turn_start(&history, cut);
+        let request = if let Some(start) = split_start {
+            if start == 0 || (start == 1 && previous_summary(&history).is_some()) {
                 prefix_summary_request(
                     &self.config,
                     self.job_provider(job),
@@ -417,8 +438,16 @@ impl Worker {
             );
             return Ok(false);
         }
-        self.build_inference(session, lease, preceding, request)
-            .await?;
+        self.build_inference_with_prefix(
+            session,
+            lease,
+            preceding,
+            request,
+            split_start.is_some_and(|start| {
+                start == 0 || (start == 1 && previous_summary(&history).is_some())
+            }),
+        )
+        .await?;
         Ok(true)
     }
 
@@ -528,7 +557,7 @@ impl Worker {
     ) -> Result<(String, Vec<swarmy_core::Message>, bool)> {
         let mut history = snapshot.replay(events).messages().to_vec();
         history.retain(|kept| kept.id != message.id);
-        if is_prefix_job(job) {
+        if job.summary_prefix {
             let prior = events.iter().rev().find_map(|event| match event {
                 Event::InferenceCompleted {
                     request_id,
@@ -558,6 +587,19 @@ impl Worker {
             };
             text = format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{text}");
         }
+        let (clean, recovery) = self.compaction_history(snapshot, events).await?;
+        history = clean;
+        Ok((text, history, recovery))
+    }
+
+    /// Compute the cut input once from the replay, excluding checkpoint replies
+    /// and the abandoned length-stopped reply. All phases use this same view.
+    async fn compaction_history(
+        &self,
+        snapshot: &Snapshot,
+        events: &[Event],
+    ) -> Result<(Vec<swarmy_core::Message>, bool)> {
+        let mut history = snapshot.replay(events).messages().to_vec();
         let mut recovery = events.iter().any(|event| {
             matches!(
                 event,
@@ -567,38 +609,38 @@ impl Worker {
                 }
             )
         });
-        // A length-stopped reply is visible in the predecessor log but is not
-        // part of the retried context. Pi agent-session.ts:2655-2696 drops it.
         for event in events.iter().rev() {
-            if let Event::InferenceCompleted {
+            let Event::InferenceCompleted {
                 request_id,
-                message: attempt,
+                message,
                 ..
             } = event
-            {
-                let Some(attempt_job) = self
-                    .store
-                    .get_inference_input::<InferenceJob>(*request_id)
-                    .await?
-                else {
-                    continue;
-                };
-                if attempt_job.summary {
-                    continue;
-                }
-                if let Some(Ok(response)) = self
-                    .store
-                    .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
-                    .await?
-                    && self.recoverable_length(&attempt_job, &response)
-                {
-                    history.retain(|kept| kept.id != attempt.id);
-                    recovery = true;
-                }
+            else {
+                continue;
+            };
+            let Some(job) = self
+                .store
+                .get_inference_input::<InferenceJob>(*request_id)
+                .await?
+            else {
                 break;
+            };
+            if job.summary {
+                history.retain(|kept| kept.id != message.id);
+                continue;
             }
+            if let Some(Ok(response)) = self
+                .store
+                .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                .await?
+                && self.recoverable_length(&job, &response)
+            {
+                history.retain(|kept| kept.id != message.id);
+                recovery = true;
+            }
+            break;
         }
-        Ok((text, history, recovery))
+        Ok((history, recovery))
     }
 
     /// Mark the successor runnable before nudging: idle nudges are dropped.
@@ -651,13 +693,13 @@ fn raw_cut(history: &[swarmy_core::Message]) -> usize {
 
 /// Pi compaction.ts:453-508 splits when the active turn began before the cut.
 fn split_turn_start(history: &[swarmy_core::Message], cut: usize) -> Option<usize> {
-    let start = history.iter().rposition(|message| message.role == swarmy_core::MessageRole::User
-        && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX))))?;
-    (start < cut).then_some(start)
-}
-
-fn is_prefix_job(job: &InferenceJob) -> bool {
-    job.summary && job.request.messages.first().and_then(|message| message.parts.first()).is_some_and(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("# Conversation\n")))
+    if cut >= history.len() || history[cut].role == swarmy_core::MessageRole::User {
+        return None;
+    }
+    history[..cut].iter().rposition(|message| {
+        message.role == swarmy_core::MessageRole::User
+            && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)))
+    })
 }
 
 fn previous_summary(history: &[swarmy_core::Message]) -> Option<&str> {
@@ -900,8 +942,7 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
                 Part::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<String>();
         match message.role {
             MessageRole::User if !text.is_empty() => lines.push(format!("[User]: {text}")),
             MessageRole::Assistant => {
