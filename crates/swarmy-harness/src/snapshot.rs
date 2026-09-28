@@ -37,6 +37,7 @@ impl Snapshot {
     }
 
     /// Discard an unusable checkpoint reply while preserving the durable log.
+    #[must_use]
     pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {
         self.messages.retain(|message| message.id != id);
         self
