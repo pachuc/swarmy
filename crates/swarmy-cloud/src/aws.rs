@@ -105,6 +105,22 @@ impl Aws {
         Ok(())
     }
 
+    async fn create_bucket(&self, bucket: &str, region: &str) -> Result<()> {
+        let mut request = self.s3.create_bucket().bucket(bucket);
+        if region != "us-east-1" {
+            request = request.create_bucket_configuration(
+                aws_sdk_s3::types::CreateBucketConfiguration::builder()
+                    .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(region))
+                    .build(),
+            );
+        }
+        request
+            .send()
+            .await
+            .context("s3:CreateBucket (bucket may belong to another account)")?;
+        Ok(())
+    }
+
     async fn ensure_bucket_exists(&self, bucket: &str, region: &str, owner: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
         let mut created = false;
@@ -122,20 +138,7 @@ impl Aws {
                     .and_then(ProvideErrorMetadata::code)
                     == Some("NoSuchBucket") =>
             {
-                let mut request = self.s3.create_bucket().bucket(bucket);
-                if region != "us-east-1" {
-                    request = request.create_bucket_configuration(
-                        aws_sdk_s3::types::CreateBucketConfiguration::builder()
-                            .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(
-                                region,
-                            ))
-                            .build(),
-                    );
-                }
-                request
-                    .send()
-                    .await
-                    .context("s3:CreateBucket (bucket may belong to another account)")?;
+                self.create_bucket(bucket, region).await?;
                 created = true;
                 if let Err(error) = self.write_bucket_tags(bucket, owner, Vec::new()).await {
                     warn_tag_denied(&error, "s3:PutBucketTagging", bucket, owner)?;
