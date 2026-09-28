@@ -627,9 +627,9 @@ impl Worker {
                 to: SessionState::Idle,
             });
             let mut replayed = snapshot.replay(events);
-            // A rejected checkpoint stays in the audit log, not the next
-            // model request. Accepted checkpoints archive instead of finishing.
-            if self.summary_completed(session, events).await?
+            // Rejected checkpoint replies and refused second truncations stay
+            // in the audit log, not in prompts sent on the next user turn.
+            if (skip_compaction || self.summary_completed(session, events).await?)
                 && let Some(Event::InferenceCompleted { message, .. }) =
                     events.iter().rev().find(|event| {
                         matches!(
