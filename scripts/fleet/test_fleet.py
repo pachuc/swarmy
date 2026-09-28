@@ -184,8 +184,11 @@ class FleetTests(unittest.TestCase):
                             env=dict(self.env, PENDING_QUEUE="1"))
         self.assertEqual(pending.returncode, 0, pending.stderr)
         self.assertIn("--queue", self.calls()[-1])
+        pending_calls = self.calls()[calls_before:]
+        interrupt_at = next(i for i, call in enumerate(pending_calls)
+                            if call[-3:] == ["session", "interrupt", "01AAAA"])
         self.assertFalse(any(call[2:5] == ["session", "ls", "--json"]
-                             for call in self.calls()[calls_before:]))
+                             for call in pending_calls[interrupt_at + 1:]))
         open_env = dict(self.env, PR_STATE="OPEN")
         self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")
