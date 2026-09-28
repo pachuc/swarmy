@@ -1805,7 +1805,7 @@ Finish the task
                 .unwrap();
             let job: swarmy_llm::InferenceJob =
                 f.store.get_inference_input(request).await.unwrap().unwrap();
-            assert!(job.request.messages.len() <= 12);
+            assert!(job.request.messages.len() <= 35);
         })
     })
     .await;
@@ -2088,8 +2088,8 @@ fn assert_successor_opening(new_events: &[Event], summary: &str) {
 }
 
 async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event]) {
-    // The successor's first request stays under the threshold that
-    // archived its predecessor.
+    // The successor keeps approximately 20k recent context tokens,
+    // even when a fixture overrides the usage trigger to 6k.
     let request = new_events
         .iter()
         .find_map(|event| match event {
@@ -2105,7 +2105,7 @@ async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event])
         .unwrap();
     let request_chars = serde_json::to_string(&job.request.messages).unwrap().len();
     assert!(
-        request_chars / 4 < 6000,
+        request_chars / 4 < 25_000,
         "successor request too large: {request_chars} chars"
     );
 }
