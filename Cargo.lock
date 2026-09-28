@@ -4571,6 +4571,7 @@ dependencies = [
  "foundationdb",
  "futures",
  "jiff",
+ "rustix",
  "serde",
  "serde_json",
  "swarmy-api-types",
