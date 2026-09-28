@@ -631,36 +631,40 @@ impl Worker {
             // Keep rejected checkpoint replies and failed recovery attempts in
             // the audit log, but never replay them in a later prompt.
             if skip_compaction || self.summary_completed(session, events).await? {
-                let completions = events
-                    .iter()
-                    .filter_map(|event| match event {
-                        Event::InferenceCompleted {
-                            request_id,
-                            message,
-                            ..
-                        } => Some((*request_id, message)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let mut recovery_reply = None;
-                for (index, (request_id, message)) in completions.iter().enumerate() {
+                let mut prior_completion = None;
+                let mut summary_replies = Vec::new();
+                let mut recovery_replies = Vec::new();
+                for event in events.iter() {
+                    let request_id = match event {
+                        Event::InferenceCompleted { request_id, .. }
+                        | Event::InferenceFailed { request_id, .. } => *request_id,
+                        _ => continue,
+                    };
                     if let Some(job) = self
                         .store
-                        .get_inference_input::<InferenceJob>(*request_id)
+                        .get_inference_input::<InferenceJob>(request_id)
                         .await?
                         && job.summary
                     {
-                        replayed = replayed.without_message(message.id);
-                        if job.summary_recovery && index > 0 {
-                            recovery_reply = Some(completions[index - 1].1.id);
+                        if let Event::InferenceCompleted { message, .. } = event {
+                            summary_replies.push(message.id);
                         }
+                        if job.summary_recovery
+                            && let Some(id) = prior_completion
+                        {
+                            recovery_replies.push(id);
+                        }
+                    } else if let Event::InferenceCompleted { message, .. } = event {
+                        prior_completion = Some(message.id);
+                    } else {
+                        prior_completion = None;
                     }
                 }
-                if let Some(id) = recovery_reply {
+                for id in summary_replies.into_iter().chain(recovery_replies) {
                     replayed = replayed.without_message(id);
                 }
-                if skip_compaction && let Some((_, message)) = completions.last() {
-                    replayed = replayed.without_message(message.id);
+                if skip_compaction && let Some(id) = prior_completion {
+                    replayed = replayed.without_message(id);
                 }
             }
             let bytes = encode(&replayed)?;

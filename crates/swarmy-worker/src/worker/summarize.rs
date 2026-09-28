@@ -263,7 +263,7 @@ impl Worker {
                     .clone()
                     .unwrap_or_else(|| self.config.harness.settings.model.clone());
             }
-            if input < self.config.side_summarization_threshold(&provider, &model) {
+            if input <= self.config.side_summarization_threshold(&provider, &model) {
                 return Ok(false);
             }
         }
@@ -300,7 +300,7 @@ impl Worker {
             if self
                 .config
                 .summarization_threshold(provider, model)
-                .is_none_or(|threshold| tokens < threshold)
+                .is_none_or(|threshold| tokens <= threshold)
             {
                 return Ok(false);
             }
@@ -309,7 +309,7 @@ impl Worker {
             // used to gate the mid-turn fast path.
             let threshold = self.config.side_summarization_threshold(provider, model);
             let input = response.usage.input_tokens;
-            if input < threshold {
+            if input <= threshold {
                 return Ok(false);
             }
         }

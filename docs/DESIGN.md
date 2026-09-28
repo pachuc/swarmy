@@ -149,8 +149,10 @@ JSON schema. OpenCode's output handling and auto-continue are separate designs:
 the 4,096-token cap was swarmy's own choice, not a general OpenCode rule.
 Pi retries transient summarization transport failures according to its shared
 retry policy (`compaction.ts:636-660`), but does not accept a length-stopped
-summary or retry that truncated text as a valid checkpoint. Swarmy accepts empty successful summaries as Pi does. A permanent summary failure leaves an explanatory notice. Pi reports a
-second truncated recovery failure as an event; swarmy records a session notice.
+summary or retry that truncated text as a valid checkpoint. Swarmy accepts
+empty successful summaries as Pi does. A permanent summary failure leaves an
+explanatory notice. Pi reports a second truncated recovery failure as an event;
+swarmy records a session notice.
 
 Memory files live on the agent's home volume, by default under
 `/home/agent/memory`, configured with `SWARMY_MEMORY_DIR`. Agents use the file tools
