@@ -767,6 +767,39 @@ async fn rate_limit_opens_durable_breaker_and_keeps_provider_text() {
 }
 
 #[tokio::test]
+async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
+    run(|mut f| async move {
+        std::fs::write(f.files.path().join("script.json"), r#"{"responses":{}}"#).unwrap();
+        f.start(1);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            let started = tokio::time::Instant::now();
+            let mut calls_at = Vec::new();
+            while calls_at.len() < 3 {
+                let calls = f.calls();
+                assert!(calls <= 3, "provider called beyond delivery limit");
+                while calls_at.len() < calls {
+                    calls_at.push(started.elapsed());
+                }
+                assert!(started.elapsed() < Duration::from_secs(5), "provider did not finish retries");
+                sleep(Duration::from_millis(5)).await;
+            }
+            assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. }
+                if error.contains("fake provider has no response")));
+            assert_eq!(f.calls(), 3);
+            assert!(calls_at[1] >= calls_at[0] + Duration::from_millis(75));
+            assert!(calls_at[2] >= calls_at[1] + Duration::from_millis(175));
+            sleep(ACK_WAIT * 2).await;
+            assert_eq!(f.calls(), 3);
+            f.drained().await;
+        }).catch_unwind().await;
+        f.cleanup().await;
+        result.unwrap();
+    }).await;
+}
+
+#[tokio::test]
 async fn authentication_failure_does_not_open_breaker() {
     run(|mut f| async move {
         f.failure_script(401, None);
