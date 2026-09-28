@@ -452,6 +452,8 @@ impl Gateway {
         let stored = InferenceJob {
             summary: job.summary,
             summary_prefix: job.summary_prefix,
+            summary_cut: None,
+            summary_recovery: false,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,
@@ -1554,6 +1556,8 @@ mod retry_tests {
         swarmy_llm::InferenceJob {
             summary: false,
             summary_prefix: false,
+            summary_cut: None,
+            summary_recovery: false,
             session_id,
             step,
             request_id: swarmy_core::RequestId::for_step(session_id, step),
