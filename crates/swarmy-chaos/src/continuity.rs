@@ -158,14 +158,18 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
     let head = send(f, first, "Write a long scratch note, then wait.").await?;
     settled(f, agent, first, head, false).await?;
 
-    // Deliberately omit the fact from the Markdown summary.
+    // Deliberately omit the fact from the Markdown summary. The scratch-note
+    // turn is larger than the kept tail, so the cut splits it and, as in Pi,
+    // the worker asks for a history summary and then a turn-prefix summary.
     let summary = "## Goal\nRemember the user's fact\n\n## Progress\n- Memory saved and tree installed\n\n## Next Steps\n- Read memory files for the user's fact";
+    let prefix = "## Original Request\nWrite a long scratch note, then wait.\n\n## Early Progress\n- Scratch note written";
     script(
         f,
         vec![
             tool("set_timer", &json!({"delay_seconds":120,"note":NOTE})),
             answer("Timer set; ready to summarize.", 100),
             answer(summary, 0),
+            answer(prefix, 0),
         ],
     )
     .await?;
