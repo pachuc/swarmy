@@ -58,21 +58,40 @@ impl State {
             .with_context(|| format!("no remote node named {name}; run swarmy remote up {name}"))
     }
 
-    /// Refuse bucket deletion while any other saved remote still refers to it.
-    pub fn bucket_shared(&self, owner: &str, bucket: &str) -> Result<bool> {
+    /// Only remote records are inspected; tunnel profiles also use JSON here.
+    fn shared(&self, owner: &str, matches: impl Fn(&RemoteNode) -> bool) -> Result<bool> {
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
+            if path.extension().is_none_or(|ext| ext != "json")
+                || path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_none_or(|stem| validate_remote_name(stem).is_err())
+            {
                 continue;
             }
             let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)
                 .with_context(|| format!("reading remote state {}", path.display()))?;
-            if other.name != owner && other.bucket() == Some(bucket) {
+            if other.name != owner && matches(&other) {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    pub fn bucket_shared(&self, owner: &str, bucket: &str) -> Result<bool> {
+        self.shared(owner, |other| other.bucket() == Some(bucket))
+    }
+
+    pub fn role_shared(&self, owner: &str, role: &str) -> Result<bool> {
+        self.shared(owner, |other| {
+            other
+                .cloud_settings()
+                .instance_profile(&other.name)
+                .as_deref()
+                == Some(role)
+        })
     }
 
     pub fn save(&self, node: &RemoteNode) -> Result<()> {

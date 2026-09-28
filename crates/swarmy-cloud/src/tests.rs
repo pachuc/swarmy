@@ -1867,3 +1867,56 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
     );
     assert_eq!(cloud.tagged.borrow().len(), 2);
 }
+
+#[tokio::test]
+async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    std::fs::write(state.directory.join("cleanup.profile.json"), b"{}").unwrap();
+    assert!(!state.bucket_shared("cleanup", "test-bucket").unwrap());
+    let mut other = node.clone();
+    other.name = "other".into();
+    other.launch_settings.as_mut().unwrap().bucket = Some("different-bucket".into());
+    // The other remote uses the same IAM override, but not the same bucket.
+    other.launch_settings.as_mut().unwrap().aws.iam_role = Some("swarmy-cleanup".into());
+    state.save(&other).unwrap();
+    assert!(state.role_shared("cleanup", "swarmy-cleanup").unwrap());
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|call| call == "bucket test-bucket")
+    );
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|call| call == "role swarmy-cleanup")
+    );
+}

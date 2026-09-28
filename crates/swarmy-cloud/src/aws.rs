@@ -35,14 +35,24 @@ impl Aws {
         }
     }
 
-    async fn write_bucket_tags(&self, name: &str, owner: &str) -> Result<()> {
+    async fn write_bucket_tags(
+        &self,
+        name: &str,
+        owner: &str,
+        existing: Vec<aws_sdk_s3::types::Tag>,
+    ) -> Result<()> {
+        let mut tags: Vec<_> = existing
+            .into_iter()
+            .filter(|tag| tag.key() != "managed-by" && tag.key() != "swarmy-remote")
+            .collect();
+        tags.push(s3_tag("managed-by", "swarmy"));
+        tags.push(s3_tag("swarmy-remote", owner));
         self.s3
             .put_bucket_tagging()
             .bucket(name)
             .tagging(
                 aws_sdk_s3::types::Tagging::builder()
-                    .tag_set(s3_tag("managed-by", "swarmy"))
-                    .tag_set(s3_tag("swarmy-remote", owner))
+                    .set_tag_set(Some(tags))
                     .build()?,
             )
             .send()
@@ -132,7 +142,7 @@ impl Aws {
                     .await
                     .context("s3:CreateBucket (bucket may belong to another account)")?;
                 created = true;
-                self.write_bucket_tags(bucket, owner).await?;
+                self.write_bucket_tags(bucket, owner, Vec::new()).await?;
             }
             Err(error) => {
                 return Err(error)
@@ -291,6 +301,19 @@ fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
         .value(value)
         .build()
         .expect("tag fields")
+}
+
+fn ensure_not_another_remote<'a>(
+    tags: impl Iterator<Item = (&'a str, &'a str)>,
+    owner: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !tags
+            .into_iter()
+            .any(|(key, value)| key == "swarmy-remote" && value != owner),
+        "resource is tagged for another remote"
+    );
+    Ok(())
 }
 
 fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
@@ -589,19 +612,50 @@ impl Cloud for Aws {
     }
 
     async fn tag_bucket(&self, name: &str, owner: &str) -> Result<()> {
-        anyhow::ensure!(
-            self.bucket_ownership(name, owner).await? != Ownership::Absent,
-            "bucket is absent"
-        );
-        self.write_bucket_tags(name, owner).await
+        let tags = match self.s3.get_bucket_tagging().bucket(name).send().await {
+            Ok(output) => output.tag_set().to_vec(),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchTagSet") =>
+            {
+                Vec::new()
+            }
+            Err(error) => return Err(error).context("s3:GetBucketTagging"),
+        };
+        ensure_not_another_remote(tags.iter().map(|tag| (tag.key(), tag.value())), owner)?;
+        self.write_bucket_tags(name, owner, tags).await
     }
 
     async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
-        let (profile, role) = self.role_ownership(name, owner).await?;
-        anyhow::ensure!(
-            profile != Ownership::Absent && role != Ownership::Absent,
-            "role or instance profile is absent"
-        );
+        let role = self
+            .iam
+            .get_role()
+            .role_name(name)
+            .send()
+            .await
+            .context("iam:GetRole")?
+            .role
+            .context("role is absent")?;
+        let profile = self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+            .context("iam:GetInstanceProfile")?
+            .instance_profile
+            .context("instance profile is absent")?;
+        // Check both before changing either one, so a conflicting profile cannot leave a tagged role.
+        ensure_not_another_remote(
+            role.tags().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        )?;
+        ensure_not_another_remote(
+            profile.tags().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        )?;
         self.iam
             .tag_role()
             .role_name(name)
@@ -916,5 +970,21 @@ mod tests {
                     .any(|tag| tag.key() == Some("Name") && tag.value() == Some("test"))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tag_tests {
+    use super::{ensure_not_another_remote, s3_tag};
+
+    #[test]
+    fn adoption_rejects_foreign_owner_even_without_managed_by() {
+        let tags = [s3_tag("swarmy-remote", "other")];
+        assert!(
+            ensure_not_another_remote(tags.iter().map(|t| (t.key(), t.value())), "mine").is_err()
+        );
+        assert!(
+            ensure_not_another_remote(tags.iter().map(|t| (t.key(), t.value())), "other").is_ok()
+        );
     }
 }

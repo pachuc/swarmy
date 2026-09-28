@@ -57,8 +57,9 @@ pub async fn confirm(
     let bucket_status = cloud.bucket_ownership(bucket, &node.name).await?;
     let bucket_owned =
         !state.bucket_shared(&node.name, bucket)? && bucket_status == Ownership::Owned;
+    let role_shared = state.role_shared(&node.name, &role)?;
     let (profile, role_status) = cloud.role_ownership(&role, &node.name).await?;
-    let iam_safe = bucket_owned || bucket_status == Ownership::Absent;
+    let iam_safe = !role_shared && (bucket_owned || bucket_status == Ownership::Absent);
     let iam_owned =
         iam_safe && profile != Ownership::Unmanaged && role_status != Ownership::Unmanaged;
     let profile_owned = iam_owned && profile == Ownership::Owned;
@@ -129,6 +130,10 @@ pub(crate) async fn tag_with_confirmation(
     anyhow::ensure!(
         !state.bucket_shared(&node.name, bucket)?,
         "bucket is also recorded by another remote"
+    );
+    anyhow::ensure!(
+        !state.role_shared(&node.name, &role)?,
+        "role is also recorded by another remote"
     );
     for (kind, name) in [
         ("bucket", bucket),
@@ -216,13 +221,22 @@ pub async fn run(
                     }
                 }
             }
-            if bucket_status == Ownership::Unmanaged {
-                println!("Instance profile {role}: kept (bucket is retained)");
-                println!("Role {role}: kept (bucket is retained)");
+            let role_shared = state.role_shared(&node.name, &role)?;
+            if bucket_status == Ownership::Unmanaged || role_shared {
+                let reason = if role_shared {
+                    "another remote state records the role"
+                } else {
+                    "bucket is retained"
+                };
+                println!("Instance profile {role}: kept ({reason})");
+                println!("Role {role}: kept ({reason})");
             } else {
                 let (profile, role_status) = cloud.role_ownership(&role, &node.name).await?;
                 if profile == Ownership::Unmanaged {
                     println!("Instance profile {role}: kept (ownership tags do not match)");
+                }
+                if role_status == Ownership::Unmanaged && profile != Ownership::Unmanaged {
+                    println!("Instance profile {role}: kept (role is unowned)");
                 }
                 if role_status == Ownership::Unmanaged || profile == Ownership::Unmanaged {
                     println!(
