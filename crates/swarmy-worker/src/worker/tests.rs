@@ -355,6 +355,7 @@ mod side_tail_tests {
             effort_used: None,
             usage: TokenUsage {
                 input_tokens: 10,
+                output_tokens: 3,
                 ..Default::default()
             },
             cost_micros: 0,
@@ -369,7 +370,7 @@ mod side_tail_tests {
         };
         assert_eq!(provider, "fake");
         assert_eq!(model, "base");
-        assert_eq!(input, 10);
+        assert_eq!(input, 13);
         // A low-usage completion stays on the fast path without a store read.
         assert!(input < 16_384);
     }

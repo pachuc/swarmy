@@ -185,6 +185,31 @@ mod checkpoint_tests {
     use ulid::Ulid;
 
     #[test]
+    fn removing_tool_call_recomputes_phase() {
+        let user = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::User,
+            parts: vec![Part::Text { text: "run".into() }],
+        };
+        let call = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::ToolCall {
+                call_id: swarmy_core::ToolCallId("one".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            }],
+        };
+        let snapshot = Snapshot {
+            messages: vec![user.clone(), call.clone()],
+            phase: model_phase(&call),
+        };
+        let retained = snapshot.without_message(call.id);
+        assert_eq!(retained.messages(), &[user]);
+        assert!(matches!(retained.phase, Phase::Ready));
+    }
+
+    #[test]
     fn rejected_checkpoint_reply_is_not_replayed_from_next_snapshot() {
         let original = Message {
             id: MessageId::from_ulid(Ulid::generate()),

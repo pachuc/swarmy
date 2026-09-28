@@ -1826,7 +1826,7 @@ async fn second_length_stop_fails_with_notice() {
         let successor = wait_successor(f, id).await;
         let events = f.idle(successor).await;
         assert_eq!(f.calls(), 3);
-        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("Truncated response recovery failed")))));
+        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery failed after one compact-and-retry attempt."))));
     })).await;
 }
 
