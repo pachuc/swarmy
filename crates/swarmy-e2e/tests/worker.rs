@@ -1834,6 +1834,44 @@ async fn second_length_stop_fails_with_notice() {
 }
 
 #[tokio::test]
+async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.keyring();
+        f.put_entry("primary").await;
+        let mut truncated = side_response("UNUSABLE_TRUNCATION".into(), 20);
+        truncated.stop_reason = StopReason::MaxOutputTokens;
+        truncated.usage.output_tokens = 1;
+        let mut refused = side_response("REFUSED_CHECKPOINT".into(), 20);
+        refused.stop_reason = StopReason::MaxOutputTokens;
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": truncated, "1": refused, "2": side_response("Next answer".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("refused-recovery", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 2);
+        assert!(f.store.next_session(id).await.unwrap().is_none());
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 2, "idle wake must not reissue refused checkpoint");
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 3);
+        let prompt = f.histories().pop().unwrap();
+        assert!(!prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "UNUSABLE_TRUNCATION" || text == "REFUSED_CHECKPOINT"))));
+    })).await;
+}
+
+#[tokio::test]
 async fn no_head_to_compact_omits_truncated_tool_attempt() {
     run(|f| {
         Box::pin(async move {
