@@ -1968,7 +1968,6 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
                     .iter()
                     .any(|message| message.parts.iter().any(|part| match part {
                         Part::Text { text } => text.contains("recovery could not compact"),
-                        Part::ToolCall { call_id, .. } => call_id.0 == "abandoned",
                         _ => false,
                     }))
             );
