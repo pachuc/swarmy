@@ -566,7 +566,9 @@ mod job_tests {
             entry: Option<String>,
             route: Option<String>,
             route_step: u32,
+            #[serde(with = "swarmy_core::trailing")]
             summary: bool,
+            #[serde(with = "swarmy_core::trailing")]
             summary_prefix: bool,
         }
         let session_id = SessionId::from_ulid(ulid::Ulid::nil());

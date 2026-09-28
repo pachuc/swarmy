@@ -583,7 +583,33 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
     ) -> Result<()> {
-        if !session.interrupt_requested
+        self.finish_inner(session, lease, snapshot, events, turn, false)
+            .await
+    }
+
+    pub(super) async fn finish_failed_recovery(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
+        self.finish_inner(session, lease, snapshot, events, turn, true)
+            .await
+    }
+
+    async fn finish_inner(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &mut Vec<Event>,
+        turn: Option<MessageId>,
+        skip_compaction: bool,
+    ) -> Result<()> {
+        if !skip_compaction
+            && !session.interrupt_requested
             && self
                 .summarize(session, lease, snapshot, events, None)
                 .await?

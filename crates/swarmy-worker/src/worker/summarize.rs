@@ -128,7 +128,8 @@ impl Worker {
                     }],
                 )
                 .await?;
-                self.finish(session, lease, snapshot, events, turn).await?;
+                self.finish_failed_recovery(session, lease, snapshot, events, turn)
+                    .await?;
                 return Ok(true);
             }
             return Ok(false);
