@@ -504,7 +504,7 @@ mod tests {
             api_url: Some("http://127.0.0.1:18742".into()),
             api_token: Some("fixture-token".into()),
             s3_bucket: None,
-            s3_region: None,
+            s3_region: Some("eu-west-1".into()),
             default_image: Some("base-ubuntu:test".into()),
         };
         std::fs::write(
@@ -542,6 +542,7 @@ mod tests {
             profile.fdb_cluster_file
         );
         assert_eq!(loaded.settings.s3_bucket, "custom");
+        assert_eq!(loaded.settings.s3_region, "eu-west-1");
         assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
         let mut invalid = profile;
         invalid.ports.fdb = 14500;
