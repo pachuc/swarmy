@@ -3,12 +3,14 @@
 # SUITES overrides the list (comma-separated), for example
 # SUITES="swarmyd --test node" for the node suite alone. Each suite's full output goes to
 # ~/suite-logs/<branch suffix>-<package>-<test>.log; the console gets the tail.
+# REV pins the commit to test (a branch head moves while a worker is still
+# pushing); SKIP_CHAOS_CI=1 leaves out scripts/chaos-ci.sh.
 set -uo pipefail
 branch=$1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
-git fetch -q origin "$branch" && git checkout -q -B suite "origin/$branch" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
+git fetch -q origin "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== branch $branch at $(git rev-parse --short HEAD)"
 sudo systemctl stop swarmyd swarmy-tunnel
 api_pid=""
@@ -56,8 +58,10 @@ for suite in "${suites[@]}"; do
   full=~/suite-logs/${branch##*/}-$1-$3.log
   if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -12; then :; else rc=1; fi
 done
-echo "== scripts/chaos-ci.sh"
-sudo -E env PATH="$PATH" bash scripts/chaos-ci.sh 2>&1 | tail -3 || rc=1
+if [ "${SKIP_CHAOS_CI:-0}" != 1 ]; then
+  echo "== scripts/chaos-ci.sh"
+  sudo -E env PATH="$PATH" bash scripts/chaos-ci.sh 2>&1 | tail -3 || rc=1
+fi
 [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "SUITES_EXIT=$rc"

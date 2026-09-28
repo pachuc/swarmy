@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Usage: rerun-suite.sh REF PACKAGE TEST — rerun one root suite with full output.
 # Run it through suite-queue.sh --only, which holds the node's suite lock.
+# It serves no API, so the chaos suites go through root-suites.sh instead.
 set -uo pipefail
 ref=$1; pkg=$2; suite=$3
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
-git fetch -q origin "$ref" && git checkout -q -B suite "origin/$ref"
+git fetch -q origin "$ref" && git checkout -q -B suite "${REV:-origin/$ref}"
 echo "== $ref at $(git rev-parse --short HEAD)"
 sudo systemctl stop swarmyd swarmy-tunnel
 trap "sudo systemctl start swarmy-tunnel swarmyd" EXIT
