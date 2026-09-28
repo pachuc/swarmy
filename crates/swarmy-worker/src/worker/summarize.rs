@@ -99,7 +99,7 @@ impl Worker {
             return Ok(false);
         }
         let stopped_on_length = matches!(last, Event::InferenceCompleted { .. });
-        if self.recovery_already_attempted(session, events).await? {
+        if self.recovery_already_attempted(session).await? {
             if stopped_on_length {
                 // Pi agent-session.ts:2671-2690 fails the second truncated
                 // attempt rather than accepting its partial assistant reply.
@@ -129,11 +129,11 @@ impl Worker {
             .await
     }
 
-    async fn recovery_already_attempted(
-        &self,
-        session: &SessionRecord,
-        events: &[Event],
-    ) -> Result<bool> {
+    async fn recovery_already_attempted(&self, session: &SessionRecord) -> Result<bool> {
+        // The worker's event tail may start after a snapshot. Read the whole
+        // current session only on recovery, so a later user message is not
+        // mistaken for part of the original retried turn.
+        let events = self.tail(session.session_id, 0, session.head_seq).await?;
         // Pi agent-session.ts:901,952 resets the one-shot recovery guard on
         // new input or a successful assistant reply, not on every rollover.
         // The successor starts with a user-role summary and may replay the
