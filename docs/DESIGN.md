@@ -128,10 +128,11 @@ is merged under `**Turn Context (split turn):**` (`compaction.ts:1016-1054,
 1101-1140`). Read and modified
 file paths from explicit file-tool calls are appended cumulatively as Pi does
 (`utils.ts:25-94`, `compaction.ts:1079-1080`). Swarmy counts UTF-8 bytes
-for its token estimate and serde_json retains sorted object keys; Pi estimates
-UTF-16 character counts and preserves argument insertion order. The one-off
-request has no
-tools or cache writes, uses the conversation's reasoning effort, and caps
+for its token estimate and Rust Unicode scalar values for the 2,000-character
+tool-result truncation. Pi counts UTF-16 code units for both. Serde JSON
+retains sorted object keys, while Pi preserves argument insertion order. The
+one-off request has no tools or explicit cache writes, uses the conversation's
+reasoning effort, and caps
 output at min(0.8 times reserve, model output limit)
 (`compaction.ts:728-790`). Length-stopped, empty, failed, or tool-calling
 summaries do not replace the current session. A context overflow or an early

@@ -451,6 +451,7 @@ impl Gateway {
         );
         let stored = InferenceJob {
             summary: job.summary,
+            summary_prefix: job.summary_prefix,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,
