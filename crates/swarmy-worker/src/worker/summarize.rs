@@ -338,10 +338,13 @@ impl Worker {
             let history = self
                 .compaction_history(snapshot, events, job.summary_recovery)
                 .await?;
-            let cut = job.summary_cut.map_or_else(
-                || raw_cut(&history),
-                |cut| usize::try_from(cut).unwrap_or(usize::MAX),
-            );
+            let cut = job
+                .summary_cut
+                .map_or_else(
+                    || raw_cut(&history),
+                    |cut| usize::try_from(cut).unwrap_or(usize::MAX),
+                )
+                .min(history.len());
             if let Some(start) = split_turn_start(&history, cut) {
                 if !message.as_ref().is_some_and(|message| {
                     valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
