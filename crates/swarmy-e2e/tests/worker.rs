@@ -2083,16 +2083,23 @@ async fn no_head_recovery_survives_crash_before_release() {
             let events = f.idle(id).await;
             assert_eq!(f.calls(), 1, "replacement must not issue inference");
             assert!(f.store.next_session(id).await.unwrap().is_none());
-            assert!(
-                !successor_messages(&events).iter().any(|message| {
-                    message.parts.iter().any(
-            |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
-        )
-                })
-            );
+            // The archived event remains durable, but the idle snapshot omits it.
+            assert!(events.iter().any(|event| matches!(event,
+                Event::InferenceCompleted { message, .. } if message.parts.iter().any(
+                    |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
+                )
+            )));
             f.wake(id).await;
             f.idle(id).await;
             assert_eq!(f.calls(), 1);
+            f.user_message(id).await;
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(f.calls(), 2);
+            let prompt = f.histories().pop().unwrap();
+            assert!(!prompt.iter().any(|message| message.parts.iter().any(
+                |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
+            )));
         })
     })
     .await;
