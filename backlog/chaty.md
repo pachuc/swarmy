@@ -89,7 +89,7 @@ tool with its own database and command surface today.
    in a group channel to split a task; they open a direct message, divide the
    work, each starts a worker session, and report back in the group;
    messages sent while an agent is mid-step arrive as one batch.
-8. Documentation, including `docs/DESIGN.md` section 10.
+8. Documentation, including `docs/ROADMAP.md`.
 
 ## When to pick it up
 
@@ -99,6 +99,6 @@ chaty as a standalone tool comes first.
 
 ## Related
 
-- `docs/DESIGN.md` section 10 (channels and self-organization).
+- `docs/ROADMAP.md` (channels and self-organization).
 - [gui-client](gui-client.md), whose main screen is this.
 - [agent-fork](agent-fork.md), [tool-diagnostics-and-permissions](tool-diagnostics-and-permissions.md).

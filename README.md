@@ -2,7 +2,7 @@
 
 Scalable, failure-resistant agent swarm infrastructure in Rust.
 
-Start with [docs/DESIGN.md](docs/DESIGN.md).
+Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 The current architecture as a [sysy](https://github.com/pachuc/sysy) design lives in
 [docs/architecture.sysy.json](docs/architecture.sysy.json). Open it with

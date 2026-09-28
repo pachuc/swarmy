@@ -1,8 +1,7 @@
 # Remote development nodes
 
-For the complete laptop-to-chat workflow, credential handling, costs, and
-teardown queries, start with [the developer guide](DEV.md#remote-node-workflow).
-This page describes provisioning and the saved node state.
+This is the operations guide for provisioning, upgrades, recovery and teardown.
+For fleet-driver commands see [fleet-runbook.md](fleet-runbook.md).
 
 Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
 EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
@@ -248,3 +247,31 @@ Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
 `iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+
+## Costs and recovery
+
+Check current EC2 prices for the control and sandbox shapes, plus EBS,
+object storage requests and inference. Use `--sandboxes 0` for a control-only
+node; sandbox nodes need local NVMe. Check `df -h /` for the store and
+`df -h /mnt/swarmy-local` for scratch. The collector and snapshot retention
+settings are described in [gc-benchmarks.md](gc-benchmarks.md) and
+[volume-benchmarks.md](volume-benchmarks.md).
+
+A joining node failure does not replicate the backing store: replace the
+sandbox node with `swarmy remote add-node NAME` after checking its record with
+`swarmy remote status`. If the first node fails, its development stack and
+backing data are lost unless stored elsewhere; `remote down` cleans up the
+saved deployment, and `remote up` creates a new one. Pushed branches survive.
+If the client disconnects, `swarmy remote connect NAME` restores its profile
+without stopping workers. Run `swarmy remote down NAME` only after collecting
+open work; it terminates instances and removes the managed key pair, while
+bucket resources remain for separate cleanup.
+
+## Root suites and the nightly timer
+
+Root-only NBD and sandbox suites are a manual operator responsibility under
+[AGENTS.md](../AGENTS.md#building-and-testing). The former nightly node-suite
+timer was removed; do not expect a scheduled root run. Use the scripts in
+[`scripts/node-suites/`](../scripts/node-suites/) on a suitable node and record
+results in the pull request. CI's reduced chaos checks are defined in
+[ci.yml](../.github/workflows/ci.yml).

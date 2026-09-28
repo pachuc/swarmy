@@ -76,7 +76,8 @@ Run integration tests with the dev stack:
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo test -p swarmy-gateway --locked
+cargo build --workspace --locked
+cargo test --locked -p swarmy-e2e --test gateway -- --test-threads=1
 ```
 
 Tests allocate unique FoundationDB directories and bus prefixes and run the

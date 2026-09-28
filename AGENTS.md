@@ -7,7 +7,7 @@ working for weeks with memory, timers, and a persistent computer; any model
 provider can serve them. Written in Rust, organized as sixteen crates in one
 workspace.
 
-Read `docs/DESIGN.md` before changing anything: it explains the concepts, the
+Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, the
 services, and the vertical slices the work is organized into. This file is
 the map: what exists, where the plan lives, the decisions behind it, and how
 to resume. When this file and the design disagree, this file describes what
@@ -347,7 +347,7 @@ keep its own disk in order. The rules, which the task prompt repeats:
 
 ## How to resume
 
-1. Read this file and the relevant section of `docs/DESIGN.md`.
+1. Read this file and the relevant section of `docs/ARCHITECTURE.md`.
 2. `tasky --json goal list --project swarmy` for the goals, then
    `tasky --json task ready --project swarmy` for what can start. Activate the
    next goal only when the one before it is merged.

@@ -3,7 +3,7 @@
 Recorded 2026-09-21. Small chores that do not deserve a goal but should not
 be forgotten. Do them opportunistically alongside related work.
 
-- **`docs/DESIGN.md` sections 4.6 and 8.3 describe a `swarmy-guest` agent
+- **`docs/ROADMAP.md` records the unbuilt `swarmy-guest` agent
   that was never built.** `runc exec` plus helpers embedded in the node daemon
   and the image replaced it. Rewrite both sections to describe what exists,
   and remove `swarmy-guest` from the crate list in section 11. Section 9 was

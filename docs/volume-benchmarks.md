@@ -692,7 +692,7 @@ to 1,233.974 s; the measured update/install/flush sum rose from 905.760 s to
 and accumulated 1,256.260 s of dirty-lock waiting. Both clouds retained the
 installed compiler after flush, clone, cache clearing, and reattachment.
 
-The [proposed budget in the design](DESIGN.md#74-proposed-tool-boundary-latency-budget)
+The [operational constraints](ARCHITECTURE.md#operational-invariants)
 uses the measured request costs, a 32-upload concurrency assumption, conservative
 planning throughput, and explicit metadata/freeze allowances. It targets both
 unstaged completion latency and avoidance of installation regressions. Neither
@@ -1934,7 +1934,7 @@ shape passes through that window three times, compared with once for text.
 The shorter timers remove most of that wait, but client polling and the
 remaining scheduling/store work still exceed the proposed budget. Immediate
 fake inference is only a small part of end-to-end time. These observations
-motivate the per-stage targets in [design section 5.1](DESIGN.md#51-turn-timeline-and-proposed-latency-budget):
+motivate the per-stage targets in [architecture invariants](ARCHITECTURE.md#operational-invariants):
 under 100 ms locally and under three round trips plus 100 ms remotely. Neither
 configuration demonstrates that target. Meeting it needs readiness-driven
 scheduling that distinguishes new steps from resends, prompt client idle
