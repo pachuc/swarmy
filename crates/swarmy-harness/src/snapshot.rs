@@ -170,3 +170,35 @@ fn model_phase(message: &Message) -> Phase {
         }
     }
 }
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use swarmy_core::MessageId;
+    use ulid::Ulid;
+
+    #[test]
+    fn rejected_checkpoint_reply_is_not_replayed_from_next_snapshot() {
+        let original = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::Text {
+                text: "answer".into(),
+            }],
+        };
+        let rejected = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![Part::Text {
+                text: "partial checkpoint".into(),
+            }],
+        };
+        let snapshot = Snapshot {
+            messages: vec![original.clone(), rejected.clone()],
+            phase: Phase::EndTurn,
+        };
+        let retained = snapshot.without_message(rejected.id);
+        assert_eq!(retained.messages(), &[original.clone()]);
+        assert_eq!(retained.replay(&[]).messages(), &[original]);
+    }
+}
