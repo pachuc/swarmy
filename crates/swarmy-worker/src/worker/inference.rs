@@ -55,7 +55,7 @@ impl Worker {
         // prompt override first and then the memory directory and contents appended.
         // The agent and its route resolve in one transaction so an inference
         // costs no more store transactions than before routes.
-        let summarizing = request.system_prompt == swarmy_harness::SUMMARY_PROMPT;
+        let summarizing = request.no_cache;
         let mut defaults = swarmy_core::ResolvedSelection {
             provider: self.config.provider.clone(),
             model: request.settings.model.clone(),
@@ -327,6 +327,7 @@ impl Worker {
             session_id: id,
             step,
             request_id: RequestId::for_step(id, step),
+            summary: request.no_cache,
             request,
         };
         self.kill("before_release");

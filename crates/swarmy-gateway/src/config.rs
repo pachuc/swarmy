@@ -313,6 +313,7 @@ mod tests {
         let mut provider = make_provider();
         for step in [0, 1, 0, 2, 1, 2] {
             let mut request = Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -368,6 +369,7 @@ mod tests {
             parts: vec![swarmy_core::Part::Text { text: text.into() }],
         };
         let mut request = Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: vec![text(MessageRole::User, "one")],
             tools: Vec::new(),

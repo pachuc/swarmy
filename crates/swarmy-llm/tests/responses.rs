@@ -18,6 +18,7 @@ use wiremock::{
 
 fn request(model: &str) -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be helpful.".into(),
         messages: vec![message(
             vec![Part::Text {

@@ -43,10 +43,13 @@ pub fn request_json_for(
         codex: endpoint.codex,
     };
     let mut value = build_request(request, Some(&context))?;
-    if let Some(session) = session {
+    if let Some(session) = session.filter(|_| !request.no_cache) {
         value["prompt_cache_key"] = json!(session.to_string());
     }
-    if context.compat.supports_long_cache_retention() == Some(true) && !context.codex {
+    if !request.no_cache
+        && context.compat.supports_long_cache_retention() == Some(true)
+        && !context.codex
+    {
         value["prompt_cache_retention"] = json!("24h");
     }
     Ok(value)

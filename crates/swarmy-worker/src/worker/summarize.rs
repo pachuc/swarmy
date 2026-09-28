@@ -37,7 +37,7 @@ impl Worker {
             .store
             .get_inference_input::<InferenceJob>(request_id)
             .await?
-            .is_some_and(|job| job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT))
+            .is_some_and(|job| job.summary))
     }
 
     /// Mid-turn checks use event usage first, avoiding store reads on every
@@ -71,7 +71,7 @@ impl Worker {
                     .clone()
                     .unwrap_or_else(|| self.config.harness.settings.model.clone());
             }
-            if input < self.config.side_pressure_threshold(&provider, &model) {
+            if input < self.config.side_summarization_threshold(&provider, &model) {
                 return Ok(false);
             }
         }
@@ -80,13 +80,10 @@ impl Worker {
             None if mid_turn.is_some() => false,
             None => return Ok(false),
         };
-        if mid_turn.is_some() && is_main {
-            return Ok(false);
-        }
         let Some((_request_id, job, response, message)) = self.last_inference(events).await? else {
             return Ok(false);
         };
-        if job.request.system_prompt == swarmy_harness::SUMMARY_PROMPT {
+        if job.summary {
             if mid_turn.is_some() {
                 return Ok(false);
             }
@@ -114,11 +111,6 @@ impl Worker {
             let threshold = self.config.side_summarization_threshold(provider, model);
             let input = response.usage.input_tokens;
             if input < threshold {
-                let pressure = self.config.side_pressure_threshold(provider, model);
-                if input >= pressure && !pressure_warned(snapshot, events) {
-                    self.emit_pressure(session, lease, events, input, threshold)
-                        .await?;
-                }
                 return Ok(false);
             }
         }
@@ -191,10 +183,15 @@ impl Worker {
                 history.push(message.clone());
             }
         }
+        let tail = select_side_tail(&history);
+        let cut = tail
+            .first()
+            .and_then(|first| history.iter().position(|message| message.id == first.id))
+            .unwrap_or(history.len());
         let request = summary_request(
             &self.config,
             self.job_provider(job),
-            &history,
+            &history[..cut],
             job.request.settings.clone(),
         );
         if !summary_fits(&self.config, &request, self.job_provider(job)) {
@@ -207,47 +204,6 @@ impl Worker {
         self.build_inference(session, lease, preceding, request)
             .await?;
         Ok(true)
-    }
-
-    /// Append a `context_pressure` warning when input usage passes 75
-    /// percent of the side threshold, so fleet status sees it coming.
-    /// Callers check `pressure_warned` first; the append itself is best
-    /// effort and never fails the step.
-    pub(super) async fn emit_pressure(
-        &self,
-        session: &mut SessionRecord,
-        lease: &HeldLease,
-        events: &mut Vec<Event>,
-        input_tokens: u64,
-        threshold: u64,
-    ) -> Result<()> {
-        let message = swarmy_core::Message {
-            id: MessageId::from_ulid(Ulid::generate()),
-            role: swarmy_core::MessageRole::System,
-            parts: vec![swarmy_core::Part::Notice {
-                kind: swarmy_core::NoticeKind::ContextPressure,
-                text: format!(
-                    "context_pressure: input {input_tokens} tokens at 75 percent of the {threshold} token side-session threshold. Summarization will archive this session soon; push work to keep it safe."
-                ),
-            }],
-        };
-        if let Err(error) = self
-            .append(
-                session,
-                lease,
-                events,
-                &[Event::MessageAppended { seq: 0, message }],
-            )
-            .await
-        {
-            tracing::warn!(
-                session_id = %session.session_id,
-                %error,
-                "context_pressure append failed"
-            );
-            return Err(error);
-        }
-        Ok(())
     }
 
     pub(super) async fn archive_summary(
@@ -274,44 +230,39 @@ impl Worker {
             .get_agent(session.agent_id)
             .await?
             .is_some_and(|agent| agent.main_session == Some(session.session_id));
-        let summary = if let Some(summary) = parse_summary(&text) {
-            summary
-        } else if !is_main && !text.trim().is_empty() {
-            let stop_reason = if let Some(Event::InferenceCompleted { request_id, .. }) = events
+        let valid = !text.trim().is_empty()
+            && !message
+                .parts
                 .iter()
-                .rev()
-                .find(|event| matches!(event, Event::InferenceCompleted { .. }))
-            {
+                .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
+            && if let Some(id) = events.iter().rev().find_map(|event| match event {
+                Event::InferenceCompleted { request_id, .. } => Some(*request_id),
+                _ => None,
+            }) {
                 self.store
-                    .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                    .get_inference_result::<Result<swarmy_llm::Response, String>>(id)
                     .await?
-                    .and_then(std::result::Result::ok)
-                    .map_or_else(
-                        || "unknown".into(),
-                        |response| format!("{:?}", response.stop_reason),
-                    )
+                    .is_some_and(|response| {
+                        response.is_ok_and(|response| {
+                            response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
+                        })
+                    })
             } else {
-                "unknown".into()
+                false
             };
-            tracing::warn!(session_id = %session.session_id, %stop_reason, "unparseable summary reply; rolling over side session with raw summary");
-            swarmy_core::ConversationSummary {
-                goals: String::new(),
-                state_of_work: text,
-                open_questions: String::new(),
-                facts_to_keep: String::new(),
-            }
-        } else {
-            tracing::warn!(session_id = %session.session_id, reason = "empty or invalid summary reply", "retaining current session");
+        if !valid {
+            tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
-        };
+        }
         let opening = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
-            role: swarmy_core::MessageRole::System,
+            role: swarmy_core::MessageRole::User,
             parts: vec![swarmy_core::Part::Text {
                 text: format!(
-                    "Conversation summarized. Previous session: {}. Its full transcript remains readable.\n{}",
-                    session.session_id,
-                    serde_json::to_string(&summary)?
+                    "{}{}{}",
+                    swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                    text,
+                    swarmy_harness::COMPACTION_SUMMARY_SUFFIX
                 ),
             }],
         };
@@ -323,6 +274,7 @@ impl Worker {
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &opening,
+                    &Self::side_successor_tail(snapshot.replay(events).messages(), message),
                 )
                 .await?
         } else {
@@ -364,14 +316,6 @@ impl Worker {
     ) -> Vec<swarmy_core::Message> {
         let mut tail = select_side_tail(history);
         tail.retain(|kept| kept.id != summary.id);
-        if history
-            .iter()
-            .rev()
-            .find(|kept| kept.id != summary.id)
-            .is_some_and(|previous| previous.role == swarmy_core::MessageRole::Tool)
-        {
-            tail.push(continue_message());
-        }
         tail
     }
 
@@ -408,29 +352,7 @@ impl Worker {
 /// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
-fn parse_summary(text: &str) -> Option<swarmy_core::ConversationSummary> {
-    let text = text.trim();
-    let text = text.strip_prefix("```").map_or(text, |fenced| {
-        fenced.split_once('\n').map_or(fenced, |(_, body)| body)
-    });
-    let text = text.strip_suffix("```").unwrap_or(text).trim();
-    let json = text.get(text.find('{')?..=text.rfind('}')?)?;
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let object = value.as_object()?;
-    let field = |name: &str| match object.get(name) {
-        Some(serde_json::Value::String(text)) => text.clone(),
-        Some(value) => value.to_string(),
-        None => String::new(),
-    };
-    Some(swarmy_core::ConversationSummary {
-        goals: field("goals"),
-        state_of_work: field("state_of_work"),
-        open_questions: field("open_questions"),
-        facts_to_keep: field("facts_to_keep"),
-    })
-}
-
-const SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
+const SUMMARY_RESERVE_TOKENS: u64 = 16_384;
 
 /// Rough token estimate for one message, chars divided by four like the Pi
 /// and `OpenCode` heuristics. Images count as a fixed 4,800 chars.
@@ -471,14 +393,6 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
 /// round alone exceeds the budget.
 pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Message> {
     use swarmy_core::MessageRole::Assistant;
-    // A stale pressure warning belongs to the archived session; the successor
-    // warns again on its own usage, so drop it from the carried tail.
-    let messages: Vec<swarmy_core::Message> = messages
-        .iter()
-        .filter(|message| !is_pressure_warning(message))
-        .cloned()
-        .collect();
-    let messages = messages.as_slice();
     if messages.is_empty() {
         return Vec::new();
     }
@@ -547,42 +461,6 @@ pub(super) fn last_tool_round(messages: &[swarmy_core::Message]) -> Option<usize
         .then_some(round)
 }
 
-/// Whether a message is a `context_pressure` warning.
-pub(super) fn is_pressure_warning(message: &swarmy_core::Message) -> bool {
-    message.role == swarmy_core::MessageRole::System
-        && message.parts.iter().any(|part| match part {
-            swarmy_core::Part::Notice {
-                kind: swarmy_core::NoticeKind::ContextPressure,
-                ..
-            } => true,
-            swarmy_core::Part::Text { text } => text.starts_with("context_pressure"),
-            _ => false,
-        })
-}
-
-/// Check the replayed snapshot as well as the event tail to avoid warning
-/// again after the snapshot cursor advances.
-pub(super) fn pressure_warned(snapshot: &Snapshot, events: &[Event]) -> bool {
-    snapshot
-        .replay(events)
-        .messages()
-        .iter()
-        .any(is_pressure_warning)
-}
-
-/// Continue a mid-task successor from its summary and retained tail.
-pub(super) fn continue_message() -> swarmy_core::Message {
-    use swarmy_core::{MessageId, MessageRole, Part};
-    swarmy_core::Message {
-        id: MessageId::from_ulid(Ulid::generate()),
-        role: MessageRole::User,
-        parts: vec![Part::Text {
-            text: "Continue the summarized task from the recent tool context above. Do the next steps, or finish with a concise status when nothing remains."
-                .into(),
-        }],
-    }
-}
-
 /// Summary request with bounded output: the smaller of the model's output
 /// limit and the structured-summary cap, so the request fits providers that
 /// reject oversized max-token values.
@@ -590,37 +468,117 @@ pub(super) fn summary_request(
     config: &crate::config::Config,
     provider: &str,
     messages: &[swarmy_core::Message],
-    settings: swarmy_llm::GenerationSettings,
+    mut settings: swarmy_llm::GenerationSettings,
 ) -> swarmy_llm::Request {
-    let mut settings = settings;
-    // Keep reasoning from eating the summary's output cap, but only lower an
-    // effort the session already asked for: a model without reasoning must
-    // not start receiving an effort parameter.
-    if matches!(
-        settings.reasoning_effort,
-        Some(
-            swarmy_llm::ReasoningEffort::Medium
-                | swarmy_llm::ReasoningEffort::High
-                | swarmy_llm::ReasoningEffort::Xhigh
-                | swarmy_llm::ReasoningEffort::Max
-        )
-    ) {
-        settings.reasoning_effort = Some(swarmy_llm::ReasoningEffort::Low);
-    }
-    let cap = config
-        .catalog
-        .model(provider, &settings.model)
-        .and_then(|model| model.limit.output)
-        .map_or(SUMMARY_OUTPUT_TOKENS, |limit| {
-            limit.min(SUMMARY_OUTPUT_TOKENS)
+    settings.max_output_tokens = Some(
+        config
+            .catalog
+            .model(provider, &settings.model)
+            .and_then(|model| model.limit.output)
+            .unwrap_or(u64::MAX)
+            .min(SUMMARY_RESERVE_TOKENS * 4 / 5),
+    );
+    let previous = messages
+        .first()
+        .and_then(|message| message.parts.first())
+        .and_then(|part| match part {
+            swarmy_core::Part::Text { text } => text
+                .strip_prefix(swarmy_harness::COMPACTION_SUMMARY_PREFIX)
+                .and_then(|text| text.strip_suffix(swarmy_harness::COMPACTION_SUMMARY_SUFFIX)),
+            _ => None,
         });
-    settings.max_output_tokens = Some(cap);
+    let conversation = serialize_conversation(if previous.is_some() {
+        &messages[1..]
+    } else {
+        messages
+    });
+    let mut prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n");
+    if let Some(previous) = previous {
+        prompt.push_str(&format!(
+            "<previous-summary>\n{previous}\n</previous-summary>\n\n"
+        ));
+    }
+    prompt.push_str(if previous.is_some() {
+        swarmy_harness::UPDATE_SUMMARIZATION_PROMPT
+    } else {
+        swarmy_harness::SUMMARIZATION_PROMPT
+    });
     swarmy_llm::Request {
-        system_prompt: swarmy_harness::SUMMARY_PROMPT.into(),
-        messages: messages.to_vec(),
+        system_prompt: swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.into(),
+        messages: vec![swarmy_core::Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text { text: prompt }],
+        }],
         tools: Vec::new(),
         settings,
+        no_cache: true,
     }
+}
+
+/// Pi utils.ts:109-149: serialize old context as data, never as live chat turns.
+pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> String {
+    use swarmy_core::{MessageRole, Part, ToolResult};
+    let mut lines = Vec::new();
+    for message in messages {
+        let text = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        match message.role {
+            MessageRole::User if !text.is_empty() => lines.push(format!("[User]: {text}")),
+            MessageRole::Assistant => {
+                for part in &message.parts {
+                    if let Part::Reasoning { text, .. } = part {
+                        lines.push(format!("[Assistant thinking]: {text}"));
+                    }
+                }
+                if !text.is_empty() {
+                    lines.push(format!("[Assistant]: {text}"));
+                }
+                let calls = message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::ToolCall { tool, input, .. } => Some(format!(
+                            "{tool}({})",
+                            input
+                                .as_object()
+                                .map(|args| args
+                                    .iter()
+                                    .map(|(k, v)| format!("{k}={v}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", "))
+                                .unwrap_or_default()
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !calls.is_empty() {
+                    lines.push(format!("[Assistant tool calls]: {}", calls.join("; ")));
+                }
+            }
+            MessageRole::Tool => {
+                for part in &message.parts {
+                    if let Part::ToolResult { result, .. } = part {
+                        let output = match result {
+                            ToolResult::Completed { output, .. } => output,
+                            ToolResult::Error { error } => error,
+                        };
+                        let truncated: String = output.chars().take(2_000).collect();
+                        lines.push(format!("[Tool result]: {truncated}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    lines.join("\n\n")
 }
 
 /// Whether the summary request fits the model window. The estimate covers
@@ -641,35 +599,11 @@ pub(super) fn summary_fits(
         return true;
     };
     let output = request.settings.max_output_tokens.unwrap_or(0);
-    let mut chars: u64 = u64::try_from(swarmy_harness::SUMMARY_PROMPT.len()).unwrap_or(u64::MAX);
+    let mut chars: u64 =
+        u64::try_from(swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.len()).unwrap_or(u64::MAX);
     for message in &request.messages {
         chars = chars.saturating_add(estimate_message_tokens(message).saturating_mul(4));
     }
     let estimated = chars.div_ceil(4);
     estimated.saturating_add(output) <= context
-}
-
-#[cfg(test)]
-mod summary_parse_tests {
-    use super::parse_summary;
-
-    #[test]
-    fn accepts_fences_arrays_missing_fields_and_preambles() {
-        let fenced =
-            parse_summary("```json\n{\"goals\":[\"one\",\"two\"],\"state_of_work\":\"done\"}\n```")
-                .unwrap();
-        assert_eq!(fenced.goals, "[\"one\",\"two\"]");
-        assert_eq!(fenced.open_questions, "");
-        assert_eq!(
-            parse_summary("Here is the summary: {\"goals\":\"work\"}")
-                .unwrap()
-                .goals,
-            "work"
-        );
-    }
-
-    #[test]
-    fn rejects_truncated_json() {
-        assert!(parse_summary("{\"goals\": [\"unfinished\"").is_none());
-    }
 }

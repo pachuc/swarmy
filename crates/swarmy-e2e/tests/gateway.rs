@@ -193,6 +193,7 @@ impl Fixture {
         self.job_for_agent_with_request(
             AgentId::from_ulid(Ulid::generate()),
             Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -206,6 +207,7 @@ impl Fixture {
         self.job_for_agent_with_request(
             agent_id,
             Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -265,6 +267,7 @@ impl Fixture {
             .unwrap();
         let request_id = RequestId::for_step(session_id, lease.seq);
         let job = InferenceJob {
+            summary: false,
             provider: "fake".into(),
             entry: None,
             route: None,
@@ -535,6 +538,7 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
             .job_for_agent_with_request(
                 AgentId::from_ulid(Ulid::generate()),
                 Request {
+                    no_cache: false,
                     system_prompt: String::new(),
                     messages: vec![message],
                     tools: Vec::new(),
@@ -948,11 +952,13 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
                 ..Default::default()
             };
             let mut first = f.job_for_agent_with_request(agent_id, Request {
+        no_cache: false,
                 system_prompt: String::new(), messages: Vec::new(), tools: Vec::new(),
                 settings: settings.clone(),
             }).await;
             first.provider = "fake".into();
             let mut second = f.job_for_agent_with_request(agent_id, Request {
+        no_cache: false,
                 system_prompt: String::new(), messages: Vec::new(), tools: Vec::new(), settings,
             }).await;
             second.provider = "scripted".into();
@@ -1153,6 +1159,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         .job_for_agent_with_request(
             agent,
             Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: vec![switch_user()],
                 tools: Vec::new(),
@@ -1181,6 +1188,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         .job_for_agent_with_request(
             agent,
             Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: history.clone(),
                 tools: Vec::new(),
@@ -1204,6 +1212,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         .job_for_agent_with_request(
             agent,
             Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: history,
                 tools: Vec::new(),

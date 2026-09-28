@@ -14,6 +14,7 @@ mod image_tests {
     fn display_image_controls_tool_schema_and_prompt() {
         use swarmy_llm::ToolDefinition;
         let request = || swarmy_llm::Request {
+            no_cache: false,
             system_prompt: "Base prompt".into(),
             messages: Vec::new(),
             tools: ["bash", "browser_snapshot", "screen_screenshot"]
@@ -46,6 +47,7 @@ mod image_tests {
     #[test]
     fn unsupported_model_gets_a_note_instead_of_image_bytes() {
         let mut request = swarmy_llm::Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: vec![Message {
                 id: MessageId::from_ulid(Ulid::nil()),

@@ -535,27 +535,17 @@ impl Store {
         expected_head: u64,
         lease: &swarmy_core::Lease,
         opening: &swarmy_core::Message,
+        tail: &[swarmy_core::Message],
     ) -> Result<(SessionId, swarmy_core::Event)> {
         if opening.role != swarmy_core::MessageRole::System {
             return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         let id = SessionId::from_ulid(ulid::Ulid::generate());
-        let event = swarmy_core::Event::MessageAppended {
-            seq: 1,
-            message: opening.clone(),
-        };
-        let opening = self.prepare(&event).await?;
-        let head = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
-        let archived = swarmy_core::Event::StateChanged {
-            seq: head,
-            from: SessionState::Leased,
-            to: SessionState::Completed,
-        };
-        let archived_value = self.prepare(&archived).await?;
+        let messages = side_messages(opening, tail);
+        let (prepared, archived_value, archived, new_head) =
+            self.prepare_side_rollover(&messages, expected_head).await?;
         self.transaction(|trx| {
-            let (opening, archived_value) = (&opening, &archived_value);
+            let (prepared, archived_value) = (&prepared, &archived_value);
             async move {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
@@ -582,9 +572,15 @@ impl Store {
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 let mut created = self.session(&trx, id).await?;
-                created.head_seq = 1;
+                created.head_seq = new_head;
                 self.write_session(&trx, &created)?;
-                trx.set(&self.event_key(id, 1_u64), opening);
+                for (index, value) in prepared.iter().enumerate() {
+                    let seq = u64::try_from(index)
+                        .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?
+                        + 1;
+                    trx.set(&self.event_key(id, seq), value);
+                }
+                let head = expected_head + 1;
                 trx.set(&self.event_key(old, head), archived_value);
                 previous.head_seq = head;
                 self.transition(&trx, previous, SessionState::Completed, now)
