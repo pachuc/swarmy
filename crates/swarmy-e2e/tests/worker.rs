@@ -1811,6 +1811,16 @@ async fn second_length_stop_fails_with_notice() {
         f.keyring();
         f.put_entry("primary").await;
         let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
+        truncated.parts.push(Part::ToolCall {
+            call_id: ToolCallId("first".into()),
+            tool: "get_time".into(),
+            input: serde_json::json!({}),
+        });
+        truncated.parts.push(Part::ToolCall {
+            call_id: ToolCallId("second".into()),
+            tool: "read".into(),
+            input: serde_json::json!({"path": "incomplete"}),
+        });
         truncated.stop_reason = StopReason::MaxOutputTokens;
         truncated.usage.output_tokens = 1;
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
@@ -1830,11 +1840,33 @@ async fn second_length_stop_fails_with_notice() {
         assert_eq!(f.calls(), 3);
         assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery failed after one compact-and-retry attempt."))));
         assert_eq!(successor_messages(&events).iter().filter(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))).count(), 1);
+        let results: Vec<_> = events.iter().filter_map(|event| match event {
+            Event::MessageAppended { message, .. } if message.role == MessageRole::Tool =>
+                message.parts.first(),
+            _ => None,
+        }).filter_map(|part| match part {
+            Part::ToolResult { call_id, result: ToolResult::Error { error } } =>
+                Some((call_id.0.as_str(), error.as_str())),
+            _ => None,
+        }).collect();
+        assert_eq!(results, [
+            ("first", "Tool call \"get_time\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."),
+            ("second", "Tool call \"read\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."),
+        ]);
+        // An idle wake must not dispatch the truncated calls.
+        f.wake(successor).await;
+        f.idle(successor).await;
+        assert_eq!(f.calls(), 3);
         f.user_message(successor).await;
         f.wake(successor).await;
         f.idle(successor).await;
         let prompt = f.histories().pop().unwrap();
         assert!(prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))));
+        for (id, error) in results {
+            assert!(prompt.iter().any(|message| message.parts.iter().any(|part|
+                matches!(part, Part::ToolResult { call_id, result: ToolResult::Error { error: actual } }
+                    if call_id.0 == id && actual == error))));
+        }
     })).await;
 }
 
@@ -1995,6 +2027,72 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
             assert!(!prompt.iter().any(|message| message.parts.iter().any(
                 |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
             )));
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn no_head_recovery_survives_crash_before_release() {
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            let mut truncated = side_response("partial".into(), 20);
+            truncated.parts = vec![Part::ToolCall {
+                call_id: ToolCallId("abandoned".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            }];
+            truncated.stop_reason = StopReason::MaxOutputTokens;
+            truncated.usage.output_tokens = 1;
+            std::fs::write(
+                f.files.path().join("script.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "responses": {"0": truncated, "1": side_response("unexpected".into(), 20)}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("no-head-crash", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            seed_no_head_history(f, id).await;
+            f.start("swarmy-scheduler", None);
+            let worker = f.start("swarmy-worker", Some("before_release"));
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let status = timeout(WAIT, f.children[worker].wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                status.code() == Some(137) || status.signal() == Some(9),
+                "{status}"
+            );
+            f.start("swarmy-worker", None);
+            let events = f.idle(id).await;
+            assert_eq!(f.calls(), 1, "replacement must not issue inference");
+            assert!(f.store.next_session(id).await.unwrap().is_none());
+            assert!(
+                !successor_messages(&events).iter().any(|message| {
+                    message.parts.iter().any(
+            |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
+        )
+                })
+            );
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(f.calls(), 1);
         })
     })
     .await;
