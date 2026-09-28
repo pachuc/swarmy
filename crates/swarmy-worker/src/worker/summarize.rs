@@ -357,9 +357,6 @@ impl Worker {
                     &history[start..cut],
                     job.request.settings.clone(),
                 );
-                if !summary_fits(&self.config, &request, self.job_provider(job)) {
-                    return Ok(false);
-                }
                 self.build_inference_with_prefix(
                     session,
                     lease,
@@ -448,7 +445,7 @@ impl Worker {
             history.retain(|kept| kept.id != message.id);
         }
         let cut = raw_cut(&history);
-        if cut == 0 {
+        if cut == 0 || (cut == 1 && previous_summary(&history).is_some()) {
             return Ok(false);
         }
         let split_start = split_turn_start(&history, cut);
@@ -476,13 +473,6 @@ impl Worker {
                 job.request.settings.clone(),
             )
         };
-        if !summary_fits(&self.config, &request, self.job_provider(job)) {
-            tracing::warn!(
-                session_id = %session.session_id,
-                "summary prompt exceeds the model window; retaining current session"
-            );
-            return Ok(false);
-        }
         self.build_inference_with_prefix(
             session,
             lease,
@@ -739,7 +729,8 @@ fn summary_text(message: &swarmy_core::Message) -> String {
             swarmy_core::Part::Text { text } => Some(text.as_str()),
             _ => None,
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn raw_cut(history: &[swarmy_core::Message]) -> usize {
@@ -775,11 +766,11 @@ fn valid_summary(
     message: &swarmy_core::Message,
     response: Option<&Result<swarmy_llm::Response, String>>,
 ) -> bool {
-    !text.trim().is_empty()
-        && !message
-            .parts
-            .iter()
-            .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
+    let _ = text;
+    !message
+        .parts
+        .iter()
+        .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
         && response.is_some_and(|response| {
             response.as_ref().is_ok_and(|response| {
                 response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
@@ -830,7 +821,6 @@ pub(super) fn estimate_message_tokens(message: &swarmy_core::Message) -> u64 {
 /// Keep complete tool rounds in the side successor tail, even when the last
 /// round alone exceeds the budget.
 pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_core::Message> {
-    use swarmy_core::MessageRole::Assistant;
     if messages.is_empty() {
         return Vec::new();
     }
@@ -843,32 +833,16 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
             break;
         }
     }
-    // Snap the cut forward to a safe boundary: the start, or just after a
-    // tool-result message before an assistant message.
-    let mut cut = start;
-    while cut < messages.len() && !is_safe_tail_cut(messages, cut) {
-        cut += 1;
-    }
-    // The budget bounds what comes before the last round, never the round
-    // itself: a single oversized tool result still travels with its assistant
-    // call instead of orphaning the call with a synthetic error.
-    let round = last_tool_round(messages);
-    if cut >= messages.len() {
-        if let Some(round) = round {
-            return messages[round..].to_vec();
-        }
-        return messages
-            .iter()
-            .rev()
-            .find(|message| message.role == Assistant)
-            .cloned()
-            .map_or_else(Vec::new, |message| vec![message]);
-    }
-    if let Some(round) = round
-        && cut > round
-    {
-        cut = round;
-    }
+    // Pi compaction.ts:494-500 takes the first valid boundary after the
+    // budget is reached, or the last valid boundary before it.
+    let cut = (start..messages.len())
+        .find(|&index| is_safe_tail_cut(messages, index))
+        .or_else(|| {
+            (0..start)
+                .rev()
+                .find(|&index| is_safe_tail_cut(messages, index))
+        })
+        .unwrap_or(0);
     messages[cut..].to_vec()
 }
 
@@ -877,23 +851,6 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
 pub(super) fn is_safe_tail_cut(messages: &[swarmy_core::Message], cut: usize) -> bool {
     use swarmy_core::MessageRole::{Assistant, User};
     cut == 0 || matches!(messages[cut].role, Assistant | User)
-}
-
-/// Start of the last complete tool round, if any: the latest assistant
-/// message with tool calls that has tool results after it.
-pub(super) fn last_tool_round(messages: &[swarmy_core::Message]) -> Option<usize> {
-    use swarmy_core::MessageRole::Tool;
-    let round = messages.iter().rposition(|message| {
-        message
-            .parts
-            .iter()
-            .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
-    })?;
-    messages
-        .iter()
-        .skip(round + 1)
-        .any(|message| message.role == Tool)
-        .then_some(round)
 }
 
 /// Summary request with bounded output: the smaller of the model's output
@@ -1069,33 +1026,6 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
     lines.join("\n\n")
 }
 
-/// Whether the summary request fits the model window. The estimate covers
-/// the replayed messages plus the prompt template, reserving the bounded
-/// output. Unknown windows skip the check; the early threshold keeps the
-/// prompt small in practice.
-pub(super) fn summary_fits(
-    config: &crate::config::Config,
-    request: &swarmy_llm::Request,
-    provider: &str,
-) -> bool {
-    let Some(context) = config
-        .catalog
-        .model(provider, &request.settings.model)
-        .map(|model| model.limit.context)
-        .or(config.model_context_window_tokens)
-    else {
-        return true;
-    };
-    let output = request.settings.max_output_tokens.unwrap_or(0);
-    let mut chars: u64 =
-        u64::try_from(swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.len()).unwrap_or(u64::MAX);
-    for message in &request.messages {
-        chars = chars.saturating_add(estimate_message_tokens(message).saturating_mul(4));
-    }
-    let estimated = chars.div_ceil(4);
-    estimated.saturating_add(output) <= context
-}
-
 /// Pi utils.ts:25-94 and compaction.ts:1079-1080 track explicit file-tool paths.
 fn file_lists(messages: &[swarmy_core::Message]) -> String {
     use std::collections::BTreeSet;
@@ -1177,14 +1107,14 @@ mod pi_compaction_tests {
     }
 
     #[test]
-    fn rejects_incomplete_empty_and_tool_calling_summaries() {
+    fn rejects_incomplete_and_tool_calling_summaries() {
         let message = text(MessageRole::Assistant, "## Goal\nFinish");
         assert!(!valid_summary(
             "## Goal\nFinish",
             &message,
             Some(&Ok(answer(StopReason::MaxOutputTokens)))
         ));
-        assert!(!valid_summary(
+        assert!(valid_summary(
             " \n ",
             &message,
             Some(&Ok(answer(StopReason::EndTurn)))

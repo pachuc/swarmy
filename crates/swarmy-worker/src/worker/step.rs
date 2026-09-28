@@ -5,6 +5,7 @@ use super::{
     Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
     encode,
 };
+use swarmy_llm::InferenceJob;
 
 /// State carried from claim through the final fenced write. The lease remains
 /// owned here while the heartbeat holds a clone of its handle.
@@ -627,18 +628,40 @@ impl Worker {
                 to: SessionState::Idle,
             });
             let mut replayed = snapshot.replay(events);
-            // Rejected checkpoint replies and refused second truncations stay
-            // in the audit log, not in prompts sent on the next user turn.
-            if (skip_compaction || self.summary_completed(session, events).await?)
-                && let Some(Event::InferenceCompleted { message, .. }) =
-                    events.iter().rev().find(|event| {
-                        matches!(
-                            event,
-                            Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
-                        )
+            // Keep rejected checkpoint replies and failed recovery attempts in
+            // the audit log, but never replay them in a later prompt.
+            if skip_compaction || self.summary_completed(session, events).await? {
+                let completions = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        Event::InferenceCompleted {
+                            request_id,
+                            message,
+                            ..
+                        } => Some((*request_id, message)),
+                        _ => None,
                     })
-            {
-                replayed = replayed.without_message(message.id);
+                    .collect::<Vec<_>>();
+                let mut recovery_reply = None;
+                for (index, (request_id, message)) in completions.iter().enumerate() {
+                    if let Some(job) = self
+                        .store
+                        .get_inference_input::<InferenceJob>(*request_id)
+                        .await?
+                        && job.summary
+                    {
+                        replayed = replayed.without_message(message.id);
+                        if job.summary_recovery && index > 0 {
+                            recovery_reply = Some(completions[index - 1].1.id);
+                        }
+                    }
+                }
+                if let Some(id) = recovery_reply {
+                    replayed = replayed.without_message(id);
+                }
+                if skip_compaction && let Some((_, message)) = completions.last() {
+                    replayed = replayed.without_message(message.id);
+                }
             }
             let bytes = encode(&replayed)?;
             let reference = SnapshotRef {

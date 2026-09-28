@@ -108,8 +108,8 @@ also at the end of a completed turn. The trigger is the model context window
 minus a 16,384-token reserve (an explicit model or stack threshold may override
 it). Unknown windows do not trigger usage compaction; provider overflow can
 still start recovery. Main and side successors retain approximately 20,000
-recent context tokens in complete tool rounds; a single oversized round may
-exceed that budget. When there is no head before the kept tail, compaction
+recent context tokens, cutting at the next valid message boundary when
+possible. A single oversized tool round may be omitted from the tail. When there is no head before the kept tail, compaction
 is skipped. The summary goes in a user opening, followed by the tail selected by
 the same cut as the summary request. An overflow may split even a single
 oversized user turn, retaining its omitted request in the prefix checkpoint. Mid-turn work resumes from the tool results
@@ -135,7 +135,7 @@ retains sorted object keys, while Pi preserves argument insertion order. The
 one-off request has no tools or explicit cache writes, uses the conversation's
 reasoning effort, and caps
 output at min(0.8 times reserve, model output limit)
-(`compaction.ts:728-790`). Length-stopped, empty, failed, or tool-calling
+(`compaction.ts:728-790`). Length-stopped, failed, or tool-calling
 summaries do not replace the current session; a rejected checkpoint reply
 remains in the audit log but is excluded from the next request snapshot. A context overflow or an early
 length stop may compact and retry once (`agent-session.ts:2583-2696`,
@@ -149,9 +149,7 @@ JSON schema. OpenCode's output handling and auto-continue are separate designs:
 the 4,096-token cap was swarmy's own choice, not a general OpenCode rule.
 Pi retries transient summarization transport failures according to its shared
 retry policy (`compaction.ts:636-660`), but does not accept a length-stopped
-summary or retry that truncated text as a valid checkpoint. Swarmy additionally
-rejects empty summaries and checks `summary_fits` against the model window
-before submitting. A permanent summary failure leaves an explanatory notice. Pi reports a
+summary or retry that truncated text as a valid checkpoint. Swarmy accepts empty successful summaries as Pi does. A permanent summary failure leaves an explanatory notice. Pi reports a
 second truncated recovery failure as an event; swarmy records a session notice.
 
 Memory files live on the agent's home volume, by default under

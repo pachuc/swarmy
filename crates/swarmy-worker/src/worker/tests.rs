@@ -325,6 +325,19 @@ mod side_tail_tests {
     }
 
     #[test]
+    fn tail_skips_oversized_tool_round_when_followed_by_assistant() {
+        let history = vec![
+            text(MessageRole::User, "launch"),
+            assistant_calls("huge", false),
+            tool_result_sized("huge", 128 * 1024),
+            text(MessageRole::Assistant, "done"),
+        ];
+        let tail = select_side_tail(&history);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].role, MessageRole::Assistant);
+    }
+
+    #[test]
     fn mid_turn_fast_path_needs_no_store_reads() {
         use super::super::summarize::last_side_usage;
         use swarmy_core::{Event, RequestId, SessionId, TokenUsage};

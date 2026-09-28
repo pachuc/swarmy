@@ -73,7 +73,7 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     let before = f.store.transaction_count();
     let attempt = f
         .worker
-        .prepare_request(&session, &mut request, &mut Vec::new())
+        .prepare_request(&session, &mut request, &mut Vec::new(), false)
         .await
         .unwrap();
     assert_eq!(

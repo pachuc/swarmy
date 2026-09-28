@@ -49,13 +49,13 @@ impl Worker {
         session: &SessionRecord,
         request: &mut swarmy_llm::Request,
         preceding: &mut Vec<Event>,
+        summarizing: bool,
     ) -> Result<ResolvedAttempt> {
         // Resolve on every inference so existing sessions see later agent updates.
         // A summary request keeps its own prompt; every other request gets the agent's
         // prompt override first and then the memory directory and contents appended.
         // The agent and its route resolve in one transaction so an inference
         // costs no more store transactions than before routes.
-        let summarizing = request.no_cache;
         let mut defaults = swarmy_core::ResolvedSelection {
             provider: self.config.provider.clone(),
             model: request.settings.model.clone(),
@@ -299,7 +299,7 @@ impl Worker {
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
         let attempt = self
-            .prepare_request(session, &mut request, &mut preceding)
+            .prepare_request(session, &mut request, &mut preceding, compaction.is_some())
             .await?;
         // Persist the picked step with the request so a retryable failure
         // advances from the attempt that actually ran, not from a stale
@@ -340,7 +340,7 @@ impl Worker {
             session_id: id,
             step,
             request_id: RequestId::for_step(id, step),
-            summary: request.no_cache,
+            summary: compaction.is_some(),
             summary_prefix,
             summary_cut: compaction.map(|(cut, _)| cut as u64),
             summary_recovery: compaction.is_some_and(|(_, recovery)| recovery),
