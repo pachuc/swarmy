@@ -507,6 +507,15 @@ mod job_tests {
             route: Option<String>,
             route_step: u32,
         }
+        // Pinned bytes produced by the master layout, not by InferenceJob's
+        // current serializer. In particular no cache-policy byte may appear
+        // between the request and provider fields.
+        const MASTER_BYTES: &[u8] = &[
+            1, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 2, 54, 2, 190, 81, 241, 161, 179, 57, 6, 120, 230, 5, 126, 218,
+            209, 215, 135, 22, 114, 63, 152, 144, 227, 33, 190, 107, 177, 117, 253, 99, 66, 171, 3,
+            111, 108, 100, 0, 0, 0, 0, 0, 0, 4, 102, 97, 107, 101, 0, 0, 0,
+        ];
         let id = SessionId::from_ulid(ulid::Ulid::nil());
         let bytes = swarmy_core::encode(&OldJob {
             session_id: id,
@@ -524,15 +533,6 @@ mod job_tests {
             route_step: 0,
         })
         .unwrap();
-        // Pinned bytes produced by the master layout, not by InferenceJob's
-        // current serializer. In particular no cache-policy byte may appear
-        // between the request and provider fields.
-        const MASTER_BYTES: &[u8] = &[
-            1, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
-            48, 48, 48, 48, 48, 48, 2, 54, 2, 190, 81, 241, 161, 179, 57, 6, 120, 230, 5, 126, 218,
-            209, 215, 135, 22, 114, 63, 152, 144, 227, 33, 190, 107, 177, 117, 253, 99, 66, 171, 3,
-            111, 108, 100, 0, 0, 0, 0, 0, 0, 4, 102, 97, 107, 101, 0, 0, 0,
-        ];
         assert_eq!(bytes, MASTER_BYTES);
         let job: InferenceJob = swarmy_core::decode(MASTER_BYTES).unwrap();
         assert_eq!(job.request.system_prompt, "old");

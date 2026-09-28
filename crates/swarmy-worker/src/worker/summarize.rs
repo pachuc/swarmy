@@ -100,6 +100,18 @@ impl Worker {
         if job.summary {
             return Ok(false);
         }
+        if self.recovery_already_attempted(session, events).await? {
+            return Ok(false);
+        }
+        self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
+            .await
+    }
+
+    async fn recovery_already_attempted(
+        &self,
+        session: &SessionRecord,
+        events: &[Event],
+    ) -> Result<bool> {
         // Pi agent-session.ts:901,952 resets the one-shot recovery guard on
         // new input or a successful assistant reply, not on every rollover.
         // The successor starts with a user-role summary and may replay the
@@ -146,7 +158,7 @@ impl Worker {
                         ..
                     } => {
                         tracing::warn!(session_id = %session.session_id, "context recovery failed after one attempt");
-                        return Ok(false);
+                        return Ok(true);
                     }
                     Event::InferenceCompleted { request_id, .. } => {
                         if let Some(prior_job) = self
@@ -166,7 +178,7 @@ impl Worker {
                                 && self.recoverable_length(&prior_job, &response)
                             {
                                 tracing::warn!(session_id = %session.session_id, "length-stop recovery failed after one attempt");
-                                return Ok(false);
+                                return Ok(true);
                             }
                         }
                         break;
@@ -175,8 +187,7 @@ impl Worker {
                 }
             }
         }
-        self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
-            .await
+        Ok(false)
     }
 
     fn recoverable_length(&self, job: &InferenceJob, response: &swarmy_llm::Response) -> bool {
@@ -360,17 +371,16 @@ impl Worker {
             }
         }
         // A failed attempt is not part of the context that Pi retries.
-        if recovery {
-            if let Some(Event::InferenceCompleted { message, .. }) =
+        if recovery
+            && let Some(Event::InferenceCompleted { message, .. }) =
                 events.iter().rev().find(|event| {
                     matches!(
                         event,
                         Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
                     )
                 })
-            {
-                history.retain(|kept| kept.id != message.id);
-            }
+        {
+            history.retain(|kept| kept.id != message.id);
         }
         let cut = raw_cut(&history);
         if cut == 0 {
@@ -424,7 +434,7 @@ impl Worker {
         let Some(message) = message else {
             return Ok(false);
         };
-        let mut text = summary_text(message);
+        let text = summary_text(message);
         let is_main = self
             .store
             .get_agent(session.agent_id)
@@ -445,21 +455,88 @@ impl Worker {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
         }
+        let (text, history, recovery) = self
+            .archived_history(snapshot, events, job, message, text)
+            .await?;
+        let cut = raw_cut(&history);
+        let file_lists = file_lists(&history[..cut]);
+        let tail = history[cut..].to_vec();
+        let opening = swarmy_core::Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text {
+                text: format!(
+                    "{}{text}{file_lists}{}",
+                    swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                    swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+                ),
+            }],
+        };
+        let should_wake = tail
+            .last()
+            .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
+            || recovery;
+        let mut token = lease.lock().await;
+        let (successor, archived) = if is_main {
+            self.store
+                .summarize_main_session(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    &opening,
+                    &tail,
+                )
+                .await?
+        } else {
+            // Carry recent tool rounds forward so the successor keeps
+            // immediate context alongside the summary; the next request stays
+            // small. A mid-task rollover replays the retained tool results
+            // directly, without a synthetic user instruction.
+            let (successor, archived_event) = self
+                .store
+                .summarize_side_session(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                    &opening,
+                    &tail,
+                )
+                .await?;
+            token.release();
+            self.publish_events(session.session_id, &[archived_event])
+                .await?;
+            // The successor shares the old session's runnable partition; wake
+            // it so a mid-task rollover continues without waiting for input.
+            // A chat-shaped successor replays to end-of-turn and idles again.
+            self.wake_successor(session.session_id, successor).await;
+            return Ok(true);
+        };
+        token.release();
+        self.publish_events(session.session_id, &[archived]).await?;
+        if should_wake {
+            self.wake_successor(session.session_id, successor).await;
+        }
+        Ok(true)
+    }
+    async fn archived_history(
+        &self,
+        snapshot: &Snapshot,
+        events: &[Event],
+        job: &InferenceJob,
+        message: &swarmy_core::Message,
+        mut text: String,
+    ) -> Result<(String, Vec<swarmy_core::Message>, bool)> {
         let mut history = snapshot.replay(events).messages().to_vec();
         history.retain(|kept| kept.id != message.id);
         if is_prefix_job(job) {
-            let prior = events
-                .iter()
-                .rev()
-                .filter_map(|event| match event {
-                    Event::InferenceCompleted {
-                        request_id,
-                        message,
-                        ..
-                    } if *request_id != job.request_id => Some((*request_id, message)),
-                    _ => None,
-                })
-                .next();
+            let prior = events.iter().rev().find_map(|event| match event {
+                Event::InferenceCompleted {
+                    request_id,
+                    message,
+                    ..
+                } if *request_id != job.request_id => Some((*request_id, message)),
+                _ => None,
+            });
             let history_text = if let Some((request_id, prior_message)) = prior {
                 if self
                     .store
@@ -521,66 +598,9 @@ impl Worker {
                 break;
             }
         }
-        let cut = raw_cut(&history);
-        let file_lists = file_lists(&history[..cut]);
-        let tail = history[cut..].to_vec();
-        let opening = swarmy_core::Message {
-            id: MessageId::from_ulid(Ulid::generate()),
-            role: swarmy_core::MessageRole::User,
-            parts: vec![swarmy_core::Part::Text {
-                text: format!(
-                    "{}{text}{file_lists}{}",
-                    swarmy_harness::COMPACTION_SUMMARY_PREFIX,
-                    swarmy_harness::COMPACTION_SUMMARY_SUFFIX
-                ),
-            }],
-        };
-        let should_wake = tail
-            .last()
-            .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
-            || recovery;
-        let mut token = lease.lock().await;
-        let (successor, archived) = if is_main {
-            self.store
-                .summarize_main_session(
-                    session.session_id,
-                    session.head_seq,
-                    token.as_ref().context("lease released")?,
-                    &opening,
-                    &tail,
-                )
-                .await?
-        } else {
-            // Carry recent tool rounds forward so the successor keeps
-            // immediate context alongside the summary; the next request stays
-            // small. A mid-task rollover replays the retained tool results
-            // directly, without a synthetic user instruction.
-            let (successor, archived_event) = self
-                .store
-                .summarize_side_session(
-                    session.session_id,
-                    session.head_seq,
-                    token.as_ref().context("lease released")?,
-                    &opening,
-                    &tail,
-                )
-                .await?;
-            token.release();
-            self.publish_events(session.session_id, &[archived_event])
-                .await?;
-            // The successor shares the old session's runnable partition; wake
-            // it so a mid-task rollover continues without waiting for input.
-            // A chat-shaped successor replays to end-of-turn and idles again.
-            self.wake_successor(session.session_id, successor).await;
-            return Ok(true);
-        };
-        token.release();
-        self.publish_events(session.session_id, &[archived]).await?;
-        if should_wake {
-            self.wake_successor(session.session_id, successor).await;
-        }
-        Ok(true)
+        Ok((text, history, recovery))
     }
+
     /// Mark the successor runnable before nudging: idle nudges are dropped.
     pub(super) async fn wake_successor(&self, previous: SessionId, successor: SessionId) {
         if let Err(error) = self.store.wake_session(successor, Timestamp::now()).await {
