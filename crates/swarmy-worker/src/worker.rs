@@ -101,8 +101,12 @@ impl Worker {
     fn kill(&self, point: &str) {
         // Production leaves kill_point unset; the chaos harness opts in at runtime.
         if self.config.kill_point.as_deref() == Some(point) {
-            tracing::warn!(point, "instrumented worker exit");
-            std::process::exit(137);
+            tracing::warn!(point, "instrumented worker kill");
+            let _ = rustix::process::kill_process(
+                rustix::process::getpid(),
+                rustix::process::Signal::KILL,
+            );
+            std::process::abort();
         }
     }
 
