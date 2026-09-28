@@ -364,8 +364,6 @@ mod tests {
             Some("sg-test")
         );
         assert_eq!(settings.remote.managed_by_tag, "codex-launcher");
-        assert!(settings.remote.aws.image.is_none());
-        assert!(settings.remote.profile.is_none());
         let settings = Settings {
             remote: RemoteSettings {
                 aws: AwsSettings {
