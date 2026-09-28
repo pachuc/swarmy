@@ -278,42 +278,15 @@ impl Worker {
             if mid_turn.is_some() {
                 return Ok(false);
             }
-            if !job.summary_prefix {
-                let history = self
-                    .compaction_history(snapshot, events, job.summary_recovery)
-                    .await?;
-                let cut = job
-                    .summary_cut
-                    .map_or_else(|| raw_cut(&history), |cut| cut as usize);
-                if let Some(start) = split_turn_start(&history, cut) {
-                    if !message.as_ref().is_some_and(|message| {
-                        valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
-                    }) {
-                        return Ok(false);
-                    }
-                    let request = prefix_summary_request(
-                        &self.config,
-                        self.job_provider(&job),
-                        &history[start..cut],
-                        job.request.settings.clone(),
-                    );
-                    if !summary_fits(&self.config, &request, self.job_provider(&job)) {
-                        return Ok(false);
-                    }
-                    self.build_inference_with_prefix(
-                        session,
-                        lease,
-                        &[],
-                        request,
-                        true,
-                        Some((cut, job.summary_recovery)),
-                    )
-                    .await?;
-                    return Ok(true);
-                }
-            }
             return self
-                .archive_summary(session, lease, snapshot, &job, message.as_ref(), events)
+                .finish_checkpoint(
+                    session,
+                    lease,
+                    snapshot,
+                    events,
+                    &job,
+                    (&response, message.as_ref()),
+                )
                 .await;
         }
         let provider = self.job_provider(&job);
@@ -348,6 +321,55 @@ impl Worker {
             (mid_turn.map_or(&[][..], std::slice::from_ref), false),
         )
         .await
+    }
+
+    async fn finish_checkpoint(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &[Event],
+        job: &InferenceJob,
+        result: (&swarmy_llm::Response, Option<&swarmy_core::Message>),
+    ) -> Result<bool> {
+        let (response, message) = result;
+        if !job.summary_prefix {
+            let history = self
+                .compaction_history(snapshot, events, job.summary_recovery)
+                .await?;
+            let cut = job.summary_cut.map_or_else(
+                || raw_cut(&history),
+                |cut| usize::try_from(cut).unwrap_or(usize::MAX),
+            );
+            if let Some(start) = split_turn_start(&history, cut) {
+                if !message.as_ref().is_some_and(|message| {
+                    valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
+                }) {
+                    return Ok(false);
+                }
+                let request = prefix_summary_request(
+                    &self.config,
+                    self.job_provider(job),
+                    &history[start..cut],
+                    job.request.settings.clone(),
+                );
+                if !summary_fits(&self.config, &request, self.job_provider(job)) {
+                    return Ok(false);
+                }
+                self.build_inference_with_prefix(
+                    session,
+                    lease,
+                    &[],
+                    request,
+                    true,
+                    Some((cut, job.summary_recovery)),
+                )
+                .await?;
+                return Ok(true);
+            }
+        }
+        self.archive_summary(session, lease, snapshot, job, message, events)
+            .await
     }
 
     /// Last stored inference input and output for the session tail.
@@ -509,7 +531,10 @@ impl Worker {
             .await?;
         let cut = job
             .summary_cut
-            .map_or_else(|| raw_cut(&history), |cut| cut as usize)
+            .map_or_else(
+                || raw_cut(&history),
+                |cut| usize::try_from(cut).unwrap_or(usize::MAX),
+            )
             .min(history.len());
         let recovery = job.summary_recovery;
         let file_lists = file_lists(&history[..cut]);
@@ -972,7 +997,7 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
             .collect::<Vec<_>>();
         match message.role {
             MessageRole::User if !text.is_empty() => {
-                lines.push(format!("[User]: {}", text.join("")))
+                lines.push(format!("[User]: {}", text.join("")));
             }
             MessageRole::Assistant => {
                 let thinking = message
