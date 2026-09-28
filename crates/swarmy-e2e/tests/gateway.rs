@@ -776,8 +776,15 @@ async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
             f.publish(&job).await;
             let started = tokio::time::Instant::now();
             let mut calls_at = Vec::new();
+            let mut republished = false;
             while calls_at.len() < 3 {
                 let calls = f.calls();
+                if calls >= 1 && !republished {
+                    // Recovery publishes a fresh stream sequence whose delivery
+                    // count starts at one; it must not reset the retry budget.
+                    f.publish(&job).await;
+                    republished = true;
+                }
                 assert!(calls <= 3, "provider called beyond delivery limit");
                 while calls_at.len() < calls {
                     calls_at.push(started.elapsed());

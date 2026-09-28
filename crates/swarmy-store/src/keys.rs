@@ -1270,6 +1270,7 @@ mod registry_tests {
             ("inference_claim", keys.inference_claim(requestid)),
             ("inference_input", keys.inference_input(requestid)),
             ("inference_request", keys.inference_request(requestid)),
+            ("inference_retry", keys.inference_retry(requestid)),
             ("inference_result", keys.inference_result(requestid)),
             ("inference_wait", keys.inference_wait(sessionid)),
             ("inference_wait_due", keys.inference_wait_due(at, sessionid)),
