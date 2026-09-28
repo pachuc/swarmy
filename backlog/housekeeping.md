@@ -3,6 +3,9 @@
 Recorded 2026-09-21. Small chores that do not deserve a goal but should not
 be forgotten. Do them opportunistically alongside related work.
 
+- **The unbuilt `swarmy-guest` proposal** was retired in the
+  [roadmap](../docs/ROADMAP.md); runc exec and node tool helpers are the
+  implemented path. No guest crate is planned.
 - **GitHub issue 32 (flush latency) is fixed but open.** Fixed by PRs 36, 37,
   38, 61, and 62; the launcher token cannot close issues. Close it by hand.
 - **The Codex fleet's lanes share one ChatGPT usage limit.** When it trips,
