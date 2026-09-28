@@ -359,15 +359,18 @@ impl Worker {
                 ),
             }],
         };
+        let tail = Self::successor_tail(snapshot, events, message);
+        let should_wake = tail.last().is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
+            || (tail.is_empty() && events.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))));
         let mut token = lease.lock().await;
-        let (_, archived) = if is_main {
+        let (successor, archived) = if is_main {
             self.store
                 .summarize_main_session(
                     session.session_id,
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &opening,
-                    &Self::successor_tail(snapshot, events, message),
+                    &tail,
                 )
                 .await?
         } else {
@@ -375,7 +378,6 @@ impl Worker {
             // immediate context alongside the summary; the next request stays
             // small. A mid-task rollover replays the retained tool results
             // directly, without a synthetic user instruction.
-            let tail = Self::successor_tail(snapshot, events, message);
             let (successor, archived_event) = self
                 .store
                 .summarize_side_session(
@@ -397,6 +399,9 @@ impl Worker {
         };
         token.release();
         self.publish_events(session.session_id, &[archived]).await?;
+        if should_wake {
+            self.wake_successor(session.session_id, successor).await;
+        }
         Ok(true)
     }
     fn successor_tail(

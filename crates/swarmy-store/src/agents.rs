@@ -537,7 +537,7 @@ impl Store {
         opening: &swarmy_core::Message,
         tail: &[swarmy_core::Message],
     ) -> Result<(SessionId, swarmy_core::Event)> {
-        if opening.role != swarmy_core::MessageRole::System {
+        if opening.role != swarmy_core::MessageRole::User {
             return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         let id = SessionId::from_ulid(ulid::Ulid::generate());
@@ -610,7 +610,7 @@ impl Store {
         opening: &swarmy_core::Message,
         tail: &[swarmy_core::Message],
     ) -> Result<(SessionId, swarmy_core::Event)> {
-        if opening.role != swarmy_core::MessageRole::System {
+        if opening.role != swarmy_core::MessageRole::User {
             return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
         }
         // Keep the successor in the old session's runnable partition so the
