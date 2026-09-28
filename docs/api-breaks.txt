@@ -35,3 +35,4 @@ POST /v1/sessions/{id}/interrupt changes MissingInferenceWait error code from se
 GET /v1/sessions/{id}/events changes successor opening from system JSON to user Markdown
 # 2026-09-28: Obsolete context warning notices retain their binary discriminant but render as legacy_context_notice in old event JSON; no new warning is emitted.
 GET /v1/sessions/{id}/events changes legacy notice kind text to legacy_context_notice
+# 2026-09-28: Checkpoint jobs append a trailing cut and recovery marker, so a resumed worker archives the same head it summarized. Older jobs decode with absent markers; older binaries cannot decode the appended fields.

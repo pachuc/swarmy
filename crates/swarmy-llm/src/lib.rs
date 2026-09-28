@@ -169,6 +169,12 @@ pub struct InferenceJob {
     /// The second checkpoint of a split turn uses Pi's prefix prompt.
     #[serde(default, with = "swarmy_core::trailing")]
     pub summary_prefix: bool,
+    /// Cut chosen before the checkpoint request, reused for the archive.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_cut: Option<u64>,
+    /// Whether this checkpoint is recovering a failed assistant attempt.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_recovery: bool,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -554,6 +560,8 @@ mod job_tests {
         let job = InferenceJob {
             summary: false,
             summary_prefix: false,
+            summary_cut: None,
+            summary_recovery: false,
             provider: "fake".into(),
             entry: Some("primary".into()),
             route: Some("fallback".into()),

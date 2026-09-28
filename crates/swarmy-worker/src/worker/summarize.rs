@@ -50,10 +50,12 @@ impl Worker {
         lease: &HeldLease,
         snapshot: &Snapshot,
         events: &mut Vec<Event>,
+        turn: Option<MessageId>,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
             return Ok(false);
         }
+        // A later user turn must not recover a stale failed inference.
         let Some(last) = events.iter().rev().find(|event| {
             matches!(
                 event,
@@ -62,6 +64,12 @@ impl Worker {
         }) else {
             return Ok(false);
         };
+        if let Some(last_seq) = events.iter().rev().find_map(|event| match event {
+            Event::InferenceCompleted { seq, .. } | Event::InferenceFailed { seq, .. } => Some(*seq),
+            _ => None,
+        }) && events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.role == swarmy_core::MessageRole::User)) {
+            return Ok(false);
+        }
         let job = match last {
             Event::InferenceFailed {
                 request_id,
@@ -120,7 +128,7 @@ impl Worker {
                     }],
                 )
                 .await?;
-                self.finish(session, lease, snapshot, events, None).await?;
+                self.finish(session, lease, snapshot, events, turn).await?;
                 return Ok(true);
             }
             return Ok(false);
@@ -271,8 +279,12 @@ impl Worker {
                 return Ok(false);
             }
             if !job.summary_prefix {
-                let (history, recovery) = self.compaction_history(snapshot, events).await?;
-                let cut = compaction_cut(&history, recovery);
+                let history = self
+                    .compaction_history(snapshot, events, job.summary_recovery)
+                    .await?;
+                let cut = job
+                    .summary_cut
+                    .map_or_else(|| raw_cut(&history), |cut| cut as usize);
                 if let Some(start) = split_turn_start(&history, cut) {
                     if !message.as_ref().is_some_and(|message| {
                         valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
@@ -288,8 +300,15 @@ impl Worker {
                     if !summary_fits(&self.config, &request, self.job_provider(&job)) {
                         return Ok(false);
                     }
-                    self.build_inference_with_prefix(session, lease, &[], request, true)
-                        .await?;
+                    self.build_inference_with_prefix(
+                        session,
+                        lease,
+                        &[],
+                        request,
+                        true,
+                        Some((cut, job.summary_recovery)),
+                    )
+                    .await?;
                     return Ok(true);
                 }
             }
@@ -402,7 +421,7 @@ impl Worker {
         {
             history.retain(|kept| kept.id != message.id);
         }
-        let cut = compaction_cut(&history, recovery);
+        let cut = raw_cut(&history);
         if cut == 0 {
             return Ok(false);
         }
@@ -446,6 +465,7 @@ impl Worker {
             split_start.is_some_and(|start| {
                 start == 0 || (start == 1 && previous_summary(&history).is_some())
             }),
+            Some((cut, recovery)),
         )
         .await?;
         Ok(true)
@@ -484,10 +504,14 @@ impl Worker {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
         }
-        let (text, history, recovery) = self
+        let (text, history) = self
             .archived_history(snapshot, events, job, message, text)
             .await?;
-        let cut = compaction_cut(&history, recovery);
+        let cut = job
+            .summary_cut
+            .map_or_else(|| raw_cut(&history), |cut| cut as usize)
+            .min(history.len());
+        let recovery = job.summary_recovery;
         let file_lists = file_lists(&history[..cut]);
         let tail = history[cut..].to_vec();
         let opening = swarmy_core::Message {
@@ -554,7 +578,7 @@ impl Worker {
         job: &InferenceJob,
         message: &swarmy_core::Message,
         mut text: String,
-    ) -> Result<(String, Vec<swarmy_core::Message>, bool)> {
+    ) -> Result<(String, Vec<swarmy_core::Message>)> {
         let mut history = snapshot.replay(events).messages().to_vec();
         history.retain(|kept| kept.id != message.id);
         if job.summary_prefix {
@@ -587,9 +611,10 @@ impl Worker {
             };
             text = format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{text}");
         }
-        let (clean, recovery) = self.compaction_history(snapshot, events).await?;
-        history = clean;
-        Ok((text, history, recovery))
+        history = self
+            .compaction_history(snapshot, events, job.summary_recovery)
+            .await?;
+        Ok((text, history))
     }
 
     /// Compute the cut input once from the replay, excluding checkpoint replies
@@ -598,49 +623,53 @@ impl Worker {
         &self,
         snapshot: &Snapshot,
         events: &[Event],
-    ) -> Result<(Vec<swarmy_core::Message>, bool)> {
+        recovery: bool,
+    ) -> Result<Vec<swarmy_core::Message>> {
         let mut history = snapshot.replay(events).messages().to_vec();
-        let mut recovery = events.iter().any(|event| {
-            matches!(
-                event,
-                Event::InferenceFailed {
-                    failure_kind: swarmy_core::FailureKind::ContextOverflow,
+        let completions = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::InferenceCompleted {
+                    request_id,
+                    message,
                     ..
-                }
-            )
-        });
-        for event in events.iter().rev() {
-            let Event::InferenceCompleted {
-                request_id,
-                message,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            let Some(job) = self
+                } => Some((*request_id, message)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut first_summary = None;
+        for (index, (request_id, message)) in completions.iter().enumerate() {
+            if self
                 .store
                 .get_inference_input::<InferenceJob>(*request_id)
                 .await?
-            else {
-                break;
-            };
-            if job.summary {
+                .is_some_and(|job| job.summary)
+            {
+                first_summary.get_or_insert(index);
                 history.retain(|kept| kept.id != message.id);
-                continue;
             }
-            if let Some(Ok(response)) = self
-                .store
-                .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
-                .await?
-                && self.recoverable_length(&job, &response)
+        }
+        if recovery
+            && let Some(index) = first_summary
+            && index > 0
+        {
+            // A length-stopped reply immediately before the checkpoint is not
+            // replayed. An overflow has no completed assistant reply here.
+            let (request_id, message) = completions[index - 1];
+            let first_summary_seq = events.iter().find_map(|event| match event {
+                Event::InferenceRequested {
+                    seq,
+                    request_id: id,
+                    ..
+                } if *id == completions[index].0 => Some(*seq),
+                _ => None,
+            });
+            if first_summary_seq.is_some_and(|seq| events.iter().rev().find(|event| event.seq() < seq && matches!(event, Event::InferenceCompleted { .. } | Event::InferenceFailed { .. })).is_some_and(|event| matches!(event, Event::InferenceCompleted { request_id: id, .. } if *id == request_id)))
             {
                 history.retain(|kept| kept.id != message.id);
-                recovery = true;
             }
-            break;
         }
-        Ok((history, recovery))
+        Ok(history)
     }
 
     /// Mark the successor runnable before nudging: idle nudges are dropped.
@@ -689,19 +718,6 @@ fn raw_cut(history: &[swarmy_core::Message]) -> usize {
         .first()
         .and_then(|first| history.iter().position(|message| message.id == first.id))
         .unwrap_or(history.len())
-}
-
-/// Keep the current user request in the retry context even when its tool
-/// output exceeds the target tail size.
-fn compaction_cut(history: &[swarmy_core::Message], recovery: bool) -> usize {
-    let cut = raw_cut(history);
-    if !recovery {
-        return cut;
-    }
-    history.iter().rposition(|message| {
-        message.role == swarmy_core::MessageRole::User
-            && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)))
-    }).map_or(cut, |user| cut.min(user))
 }
 
 /// Pi compaction.ts:453-508 splits when the active turn began before the cut.
@@ -953,9 +969,11 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
                 Part::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .collect::<String>();
+            .collect::<Vec<_>>();
         match message.role {
-            MessageRole::User if !text.is_empty() => lines.push(format!("[User]: {text}")),
+            MessageRole::User if !text.is_empty() => {
+                lines.push(format!("[User]: {}", text.join("")))
+            }
             MessageRole::Assistant => {
                 let thinking = message
                     .parts
@@ -973,7 +991,7 @@ pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> Strin
                     .iter()
                     .any(|part| matches!(part, Part::Text { .. }))
                 {
-                    lines.push(format!("[Assistant]: {text}"));
+                    lines.push(format!("[Assistant]: {}", text.join("\n")));
                 }
                 let calls = message
                     .parts
@@ -1222,15 +1240,12 @@ mod pi_compaction_tests {
     }
 
     #[test]
-    fn overflow_tail_keeps_latest_user_even_with_oversized_tool_round() {
-        let mut history = vec![text(MessageRole::User, "Earlier task")];
-        history.extend((0..30).map(|_| text(MessageRole::Assistant, &"x".repeat(3_000))));
-        history.push(text(MessageRole::User, "Retry this request"));
-        history.extend((0..30).map(|_| text(MessageRole::Assistant, &"x".repeat(3_000))));
-        let normal = compaction_cut(&history, false);
-        let recovery = compaction_cut(&history, true);
-        assert!(normal > 31);
-        assert_eq!(recovery, 31);
+    fn oversized_turn_splits_at_normal_cut_during_recovery() {
+        let mut history = vec![text(MessageRole::User, "Retry this request")];
+        history.extend((0..35).map(|_| text(MessageRole::Assistant, &"x".repeat(3_000))));
+        let cut = raw_cut(&history);
+        assert!(cut > 0 && cut < history.len());
+        assert_eq!(split_turn_start(&history, cut), Some(0));
     }
 
     #[test]

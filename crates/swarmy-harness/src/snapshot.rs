@@ -36,6 +36,12 @@ impl Snapshot {
         &self.messages
     }
 
+    /// Discard an unusable checkpoint reply while preserving the durable log.
+    pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {
+        self.messages.retain(|message| message.id != id);
+        self
+    }
+
     /// Replays an ordered tail without changing the input snapshot or events.
     /// State and snapshot bookkeeping events do not change conversation decisions.
     #[must_use]
