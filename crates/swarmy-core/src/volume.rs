@@ -51,13 +51,12 @@ pub struct ImageRecord {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{ImageTag, LeaseOwnerId, encoding::tests::assert_round_trip};
     use ulid::Ulid;
 
-    #[test]
-    fn volume_types_round_trip() {
+    pub(crate) fn volume_types_round_trip() {
         assert_round_trip(&ManifestHeader {
             size: 32 * 1024 * 1024 * 1024,
             chunk_size: CHUNK_SIZE,

@@ -172,7 +172,7 @@ pub struct ConversationSummary {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::encoding::tests::assert_round_trip;
     use ulid::Ulid;
@@ -213,8 +213,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn records_round_trip() {
+    pub(crate) fn records_round_trip() {
         let mut session = SessionRecord {
             interrupt_requested: false,
             session_id: SessionId::from_ulid(Ulid::from_parts(1, 2)),

@@ -129,7 +129,7 @@ pub fn interrupted_event(seq: u64, request_id: crate::RequestId) -> Event {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         SessionId, decode, encode,
@@ -199,8 +199,7 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn every_event_round_trips_with_its_sequence_and_tag() {
+    pub(crate) fn every_event_round_trips_with_its_sequence_and_tag() {
         let tags = [
             "message_appended",
             "inference_requested",

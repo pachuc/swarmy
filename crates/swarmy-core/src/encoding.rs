@@ -99,6 +99,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn current_wire_types_round_trip() {
+        crate::volume::tests::volume_types_round_trip();
+        crate::scheduler::tests::scheduler_messages_round_trip();
+        crate::message::tests::every_part_and_message_role_round_trips();
+        crate::event::tests::every_event_round_trips_with_its_sequence_and_tag();
+        crate::session::tests::records_round_trip();
+    }
+
+    #[test]
     fn unknown_versions_are_rejected_before_reading_payloads() {
         for version in [0, 2, u8::MAX] {
             let mut bytes = encode(&42_u64).unwrap();
