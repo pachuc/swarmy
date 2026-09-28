@@ -1814,7 +1814,7 @@ async fn second_length_stop_fails_with_notice() {
         truncated.stop_reason = StopReason::MaxOutputTokens;
         truncated.usage.output_tokens = 1;
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": truncated, "1": side_response("## Goal\nRetry".into(), 20), "2": truncated}
+            "responses": {"0": truncated, "1": side_response("## Goal\nRetry".into(), 20), "2": truncated, "3": side_response("After retry limit".into(), 20)}
         })).unwrap()).unwrap();
         let image = image_fixture::image(&f.store).await;
         let agent = f.store.create_agent("length-twice", image, "", Timestamp::now(), None).await.unwrap();
@@ -1830,6 +1830,11 @@ async fn second_length_stop_fails_with_notice() {
         assert_eq!(f.calls(), 3);
         assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery failed after one compact-and-retry attempt."))));
         assert_eq!(successor_messages(&events).iter().filter(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))).count(), 1);
+        f.user_message(successor).await;
+        f.wake(successor).await;
+        f.idle(successor).await;
+        let prompt = f.histories().pop().unwrap();
+        assert!(prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))));
     })).await;
 }
 
