@@ -29,6 +29,5 @@
     "max_output_tokens": 256,
     "temperature": null,
     "reasoning_effort": null
-  },
-  "no_cache": false
+  }
 }
