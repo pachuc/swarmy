@@ -504,9 +504,22 @@ mod tests {
             api_url: Some("http://127.0.0.1:18742".into()),
             api_token: Some("fixture-token".into()),
             s3_bucket: None,
-            s3_region: Some("eu-west-1".into()),
+            s3_region: None,
             default_image: Some("base-ubuntu:test".into()),
         };
+        // A profile with its own bucket and region takes the laptop's regional
+        // credentials into the service settings without an endpoint override.
+        let mut regional_profile = profile.clone();
+        regional_profile.s3_bucket = Some("bucket".into());
+        regional_profile.s3_region = Some("eu-west-1".into());
+        regional_profile.s3_endpoint.clear();
+        let mut regional_settings = Settings::default();
+        regional_profile.apply(&mut regional_settings);
+        assert_eq!(regional_settings.s3_bucket, "bucket");
+        assert_eq!(regional_settings.s3_region, "eu-west-1");
+        assert!(regional_settings.s3_endpoint.is_empty());
+        assert!(regional_settings.s3_access_key.is_empty());
+        assert!(regional_settings.s3_secret_key.is_empty());
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
             serde_json::to_vec(&profile).unwrap(),
@@ -542,7 +555,6 @@ mod tests {
             profile.fdb_cluster_file
         );
         assert_eq!(loaded.settings.s3_bucket, "custom");
-        assert_eq!(loaded.settings.s3_region, "eu-west-1");
         assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
         let mut invalid = profile;
         invalid.ports.fdb = 14500;
