@@ -347,19 +347,7 @@ impl Worker {
                 history.retain(|kept| kept.id != message.id);
             }
         }
-        let tail = select_side_tail(&history);
-        let mut cut = tail
-            .first()
-            .and_then(|first| history.iter().position(|message| message.id == first.id))
-            .unwrap_or(history.len());
-        if recovery {
-            if let Some(last_user) = history
-                .iter()
-                .rposition(|message| message.role == swarmy_core::MessageRole::User)
-            {
-                cut = cut.min(last_user);
-            }
-        }
+        let cut = compaction_cut(&history);
         if cut == 0 {
             return Ok(false);
         }
@@ -420,7 +408,51 @@ impl Worker {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
         }
-        let file_lists = file_lists(snapshot.replay(events).messages());
+        let mut history = snapshot.replay(events).messages().to_vec();
+        history.retain(|kept| kept.id != message.id);
+        let mut recovery = events.iter().any(|event| {
+            matches!(
+                event,
+                Event::InferenceFailed {
+                    failure_kind: swarmy_core::FailureKind::ContextOverflow,
+                    ..
+                }
+            )
+        });
+        // A length-stopped reply is visible in the predecessor log but is not
+        // part of the retried context. Pi agent-session.ts:2655-2696 drops it.
+        for event in events.iter().rev() {
+            if let Event::InferenceCompleted {
+                request_id,
+                message: attempt,
+                ..
+            } = event
+            {
+                let Some(attempt_job) = self
+                    .store
+                    .get_inference_input::<InferenceJob>(*request_id)
+                    .await?
+                else {
+                    continue;
+                };
+                if attempt_job.summary {
+                    continue;
+                }
+                if let Some(Ok(response)) = self
+                    .store
+                    .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                    .await?
+                    && self.recoverable_length(&attempt_job, &response)
+                {
+                    history.retain(|kept| kept.id != attempt.id);
+                    recovery = true;
+                }
+                break;
+            }
+        }
+        let cut = compaction_cut(&history);
+        let file_lists = file_lists(&history[..cut]);
+        let tail = history[cut..].to_vec();
         let opening = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::User,
@@ -432,20 +464,10 @@ impl Worker {
                 ),
             }],
         };
-        let tail = Self::successor_tail(snapshot, events, message);
         let should_wake = tail
             .last()
             .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
-            || (tail.is_empty()
-                && events.iter().any(|event| {
-                    matches!(
-                        event,
-                        Event::InferenceFailed {
-                            failure_kind: swarmy_core::FailureKind::ContextOverflow,
-                            ..
-                        }
-                    )
-                }));
+            || recovery;
         let mut token = lease.lock().await;
         let (successor, archived) = if is_main {
             self.store
@@ -488,36 +510,6 @@ impl Worker {
         }
         Ok(true)
     }
-    fn successor_tail(
-        snapshot: &Snapshot,
-        events: &[Event],
-        summary: &swarmy_core::Message,
-    ) -> Vec<swarmy_core::Message> {
-        Self::side_successor_tail(snapshot.replay(events).messages(), summary)
-    }
-
-    /// Retain complete tool rounds and continue a mid-task successor without
-    /// losing tool results awaiting the next inference.
-    pub(super) fn side_successor_tail(
-        history: &[swarmy_core::Message],
-        summary: &swarmy_core::Message,
-    ) -> Vec<swarmy_core::Message> {
-        let history = history
-            .iter()
-            .filter(|kept| kept.id != summary.id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut tail = select_side_tail(&history);
-        if let Some(last_user) = history
-            .iter()
-            .rposition(|message| message.role == swarmy_core::MessageRole::User)
-            && !tail.iter().any(|kept| kept.id == history[last_user].id)
-        {
-            tail = history[last_user..].to_vec();
-        }
-        tail
-    }
-
     /// Mark the successor runnable before nudging: idle nudges are dropped.
     pub(super) async fn wake_successor(&self, previous: SessionId, successor: SessionId) {
         if let Err(error) = self.store.wake_session(successor, Timestamp::now()).await {
@@ -548,6 +540,20 @@ impl Worker {
         }
     }
 }
+/// The same cut is used for the inference prompt and the archived successor.
+/// Until a split-turn checkpoint exists, retain the active user request.
+fn compaction_cut(history: &[swarmy_core::Message]) -> usize {
+    let tail = select_side_tail(history);
+    let cut = tail
+        .first()
+        .and_then(|first| history.iter().position(|message| message.id == first.id))
+        .unwrap_or(history.len());
+    history
+        .iter()
+        .rposition(|message| message.role == swarmy_core::MessageRole::User)
+        .map_or(cut, |user| cut.min(user))
+}
+
 /// Pi utils.ts:607-622 rejects failed or length-stopped checkpoints.
 fn valid_summary(
     text: &str,
