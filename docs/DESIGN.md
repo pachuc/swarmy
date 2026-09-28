@@ -110,8 +110,9 @@ it). Unknown windows do not trigger usage compaction; provider overflow can
 still start recovery. Main and side successors retain approximately 20,000
 recent context tokens in complete tool rounds; a single oversized round may
 exceed that budget. When there is no head before the kept tail, compaction
-is skipped. The summary goes in a user opening, followed by exactly the tail
-that the summary request omitted. Mid-turn work resumes from the tool results
+is skipped. The summary goes in a user opening, followed by the tail selected by
+the same cut as the summary request. An overflow may split even a single
+oversized user turn, retaining its omitted request in the prefix checkpoint. Mid-turn work resumes from the tool results
 without an invented continue instruction.
 
 Swarmy ports Pi's summarizer system prompt (`badlogic/pi-mono`,
@@ -135,7 +136,8 @@ one-off request has no tools or explicit cache writes, uses the conversation's
 reasoning effort, and caps
 output at min(0.8 times reserve, model output limit)
 (`compaction.ts:728-790`). Length-stopped, empty, failed, or tool-calling
-summaries do not replace the current session. A context overflow or an early
+summaries do not replace the current session; a rejected checkpoint reply
+remains in the audit log but is excluded from the next request snapshot. A context overflow or an early
 length stop may compact and retry once (`agent-session.ts:2583-2696`,
 `packages/ai/src/utils/overflow.ts:173-181`); a second failure ends the turn.
 
@@ -149,7 +151,8 @@ Pi retries transient summarization transport failures according to its shared
 retry policy (`compaction.ts:636-660`), but does not accept a length-stopped
 summary or retry that truncated text as a valid checkpoint. Swarmy additionally
 rejects empty summaries and checks `summary_fits` against the model window
-before submitting. A permanent summary failure leaves an explanatory notice.
+before submitting. A permanent summary failure leaves an explanatory notice. Pi reports a
+second truncated recovery failure as an event; swarmy records a session notice.
 
 Memory files live on the agent's home volume, by default under
 `/home/agent/memory`, configured with `SWARMY_MEMORY_DIR`. Agents use the file tools

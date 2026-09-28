@@ -265,7 +265,7 @@ impl Worker {
             return Ok(None);
         }
         if self
-            .recover_context_overflow(session, lease, &snapshot, events)
+            .recover_context_overflow(session, lease, &snapshot, events, turn)
             .await?
         {
             return Ok(None);
@@ -600,7 +600,21 @@ impl Worker {
                 from: SessionState::Leased,
                 to: SessionState::Idle,
             });
-            let bytes = encode(&snapshot.replay(events))?;
+            let mut replayed = snapshot.replay(events);
+            // A rejected checkpoint stays in the audit log, not the next
+            // model request. Accepted checkpoints archive instead of finishing.
+            if self.summary_completed(session, events).await?
+                && let Some(Event::InferenceCompleted { message, .. }) =
+                    events.iter().rev().find(|event| {
+                        matches!(
+                            event,
+                            Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
+                        )
+                    })
+            {
+                replayed = replayed.without_message(message.id);
+            }
+            let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
                 object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
                 seq: head,

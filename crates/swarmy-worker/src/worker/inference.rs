@@ -284,7 +284,7 @@ impl Worker {
         preceding: &[Event],
         request: swarmy_llm::Request,
     ) -> Result<()> {
-        self.build_inference_with_prefix(session, lease, preceding, request, false)
+        self.build_inference_with_prefix(session, lease, preceding, request, false, None)
             .await
     }
 
@@ -295,6 +295,7 @@ impl Worker {
         preceding: &[Event],
         mut request: swarmy_llm::Request,
         summary_prefix: bool,
+        compaction: Option<(usize, bool)>,
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
         let attempt = self
@@ -341,6 +342,8 @@ impl Worker {
             request_id: RequestId::for_step(id, step),
             summary: request.no_cache,
             summary_prefix,
+            summary_cut: compaction.map(|(cut, _)| cut as u64),
+            summary_recovery: compaction.is_some_and(|(_, recovery)| recovery),
             request,
         };
         self.kill("before_release");
