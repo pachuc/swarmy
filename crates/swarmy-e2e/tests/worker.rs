@@ -1829,62 +1829,129 @@ async fn second_length_stop_fails_with_notice() {
         let events = f.idle(successor).await;
         assert_eq!(f.calls(), 3);
         assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery failed after one compact-and-retry attempt."))));
+        assert_eq!(successor_messages(&events).iter().filter(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT"))).count(), 1);
     })).await;
 }
 
 #[tokio::test]
 async fn no_head_to_compact_omits_truncated_tool_attempt() {
-    run(|f| Box::pin(async move {
-        f.provider = "openai".into();
-        f.keyring();
-        f.put_entry("primary").await;
-        let mut truncated = side_response("partial".into(), 20);
-        truncated.parts = vec![Part::ToolCall {
-            call_id: ToolCallId("abandoned".into()),
-            tool: "get_time".into(),
-            input: serde_json::json!({}),
-        }];
-        truncated.stop_reason = StopReason::MaxOutputTokens;
-        truncated.usage.output_tokens = 1;
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": truncated, "1": side_response("Next answer".into(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("no-head-recovery", image, "", Timestamp::now(), None).await.unwrap();
-        let id = side_id();
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        let call_id = ToolCallId("large".into());
-        f.store.append_events(id, 0, &[
-            Event::MessageAppended { seq: 0, message: Message {
-                id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::User,
-                parts: vec![Part::Text { text: format!("{}## Goal\nContinue{}", swarmy_harness::COMPACTION_SUMMARY_PREFIX, swarmy_harness::COMPACTION_SUMMARY_SUFFIX) }],
-            }},
-            Event::MessageAppended { seq: 0, message: Message {
-                id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::Assistant,
-                parts: vec![Part::ToolCall { call_id: call_id.clone(), tool: "get_time".into(), input: serde_json::json!({}) }],
-            }},
-            Event::MessageAppended { seq: 0, message: Message {
-                id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::Tool,
-                parts: vec![Part::ToolResult { call_id, result: ToolResult::Completed {
-                    output: "x".repeat(128 * 1024), title: String::new(), metadata: BTreeMap::new(),
-                }}],
-            }},
-        ]).await.unwrap();
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let events = f.idle(id).await;
-        assert_eq!(f.calls(), 1);
-        assert!(f.store.next_session(id).await.unwrap().is_none());
-        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Truncated response recovery could not compact this turn."))));
-        f.user_message(id).await;
-        f.wake(id).await;
-        f.idle(id).await;
-        assert_eq!(f.calls(), 2);
-        let prompt = f.histories().pop().unwrap();
-        assert!(!prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned"))));
-    })).await;
+    run(|f| {
+        Box::pin(async move {
+            f.provider = "openai".into();
+            f.keyring();
+            f.put_entry("primary").await;
+            let mut truncated = side_response("partial".into(), 20);
+            truncated.parts = vec![Part::ToolCall {
+                call_id: ToolCallId("abandoned".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            }];
+            truncated.stop_reason = StopReason::MaxOutputTokens;
+            truncated.usage.output_tokens = 1;
+            std::fs::write(
+                f.files.path().join("script.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "responses": {"0": truncated, "1": side_response("Next answer".into(), 20)}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("no-head-recovery", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            let call_id = ToolCallId("large".into());
+            f.store
+                .append_events(
+                    id,
+                    0,
+                    &[
+                        Event::MessageAppended {
+                            seq: 0,
+                            message: Message {
+                                id: MessageId::from_ulid(Ulid::generate()),
+                                role: MessageRole::User,
+                                parts: vec![Part::Text {
+                                    text: format!(
+                                        "{}## Goal\nContinue{}",
+                                        swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                                        swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+                                    ),
+                                }],
+                            },
+                        },
+                        Event::MessageAppended {
+                            seq: 0,
+                            message: Message {
+                                id: MessageId::from_ulid(Ulid::generate()),
+                                role: MessageRole::Assistant,
+                                parts: vec![Part::ToolCall {
+                                    call_id: call_id.clone(),
+                                    tool: "get_time".into(),
+                                    input: serde_json::json!({}),
+                                }],
+                            },
+                        },
+                        Event::MessageAppended {
+                            seq: 0,
+                            message: Message {
+                                id: MessageId::from_ulid(Ulid::generate()),
+                                role: MessageRole::Tool,
+                                parts: vec![Part::ToolResult {
+                                    call_id,
+                                    result: ToolResult::Completed {
+                                        output: "x".repeat(128 * 1024),
+                                        title: String::new(),
+                                        metadata: BTreeMap::new(),
+                                    },
+                                }],
+                            },
+                        },
+                    ],
+                )
+                .await
+                .unwrap();
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert_eq!(f.calls(), 1);
+            assert!(f.store.next_session(id).await.unwrap().is_none());
+            assert!(
+                !successor_messages(&events)
+                    .iter()
+                    .any(|message| message.parts.iter().any(|part| match part {
+                        Part::Text { text } => text.contains("recovery could not compact"),
+                        Part::ToolCall { call_id, .. } => call_id.0 == "abandoned",
+                        _ => false,
+                    }))
+            );
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(
+                f.calls(),
+                1,
+                "an idle wake must not retry an omitted attempt"
+            );
+            f.user_message(id).await;
+            f.wake(id).await;
+            f.idle(id).await;
+            assert_eq!(f.calls(), 2);
+            let prompt = f.histories().pop().unwrap();
+            assert!(!prompt.iter().any(|message| message.parts.iter().any(
+                |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
+            )));
+        })
+    })
+    .await;
 }
 
 #[tokio::test]

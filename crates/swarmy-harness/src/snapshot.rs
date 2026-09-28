@@ -39,9 +39,15 @@ impl Snapshot {
     /// Discard an unusable checkpoint reply while preserving the durable log.
     #[must_use]
     pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {
-        let before = self.messages.len();
+        let removed_tool_call = self.messages.iter().any(|message| {
+            message.id == id
+                && message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::ToolCall { .. }))
+        });
         self.messages.retain(|message| message.id != id);
-        if self.messages.len() != before {
+        if removed_tool_call {
             self.phase = self
                 .messages
                 .last()

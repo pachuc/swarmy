@@ -556,7 +556,7 @@ costs and node troubleshooting. For fleet-driver commands see
 Named agents keep a chain of main sessions. At the end of a turn the worker
 compares the latest provider input plus output token count with the model
 context window minus a 16,384-token reserve (or the configured threshold).
-Side sessions check the latest input usage after tool results; both main and
+Side sessions check the latest total token usage after tool results; both main and
 side sessions keep recent context through compaction. Unknown windows do not
 trigger usage compaction, but a provider context overflow may still recover.
 Ephemeral sessions do not compact automatically.

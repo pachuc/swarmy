@@ -65,20 +65,10 @@ impl Worker {
             return Ok(false);
         };
         if let Some(last_seq) = events.iter().rev().find_map(|event| match event {
-            Event::InferenceCompleted { seq, .. } | Event::InferenceFailed { seq, .. } => {
-                Some(*seq)
-            }
+            Event::InferenceCompleted { seq, .. } | Event::InferenceFailed { seq, .. } => Some(*seq),
             _ => None,
-        }) {
-            if events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.role == swarmy_core::MessageRole::User)) {
-                return Ok(false);
-            }
-            // A failed attempt with no compactable head has no summary job.
-            // Its durable notice is the one-attempt guard until new input.
-            if events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text == "Context overflow recovery could not compact this turn." || text == "Truncated response recovery could not compact this turn.")))) {
-                self.finish_failed_recovery(session, lease, snapshot, events, turn, false).await?;
-                return Ok(true);
-            }
+        }) && events.iter().any(|event| matches!(event, Event::MessageAppended { seq, message } if *seq > last_seq && message.role == swarmy_core::MessageRole::User)) {
+            return Ok(false);
         }
         let job = match last {
             Event::InferenceFailed {
@@ -146,12 +136,7 @@ impl Worker {
         }
         // Pi omits the failed attempt before trying to compact. Even if no
         // head remains, never execute a truncated tool call or replay it.
-        let text = if stopped_on_length {
-            "Truncated response recovery could not compact this turn."
-        } else {
-            "Context overflow recovery could not compact this turn."
-        };
-        self.recovery_notice(session, lease, snapshot, events, turn, (text, true))
+        self.finish_failed_recovery(session, lease, snapshot, events, turn, true)
             .await?;
         Ok(true)
     }
@@ -370,9 +355,10 @@ impl Worker {
                 )
                 .min(history.len());
             if let Some(start) = split_turn_start(&history, cut) {
-                if !message.as_ref().is_some_and(|message| {
-                    valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
-                }) {
+                if !message
+                    .as_ref()
+                    .is_some_and(|message| valid_summary(message, Some(&Ok(response.clone()))))
+                {
                     return Ok(false);
                 }
                 let request = prefix_summary_request(
@@ -539,7 +525,7 @@ impl Worker {
         } else {
             None
         };
-        let valid = valid_summary(&text, message, response.as_ref());
+        let valid = valid_summary(message, response.as_ref());
         if !valid {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
@@ -786,11 +772,9 @@ fn previous_summary(history: &[swarmy_core::Message]) -> Option<&str> {
 
 /// Pi utils.ts:607-622 rejects failed or length-stopped checkpoints.
 fn valid_summary(
-    text: &str,
     message: &swarmy_core::Message,
     response: Option<&Result<swarmy_llm::Response, String>>,
 ) -> bool {
-    let _ = text;
     !message
         .parts
         .iter()
@@ -1135,21 +1119,18 @@ mod pi_compaction_tests {
     fn rejects_incomplete_and_tool_calling_summaries() {
         let message = text(MessageRole::Assistant, "## Goal\nFinish");
         assert!(!valid_summary(
-            "## Goal\nFinish",
             &message,
             Some(&Ok(answer(StopReason::MaxOutputTokens)))
         ));
         assert!(valid_summary(
-            " \n ",
             &message,
             Some(&Ok(answer(StopReason::EndTurn)))
         ));
         assert!(!valid_summary(
-            "## Goal\nFinish",
             &message,
             Some(&Err("provider failed".into()))
         ));
-        assert!(!valid_summary("## Goal\nFinish", &message, None));
+        assert!(!valid_summary(&message, None));
         let mut tool = message.clone();
         tool.parts.push(Part::ToolCall {
             call_id: ToolCallId("read-1".into()),
@@ -1162,7 +1143,6 @@ mod pi_compaction_tests {
             Some(&Ok(answer(StopReason::EndTurn)))
         ));
         assert!(valid_summary(
-            "## Goal\nFinish",
             &message,
             Some(&Ok(answer(StopReason::EndTurn)))
         ));

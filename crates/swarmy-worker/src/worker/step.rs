@@ -648,7 +648,7 @@ impl Worker {
         if omit_attempt && let Some(id) = prior_completion {
             replayed = replayed.without_message(id);
         }
-        if skip_compaction {
+        if skip_compaction || self.summary_completed(session, events).await? {
             replayed = replayed.end_turn();
         }
         Ok(replayed)
