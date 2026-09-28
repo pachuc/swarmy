@@ -1601,7 +1601,7 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
         *cloud.teardown.borrow(),
         [
             "instance i-test",
-            "key swarmy-cleanup",
+            &format!("key {}", super::key_name(&node).unwrap()),
             "bucket test-bucket",
             "role swarmy-cleanup"
         ]
