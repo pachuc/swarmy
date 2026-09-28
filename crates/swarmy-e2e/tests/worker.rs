@@ -1684,6 +1684,50 @@ async fn check_overflow_recovery(second_overflow: bool) {
 }
 
 #[tokio::test]
+async fn new_user_turn_reenables_overflow_recovery() {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nKeep working";
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {
+                "1": side_response(summary.into(), 20),
+                "2": side_response("First recovered reply".into(), 20),
+                "4": side_response(summary.into(), 20),
+                "5": side_response("Second recovered reply".into(), 20)
+            },
+            "failures": {
+                "0": {"status": 400, "message": "context overflow"},
+                "3": {"status": 400, "message": "context overflow"}
+            }
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("reset-recovery", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let first = wait_successor(f, id).await;
+        f.idle(first).await;
+        let head = f.store.fetch_session(first).await.unwrap().unwrap().head_seq;
+        f.store.append_events(first, head, &[Event::MessageAppended {
+            seq: 0,
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text { text: "Next request ".repeat(9_000) }],
+            },
+        }]).await.unwrap();
+        f.wake(first).await;
+        let second = wait_successor(f, first).await;
+        let events = f.idle(second).await;
+        assert_eq!(f.calls(), 6, "each turn has one overflow, summary, and retry");
+        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Second recovered reply"))));
+    })).await;
+}
+
+#[tokio::test]
 async fn early_length_stop_compacts_without_replaying_truncated_reply() {
     run(|f| Box::pin(async move {
         f.provider = "openai".into();
