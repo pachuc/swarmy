@@ -82,16 +82,7 @@ impl Worker {
                     .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
                     .await?;
                 if !response.is_some_and(|response| {
-                    response.is_ok_and(|response| {
-                        response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens
-                            && response.usage.output_tokens
-                                < self
-                                    .config
-                                    .catalog
-                                    .model(self.job_provider(&job), &job.request.settings.model)
-                                    .and_then(|model| model.limit.output)
-                                    .unwrap_or(0)
-                    })
+                    response.is_ok_and(|response| self.recoverable_length(&job, &response))
                 }) {
                     return Ok(false);
                 }
@@ -109,28 +100,87 @@ impl Worker {
         if job.summary {
             return Ok(false);
         }
-        if let Some(previous) = self.store.previous_session(session.session_id).await? {
+        // Pi agent-session.ts:901,952 resets the one-shot recovery guard on
+        // new input or a successful assistant reply, not on every rollover.
+        let history = snapshot.replay(events);
+        let new_user = history.messages().iter().skip(1).any(|message| {
+            message.role == swarmy_core::MessageRole::User
+            && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)))
+        });
+        let mut successful_reply = false;
+        if !new_user {
+            for event in events {
+                if let Event::InferenceCompleted { request_id, .. } = event
+                    && let Some(Ok(response)) = self
+                        .store
+                        .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                        .await?
+                    && response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
+                {
+                    successful_reply = true;
+                    break;
+                }
+            }
+        }
+        if !new_user
+            && !successful_reply
+            && let Some(previous) = self.store.previous_session(session.session_id).await?
+        {
             let previous_record = self
                 .store
                 .fetch_session(previous)
                 .await?
                 .context("missing predecessor session")?;
             let prior = self.tail(previous, 0, previous_record.head_seq).await?;
-            if prior.iter().rev().any(|event| {
-                matches!(
-                    event,
+            for event in prior.iter().rev() {
+                match event {
                     Event::InferenceFailed {
                         failure_kind: swarmy_core::FailureKind::ContextOverflow,
                         ..
+                    } => {
+                        tracing::warn!(session_id = %session.session_id, "context recovery failed after one attempt");
+                        return Ok(false);
                     }
-                )
-            }) {
-                tracing::warn!(session_id = %session.session_id, "context overflow recovery failed after one attempt");
-                return Ok(false);
+                    Event::InferenceCompleted { request_id, .. } => {
+                        if let Some(prior_job) = self
+                            .store
+                            .get_inference_input::<InferenceJob>(*request_id)
+                            .await?
+                        {
+                            if prior_job.summary {
+                                continue;
+                            }
+                            if let Some(Ok(response)) = self
+                                .store
+                                .get_inference_result::<Result<swarmy_llm::Response, String>>(
+                                    *request_id,
+                                )
+                                .await?
+                                && self.recoverable_length(&prior_job, &response)
+                            {
+                                tracing::warn!(session_id = %session.session_id, "length-stop recovery failed after one attempt");
+                                return Ok(false);
+                            }
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
             }
         }
         self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
             .await
+    }
+
+    fn recoverable_length(&self, job: &InferenceJob, response: &swarmy_llm::Response) -> bool {
+        response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens
+            && response.usage.output_tokens
+                < self
+                    .config
+                    .catalog
+                    .model(self.job_provider(job), &job.request.settings.model)
+                    .and_then(|model| model.limit.output)
+                    .unwrap_or(0)
     }
 
     /// Mid-turn checks use event usage first, avoiding store reads on every
