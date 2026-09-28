@@ -8,3 +8,6 @@ build	master	1	core_touch	74	0
 build	baseline	2	cold	1558	0
 build	baseline	2	unchanged	1	0
 build	baseline	2	core_touch	68	0
+build	master	2	cold	975	0
+build	master	2	unchanged	0	0
+build	master	2	core_touch	74	0
