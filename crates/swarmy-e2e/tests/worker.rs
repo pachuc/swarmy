@@ -7,6 +7,7 @@ mod cli_bin;
 use std::{
     collections::{BTreeMap, HashSet},
     future::Future,
+    os::unix::process::ExitStatusExt,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -1248,7 +1249,10 @@ async fn recover_at_each_kill_point() {
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(status.code(), Some(137), "kill point {point}");
+                assert!(
+                    status.code() == Some(137) || status.signal() == Some(9),
+                    "kill point {point}: {status}"
+                );
                 let replacement = f.start("swarmy-worker", None);
                 let events = f.idle(id).await;
                 assert_requests(id, &events, 2);

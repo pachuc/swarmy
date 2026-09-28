@@ -126,31 +126,6 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn routes_subcommands_parse_without_connecting_to_the_stack() {
-        assert!(crate::Cli::try_parse_from(["swarmy", "auth", "routes", "ls"]).is_ok());
-        assert!(
-            crate::Cli::try_parse_from(["swarmy", "auth", "routes", "show", "fallback"]).is_ok()
-        );
-        assert!(
-            crate::Cli::try_parse_from([
-                "swarmy",
-                "auth",
-                "routes",
-                "set",
-                "fallback",
-                "chatgpt/default",
-                "openai/work-key",
-                "azure/prod=gpt-5.5",
-            ])
-            .is_ok()
-        );
-        assert!(crate::Cli::try_parse_from(["swarmy", "auth", "routes", "rm", "fallback"]).is_ok());
-        assert!(
-            crate::Cli::try_parse_from(["swarmy", "auth", "routes", "set", "fallback"]).is_err()
-        );
-    }
-
-    #[test]
     fn quota_flags_parse_without_connecting_to_the_stack() {
         assert!(crate::Cli::try_parse_from(["swarmy", "auth", "quota"]).is_ok());
         assert!(

@@ -1,9 +1,8 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeSet, time::Duration};
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_harness::{GetTime, Harness, ToolRegistry};
 use swarmy_llm::{GenerationSettings, ReasoningEffort};
-use swarmy_store::RUNNABLE_PARTITIONS;
 
 pub struct Config {
     pub cluster: String,
@@ -80,7 +79,8 @@ impl Config {
                 ack_wait: duration(settings.bus_ack_wait_ms)?,
                 max_deliver: settings.bus_max_deliver,
             },
-            partitions: parse_partitions(&settings.worker_partitions)?,
+            partitions: swarmy_config::parse_partitions(&settings.worker_partitions)
+                .map_err(|error| anyhow::anyhow!("SWARMY_WORKER_PARTITIONS: {error}"))?,
             provider,
             lease_duration: duration(settings.worker_lease_ms)?,
             placement_lease: Duration::from_secs(settings.placement_lease_seconds.get()),
@@ -151,40 +151,4 @@ pub const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
 fn duration(millis: u64) -> Result<Duration> {
     ensure!(millis >= 30, "worker duration must be at least 30 ms");
     Ok(Duration::from_millis(millis))
-}
-
-fn parse_partitions(value: &str) -> anyhow::Result<BTreeSet<u16>> {
-    let mut partitions = BTreeSet::new();
-    for component in value.split(',').map(str::trim) {
-        let (first, last) = component.split_once('-').unwrap_or((component, component));
-        let parse = |value: &str| {
-            value
-                .trim()
-                .parse::<u16>()
-                .with_context(|| format!("invalid SWARMY_WORKER_PARTITIONS component: {component}"))
-        };
-        let (first, last) = (parse(first)?, parse(last)?);
-        if first > last || last >= RUNNABLE_PARTITIONS {
-            bail!("SWARMY_WORKER_PARTITIONS must be in 0-255 with ascending ranges");
-        }
-        partitions.extend(first..=last);
-    }
-    Ok(partitions)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn partitions_accept_ranges_lists_and_duplicates() {
-        assert_eq!(parse_partitions("0-255").unwrap().len(), 256);
-        assert_eq!(
-            parse_partitions(" 0, 2-4, 3,255 ").unwrap(),
-            BTreeSet::from([0, 2, 3, 4, 255])
-        );
-        for invalid in ["", "256", "4-2", "-1", "0-256", "1,", "1-2-3", "x"] {
-            assert!(parse_partitions(invalid).is_err(), "accepted {invalid:?}");
-        }
-    }
 }

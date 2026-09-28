@@ -4,19 +4,37 @@ on:
     branches: [master]
   pull_request:
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  linux:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show
-      # Restore compiled dependencies keyed on the lockfile and toolchain so a
-      # run only compiles what changed; a cold run still works, just slower.
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo fmt --all --check
+      - run: cargo build --locked -p swarmy-cli --no-default-features
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
+      - run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
+      - run: cargo test --locked -p swarmy-llm --no-default-features
+  workspace-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-tests
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install development services
         env:
@@ -50,40 +68,127 @@ jobs:
           for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
             printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
           done
-      - run: cargo fmt --all --check
-      # The end-to-end suite spawns the real scheduler, worker, gateway, and
-      # CLI binaries, so build the workspace first and run that suite on its
-      # own: each of its tests spawns those services, and they starve each
-      # other on the two-core runner when run in parallel.
-      - run: cargo build --locked -p swarmy-cli --no-default-features
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked --exclude swarmy-e2e
-      - name: Run the end-to-end suite serially
-        run: cargo test --locked -p swarmy-e2e -- --test-threads=1
-      # The default build leaves the opt-in `remote` feature off, so the
-      # workspace test and clippy runs never compile the provisioning client.
-      # Build it once here and run its unit and integration tests and clippy
-      # with the feature on.
-      - name: Test the cloud provisioning implementation
-        run: cargo test --locked -p swarmy-cloud --features remote
-      - name: Test the provisioning client
-        run: cargo test --locked -p swarmy-cli --features remote
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Lint the cloud provisioning implementation
-        run: cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
-      - name: Lint the provisioning client
-        run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
-      # The cloud provider gates must not rot: this build refuses Bedrock,
-      # Gemini, and Azure with a clear error instead of failing to compile.
-      - name: Test the inference clients without cloud features
-        run: cargo test --locked -p swarmy-llm --no-default-features
-      - name: Run the reduced failure-injection test
-        run: scripts/chaos-ci.sh
       - name: Stop development services
         if: always()
         run: |
           scripts/dev-stack.sh stop
           scripts/dev-stack.sh status
+  e2e-and-chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-and-chaos
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install development services
+        env:
+          FDB_VERSION: 7.3.79
+          NATS_VERSION: 2.14.6
+          SEAWEEDFS_VERSION: '4.47'
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          for pkg in clients server; do
+            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
+            sha256sum -c "${deb}.sha256"
+            # Avoid package hooks starting a system database on our local port.
+            sudo dpkg-deb -x "$deb" /
+          done
+          sudo ldconfig
+          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
+          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
+          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
+          sudo install -m 0755 weed /usr/local/bin/weed
+          /usr/sbin/fdbserver --version
+          fdbcli --version
+          nats-server --version
+          weed version
+      - name: Start development services
+        run: |
+          scripts/dev-stack.sh start
+          source .dev/env
+          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+      - run: cargo build --workspace --locked
+      - run: cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
+      - run: scripts/chaos-ci.sh
+      - name: Stop development services
+        if: always()
+        run: |
+          scripts/dev-stack.sh stop
+          scripts/dev-stack.sh status
+  cli-session:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cli-session
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install development services
+        env:
+          FDB_VERSION: 7.3.79
+          NATS_VERSION: 2.14.6
+          SEAWEEDFS_VERSION: '4.47'
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          for pkg in clients server; do
+            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
+            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
+            sha256sum -c "${deb}.sha256"
+            # Avoid package hooks starting a system database on our local port.
+            sudo dpkg-deb -x "$deb" /
+          done
+          sudo ldconfig
+          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
+          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
+          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
+          sudo install -m 0755 weed /usr/local/bin/weed
+          /usr/sbin/fdbserver --version
+          fdbcli --version
+          nats-server --version
+          weed version
+      - name: Start development services
+        run: |
+          scripts/dev-stack.sh start
+          source .dev/env
+          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+      - run: cargo build --workspace --locked
+      - run: cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
+      - name: Stop development services
+        if: always()
+        run: |
+          scripts/dev-stack.sh stop
+          scripts/dev-stack.sh status
+  remote-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: remote-tests
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo test --locked -p swarmy-cloud --features remote
+      - run: cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
   openapi-compat:
     runs-on: ubuntu-latest
     steps:

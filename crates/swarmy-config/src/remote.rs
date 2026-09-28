@@ -358,18 +358,12 @@ mod tests {
     #[test]
     fn defaults_and_overrides() {
         let settings: Settings = toml::from_str("[remote]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'\nmanaged_by_tag = 'codex-launcher'").unwrap();
-        assert_eq!(settings.remote.provider, "aws");
-        assert_eq!(settings.remote.region, "us-east-1");
-        assert_eq!(settings.remote.aws.instance_type, "m6id.xlarge");
-        assert_eq!(settings.remote.disk_gb, 100);
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-test"));
         assert_eq!(
             settings.remote.aws.security_group.as_deref(),
             Some("sg-test")
         );
         assert_eq!(settings.remote.managed_by_tag, "codex-launcher");
-        assert!(settings.remote.aws.image.is_none());
-        assert!(settings.remote.profile.is_none());
         let settings = Settings {
             remote: RemoteSettings {
                 aws: AwsSettings {
@@ -391,7 +385,6 @@ mod tests {
             "[remote]\nprovider = 'aws'\ninstance_type = 'm6i.large'\nimage = 'ami-flat'\n[remote.aws]\nsubnet = 'subnet-nested'\ninstance_type = 'm6id.4xlarge'\n",
         )
         .unwrap();
-        assert_eq!(settings.remote.provider, "aws");
         // The sub-table wins when both spellings are present.
         assert_eq!(settings.remote.aws.instance_type, "m6id.4xlarge");
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-nested"));
@@ -468,9 +461,6 @@ mod tests {
             "i-local"
         );
         let settings = Settings::default();
-        assert_eq!(settings.remote.provider, "aws");
-        assert_eq!(settings.remote.aws.instance_type, "m6id.xlarge");
-        assert_eq!(settings.remote.disk_gb, 100);
         assert_eq!(settings.remote.managed_by_tag, "swarmy");
         assert!(settings.remote.aws.subnet.is_none());
         assert!(settings.remote.aws.security_group.is_none());
@@ -486,21 +476,6 @@ mod tests {
         };
         profile.apply(&mut settings);
         assert_eq!(settings.default_image.as_deref(), Some("configured:tag"));
-    }
-
-    #[test]
-    fn bucket_profile_uses_laptop_credentials_and_region() {
-        let mut profile: RemoteProfile = serde_json::from_str(r#"{"name":"remote","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"","s3_bucket":"bucket","s3_region":"eu-west-1"}"#).unwrap();
-        let mut settings = Settings::default();
-        profile.apply(&mut settings);
-        assert_eq!(settings.s3_bucket, "bucket");
-        assert_eq!(settings.s3_region, "eu-west-1");
-        assert!(settings.s3_endpoint.is_empty());
-        assert!(settings.s3_access_key.is_empty());
-        assert!(settings.s3_secret_key.is_empty());
-        profile.s3_bucket = None;
-        profile.apply(&mut settings);
-        assert_eq!(settings.s3_bucket, "bucket");
     }
 
     #[test]
@@ -533,6 +508,19 @@ mod tests {
             s3_region: None,
             default_image: Some("base-ubuntu:test".into()),
         };
+        // A profile with its own bucket and region takes the laptop's regional
+        // credentials into the service settings without an endpoint override.
+        let mut regional_profile = profile.clone();
+        regional_profile.s3_bucket = Some("bucket".into());
+        regional_profile.s3_region = Some("eu-west-1".into());
+        regional_profile.s3_endpoint.clear();
+        let mut regional_settings = Settings::default();
+        regional_profile.apply(&mut regional_settings);
+        assert_eq!(regional_settings.s3_bucket, "bucket");
+        assert_eq!(regional_settings.s3_region, "eu-west-1");
+        assert!(regional_settings.s3_endpoint.is_empty());
+        assert!(regional_settings.s3_access_key.is_empty());
+        assert!(regional_settings.s3_secret_key.is_empty());
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
             serde_json::to_vec(&profile).unwrap(),

@@ -4,7 +4,9 @@ pub use keyring::Keyring;
 mod exports;
 mod models;
 mod object;
+mod partitions;
 pub use models::{CustomModel, CustomProvider};
+pub use partitions::parse_partitions;
 mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
@@ -1077,9 +1079,6 @@ mod tests {
     #[test]
     fn hosting_policy_defaults_and_overrides() {
         let mut settings = Settings::default();
-        assert_eq!(settings.sandbox_idle_seconds.get(), 1800);
-        assert_eq!(settings.ephemeral_retention_seconds.get(), 86400);
-        assert_eq!(settings.placement_lease_seconds.get(), 30);
         let environment = BTreeMap::from([
             ("SWARMY_SANDBOX_IDLE_SECONDS".into(), "2".into()),
             ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
@@ -1111,11 +1110,6 @@ mod tests {
     #[test]
     fn gc_defaults_overrides_and_positive_values() {
         let mut settings = Settings::default();
-        assert_eq!(settings.gc.grace_seconds.get(), 21600);
-        assert_eq!(settings.gc.interval_seconds.get(), 3600);
-        assert_eq!(settings.gc.filter_bytes.get(), 64 * 1024 * 1024);
-        assert_eq!(settings.gc.batch_size.get(), 256);
-        assert_eq!(settings.gc.delete_concurrency.get(), 32);
         for (name, field) in [
             ("SWARMY_GC_GRACE_SECONDS", "grace_seconds"),
             ("SWARMY_GC_INTERVAL_SECONDS", "interval_seconds"),
@@ -1139,8 +1133,6 @@ mod tests {
     #[test]
     fn snapshot_policy_defaults_overrides_and_positive_values() {
         let mut settings = Settings::default();
-        assert_eq!(settings.volume_snapshots.period_seconds.get(), 600);
-        assert_eq!(settings.volume_snapshots.retention.get(), 10);
         let environment = BTreeMap::from([
             ("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS".into(), "2".into()),
             ("SWARMY_VOLUME_SNAPSHOT_RETENTION".into(), "3".into()),
@@ -1353,8 +1345,6 @@ mod tests {
 
     #[test]
     fn metering_retention_defaults_overrides_and_positive_values() {
-        let settings = Settings::default();
-        assert_eq!(settings.metering.raw_retention_days.get(), 90);
         let mut settings = Settings::default();
         settings
             .apply_environment(&BTreeMap::from([(

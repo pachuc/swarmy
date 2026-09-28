@@ -153,6 +153,10 @@ impl RequestScript {
             return Err(Error::UnscriptedTurn(step));
         }
         let tool = self.tool_steps.contains(&step);
+        // Non-zero usage populates durable throughput metrics in gateway tests.
+        let output_tokens = u64::try_from(self.final_answer.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
         Ok(Response {
             parts: vec![if tool {
                 Part::ToolCall {
@@ -178,7 +182,12 @@ impl RequestScript {
             } else {
                 StopReason::EndTurn
             },
-            usage: TokenUsage::default(),
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens,
+                total_tokens: 10 + output_tokens,
+                ..TokenUsage::default()
+            },
             quota_remaining: BTreeMap::new(),
             quota_resets: BTreeMap::new(),
         })

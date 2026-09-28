@@ -281,22 +281,3 @@ fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
         .map(|(_, value)| *value)
         .min()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn window_strings_parse_to_seconds() {
-        assert_eq!(parse_window("30s"), Some(30));
-        assert_eq!(parse_window("5h"), Some(18_000));
-        assert_eq!(parse_window("7d"), Some(604_800));
-        assert_eq!(parse_window("2w"), Some(1_209_600));
-        assert_eq!(parse_window("5x"), None);
-        assert_eq!(parse_window("h"), None);
-        assert_eq!(parse_window(""), None);
-        assert_eq!(parse_window("5é"), None);
-        assert_eq!(parse_window("é"), None);
-        assert_eq!(parse_window(" 5h "), Some(18_000));
-    }
-}

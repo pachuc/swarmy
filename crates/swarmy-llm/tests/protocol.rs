@@ -298,22 +298,74 @@ fn empty_output_in_the_terminal_event_falls_back_to_streamed_items() {
 }
 
 #[test]
-fn responses_image_request_body() {
+fn image_request_body_for_each_protocol() {
+    #[cfg(feature = "gemini")]
+    use swarmy_llm::api::gemini;
+    use swarmy_llm::api::{anthropic, completions};
+    use swarmy_llm::catalog::Catalog;
+    let image = Part::Image {
+        media_type: "image/png".into(),
+        bytes: vec![1, 2, 3],
+        object_key: None,
+        detail: Some("low".into()),
+    };
     let mut req = request();
-    req.messages = vec![message(
-        MessageRole::User,
-        vec![Part::Image {
-            media_type: "image/png".into(),
-            bytes: vec![1, 2, 3],
-            object_key: None,
-            detail: Some("low".into()),
-        }],
-    )];
-    let body = request_json(&req).unwrap();
-    assert_eq!(
-        body["input"][0]["content"][0],
-        json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"})
-    );
+    req.messages = vec![message(MessageRole::User, vec![image])];
+    let catalog = Catalog::get();
+    let responses = request_json(&req).unwrap();
+    let anthropic_model = catalog.model("anthropic", "claude-sonnet-4-5").unwrap();
+    let mut anthropic_req = req.clone();
+    anthropic_req.settings.model = anthropic_model.id.clone();
+    let anthropic = anthropic::request_json(
+        &anthropic_req,
+        anthropic_model,
+        &anthropic::Endpoint::Direct {
+            api_key: "fixture-key".into(),
+        },
+    )
+    .unwrap();
+    #[cfg(feature = "gemini")]
+    let gemini_model = catalog.model("google", "gemini-3-flash-preview").unwrap();
+    #[cfg(feature = "gemini")]
+    let mut gemini_req = req.clone();
+    #[cfg(feature = "gemini")]
+    {
+        gemini_req.settings.model = gemini_model.id.clone();
+    }
+    #[cfg(feature = "gemini")]
+    let gemini = gemini::request_json(&gemini_req, "google", gemini_model).unwrap();
+    let completions_model = catalog
+        .provider("openrouter")
+        .unwrap()
+        .models
+        .values()
+        .next()
+        .unwrap();
+    let mut completions_req = req;
+    completions_req.settings.model = completions_model.id.clone();
+    let completions =
+        completions::request_json(&completions_req, "openrouter", completions_model).unwrap();
+    for (actual, expected) in [
+        (
+            responses["input"][0]["content"][0].clone(),
+            json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"}),
+        ),
+        (
+            anthropic["messages"][0]["content"][0]["source"].clone(),
+            json!({"type":"base64", "media_type":"image/png", "data":"AQID"}),
+        ),
+        #[cfg(feature = "gemini")]
+        (
+            gemini["contents"][0]["parts"][0].clone(),
+            json!({"inlineData":{"mimeType":"image/png", "data":"AQID"}}),
+        ),
+        (
+            completions["messages"][1]["content"][0].clone(),
+            json!({"type":"image_url", "image_url":{"url":"data:image/png;base64,AQID", "detail":"low"}}),
+        ),
+    ] {
+        assert_eq!(actual, expected);
+    }
 }
 
 fn stalled_session_messages() -> Vec<Message> {
@@ -520,12 +572,18 @@ fn user_prompt_between_call_and_result_pairs_in_both_protocols() {
     );
     assert_responses_paired(
         &responses_input(&req),
-        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
         "Continue with the next step",
     );
     assert_completions_paired(
         &completions_messages(&req),
-        &["call_rqd1dzkZ3kl2nd118QaUdWYW"],
+        &[
+            "call_ZpXtECGcYFPLx8p8AqOJVFGn",
+            "call_rqd1dzkZ3kl2nd118QaUdWYW",
+        ],
         "Continue with the next step",
     );
 }

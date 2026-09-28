@@ -164,8 +164,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn every_part_and_message_role_round_trips() {
+    pub(crate) fn every_part_and_message_role_round_trips() {
         for part in parts() {
             assert_round_trip(&part);
         }

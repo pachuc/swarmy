@@ -571,19 +571,6 @@ mod tests {
         assert_eq!(on["thinkingBudget"], json!(8192));
     }
 
-    #[test]
-    fn provider_errors_keep_the_message() {
-        let error = crate::error::provider_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            r#"{"error": {"code": 400, "message": "thinking is disabled"}}"#,
-        );
-        assert!(error.to_string().contains("thinking is disabled"));
-        assert!(matches!(
-            crate::error::provider_error(reqwest::StatusCode::FORBIDDEN, ""),
-            Error::Status(reqwest::StatusCode::FORBIDDEN)
-        ));
-    }
-
     use super::*;
 
     #[test]

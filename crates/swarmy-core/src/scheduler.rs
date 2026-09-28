@@ -36,12 +36,11 @@ pub fn runnable_partition(id: SessionId) -> u16 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::encoding::tests::assert_round_trip;
 
-    #[test]
-    fn scheduler_messages_round_trip() {
+    pub(crate) fn scheduler_messages_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 2));
         assert_round_trip(&Nudge { session_id });
         assert_round_trip(&WakeRequest { session_id });
