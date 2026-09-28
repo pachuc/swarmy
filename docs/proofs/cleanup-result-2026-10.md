@@ -20,6 +20,7 @@ Output of `python3 scripts/repo-metrics.py` (`--json` captured for the calculati
 | Tokio test functions | 434 | 454 | +4.6% |
 | Cargo.lock packages | 515 | 513 | -0.4% |
 | `aws-*` packages | 29 | 27 | -6.9% |
+| Internal dependency edges | 79 | 105 | +32.9% |
 
 ### Per-crate counts
 
@@ -127,6 +128,23 @@ Output of `python3 scripts/repo-metrics.py` (`--json` captured for the calculati
 | `swarmyd` Tokio tests | 13 | 13 | +0.0% |
 
 New crates have a zero baseline; the percentage is undefined. The `swarmy-e2e` tests were moved out of service crates, primarily by PR #175 and consolidated by PR #193.
+
+### Previously largest source files
+
+This follows the baseline file set; new top-ten files are listed in the current metrics appendix.
+
+| File | Before (lines) | After (lines) | Change |
+| --- | ---: | ---: | ---: |
+| `crates/swarmy-worker/src/worker.rs` | 2882 | 186 | -93.5% |
+| `crates/swarmy-store/src/metrics.rs` | 2721 | 2895 | +6.4% |
+| `crates/swarmy-client/src/lib.rs` | 1699 | 1733 | +2.0% |
+| `crates/swarmy-gateway/src/main.rs` | 1624 | 1667 | +2.6% |
+| `crates/swarmy-llm/src/api/bedrock.rs` | 1581 | 1594 | +0.8% |
+| `crates/swarmy-config/src/lib.rs` | 1438 | 1428 | -0.7% |
+| `crates/swarmy-store/src/agents.rs` | 1321 | 1128 | -14.6% |
+| `crates/swarmy-api-types/src/lib.rs` | 1260 | 1432 | +13.7% |
+| `crates/swarmy-store/src/credentials.rs` | 1227 | 1094 | -10.8% |
+| `crates/swarmy-sandbox/src/runc.rs` | 1203 | 1230 | +2.2% |
 
 ## Timings (seconds)
 
