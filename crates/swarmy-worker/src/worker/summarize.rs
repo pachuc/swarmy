@@ -1138,7 +1138,6 @@ mod pi_compaction_tests {
             input: serde_json::json!({"path": "src/main.rs"}),
         });
         assert!(!valid_summary(
-            "## Goal\nFinish",
             &tool,
             Some(&Ok(answer(StopReason::EndTurn)))
         ));
@@ -1146,6 +1145,23 @@ mod pi_compaction_tests {
             &message,
             Some(&Ok(answer(StopReason::EndTurn)))
         ));
+    }
+
+    #[test]
+    fn summary_text_joins_parts_with_newlines() {
+        let message = Message {
+            id: MessageId::from_ulid(Ulid::generate()),
+            role: MessageRole::Assistant,
+            parts: vec![
+                Part::Text {
+                    text: "first".into(),
+                },
+                Part::Text {
+                    text: "second".into(),
+                },
+            ],
+        };
+        assert_eq!(summary_text(&message), "first\nsecond");
     }
 
     #[test]
