@@ -35,7 +35,7 @@ crate in a tier depends on every lower tier.
   ([source](../crates/swarmy-chat/src/lib.rs)).
 - **swarmy-image** builds and registers images from recipes
   ([source](../crates/swarmy-image/src/lib.rs)).
-- **swarmy-devtools** supports local backing-service setup
+- **swarmy-devtools** supports standalone provider login and credential import
   ([source](../crates/swarmy-devtools/src/main.rs)).
 
 ### Storage and transport
