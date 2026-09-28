@@ -247,6 +247,7 @@ mod checkpoint_tests {
         };
         let retained = snapshot.without_message(rejected.id);
         assert_eq!(retained.messages(), std::slice::from_ref(&original));
+        assert!(matches!(retained.phase, Phase::EndTurn));
         assert_eq!(retained.replay(&[]).messages(), &[original]);
     }
 }
