@@ -187,6 +187,8 @@ pub struct InferenceJobRef {
     pub route_step: u32,
     #[serde(default, with = "swarmy_core::trailing")]
     pub summary: bool,
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_prefix: bool,
 }
 
 impl From<&InferenceJob> for InferenceJobRef {
@@ -201,6 +203,7 @@ impl From<&InferenceJob> for InferenceJobRef {
             route: job.route.clone(),
             route_step: job.route_step,
             summary: job.summary,
+            summary_prefix: job.summary_prefix,
         }
     }
 }
@@ -541,6 +544,7 @@ mod job_tests {
         assert_eq!(job.request.system_prompt, "old");
         assert_eq!(job.provider, "fake");
         assert!(!job.summary);
+        assert!(!job.summary_prefix);
         assert!(!job.request.no_cache);
     }
 

@@ -1211,6 +1211,19 @@ mod pi_compaction_tests {
     }
 
     #[test]
+    fn split_start_is_relative_to_cut_not_latest_user() {
+        let history = vec![
+            text(MessageRole::User, "old turn"),
+            text(MessageRole::Assistant, "first"),
+            text(MessageRole::User, "new turn"),
+            text(MessageRole::Assistant, "second"),
+        ];
+        assert_eq!(split_turn_start(&history, 1), Some(0));
+        assert_eq!(split_turn_start(&history, 2), None);
+        assert_eq!(split_turn_start(&history, 3), Some(2));
+    }
+
+    #[test]
     fn serialization_keeps_empty_assistant_text_and_joins_thinking() {
         let mut assistant = text(MessageRole::Assistant, "");
         assistant.parts.push(Part::Reasoning {
