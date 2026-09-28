@@ -677,7 +677,12 @@ impl Worker {
                 to: SessionState::Idle,
             });
             let replayed = self
-                .without_failed_checkpoint_replies(session, events, replayed, skip_compaction)
+                .without_failed_checkpoint_replies(
+                    session,
+                    events,
+                    snapshot.replay(events),
+                    skip_compaction,
+                )
                 .await?;
             let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
