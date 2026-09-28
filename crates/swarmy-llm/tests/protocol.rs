@@ -333,7 +333,7 @@ fn image_request_body_for_each_protocol() {
         .values()
         .next()
         .unwrap();
-    let mut completions_req = req.clone();
+    let mut completions_req = req;
     completions_req.settings.model = completions_model.id.clone();
     let completions =
         completions::request_json(&completions_req, "openrouter", completions_model).unwrap();
