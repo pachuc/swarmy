@@ -237,8 +237,33 @@ impl Worker {
             if mid_turn.is_some() {
                 return Ok(false);
             }
+            if !is_prefix_job(&job) {
+                let mut history = snapshot.replay(events).messages().to_vec();
+                if let Some(message) = message.as_ref() {
+                    history.retain(|kept| kept.id != message.id);
+                }
+                let cut = raw_cut(&history);
+                if let Some(start) = split_turn_start(&history, cut) {
+                    if !message.as_ref().is_some_and(|message| {
+                        valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
+                    }) {
+                        return Ok(false);
+                    }
+                    let request = prefix_summary_request(
+                        &self.config,
+                        self.job_provider(&job),
+                        &history[start..cut],
+                        job.request.settings.clone(),
+                    );
+                    if !summary_fits(&self.config, &request, self.job_provider(&job)) {
+                        return Ok(false);
+                    }
+                    self.build_inference(session, lease, &[], request).await?;
+                    return Ok(true);
+                }
+            }
             return self
-                .archive_summary(session, lease, snapshot, message.as_ref(), events)
+                .archive_summary(session, lease, snapshot, &job, message.as_ref(), events)
                 .await;
         }
         let provider = self.job_provider(&job);
@@ -347,16 +372,34 @@ impl Worker {
                 history.retain(|kept| kept.id != message.id);
             }
         }
-        let cut = compaction_cut(&history);
+        let cut = raw_cut(&history);
         if cut == 0 {
             return Ok(false);
         }
-        let request = summary_request(
-            &self.config,
-            self.job_provider(job),
-            &history[..cut],
-            job.request.settings.clone(),
-        );
+        let request = if let Some(start) = split_turn_start(&history, cut) {
+            if start == 0 {
+                prefix_summary_request(
+                    &self.config,
+                    self.job_provider(job),
+                    &history[..cut],
+                    job.request.settings.clone(),
+                )
+            } else {
+                summary_request(
+                    &self.config,
+                    self.job_provider(job),
+                    &history[..start],
+                    job.request.settings.clone(),
+                )
+            }
+        } else {
+            summary_request(
+                &self.config,
+                self.job_provider(job),
+                &history[..cut],
+                job.request.settings.clone(),
+            )
+        };
         if !summary_fits(&self.config, &request, self.job_provider(job)) {
             tracing::warn!(
                 session_id = %session.session_id,
@@ -374,20 +417,14 @@ impl Worker {
         session: &SessionRecord,
         lease: &HeldLease,
         snapshot: &Snapshot,
+        job: &InferenceJob,
         message: Option<&swarmy_core::Message>,
         events: &[Event],
     ) -> Result<bool> {
         let Some(message) = message else {
             return Ok(false);
         };
-        let text: String = message
-            .parts
-            .iter()
-            .filter_map(|part| match part {
-                swarmy_core::Part::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
+        let mut text = summary_text(message);
         let is_main = self
             .store
             .get_agent(session.agent_id)
@@ -410,6 +447,40 @@ impl Worker {
         }
         let mut history = snapshot.replay(events).messages().to_vec();
         history.retain(|kept| kept.id != message.id);
+        if is_prefix_job(job) {
+            let prior = events
+                .iter()
+                .rev()
+                .filter_map(|event| match event {
+                    Event::InferenceCompleted {
+                        request_id,
+                        message,
+                        ..
+                    } if *request_id != job.request_id => Some((*request_id, message)),
+                    _ => None,
+                })
+                .next();
+            let history_text = if let Some((request_id, prior_message)) = prior {
+                if self
+                    .store
+                    .get_inference_input::<InferenceJob>(request_id)
+                    .await?
+                    .is_some_and(|prior_job| prior_job.summary)
+                {
+                    history.retain(|kept| kept.id != prior_message.id);
+                    summary_text(prior_message)
+                } else {
+                    previous_summary(&history)
+                        .unwrap_or("No prior history.")
+                        .to_owned()
+                }
+            } else {
+                previous_summary(&history)
+                    .unwrap_or("No prior history.")
+                    .to_owned()
+            };
+            text = format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{text}");
+        }
         let mut recovery = events.iter().any(|event| {
             matches!(
                 event,
@@ -450,7 +521,7 @@ impl Worker {
                 break;
             }
         }
-        let cut = compaction_cut(&history);
+        let cut = raw_cut(&history);
         let file_lists = file_lists(&history[..cut]);
         let tail = history[cut..].to_vec();
         let opening = swarmy_core::Message {
@@ -540,18 +611,42 @@ impl Worker {
         }
     }
 }
-/// The same cut is used for the inference prompt and the archived successor.
-/// Until a split-turn checkpoint exists, retain the active user request.
-fn compaction_cut(history: &[swarmy_core::Message]) -> usize {
-    let tail = select_side_tail(history);
-    let cut = tail
+fn summary_text(message: &swarmy_core::Message) -> String {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            swarmy_core::Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn raw_cut(history: &[swarmy_core::Message]) -> usize {
+    select_side_tail(history)
         .first()
         .and_then(|first| history.iter().position(|message| message.id == first.id))
-        .unwrap_or(history.len());
-    history
-        .iter()
-        .rposition(|message| message.role == swarmy_core::MessageRole::User)
-        .map_or(cut, |user| cut.min(user))
+        .unwrap_or(history.len())
+}
+
+/// Pi compaction.ts:453-508 splits when the active turn began before the cut.
+fn split_turn_start(history: &[swarmy_core::Message], cut: usize) -> Option<usize> {
+    let start = history.iter().rposition(|message| message.role == swarmy_core::MessageRole::User
+        && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX))))?;
+    (start < cut).then_some(start)
+}
+
+fn is_prefix_job(job: &InferenceJob) -> bool {
+    job.summary && job.request.messages.first().and_then(|message| message.parts.first()).is_some_and(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with("# Conversation\n")))
+}
+
+fn previous_summary(history: &[swarmy_core::Message]) -> Option<&str> {
+    history.first()?.parts.first().and_then(|part| match part {
+        swarmy_core::Part::Text { text } => text
+            .strip_prefix(swarmy_harness::COMPACTION_SUMMARY_PREFIX)
+            .and_then(|text| text.strip_suffix(swarmy_harness::COMPACTION_SUMMARY_SUFFIX)),
+        _ => None,
+    })
 }
 
 /// Pi utils.ts:607-622 rejects failed or length-stopped checkpoints.
@@ -712,6 +807,28 @@ pub(super) fn summary_request(
         settings,
         no_cache: true,
     }
+}
+
+/// Pi compaction.ts:1101-1140 gives the turn prefix half the reserve.
+fn prefix_summary_request(
+    config: &crate::config::Config,
+    provider: &str,
+    messages: &[swarmy_core::Message],
+    settings: swarmy_llm::GenerationSettings,
+) -> swarmy_llm::Request {
+    let mut request = summary_request(config, provider, messages, settings);
+    request.settings.max_output_tokens = request
+        .settings
+        .max_output_tokens
+        .map(|limit| limit.min(SUMMARY_RESERVE_TOKENS / 2));
+    request.messages[0].parts = vec![swarmy_core::Part::Text {
+        text: format!(
+            "# Conversation\n{}\n\n# Instructions\n{}",
+            serialize_conversation(messages),
+            swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT
+        ),
+    }];
+    request
 }
 
 fn summary_prompt(messages: &[swarmy_core::Message]) -> String {

@@ -152,14 +152,20 @@ pub async fn exercise(f: &mut Fixture) -> Result<()> {
     let head = send(f, first, &format!("Remember this fact in your memory files: {FACT} Install the tree tool and checkpoint your disk.")).await?;
     settled(f, agent, first, head, false).await?;
 
-    // Deliberately omit the fact from the summary. The recalled fact must be in disk memory.
-    let summary = json!({"goals":"Remember the user's fact", "state_of_work":"Memory saved and tree installed", "open_questions":"", "facts_to_keep":"Read memory files for the user's fact"}).to_string();
+    // Pi retains a 20k-token tail on main sessions too. Put the remembered
+    // fact before that tail so this test still proves disk-memory recall.
+    script(f, vec![answer(&"x".repeat(100_000), 0)]).await?;
+    let head = send(f, first, "Write a long scratch note, then wait.").await?;
+    settled(f, agent, first, head, false).await?;
+
+    // Deliberately omit the fact from the Markdown summary.
+    let summary = "## Goal\nRemember the user's fact\n\n## Progress\n- Memory saved and tree installed\n\n## Next Steps\n- Read memory files for the user's fact";
     script(
         f,
         vec![
             tool("set_timer", &json!({"delay_seconds":120,"note":NOTE})),
             answer("Timer set; ready to summarize.", 100),
-            answer(&summary, 0),
+            answer(summary, 0),
         ],
     )
     .await?;
