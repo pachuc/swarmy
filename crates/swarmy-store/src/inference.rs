@@ -1,5 +1,6 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::time::Duration;
 use swarmy_core::{
     Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId, RequestId, SessionId,
     SessionState,
@@ -14,6 +15,12 @@ pub struct InferenceClaim {
     pub request_id: RequestId,
     pub owner: LeaseOwnerId,
     pub expires_at: Timestamp,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InferenceRetry {
+    attempts: u32,
+    next_at: Timestamp,
 }
 
 /// Inputs to the atomic terminal update. Both success and exhausted retries wake
@@ -101,6 +108,18 @@ impl Store {
                         return Ok(false);
                     }
                 }
+                // A newly published reference must not bypass the backoff of an
+                // earlier delivery of the same request.
+                if old.as_ref().is_none_or(|old| old.owner != claim.owner)
+                    && read::<InferenceRetry>(
+                        &trx,
+                        &crate::keys::Keys::new(&self.root).inference_retry(claim.request_id),
+                    )
+                    .await?
+                    .is_some_and(|retry| retry.next_at > now)
+                {
+                    return Ok(false);
+                }
                 if let Some(old) = old
                     && old.expires_at > now
                     && old.owner != claim.owner
@@ -139,6 +158,39 @@ impl Store {
                 trx.clear(&key);
             }
             Ok(())
+        })
+        .await
+    }
+
+    /// Count provider failures by request, not by queue delivery: recovery can
+    /// publish a fresh `JetStream` message with delivery count one.
+    /// Returns the number of provider calls recorded for this request.
+    /// # Errors
+    /// Rejects a replaced claim and propagates storage failures.
+    pub async fn record_inference_retry(
+        &self,
+        claim: &InferenceClaim,
+        now: Timestamp,
+    ) -> Result<u32> {
+        self.transaction(|trx| async move {
+            let keys = crate::keys::Keys::new(&self.root);
+            let claim_key = keys.inference_claim(claim.request_id);
+            if read::<InferenceClaim>(&trx, &claim_key)
+                .await?
+                .is_none_or(|old| old.owner != claim.owner)
+            {
+                return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
+            }
+            let retry_key = keys.inference_retry(claim.request_id);
+            let attempts = read::<InferenceRetry>(&trx, &retry_key)
+                .await?
+                .map_or(1, |retry| retry.attempts.saturating_add(1));
+            let delay = Duration::from_millis(100) * 2_u32.pow(attempts.saturating_sub(1).min(5));
+            let next_at = now
+                .checked_add(delay)
+                .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            write(&trx, &retry_key, &InferenceRetry { attempts, next_at })?;
+            Ok(attempts)
         })
         .await
     }
@@ -313,6 +365,7 @@ impl Store {
             // create a new step after the worker's wait.
             trx.clear(&crate::keys::Keys::new(&self.root).inference_request(claim.request_id));
             trx.clear(&claim_key);
+            trx.clear(&crate::keys::Keys::new(&self.root).inference_retry(claim.request_id));
             session.head_seq = head;
             let interrupt_requested = session.interrupt_requested;
             let state = if let (false, Some(snapshot), Some((event, reference))) =

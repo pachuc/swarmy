@@ -761,17 +761,26 @@ impl Gateway {
                     && !retryable_error(&error).0
                     // The worker, not the transport queue, owns the single
                     // compact-and-retry attempt for context overflow.
-                    && !matches!(error, swarmy_llm::Error::ContextOverflow(_))
-                    && message.delivery_count()? < self.max_deliver =>
+                    && !matches!(error, swarmy_llm::Error::ContextOverflow(_)) =>
             {
-                warn!(%error, request_id = %job.request_id, "provider failed; retrying");
+                // Recovery may republish the reference with a new stream sequence.
+                // Its delivery count starts at one, so it cannot bound calls.
+                let attempts = self
+                    .store
+                    .record_inference_retry(claim, Timestamp::now())
+                    .await?;
+                if i64::from(attempts) >= self.max_deliver {
+                    warn!(%error, attempts, request_id = %job.request_id, "provider retries exhausted");
+                    return Ok(Some((Err(error), streamed)));
+                }
+                let delay =
+                    Duration::from_millis(100) * 2_u32.pow(attempts.saturating_sub(1).min(5));
+                // Store the next deadline based on the durable attempt count.
+                warn!(%error, attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
                 self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
                 self.store.release_inference(claim).await?;
-                let exponent = u32::try_from(message.delivery_count()?.saturating_sub(1).min(5))?;
-                message
-                    .negative_acknowledge(Some(Duration::from_millis(100) * 2_u32.pow(exponent)))
-                    .await?;
+                message.negative_acknowledge(Some(delay)).await?;
                 Ok(None)
             }
             Err(error) => Ok(Some((Err(error), streamed))),
