@@ -18,6 +18,7 @@ use super::{
 struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
     teardown: RefCell<Vec<String>>,
+    absent: Cell<bool>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
@@ -108,18 +109,20 @@ impl Cloud for FakeCloud {
         if self.fail_terminate.get() {
             return std::future::ready(Err(anyhow::anyhow!("access denied")));
         }
+        self.teardown.borrow_mut().push(format!("instance {id}"));
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
     }
     fn delete_bucket(&self, name: &str) -> impl Future<Output = Result<bool>> {
         self.teardown.borrow_mut().push(format!("bucket {name}"));
-        std::future::ready(Ok(true))
+        std::future::ready(Ok(!self.absent.get()))
     }
     fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<bool>> {
         self.teardown.borrow_mut().push(format!("role {name}"));
-        std::future::ready(Ok(true))
+        std::future::ready(Ok(!self.absent.get()))
     }
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>> {
+        self.teardown.borrow_mut().push(format!("key {name}"));
         self.key_delete_attempts.borrow_mut().push(name.into());
         if self.fail_delete.get() {
             return std::future::ready(Err(anyhow::anyhow!("access denied")));
@@ -1557,4 +1560,58 @@ fn laptop_services_provisioning_generates_no_api_token() {
     let settings = node_settings(swarmy_config::RemoteServices::Laptop, "");
     let options = super::services::Options::with_keyring(&settings, false, None, None).unwrap();
     assert!(node_config_token(options.config_toml()).is_empty());
+}
+
+#[tokio::test]
+async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        *cloud.teardown.borrow(),
+        [
+            "instance i-test",
+            "key swarmy-cleanup",
+            "bucket test-bucket",
+            "role swarmy-cleanup"
+        ]
+    );
+    // A failed local state removal can leave the record after AWS cleanup.
+    state.save(&node).unwrap();
+    cloud.absent.set(true);
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(state.read("cleanup").unwrap().is_none());
+}
+
+#[test]
+fn down_requires_confirmation_for_json_and_non_terminal_calls() {
+    assert!(down::confirm(false, false, true).is_err());
+    assert!(down::confirm(true, false, true).is_ok());
+    assert!(down::confirm(false, true, true).is_ok());
 }
