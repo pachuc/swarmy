@@ -109,7 +109,10 @@ impl Worker {
         let stopped_on_length = matches!(last, Event::InferenceCompleted { .. });
         if self.recovery_already_attempted(session).await? {
             if stopped_on_length {
-                // Pi agent-session.ts:2671-2690 keeps the second truncated reply.
+                // Pi keeps the reply but fails its calls rather than executing
+                // potentially incomplete arguments. Persist results before the
+                // notice and idle snapshot so every prompt sees the same history.
+                self.fail_truncated_calls(session, lease, events).await?;
                 self.recovery_notice(
                     session,
                     lease,
@@ -139,6 +142,64 @@ impl Worker {
         self.finish_failed_recovery(session, lease, snapshot, events, turn, true)
             .await?;
         Ok(true)
+    }
+
+    async fn fail_truncated_calls(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+    ) -> Result<()> {
+        let Some((seq, message)) = events.iter().rev().find_map(|event| match event {
+            Event::InferenceCompleted { seq, message, .. } => Some((*seq, message.clone())),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        let already_recorded: Vec<_> = events
+            .iter()
+            .filter(|event| event.seq() > seq)
+            .filter_map(|event| {
+                if let Event::MessageAppended { message, .. } = event {
+                    Some(message.parts.as_slice())
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .filter_map(|part| {
+                if let swarmy_core::Part::ToolResult { call_id, .. } = part {
+                    Some(call_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let batch: Vec<_> = message.parts.iter().filter_map(|part| {
+            if let swarmy_core::Part::ToolCall { call_id, tool, .. } = part
+                && !already_recorded.contains(call_id)
+            {
+                Some(Event::MessageAppended {
+                    seq: 0,
+                    message: swarmy_core::Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: swarmy_core::MessageRole::Tool,
+                        parts: vec![swarmy_core::Part::ToolResult {
+                            call_id: call_id.clone(),
+                            result: swarmy_core::ToolResult::Error {
+                                error: format!("Tool call \"{tool}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments."),
+                            },
+                        }],
+                    },
+                })
+            } else {
+                None
+            }
+        }).collect();
+        if !batch.is_empty() {
+            self.append(session, lease, events, &batch).await?;
+        }
+        Ok(())
     }
 
     async fn recovery_notice(
