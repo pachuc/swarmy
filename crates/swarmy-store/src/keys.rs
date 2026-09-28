@@ -297,6 +297,10 @@ const SESSION_PLAN: &str = "session_plan";
 const SESSION_ROUTE: &str = "session_route";
 /// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_ROUTE_STEP: &str = "session_route_step";
+/// Queued input lives outside the session key family so session scans stay valid.
+const QUEUED_MESSAGE: &str = "queued_message";
+const QUEUED_COUNTER: &str = "queued_counter";
+const QUEUED_REPLAY: &str = "queued_replay";
 /// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_STATE_SINCE: &str = "session_state_since";
 const SESSION_TOOLS: &str = "session_tools";
@@ -742,6 +746,21 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn service_heartbeat_space(&self) -> Subspace {
         self.root.subspace(&(SERVICE_HEARTBEAT,))
+    }
+    pub(crate) fn queued_space(&self, id: SessionId) -> Subspace {
+        self.root
+            .subspace(&(QUEUED_MESSAGE, id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn queued_message(&self, id: SessionId, index: u64) -> Vec<u8> {
+        self.queued_space(id).pack(&(index,))
+    }
+    pub(crate) fn queued_counter(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .subspace(&(QUEUED_COUNTER,))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn queued_replay(&self, key: &str) -> Vec<u8> {
+        self.root.subspace(&(QUEUED_REPLAY,)).pack(&(key,))
     }
     pub(crate) fn session(&self, id: SessionId) -> Vec<u8> {
         self.session_space()
@@ -1318,6 +1337,9 @@ mod registry_tests {
             ("session_plan", keys.session_plan(sessionid)),
             ("session_route", keys.session_route(sessionid)),
             ("session_route_step", keys.session_route_step(sessionid)),
+            ("queued_message", keys.queued_message(sessionid, 5)),
+            ("queued_counter", keys.queued_counter(sessionid)),
+            ("queued_replay", keys.queued_replay("value")),
             ("session_state_since", keys.session_state_since(sessionid)),
             ("session_tools", keys.session_tools(sessionid, requestid)),
             ("snapshot", keys.snapshot(sessionid, 5)),

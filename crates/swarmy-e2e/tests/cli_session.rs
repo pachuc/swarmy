@@ -1076,6 +1076,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         .append_message(
             &session.to_string(),
             &swarmy_api_types::AppendMessage {
+                queue: false,
                 idempotency_key: "metrics-turn".into(),
                 expected_head: 0,
                 text: "hello".into(),

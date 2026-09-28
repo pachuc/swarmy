@@ -571,9 +571,16 @@ impl Store {
                     SessionSettings::new(id),
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
+                self.transfer_queued(&trx, old, id).await?;
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = new_head;
                 self.write_session(&trx, &created)?;
+                // The queued-input check shares the rollover transaction, so a
+                // successor is runnable even if the worker dies before nudging it.
+                if self.has_queued_in(&trx, id).await? {
+                    self.transition(&trx, created, SessionState::Runnable, now)
+                        .await?;
+                }
                 for (index, value) in prepared.iter().enumerate() {
                     let seq = u64::try_from(index)
                         .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?
@@ -667,8 +674,14 @@ impl Store {
                     settings,
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
+                self.transfer_queued(&trx, old, id).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
                     .await?;
+                if self.has_queued_in(&trx, id).await? {
+                    let created = self.session(&trx, id).await?;
+                    self.transition(&trx, created, SessionState::Runnable, now)
+                        .await?;
+                }
                 previous.head_seq = expected_head
                     .checked_add(1)
                     .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;

@@ -486,3 +486,307 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
         now,
     }
 }
+
+#[tokio::test]
+async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let session = SessionRecord {
+        state: SessionState::Idle,
+        ..session()
+    };
+    let id = session.session_id;
+    store
+        .create_session(
+            &session,
+            Timestamp::now(),
+            image_fixture::image(store).await,
+        )
+        .await
+        .unwrap();
+    let Event::MessageAppended { message: first, .. } = event("first") else {
+        unreachable!()
+    };
+    store.append_user_message(id, 0, &first).await.unwrap();
+    let (lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let Event::MessageAppended { message, .. } = event("queued") else {
+        unreachable!()
+    };
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(id, &message, "queued-once")
+            .await
+            .unwrap(),
+        (1, true, false)
+    );
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(id, &message, "queued-once")
+            .await
+            .unwrap(),
+        (1, false, false)
+    );
+    assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
+    assert!(matches!(
+        store
+            .finish_turn(
+                id,
+                1,
+                &lease,
+                &SnapshotRef {
+                    seq: 2,
+                    object_key: "checkpoint".into()
+                }
+            )
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::QueuedInputPending
+        ))
+    ));
+    // Simulate a worker exit and a new claim before the queued input is drained.
+    store
+        .release_lease(id, &lease, Timestamp::now())
+        .await
+        .unwrap();
+    let (new_lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(lease, new_lease);
+    let delivered = store.deliver_queued(id, 1, &new_lease, &[]).await.unwrap();
+    assert!(matches!(
+        &delivered[..],
+        [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
+    ));
+    assert_eq!(&store.read_events(id, 1, 10).await.unwrap(), &delivered);
+    assert!(
+        store
+            .deliver_queued(id, 3, &new_lease, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn queued_during_terminal_inference_starts_next_step_in_order() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let mut completion = terminal_completion(store, id).await;
+    completion.claim.owner = owner();
+    completion.claim.expires_at = Timestamp::now()
+        .checked_add(std::time::Duration::from_secs(60))
+        .unwrap();
+    completion.now = Timestamp::now();
+    assert!(
+        store
+            .start_inference(&completion.claim, completion.now)
+            .await
+            .unwrap()
+    );
+    let Event::MessageAppended { message, .. } = event("queued before answer") else {
+        unreachable!()
+    };
+    store
+        .queue_user_message_idempotent(id, &message, "during-answer")
+        .await
+        .unwrap();
+    let snapshot = SnapshotRef {
+        seq: 3,
+        object_key: "terminal-snapshot".into(),
+    };
+    assert!(
+        store
+            .complete_inference_and_idle(&completion, &"answer", &snapshot)
+            .await
+            .unwrap()
+    );
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Runnable);
+    assert_eq!(session.head_seq, 2);
+    let (lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let delivered = store.deliver_queued(id, 2, &lease, &[]).await.unwrap();
+    assert!(
+        matches!(&delivered[..], [Event::MessageQueued { .. }, Event::MessageAppended { message: next, .. }] if next == &message)
+    );
+    assert!(
+        store
+            .deliver_queued(id, 4, &lease, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn queued_rows_do_not_corrupt_session_listing_and_large_bodies_use_blobs() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let Event::MessageAppended { message, .. } = event(&"large".repeat(25_000)) else {
+        unreachable!()
+    };
+    store
+        .queue_user_message_idempotent(id, &message, "large-queued")
+        .await
+        .unwrap();
+    assert!(
+        store
+            .list_sessions(None, 64)
+            .await
+            .unwrap()
+            .iter()
+            .any(|item| item.session_id == id)
+    );
+    let (lease, _, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let delivered = store.deliver_queued(id, 0, &lease, &[]).await.unwrap();
+    assert!(
+        matches!(&delivered[1], Event::MessageAppended { message: next, .. } if next == &message)
+    );
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn queued_input_survives_an_interrupt_before_newer_input() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    let Event::MessageAppended { message, .. } = event("before interrupt") else {
+        unreachable!()
+    };
+    store
+        .queue_user_message_idempotent(id, &message, "before-interrupt")
+        .await
+        .unwrap();
+    store.interrupt_session(id).await.unwrap();
+    assert!(store.finish_runnable_interrupt(id).await.unwrap());
+    assert_eq!(
+        store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    let (lease, session, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let events = store
+        .deliver_queued(id, session.head_seq, &lease, &[])
+        .await
+        .unwrap();
+    assert!(matches!(&events[1], Event::MessageAppended { message: next, .. } if next == &message));
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn queued_input_is_delivered_in_bounded_ordered_batches() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    for index in 0..12 {
+        let Event::MessageAppended { message, .. } =
+            event(&format!("{index}:{}", "x".repeat(80_000)))
+        else {
+            unreachable!()
+        };
+        store
+            .queue_user_message_idempotent(id, &message, &format!("batch-{index}"))
+            .await
+            .unwrap();
+    }
+    let (lease, session, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let first = store
+        .deliver_queued(id, session.head_seq, &lease, &[])
+        .await
+        .unwrap();
+    assert!(first.len() < 24);
+    let second = store
+        .deliver_queued(id, first.len() as u64, &lease, &[])
+        .await
+        .unwrap();
+    assert!(!second.is_empty());
+    let all = first
+        .iter()
+        .chain(&second)
+        .filter_map(|event| {
+            if let Event::MessageAppended { message, .. } = event {
+                Some(message)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(all.len(), 12);
+    for (index, message) in all.iter().enumerate() {
+        assert!(
+            matches!(&message.parts[0], swarmy_core::Part::Text { text } if text.starts_with(&format!("{index}:")))
+        );
+    }
+    assert!(
+        store
+            .deliver_queued(id, 24, &lease, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.cleanup().await;
+}

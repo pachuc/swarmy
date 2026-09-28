@@ -98,6 +98,9 @@ enum Command {
         /// Continue an existing session by id instead of an agent's main one
         #[arg(long, conflicts_with_all = ["agent", "image", "new"])]
         session: Option<ulid::Ulid>,
+        /// Deliver after the current tool call without interrupting the turn.
+        #[arg(long, requires = "session")]
+        queue: bool,
         #[command(flatten)]
         selection: selection_command::SelectionArgs,
     },
@@ -202,12 +205,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             agent,
             new,
             session,
+            queue,
             selection,
         } => {
             let (client, endpoint) = api_client::connect()?;
             api_client::call(&endpoint, client.health()).await?;
             client_commands::run(
-                client, prompt, image, agent, new, session, selection, cli.json,
+                client, prompt, image, agent, new, session, queue, selection, cli.json,
             )
             .await?;
         }

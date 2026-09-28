@@ -298,18 +298,25 @@ impl Conversation {
     /// # Errors
     /// Returns an error if the API call or event stream fails.
     pub async fn send(&mut self, text: String) -> Result<String> {
+        self.send_with_queue(text, false).await
+    }
+
+    /// # Errors
+    /// Returns API and transport errors or an invalid message error.
+    pub async fn send_with_queue(&mut self, text: String, queue: bool) -> Result<String> {
         ensure!(!text.trim().is_empty(), "message is empty");
         self.last_text.clear();
         self.tool_count = 0;
         self.tool_result = None;
         self.pending.clear();
         ensure!(
-            self.session.state == api::SessionState::Idle,
+            queue || self.session.state == api::SessionState::Idle,
             "session is not idle"
         );
         let mut body = api::AppendMessage {
             idempotency_key: ulid::Ulid::generate().to_string(),
             expected_head: self.session.head_sequence,
+            queue,
             text,
         };
         let first = self.client.append_message(&self.id, &body).await;
@@ -321,7 +328,7 @@ impl Conversation {
                 self.session =
                     crate::api_client::call(&self.endpoint, self.client.session(&self.id)).await?;
                 ensure!(
-                    self.session.state == api::SessionState::Idle,
+                    queue || self.session.state == api::SessionState::Idle,
                     "session is not idle"
                 );
                 body.expected_head = self.session.head_sequence;
@@ -334,7 +341,9 @@ impl Conversation {
         self.min_sequence = appended.sequence;
         self.delivered = self.delivered.max(appended.sequence.saturating_sub(1));
         self.session.head_sequence = appended.sequence;
-        self.session.state = api::SessionState::Runnable;
+        if !queue || self.session.state == api::SessionState::Idle {
+            self.session.state = api::SessionState::Runnable;
+        }
         self.poll.reset_after(Duration::from_secs(3));
         Ok(appended.turn_id)
     }
@@ -654,6 +663,9 @@ impl Conversation {
             progress.started = true;
         }
         if !quiet && !json {
+            if record.get("message_queued").is_some() {
+                println!("[queued message delivered]");
+            }
             print_tools(record);
         }
         self.track_tools(record, progress);

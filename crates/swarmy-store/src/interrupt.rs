@@ -157,6 +157,11 @@ impl Store {
         trx.set(&self.event_key(session.session_id, head), &value);
         session.head_seq = head;
         session.interrupt_requested = false;
-        self.transition(trx, session, SessionState::Idle, now).await
+        let state = if self.has_queued_in(trx, session.session_id).await? {
+            SessionState::Runnable
+        } else {
+            SessionState::Idle
+        };
+        self.transition(trx, session, state, now).await
     }
 }

@@ -161,7 +161,9 @@ impl Snapshot {
                     };
                 }
             }
-            Event::StateChanged { .. } | Event::SnapshotWritten { .. } => {}
+            Event::StateChanged { .. }
+            | Event::SnapshotWritten { .. }
+            | Event::MessageQueued { .. } => {}
         }
     }
 }

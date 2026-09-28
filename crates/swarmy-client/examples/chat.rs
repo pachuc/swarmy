@@ -38,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .append_message(
             &session.id,
             &AppendMessage {
+                queue: false,
                 idempotency_key: ulid::Ulid::generate().to_string(),
                 expected_head: session.head_sequence,
                 text: if text.is_empty() {
