@@ -198,7 +198,7 @@ mod checkpoint_tests {
             phase: Phase::EndTurn,
         };
         let retained = snapshot.without_message(rejected.id);
-        assert_eq!(retained.messages(), &[original.clone()]);
+        assert_eq!(retained.messages(), std::slice::from_ref(&original));
         assert_eq!(retained.replay(&[]).messages(), &[original]);
     }
 }
