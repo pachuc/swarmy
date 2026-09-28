@@ -1702,7 +1702,8 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
                 "2": side_tool_response("clock-after-retry", 20, false),
                 "3": large_tool,
                 "5": side_response(summary.into(), 20),
-                "6": side_response("Recovered again".into(), 20)
+                "6": side_response("## Original Request\nContinue".into(), 20),
+                "7": side_response("Recovered again".into(), 20)
             },
             "failures": {
                 "0": {"status": 400, "message": "context overflow"},
@@ -1721,7 +1722,7 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
         let first = wait_successor(f, id).await;
         let second = wait_successor(f, first).await;
         let events = f.idle(second).await;
-        assert_eq!(f.calls(), 7, "a clean tool reply resets the recovery guard");
+        assert_eq!(f.calls(), 8, "a clean tool reply resets the recovery guard");
         assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
     })).await;
 }

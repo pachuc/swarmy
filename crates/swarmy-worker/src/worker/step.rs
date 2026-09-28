@@ -614,7 +614,7 @@ impl Worker {
         let mut prior_completion = None;
         let mut summary_replies = Vec::new();
         let mut recovery_replies = Vec::new();
-        for event in events.iter() {
+        for event in events {
             let request_id = match event {
                 Event::InferenceCompleted { request_id, .. }
                 | Event::InferenceFailed { request_id, .. } => *request_id,
