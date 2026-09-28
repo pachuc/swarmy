@@ -1611,6 +1611,48 @@ Finish the task
     })).await;
 }
 
+#[tokio::test]
+async fn context_overflow_compacts_and_retries_once() {
+    check_overflow_recovery(false).await;
+}
+
+#[tokio::test]
+async fn second_context_overflow_ends_the_turn() {
+    check_overflow_recovery(true).await;
+}
+
+async fn check_overflow_recovery(second_overflow: bool) {
+    run(|f| Box::pin(async move {
+        let summary = "## Goal\nFinish the work\n\n## Next Steps\n1. Retry";
+        let mut failures = serde_json::json!({"0": {"status": 400, "message": "context overflow"}});
+        if second_overflow {
+            failures["2"] = serde_json::json!({"status": 400, "message": "context overflow again"});
+        }
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)},
+            "failures": failures
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("overflow-agent", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        let events = f.idle(successor).await;
+        assert_eq!(f.calls(), 3, "overflow, summary, and one retried request");
+        assert_eq!(f.store.previous_session(successor).await.unwrap(), Some(id));
+        assert!(f.store.next_session(successor).await.unwrap().is_none());
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::InferenceFailed { .. })).count(), usize::from(second_overflow));
+        if !second_overflow {
+            assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+        }
+    })).await;
+}
+
 fn side_id() -> SessionId {
     loop {
         let id = SessionId::from_ulid(Ulid::generate());
@@ -1631,21 +1673,6 @@ fn side_response(text: String, input_tokens: u64) -> Response {
         quota_remaining: std::collections::BTreeMap::new(),
         quota_resets: std::collections::BTreeMap::new(),
     }
-}
-
-fn write_side_script(fixture: &Fixture, summary: &str) {
-    let responses = serde_json::json!({
-        "0": side_response("Working on the task".into(), 80),
-        "1": side_response("Still working".into(), 150),
-        "2": side_response(summary.to_owned(), 120),
-        "3": side_response("Done in the successor".into(), 12),
-        "4": side_response("Done in the successor".into(), 12),
-    });
-    std::fs::write(
-        fixture.files.path().join("script.json"),
-        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
-    )
-    .unwrap();
 }
 
 async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
@@ -1977,8 +2004,7 @@ async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId)
 }
 
 fn assert_successor_opening(new_events: &[Event], summary: &str) {
-    // The successor opens with the summary and carries a continue note,
-    // proving the rollover happened mid-task.
+    // The successor opens with the summary as a user message.
     let Event::MessageAppended { message, .. } = &new_events[0] else {
         panic!("opening missing")
     };

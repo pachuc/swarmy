@@ -226,7 +226,7 @@ mod side_tail_tests {
 
     #[test]
     fn tail_cuts_between_tool_result_and_assistant() {
-        // A short history fits the budget whole.
+        // Retain the latest assistant turn; the earlier user request is summarized.
         let history = vec![
             text(MessageRole::User, "launch"),
             assistant_calls("a", false),
@@ -237,7 +237,7 @@ mod side_tail_tests {
             text(MessageRole::Assistant, "summary output"),
         ];
         let tail = select_side_tail(&history);
-        assert_eq!(tail.len(), history.len());
+        assert_eq!(tail.len(), history.len() - 1);
         // A long history cuts at a tool-result boundary and keeps pairs.
         let mut long = vec![text(MessageRole::User, "launch")];
         for round in 0..30 {
@@ -357,9 +357,7 @@ mod side_tail_tests {
         assert_eq!(provider, "fake");
         assert_eq!(model, "base");
         assert_eq!(input, 10);
-        // The default side threshold is 400k with pressure at 300k: an input
-        // of 10 stays on the fast path, which returns before any store read.
-        // Transaction count: 0. Store read count: 0.
-        assert!(input < 300_000);
+        // A low-usage completion stays on the fast path without a store read.
+        assert!(input < 16_384);
     }
 }
