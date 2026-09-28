@@ -79,9 +79,13 @@ impl Store {
                         .unwrap_or(0)
                         .checked_add(1)
                         .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
-                    if scan(&trx, keys.queued_space(id).range(), crate::MAX_SCAN_LIMIT)
-                        .await?
-                        .len()
+                    if scan(
+                        &trx,
+                        crate::keys::Keys::new(&self.root).queued_space(id).range(),
+                        crate::MAX_SCAN_LIMIT,
+                    )
+                    .await?
+                    .len()
                         >= crate::MAX_SCAN_LIMIT
                     {
                         return Err(StoreError::Storage(crate::StorageError::TooLarge));

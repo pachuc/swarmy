@@ -778,7 +778,7 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
     assert_eq!(all.len(), 12);
     for (index, message) in all.iter().enumerate() {
         assert!(
-            matches!(&message.parts[0], swarmy_core::MessagePart::Text { text } if text.starts_with(&format!("{index}:")))
+            matches!(&message.parts[0], swarmy_core::Part::Text { text } if text.starts_with(&format!("{index}:")))
         );
     }
     assert!(
