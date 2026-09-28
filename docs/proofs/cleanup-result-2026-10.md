@@ -150,22 +150,54 @@ This follows the baseline file set; new top-ten files are listed in the current 
 
 | Command / condition | Before | After | Change |
 | --- | ---: | ---: | ---: |
-| `cargo build --workspace --locked`, cold | 1603 | PENDING | PENDING |
-| `cargo build --workspace --locked`, unchanged rerun | 0 | PENDING | n/a (zero baseline) |
-| `cargo build --workspace --locked`, after core touch | 71 | PENDING | PENDING |
-| `cargo build --locked -p swarmy-cli`, first after clean | 1290 | PENDING | PENDING |
-| `cargo build --locked -p swarmy-gateway`, next | 498 | PENDING | PENDING |
-| `cargo build --locked -p swarmyd`, next | 26 | PENDING | PENDING |
-| `cargo test --workspace --locked --no-run`, cold | 1806 | PENDING | PENDING |
-| `cargo test --workspace --locked --no-run`, unchanged rerun | 1 | PENDING | PENDING |
-| `cargo test --workspace --locked`, execution only | 3 (failed) | PENDING | PENDING |
-| `cargo test --workspace --locked`, after core touch | not measured | PENDING | n/a |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, cold | not measured | PENDING | n/a |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, unchanged rerun | 414 | PENDING | PENDING |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, after core touch | 53 | PENDING | PENDING |
-| `cargo test --workspace --locked` all-in, cold | not measured | PENDING | n/a |
-| `cargo test --workspace --locked` all-in, unchanged rerun | not measured | PENDING | n/a |
-| `cargo test --workspace --locked` all-in, after core touch | not measured | PENDING | n/a |
+| `cargo build --workspace --locked`, cold | 1603 | 968 | -39.6% |
+| `cargo build --workspace --locked`, unchanged rerun | 0 | 0 | n/a (zero baseline) |
+| `cargo build --workspace --locked`, after core touch | 71 | 72 | +1.4% |
+| `cargo build --locked -p swarmy-cli`, first after clean | 1290 | 467 | -63.8% |
+| `cargo build --locked -p swarmy-gateway`, next | 498 | 531 | +6.6% |
+| `cargo build --locked -p swarmyd`, next | 26 | 148 | +469.2% |
+| `cargo test --workspace --locked --no-run`, cold | 1806 | 1150 | -36.3% |
+| `cargo test --workspace --locked --no-run`, unchanged rerun | 1 | 0 | -100.0% |
+| `cargo test --workspace --locked`, execution only | 3 (failed) | 5 (failed, rc 101) | +66.7% |
+| `cargo test --workspace --locked`, after core touch | not measured | 228 (failed, rc 101) | n/a |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings`, cold | not measured | 567 | n/a |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings`, unchanged rerun | 414 | 0 | -100.0% |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings`, after core touch | 53 | 57 | +7.5% |
+| `cargo test --workspace --locked` all-in, cold | not measured | not measured separately | n/a |
+| `cargo test --workspace --locked` all-in, unchanged rerun | not measured | not measured separately | n/a |
+| `cargo test --workspace --locked` all-in, after core touch | not measured | not measured separately | n/a |
+
+Two runs per measured row (seconds, exit code):
+
+```text
+section	run	seconds	rc
+build-cold	1	971	0
+build-warm	1	0	0
+build-touch	1	73	0
+build-cold	2	968	0
+build-warm	2	0	0
+build-touch	2	72	0
+cli	1	467	0
+gateway	1	531	0
+swarmyd	1	148	0
+cli	2	467	0
+gateway	2	532	0
+swarmyd	2	148	0
+test-build-cold	1	1150	0
+test-build-warm	1	1	0
+test-exec	1	5	101
+test-touch	1	228	101
+test-build-cold	2	1151	0
+test-build-warm	2	0	0
+test-exec	2	5	101
+test-touch	2	229	101
+clippy-cold	1	568	0
+clippy-warm	1	0	0
+clippy-touch	1	58	0
+clippy-cold	2	567	0
+clippy-warm	2	0	0
+clippy-touch	2	57	0
+```
 
 The baseline did not time cold clippy, core-touch tests, or a full all-in test separately. The cold `--no-run` build plus the immediately following execution gives a comparable split. Runs and return codes are recorded in the measurement log; cold/cached/core-touch are not conflated.
 
