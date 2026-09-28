@@ -154,7 +154,7 @@ pub fn request_json(request: &Request, provider: &str, model: &ModelInfo) -> Res
         messages.extend(convert_message(message, provider, model, system_role)?);
     }
     crate::protocol::repair_tool_results(&mut messages, crate::protocol::ToolWire::Completions);
-    if model.compat.cache_control_format() == Some("anthropic") {
+    if !request.no_cache && model.compat.cache_control_format() == Some("anthropic") {
         cache_messages(&mut messages);
     }
     let tools: Vec<_> = request

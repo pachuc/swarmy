@@ -25,8 +25,7 @@ pub use id::{
 pub use message::{Message, MessageRole, NoticeKind, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
 pub use session::{
-    ConversationSummary, Lease, SessionKind, SessionRecord, SessionSettings, SessionState,
-    SnapshotRef, can_transition,
+    Lease, SessionKind, SessionRecord, SessionSettings, SessionState, SnapshotRef, can_transition,
 };
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};

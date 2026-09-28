@@ -241,7 +241,9 @@ pub fn request_json(
     if !request.system_prompt.is_empty() {
         system.push(json!({"type": "text", "text": request.system_prompt}));
     }
-    cache_last(&mut system);
+    if !request.no_cache {
+        cache_last(&mut system);
+    }
     let mut tools: Vec<_> = request
         .tools
         .iter()
@@ -251,7 +253,9 @@ pub fn request_json(
             })
         })
         .collect();
-    cache_last(&mut tools);
+    if !request.no_cache {
+        cache_last(&mut tools);
+    }
     let mut body = json!({
         "stream": true, "system": system, "messages": messages(request, endpoint)?,
     });
@@ -424,10 +428,11 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
         }
     }
     crate::protocol::repair_tool_results(&mut messages, crate::protocol::ToolWire::Anthropic);
-    if let Some(last) = messages
-        .iter_mut()
-        .rev()
-        .find(|message| message["role"] == "user")
+    if !request.no_cache
+        && let Some(last) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| message["role"] == "user")
     {
         cache_last(
             last["content"]

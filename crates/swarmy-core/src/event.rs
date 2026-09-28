@@ -15,6 +15,7 @@ pub enum FailureKind {
     Provider,
     Publication,
     WaitExceeded,
+    ContextOverflow,
 }
 
 /// One immutable entry in a session log. Sequence numbers start at one and are

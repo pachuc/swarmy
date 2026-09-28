@@ -386,7 +386,7 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
     config.summarize_at_tokens = None;
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
-        Some(750)
+        Some(0)
     );
     assert_eq!(config.summarization_threshold("fake", "unknown"), None);
     // A stack-wide window override wins over the catalog, so an operator
@@ -394,12 +394,9 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
     config.model_context_window_tokens = Some(2000);
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
-        Some(1500)
+        Some(0)
     );
-    assert_eq!(
-        config.summarization_threshold("fake", "unknown"),
-        Some(1500)
-    );
+    assert_eq!(config.summarization_threshold("fake", "unknown"), Some(0));
     config.summarize_at_tokens = Some(100);
     assert_eq!(
         config.summarization_threshold("fake", "small-context"),
@@ -408,7 +405,7 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
 }
 
 #[test]
-fn side_threshold_prefers_model_provider_and_defaults_to_400k() {
+fn side_threshold_prefers_model_provider_and_has_no_unknown_default() {
     let mut config = config(String::new(), String::new(), "side_fixture", Arc::default());
     config.catalog = swarmy_config::Settings {
         models: vec![
@@ -440,23 +437,21 @@ fn side_threshold_prefers_model_provider_and_defaults_to_400k() {
     config.model_context_window_tokens = Some(2000);
     assert_eq!(
         config.side_summarization_threshold("fake", "small-context"),
-        1500
+        0
     );
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),
-        1500
+        0
     );
     config.model_context_window_tokens = None;
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),
-        750
+        0
     );
     assert_eq!(
         config.side_summarization_threshold("fake", "unknown"),
-        crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS
+        u64::MAX
     );
-    assert_eq!(crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS, 400_000);
-    assert_eq!(config.side_pressure_threshold("fake", "small-context"), 450);
     config.summarize_at_tokens = Some(100);
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),

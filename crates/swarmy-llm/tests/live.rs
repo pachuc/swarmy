@@ -24,6 +24,7 @@ async fn dedicated_chatgpt_account_models() {
     let mut results = Vec::new();
     for model in models.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let request = Request {
+            no_cache: false,
             system_prompt: "Answer briefly.".into(),
             messages: vec![Message {
                 id: MessageId::from_ulid(ulid::Ulid::nil()),

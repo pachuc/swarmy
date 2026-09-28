@@ -18,6 +18,7 @@ use wiremock::{
 
 fn request(model: &str) -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be helpful.".into(),
         messages: vec![message(
             vec![Part::Text {
@@ -640,4 +641,24 @@ impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
             Ok(updated)
         })
     }
+}
+
+#[test]
+fn summary_request_disables_responses_cache_affinity() {
+    use swarmy_llm::responses::request_json_for;
+    let model = catalog_model("openai", "gpt-5.5");
+    let provider = Catalog::get().provider("openai").unwrap();
+    let endpoint =
+        ResponsesEndpoint::from_catalog(provider, &model, ClientAuth::ApiKey("fixture".into()))
+            .unwrap();
+    let session = SessionId::from_ulid(ulid::Ulid::generate());
+    let mut input = request(&model.id);
+    let cached =
+        request_json_for(&input, &endpoint, "openai", Some(&model), Some(session)).unwrap();
+    assert!(cached.get("prompt_cache_key").is_some());
+    input.no_cache = true;
+    let uncached =
+        request_json_for(&input, &endpoint, "openai", Some(&model), Some(session)).unwrap();
+    assert!(uncached.get("prompt_cache_key").is_none());
+    assert!(uncached.get("prompt_cache_retention").is_none());
 }

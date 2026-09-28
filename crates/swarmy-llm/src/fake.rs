@@ -24,6 +24,13 @@ pub struct FakeFailure {
 impl FakeFailure {
     #[must_use]
     pub fn error(&self) -> Error {
+        if self
+            .message
+            .to_ascii_lowercase()
+            .contains("context overflow")
+        {
+            return Error::ContextOverflow(self.message.clone());
+        }
         Error::ProviderResponse {
             reason: crate::classify_provider_failure(&self.message),
             status: reqwest::StatusCode::from_u16(self.status)
@@ -348,6 +355,7 @@ mod tests {
             },
         );
         let request = Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: Vec::new(),
             tools: Vec::new(),
@@ -365,6 +373,7 @@ mod tests {
     async fn captures_image_inputs() {
         let fake = FakeProvider::default();
         let mut request = Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: Vec::new(),
             tools: Vec::new(),
@@ -411,6 +420,7 @@ mod file_tests {
         let mut provider = make_provider();
         for step in [0, 1, 0, 2, 1, 2] {
             let mut request = Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -466,6 +476,7 @@ mod file_tests {
             parts: vec![swarmy_core::Part::Text { text: text.into() }],
         };
         let mut request = Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: vec![text(MessageRole::User, "one")],
             tools: Vec::new(),

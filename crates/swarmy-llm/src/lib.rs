@@ -163,6 +163,18 @@ pub struct InferenceJob {
     /// Index into the resolved route for this attempt.
     #[serde(default)]
     pub route_step: u32,
+    /// Compaction job marker, independent of its system prompt.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary: bool,
+    /// The second checkpoint of a split turn uses Pi's prefix prompt.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_prefix: bool,
+    /// Cut chosen before the checkpoint request, reused for the archive.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_cut: Option<u64>,
+    /// Whether this checkpoint is recovering a failed assistant attempt.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_recovery: bool,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -179,6 +191,10 @@ pub struct InferenceJobRef {
     pub route: Option<String>,
     #[serde(default)]
     pub route_step: u32,
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary: bool,
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_prefix: bool,
 }
 
 impl From<&InferenceJob> for InferenceJobRef {
@@ -192,6 +208,8 @@ impl From<&InferenceJob> for InferenceJobRef {
             entry: job.entry.clone(),
             route: job.route.clone(),
             route_step: job.route_step,
+            summary: job.summary,
+            summary_prefix: job.summary_prefix,
         }
     }
 }
@@ -203,6 +221,9 @@ pub struct Request {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub settings: GenerationSettings,
+    /// Disable provider prompt-cache writes for one-off summarization.
+    #[serde(skip)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -477,9 +498,114 @@ mod job_tests {
     }
 
     #[test]
+    fn masters_inference_job_layout_still_decodes() {
+        // The request was the fourth field on master. A new field inside it
+        // would consume the provider byte and misalign every following field.
+        #[derive(Serialize)]
+        struct OldRequest {
+            system_prompt: String,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            settings: GenerationSettings,
+        }
+        #[derive(Serialize)]
+        struct OldJob {
+            session_id: SessionId,
+            step: u64,
+            request_id: RequestId,
+            request: OldRequest,
+            provider: String,
+            entry: Option<String>,
+            route: Option<String>,
+            route_step: u32,
+        }
+        // Pinned bytes produced by the master layout, not by InferenceJob's
+        // current serializer. In particular no cache-policy byte may appear
+        // between the request and provider fields.
+        const MASTER_BYTES: &[u8] = &[
+            1, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 2, 54, 2, 190, 81, 241, 161, 179, 57, 6, 120, 230, 5, 126, 218,
+            209, 215, 135, 22, 114, 63, 152, 144, 227, 33, 190, 107, 177, 117, 253, 99, 66, 171, 3,
+            111, 108, 100, 0, 0, 0, 0, 0, 0, 4, 102, 97, 107, 101, 0, 0, 0,
+        ];
+        let id = SessionId::from_ulid(ulid::Ulid::nil());
+        let bytes = swarmy_core::encode(&OldJob {
+            session_id: id,
+            step: 2,
+            request_id: RequestId::for_step(id, 2),
+            request: OldRequest {
+                system_prompt: "old".into(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+        })
+        .unwrap();
+        assert_eq!(bytes, MASTER_BYTES);
+        let job: InferenceJob = swarmy_core::decode(MASTER_BYTES).unwrap();
+        assert_eq!(job.request.system_prompt, "old");
+        assert_eq!(job.provider, "fake");
+        assert!(!job.summary);
+        assert!(!job.summary_prefix);
+        assert!(!job.request.no_cache);
+    }
+
+    #[test]
+    fn round_two_job_without_cut_still_decodes() {
+        #[derive(Serialize)]
+        struct RoundTwoJob {
+            session_id: SessionId,
+            step: u64,
+            request_id: RequestId,
+            request: Request,
+            provider: String,
+            entry: Option<String>,
+            route: Option<String>,
+            route_step: u32,
+            #[serde(with = "swarmy_core::trailing")]
+            summary: bool,
+            #[serde(with = "swarmy_core::trailing")]
+            summary_prefix: bool,
+        }
+        let session_id = SessionId::from_ulid(ulid::Ulid::nil());
+        let bytes = swarmy_core::encode(&RoundTwoJob {
+            session_id,
+            step: 3,
+            request_id: RequestId::for_step(session_id, 3),
+            request: Request {
+                system_prompt: "checkpoint".into(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+                no_cache: true,
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+            summary: true,
+            summary_prefix: false,
+        })
+        .unwrap();
+        let job: InferenceJob = swarmy_core::decode(&bytes).unwrap();
+        assert!(job.summary);
+        assert!(!job.summary_prefix);
+        assert_eq!(job.summary_cut, None);
+        assert!(!job.summary_recovery);
+    }
+
+    #[test]
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
+            summary: false,
+            summary_prefix: false,
+            summary_cut: None,
+            summary_recovery: false,
             provider: "fake".into(),
             entry: Some("primary".into()),
             route: Some("fallback".into()),
@@ -488,6 +614,7 @@ mod job_tests {
             step: 7,
             request_id: RequestId::for_step(session_id, 7),
             request: Request {
+                no_cache: false,
                 system_prompt: "test".into(),
                 messages: Vec::new(),
                 tools: vec![ToolDefinition {

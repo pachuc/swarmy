@@ -363,6 +363,7 @@ mod tests {
         // checkpoint rollback, tool dispatch, and node death are covered by --coding.
         for index in 0..10 {
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: vec![],
                 tools: vec![],

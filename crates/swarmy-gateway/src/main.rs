@@ -75,11 +75,6 @@ fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
     }
 }
 
-/// Default side-session threshold in input tokens when the catalog has no
-/// window for the model. This mirrors the worker default so the gateway
-/// diverts the same completions the worker would summarize.
-const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
-
 /// The fake provider yields whole parts without streaming text deltas, so a
 /// completed part is the first observable content for those turns.
 fn part_has_content(part: &swarmy_core::Part) -> bool {
@@ -157,7 +152,6 @@ fn permanent_error(error: &swarmy_llm::Error) -> bool {
         error,
         Error::UnknownModel { .. }
             | Error::Unsupported(_)
-            | Error::ContextOverflow(_)
             | Error::Credentials(_)
             | Error::NeedsLogin(_)
     ) || matches!(error, Error::ProviderResponse { status, .. } | Error::Status(status)
@@ -456,6 +450,10 @@ impl Gateway {
             "stored inference selection differs from delivery"
         );
         let stored = InferenceJob {
+            summary: job.summary,
+            summary_prefix: job.summary_prefix,
+            summary_cut: None,
+            summary_recovery: false,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,
@@ -494,6 +492,7 @@ impl Gateway {
     ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
+        request.no_cache = job.summary;
         let mut stream = client.request_for_session(request, job.session_id);
         let mut response = None;
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
@@ -760,6 +759,9 @@ impl Gateway {
                 if !blocked
                     && !permanent_error(&error)
                     && !retryable_error(&error).0
+                    // The worker, not the transport queue, owns the single
+                    // compact-and-retry attempt for context overflow.
+                    && !matches!(error, swarmy_llm::Error::ContextOverflow(_))
                     && message.delivery_count()? < self.max_deliver =>
             {
                 warn!(%error, request_id = %job.request_id, "provider failed; retrying");
@@ -894,7 +896,11 @@ impl Gateway {
                 error: error.to_string(),
                 retryable: input.retryable,
                 retry_at: input.retry_at,
-                failure_kind: swarmy_core::FailureKind::Provider,
+                failure_kind: if matches!(error, swarmy_llm::Error::ContextOverflow(_)) {
+                    swarmy_core::FailureKind::ContextOverflow
+                } else {
+                    swarmy_core::FailureKind::Provider
+                },
             },
         }
     }
@@ -1055,7 +1061,7 @@ impl Gateway {
                 quota_remaining: attribution.quota_remaining.clone(),
                 quota_resets: attribution.quota_resets.clone(),
             };
-            let snapshot = match self.terminal_snapshot(job, &completion).await {
+            let snapshot = match self.terminal_snapshot(job, &completion, result).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     warn!(%error, "retrying terminal snapshot upload");
@@ -1100,30 +1106,29 @@ impl Gateway {
         Ok(())
     }
 
-    /// Warning level at 75 percent of the side-session threshold, mirroring
-    /// the worker so the gateway only diverts completions that could warn or
-    /// summarize. An explicit override wins, then a stack-wide window
-    /// override, then the catalog value, else a conservative default.
-    fn side_pressure_threshold(&self, provider: &str, model: &str) -> u64 {
-        let threshold = self
-            .summarize_at_tokens
+    fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
+        self.summarize_at_tokens
             .or_else(|| {
                 self.model_context_window_tokens
-                    .map(|context| context - context / 4)
+                    .map(|context| context.saturating_sub(16_384))
             })
             .or_else(|| self.providers.catalog.summarize_at(provider, model))
-            .unwrap_or(DEFAULT_SIDE_SUMMARIZE_AT_TOKENS);
-        threshold - threshold / 4
+            .unwrap_or(u64::MAX)
     }
 
     async fn terminal_snapshot(
         &self,
         job: &InferenceJob,
         completion: &InferenceCompletion,
+        result: &std::result::Result<Response, String>,
     ) -> Result<Option<swarmy_core::SnapshotRef>> {
+        // The worker must validate and archive a summary before the turn idles.
+        if job.summary {
+            return Ok(None);
+        }
         // Named sessions need a worker step to decide whether to summarize.
         // Main sessions always take the slow path. Side sessions take it only
-        // once the completion reaches the pressure level, so text-only turns
+        // once the completion reaches the compaction threshold, so text-only turns
         // below that keep the single-transaction fast path instead of paying
         // for a scheduler nudge, a worker lease, and a snapshot upload.
         if let Some(session) = self.store.fetch_session(job.session_id).await?
@@ -1147,7 +1152,11 @@ impl Gateway {
                 Event::InferenceFailed { .. } => return Ok(None),
                 _ => 0,
             };
-            if input >= self.side_pressure_threshold(provider, &job.request.settings.model) {
+            if matches!(&completion.event, Event::InferenceCompleted { usage, .. } if usage.output_tokens < self.providers.catalog.model(provider, &job.request.settings.model).and_then(|model| model.limit.output).unwrap_or(0) && matches!(result, Ok(response) if response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens))
+            {
+                return Ok(None);
+            }
+            if input >= self.side_summarization_threshold(provider, &job.request.settings.model) {
                 return Ok(None);
             }
         }
@@ -1271,7 +1280,7 @@ mod retry_tests {
         };
         assert!(!retryable_error(&auth).0);
         assert!(permanent_error(&auth));
-        assert!(permanent_error(&swarmy_llm::Error::ContextOverflow(
+        assert!(!permanent_error(&swarmy_llm::Error::ContextOverflow(
             "too long".into()
         )));
     }
@@ -1324,6 +1333,7 @@ mod retry_tests {
             .unwrap();
         runtime.block_on(async {
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1352,6 +1362,7 @@ mod retry_tests {
         runtime.block_on(async {
             use swarmy_llm::Provider as _;
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1400,6 +1411,7 @@ mod retry_tests {
         runtime.block_on(async {
             use swarmy_llm::Provider as _;
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1542,10 +1554,15 @@ mod retry_tests {
         let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let step = 1;
         swarmy_llm::InferenceJob {
+            summary: false,
+            summary_prefix: false,
+            summary_cut: None,
+            summary_recovery: false,
             session_id,
             step,
             request_id: swarmy_core::RequestId::for_step(session_id, step),
             request: swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),

@@ -30,3 +30,9 @@ POST /v1/cli/credentials adds optional record/bookkeeping to the request payload
 # 2026-09-27: InferenceFailed failure_kind, Part::Notice in events and snapshots, and typed credential bookkeeping fields are one-way stored format changes. Older binaries cannot read rows written after this upgrade. Upgrade the entire swarm together; do not roll back.
 # 2026-09-27: MissingInferenceWait is not a session-not-idle error. Interrupt now reports the storage fallback instead of an unrelated conflict code.
 POST /v1/sessions/{id}/interrupt changes MissingInferenceWait error code from session_not_idle (409) to storage_error (500)
+
+# 2026-09-28: Summary inference jobs append trailing summary and split-prefix flags for explicit job identity; request cache policy is transient and does not change the stored layout. The delivery reference appends the same flags. Successor openings are user-role Markdown rather than system-role JSON; old system openings still read. Upgrade workers and gateways together; older binaries cannot read new job encodings.
+GET /v1/sessions/{id}/events changes successor opening from system JSON to user Markdown
+# 2026-09-28: Obsolete context warning notices retain their binary discriminant but render as legacy_context_notice in old event JSON; no new warning is emitted.
+GET /v1/sessions/{id}/events changes legacy notice kind text to legacy_context_notice
+# 2026-09-28: Checkpoint jobs append a trailing cut and recovery marker, so a resumed worker archives the same head it summarized. Older jobs decode with absent markers; older binaries cannot decode the appended fields.
