@@ -269,6 +269,8 @@ impl Fixture {
         let job = InferenceJob {
             summary: false,
             summary_prefix: false,
+            summary_cut: None,
+            summary_recovery: false,
             provider: "fake".into(),
             entry: None,
             route: None,

@@ -555,6 +555,48 @@ mod job_tests {
     }
 
     #[test]
+    fn round_two_job_without_cut_still_decodes() {
+        #[derive(Serialize)]
+        struct RoundTwoJob {
+            session_id: SessionId,
+            step: u64,
+            request_id: RequestId,
+            request: Request,
+            provider: String,
+            entry: Option<String>,
+            route: Option<String>,
+            route_step: u32,
+            summary: bool,
+            summary_prefix: bool,
+        }
+        let session_id = SessionId::from_ulid(ulid::Ulid::nil());
+        let bytes = swarmy_core::encode(&RoundTwoJob {
+            session_id,
+            step: 3,
+            request_id: RequestId::for_step(session_id, 3),
+            request: Request {
+                system_prompt: "checkpoint".into(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+                no_cache: true,
+            },
+            provider: "fake".into(),
+            entry: None,
+            route: None,
+            route_step: 0,
+            summary: true,
+            summary_prefix: false,
+        })
+        .unwrap();
+        let job: InferenceJob = swarmy_core::decode(&bytes).unwrap();
+        assert!(job.summary);
+        assert!(!job.summary_prefix);
+        assert_eq!(job.summary_cut, None);
+        assert!(!job.summary_recovery);
+    }
+
+    #[test]
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
