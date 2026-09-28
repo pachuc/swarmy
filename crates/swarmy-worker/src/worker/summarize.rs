@@ -612,6 +612,8 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
         total += estimate_message_tokens(message);
         start = index;
         if total >= SIDE_TAIL_BUDGET_TOKENS {
+            // The message that crosses the budget belongs to the head.
+            start = index.saturating_add(1);
             break;
         }
     }
