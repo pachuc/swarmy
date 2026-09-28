@@ -397,31 +397,6 @@ def current_session(config, session_id, sessions=None):
     return current
 
 
-def has_pressure(events):
-    """Whether the worker appended a context_pressure warning.
-
-    Only system messages count: the worker writes the warning as a system
-    message, and tool output (a file that mentions the warning by name, for
-    example) must not trip the flag.
-    """
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        message = (event.get("message_appended") or {}).get("message")
-        if not isinstance(message, dict) or message.get("role") != "system":
-            continue
-        for part in message.get("parts") or []:
-            if not isinstance(part, dict):
-                continue
-            notice = part.get("notice") or {}
-            if isinstance(notice, dict) and notice.get("kind") == "context_pressure":
-                return True
-            text = (part.get("text") or {}).get("text")
-            if isinstance(text, str) and "context_pressure" in text:
-                return True
-    return False
-
-
 def state_for(session, events, log):
     state = session.get("state") if session else None
     wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
@@ -496,8 +471,6 @@ def status(config):
             state_label = f"{state} {age_label(age)}"
         if reasons:
             state_label += "; " + reasons
-        if task_id and session_id and has_pressure(events):
-            state_label += "; context_pressure"
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"

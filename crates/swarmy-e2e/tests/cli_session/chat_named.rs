@@ -277,9 +277,9 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         fixture.store.wake_session(old, Timestamp::now()).await.unwrap();
         let (lease, session, _) = fixture.store.claim_step(old, LeaseOwnerId::from_ulid(Ulid::generate()), Timestamp::now().checked_add(Duration::from_secs(30)).unwrap()).await.unwrap();
         let (new, event) = fixture.store.summarize_main_session(old, session.head_seq, &lease, &Message {
-            id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::System,
+            id: MessageId::from_ulid(Ulid::generate()), role: MessageRole::User,
             parts: vec![Part::Text { text: "Goals: fix parser. State: tests pass. Open questions: release date. Facts: project path.".into() }],
-        }).await.unwrap();
+        }, &[]).await.unwrap();
         fixture.bus.publish_live(LiveFeed::SessionEvents(old), &event).await.unwrap();
         // One diagnostics value for the whole follow sequence; every wait
         // below is client-side (see above), so all use WAIT.

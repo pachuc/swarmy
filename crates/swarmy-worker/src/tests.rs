@@ -440,23 +440,21 @@ fn side_threshold_prefers_model_provider_and_defaults_to_400k() {
     config.model_context_window_tokens = Some(2000);
     assert_eq!(
         config.side_summarization_threshold("fake", "small-context"),
-        1500
+        0
     );
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),
-        1500
+        0
     );
     config.model_context_window_tokens = None;
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),
-        750
+        0
     );
     assert_eq!(
         config.side_summarization_threshold("fake", "unknown"),
-        crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS
+        u64::MAX
     );
-    assert_eq!(crate::config::DEFAULT_SIDE_SUMMARIZE_AT_TOKENS, 400_000);
-    assert_eq!(config.side_pressure_threshold("fake", "small-context"), 450);
     config.summarize_at_tokens = Some(100);
     assert_eq!(
         config.side_summarization_threshold("fake", "window-only"),

@@ -21,7 +21,7 @@ use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, NoticeKind, Nudge, Part, RequestId, SessionId,
+    AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
     SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::{Response, StopReason, TokenUsage};
@@ -1550,10 +1550,15 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
 async fn main_summary_atomically_archives_and_links_a_fresh_session() {
     run(|f| Box::pin(async move {
         f.summarize_at_tokens = 100;
-        let summary = serde_json::json!({
-            "goals": "Fix the tests", "state_of_work": "Parser fixed",
-            "open_questions": "Which release?", "facts_to_keep": "Repository is /home/agent/project"
-        }).to_string();
+        let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify".to_owned();
         let response = |text: String, input_tokens| Response {
             parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
             usage: TokenUsage { input_tokens, ..Default::default() },
@@ -1591,17 +1596,16 @@ async fn main_summary_atomically_archives_and_links_a_fresh_session() {
         assert_eq!(fresh.agent_id, agent.agent_id);
         let opening = f.store.read_events(new, 0, 64).await.unwrap();
         let Event::MessageAppended { message, .. } = &opening[0] else { panic!("opening missing") };
-        assert_eq!(message.role, MessageRole::System);
+        assert_eq!(message.role, MessageRole::User);
         let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        assert_eq!(serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(&summary).unwrap());
-        assert!(text.contains(&id.to_string()));
+        assert!(text.contains(&summary));
         let old = f.store.read_events(id, 0, 64).await.unwrap();
         assert_requests(id, &old, 2);
         assert_eq!(f.calls(), 2);
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
         // A duplicate, unfenced rollover cannot create a third session or move the pointer.
         let stale = swarmy_core::Lease { owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()), seq: 1, expires_at: Timestamp::now() };
-        assert!(f.store.summarize_main_session(id, 0, &stale, message).await.is_err());
+        assert!(f.store.summarize_main_session(id, 0, &stale, message, &[]).await.is_err());
         assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
         assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
     })).await;
@@ -1657,83 +1661,21 @@ async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
     .unwrap()
 }
 
-fn is_pressure_message(message: &Message) -> bool {
-    message.role == MessageRole::System
-        && message.parts.iter().any(|part| {
-            matches!(
-                part,
-                Part::Notice {
-                    kind: NoticeKind::ContextPressure,
-                    ..
-                }
-            )
-        })
-}
-
-fn has_pressure_marker(events: &[Event]) -> bool {
-    events.iter().any(|event| {
-        matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
-    })
-}
-
-async fn wait_pressure(fixture: &Fixture, id: SessionId) {
-    timeout(WAIT, async {
-        loop {
-            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-            if has_pressure_marker(&events) {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn side_pressure_warns_at_75_percent_without_archiving() {
-    run(|f| {
-        Box::pin(async move {
-            f.summarize_at_tokens = 100;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
-            write_side_script(f, &summary);
-            let image = image_fixture::image(&f.store).await;
-            let agent = f
-                .store
-                .create_agent("sidekick", image, "", Timestamp::now(), None)
-                .await
-                .unwrap();
-            let id = side_id();
-            f.store
-                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
-                .await
-                .unwrap();
-            f.user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
-            f.wake(id).await;
-            wait_pressure(f, id).await;
-            assert!(f.store.next_session(id).await.unwrap().is_none());
-        })
-    })
-    .await;
-}
-
 #[tokio::test]
 async fn side_summary_archives_with_tail_and_continues_small() {
     run(|f| {
         Box::pin(async move {
             f.summarize_at_tokens = 100;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
+            let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify"
+                .to_owned();
             write_direct_trigger_script(f, &summary);
             let image = image_fixture::image(&f.store).await;
             let agent = f
@@ -1833,15 +1775,11 @@ async fn check_side_successor(
     let Event::MessageAppended { message, .. } = &opening[0] else {
         panic!("opening missing")
     };
-    assert_eq!(message.role, MessageRole::System);
+    assert_eq!(message.role, MessageRole::User);
     let Part::Text { text } = &message.parts[0] else {
         panic!("summary missing")
     };
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
-        serde_json::from_str::<serde_json::Value>(summary).unwrap()
-    );
-    assert!(text.contains(&id.to_string()));
+    assert!(text.contains(summary));
     assert!(opening.len() >= 2);
 }
 
@@ -1914,15 +1852,6 @@ async fn read_all_events(fixture: &Fixture, id: SessionId) -> Vec<Event> {
     events
 }
 
-fn count_pressure(events: &[Event]) -> usize {
-    events
-        .iter()
-        .filter(|event| {
-            matches!(event, Event::MessageAppended { message, .. } if is_pressure_message(message))
-        })
-        .count()
-}
-
 fn successor_messages(events: &[Event]) -> Vec<Message> {
     events
         .iter()
@@ -1940,11 +1869,16 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
     run(|f| {
         Box::pin(async move {
             f.summarize_at_tokens = 6000;
-            let summary = serde_json::json!({
-                "goals": "Finish the routes task", "state_of_work": "Handler done",
-                "open_questions": "None", "facts_to_keep": "Repo at /home/agent/work"
-            })
-            .to_string();
+            let summary = "## Goal
+Finish the task
+
+## Progress
+### Done
+- [x] Handler done
+
+## Next Steps
+1. Verify"
+                .to_owned();
             write_fleet_side_script(f, &summary);
             let image = image_fixture::image(&f.store).await;
             let agent = f
@@ -1973,12 +1907,6 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
             f.idle(new).await;
             let new_events = read_all_events(f, new).await;
             assert_mid_turn_links(f, id, new).await;
-            let old_events = read_all_events(f, id).await;
-            assert_eq!(
-                count_pressure(&old_events) + count_pressure(&new_events),
-                1,
-                "pressure warns exactly once across the rollover"
-            );
             let messages = successor_messages(&new_events);
             assert_successor_opening(&new_events, &summary);
             assert_successor_request_small(f, &new_events).await;
@@ -1989,53 +1917,37 @@ async fn side_summary_mid_turn_keeps_tool_pairs_and_continues() {
 }
 
 #[tokio::test]
-async fn side_summary_fenced_array_continues() {
-    check_nonstandard_side_summary(
-        "```json\n{\"goals\":[\"Finish the routes task\"],\"state_of_work\":\"Handler done\"}\n```",
-        "[\"Finish the routes task\"]",
-        "Handler done",
-    )
+async fn side_summary_markdown_continues() {
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 6000;
+            let summary =
+                "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
+            write_fleet_side_script(f, summary);
+            let image = image_fixture::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("sidekick", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            f.user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            f.idle(new).await;
+            assert_mid_turn_links(f, id, new).await;
+            let events = read_all_events(f, new).await;
+            assert_successor_opening(&events, summary);
+        })
+    })
     .await;
-}
-
-#[tokio::test]
-async fn side_summary_prose_continues() {
-    check_nonstandard_side_summary(
-        "Handler done. Finish the routes task.",
-        "",
-        "Handler done. Finish the routes task.",
-    )
-    .await;
-}
-
-async fn check_nonstandard_side_summary(
-    reply: &'static str,
-    goals: &'static str,
-    state: &'static str,
-) {
-    run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 6000;
-        write_fleet_side_script(f, reply);
-        let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("sidekick", image, "", Timestamp::now(), None).await.unwrap();
-        let id = side_id();
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let new = wait_successor(f, id).await;
-        f.idle(new).await;
-        assert_mid_turn_links(f, id, new).await;
-        let events = read_all_events(f, new).await;
-        let Event::MessageAppended { message, .. } = &events[0] else { panic!("opening missing") };
-        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        let summary: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-        assert_eq!(summary["goals"], goals);
-        assert_eq!(summary["state_of_work"], state);
-        assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Finished; nothing remains."))), "successor did not reach final answer");
-    })).await;
 }
 
 async fn assert_mid_turn_links(fixture: &Fixture, id: SessionId, new: SessionId) {
@@ -2070,22 +1982,19 @@ fn assert_successor_opening(new_events: &[Event], summary: &str) {
     let Event::MessageAppended { message, .. } = &new_events[0] else {
         panic!("opening missing")
     };
-    assert_eq!(message.role, MessageRole::System);
+    assert_eq!(message.role, MessageRole::User);
     let Part::Text { text } = &message.parts[0] else {
         panic!("summary missing")
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap(),
-        serde_json::from_str::<serde_json::Value>(summary).unwrap()
+        text,
+        &format!(
+            "{}{}{}",
+            "The conversation history before this point was compacted into the following summary:\n\n<summary>\n",
+            summary,
+            "\n</summary>"
+        )
     );
-    let continued = successor_messages(new_events)
-        .iter()
-        .flat_map(|message| &message.parts)
-        .any(|part| match part {
-            Part::Text { text } => text.contains("Continue the summarized task"),
-            _ => false,
-        });
-    assert!(continued, "mid-task successor needs its continue note");
 }
 
 async fn assert_successor_request_small(fixture: &Fixture, new_events: &[Event]) {
