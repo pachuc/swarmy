@@ -567,16 +567,9 @@ def resume(task_id, message, config, *, interrupt=False):
         except RuntimeError as exc:
             if "nothing to interrupt" not in str(exc).lower():
                 raise
-        # The old path waits for idle before submitting another turn.
-        deadline = time.monotonic() + 60
-        while True:
-            sessions = records(command(swarmy(config, "session", "ls", "--json")))
-            if any(item.get("session_id") == session_id and item.get("state") == "idle" for item in sessions):
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError("interrupted session did not become idle")
-            time.sleep(0.1)
-    args = swarmy(config, "run", "--session", session_id, "--json", *([] if interrupt else ["--queue"]), message)
+    # Queue the replacement after requesting interruption. A previously queued
+    # message can keep the session runnable, so waiting for idle would hang.
+    args = swarmy(config, "run", "--session", session_id, "--json", "--queue", message)
     result = subprocess.run(args, text=True, capture_output=True, check=False)
     with (state_path(config) / (task_suffix(task_id) + ".jsonl")).open("a") as log:
         log.write(result.stdout)

@@ -46,7 +46,7 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         if (root / 'interrupted').exists():
             count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
             (root / 'ls_count').write_text(str(count + 1))
-            state = 'idle' if count else 'sleeping'
+            state = 'runnable' if os.environ.get('PENDING_QUEUE') else ('idle' if count else 'sleeping')
         else:
             state = 'sleeping'
         state = os.environ.get('SESSION_STATE', state)
@@ -174,11 +174,15 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(interrupted.returncode, 0, interrupted.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Stop and review")
         self.assertTrue(any(call[-3:] == ["session", "interrupt", "01AAAA"] for call in self.calls()))
-        self.assertNotIn('--queue', self.calls()[-1])
+        self.assertIn('--queue', self.calls()[-1])
         idle = self.call("resume", "EWR2HD", "Idle follow-up", "--interrupt",
                          env=dict(self.env, IDLE_INTERRUPT="1", SESSION_STATE="idle"))
         self.assertEqual(idle.returncode, 0, idle.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Idle follow-up")
+        pending = self.call("resume", "EWR2HD", "New urgent text", "--interrupt",
+                            env=dict(self.env, PENDING_QUEUE="1"))
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        self.assertIn("--queue", self.calls()[-1])
         open_env = dict(self.env, PR_STATE="OPEN")
         self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
         merged_env = dict(self.env, PR_STATE="MERGED")

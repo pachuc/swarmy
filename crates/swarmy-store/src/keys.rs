@@ -296,10 +296,11 @@ const SESSION_PLAN: &str = "session_plan";
 const SESSION_ROUTE: &str = "session_route";
 /// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_ROUTE_STEP: &str = "session_route_step";
-/// Legacy session side row, read and cleared during V1 hydration.
+/// Queued input lives outside the session key family so session scans stay valid.
 const QUEUED_MESSAGE: &str = "queued_message";
 const QUEUED_COUNTER: &str = "queued_counter";
 const QUEUED_REPLAY: &str = "queued_replay";
+/// Legacy session side row, read and cleared during V1 hydration.
 const SESSION_STATE_SINCE: &str = "session_state_since";
 const SESSION_TOOLS: &str = "session_tools";
 const SNAPSHOT: &str = "snapshot";

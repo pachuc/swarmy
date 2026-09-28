@@ -230,15 +230,9 @@ impl Store {
         if snapshot.seq != head {
             return Err(StoreError::Domain(crate::DomainError::InvalidSnapshot));
         }
-        let event = Event::StateChanged {
-            seq: head,
-            from: SessionState::Leased,
-            to: SessionState::Idle,
-        };
-        let value = self.prepare(&event).await?;
         let reference = self.prepare(snapshot).await?;
         self.transaction(|trx| {
-            let (value, reference) = (&value, &reference);
+            let reference = &reference;
             async move {
                 let now = self.now();
                 self.check_worker_lease(&trx, id, lease, now).await?;
@@ -262,22 +256,27 @@ impl Store {
                 if !session.interrupt_requested && self.has_queued_in(&trx, id).await? {
                     return Err(StoreError::Domain(crate::DomainError::QueuedInputPending));
                 }
-                trx.set(&self.event_key(id, head), value);
+                let state = if self.has_queued_in(&trx, id).await? {
+                    SessionState::Runnable
+                } else {
+                    SessionState::Idle
+                };
+                let event = Event::StateChanged {
+                    seq: head,
+                    from: SessionState::Leased,
+                    to: state,
+                };
+                trx.set(&self.event_key(id, head), &self.prepare(&event).await?);
                 trx.set(&self.snapshot_key(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
                 session.interrupt_requested = false;
                 // Turn end restarts the route chain with the next turn.
                 session.route_step = 0;
-                let state = if self.has_queued_in(&trx, id).await? {
-                    SessionState::Runnable
-                } else {
-                    SessionState::Idle
-                };
-                self.transition(&trx, session, state, now).await
+                self.transition(&trx, session, state, now).await?;
+                Ok(event)
             }
         })
-        .await?;
-        Ok(event)
+        .await
     }
 }

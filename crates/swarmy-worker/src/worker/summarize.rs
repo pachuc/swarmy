@@ -656,7 +656,7 @@ impl Worker {
         };
         token.release();
         self.publish_events(session.session_id, &[archived]).await?;
-        if should_wake || self.store.has_queued(successor).await? {
+        if should_wake {
             self.wake_successor(session.session_id, successor).await;
         }
         Ok(true)

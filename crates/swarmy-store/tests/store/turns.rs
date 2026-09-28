@@ -725,3 +725,68 @@ async fn queued_input_survives_an_interrupt_before_newer_input() {
     assert!(matches!(&events[1], Event::MessageAppended { message: next, .. } if next == &message));
     test.cleanup().await;
 }
+
+#[tokio::test]
+async fn queued_input_is_delivered_in_bounded_ordered_batches() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    for index in 0..12 {
+        let Event::MessageAppended { message, .. } =
+            event(&format!("{index}:{}", "x".repeat(80_000)))
+        else {
+            unreachable!()
+        };
+        store
+            .queue_user_message_idempotent(id, &message, &format!("batch-{index}"))
+            .await
+            .unwrap();
+    }
+    let (lease, session, _, _) = store
+        .claim_step_with_tail(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let first = store
+        .deliver_queued(id, session.head_seq, &lease, &[])
+        .await
+        .unwrap();
+    assert!(first.len() < 24);
+    let second = store
+        .deliver_queued(id, first.len() as u64, &lease, &[])
+        .await
+        .unwrap();
+    assert!(!second.is_empty());
+    let all = first
+        .iter()
+        .chain(&second)
+        .filter_map(|event| {
+            if let Event::MessageAppended { message, .. } = event {
+                Some(message)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(all.len(), 12);
+    for (index, message) in all.iter().enumerate() {
+        assert!(
+            matches!(&message.parts[0], swarmy_core::MessagePart::Text { text } if text.starts_with(&format!("{index}:")))
+        );
+    }
+    assert!(
+        store
+            .deliver_queued(id, 24, &lease, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.cleanup().await;
+}

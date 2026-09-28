@@ -79,7 +79,11 @@ impl Store {
                         .unwrap_or(0)
                         .checked_add(1)
                         .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
-                    if self.queued_in(&trx, id).await?.len() >= crate::MAX_SCAN_LIMIT {
+                    if scan(&trx, keys.queued_space(id).range(), crate::MAX_SCAN_LIMIT)
+                        .await?
+                        .len()
+                        >= crate::MAX_SCAN_LIMIT
+                    {
                         return Err(StoreError::Storage(crate::StorageError::TooLarge));
                     }
                     trx.set(
@@ -122,6 +126,10 @@ impl Store {
                 }
                 let queue = self.queued_in(&trx, id).await?;
                 let mut events = Vec::with_capacity(before.len() + queue.len() * 2);
+                let mut delivered_keys = Vec::new();
+                // Each message is written twice (queue marker and user message).
+                // Leave ample room for the tool result and transaction overhead.
+                let mut queued_bytes = 0usize;
                 for event in before {
                     if !matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::Tool) {
                         return Err(StoreError::Domain(DomainError::InvalidMessageRole));
@@ -130,7 +138,13 @@ impl Store {
                     event.set_seq(head + u64::try_from(events.len()).expect("batch bounded") + 1);
                     events.push(event);
                 }
-                for (_, item) in &queue {
+                for (key, item) in &queue {
+                    let size = crate::encode(&item.message)?.len();
+                    if !delivered_keys.is_empty() && queued_bytes + size > 512 * 1024 {
+                        break;
+                    }
+                    queued_bytes += size;
+                    delivered_keys.push(key);
                     let seq = head + u64::try_from(events.len()).expect("queue bounded") + 1;
                     events.push(Event::MessageQueued {
                         seq,
@@ -149,7 +163,7 @@ impl Store {
                     );
                 }
                 if !events.is_empty() {
-                    for (key, _) in &queue { trx.clear(key); }
+                    for key in delivered_keys { trx.clear(key); }
                     session.head_seq += u64::try_from(events.len()).expect("queue bounded");
                     self.write_session(&trx, &session)?;
                 }
