@@ -39,14 +39,17 @@ impl Snapshot {
     /// Discard an unusable checkpoint reply while preserving the durable log.
     #[must_use]
     pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {
+        let before = self.messages.len();
         self.messages.retain(|message| message.id != id);
-        self.phase = self
-            .messages
-            .last()
-            .map_or(Phase::Wait, |message| match message.role {
-                MessageRole::Assistant => model_phase(message),
-                MessageRole::User | MessageRole::Tool | MessageRole::System => Phase::Ready,
-            });
+        if self.messages.len() != before {
+            self.phase = self
+                .messages
+                .last()
+                .map_or(Phase::Wait, |message| match message.role {
+                    MessageRole::Assistant => model_phase(message),
+                    MessageRole::User | MessageRole::Tool | MessageRole::System => Phase::Ready,
+                });
+        }
         self
     }
 
