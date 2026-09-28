@@ -17,3 +17,6 @@ binaries	baseline	1	swarmyd	24	0
 binaries	master	1	cli	467	0
 binaries	master	1	gateway	531	0
 binaries	master	1	swarmyd	148	0
+binaries	baseline	2	cli	1251	0
+binaries	baseline	2	gateway	494	0
+binaries	baseline	2	swarmyd	24	0
