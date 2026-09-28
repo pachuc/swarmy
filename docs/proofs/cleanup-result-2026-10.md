@@ -201,6 +201,18 @@ clippy-touch	2	57	0
 
 The baseline did not time cold clippy, core-touch tests, or a full all-in test separately. The cold `--no-run` build plus the immediately following execution gives a comparable split. The baseline's 414 s "cached clippy" was actually its *first clippy invocation after a test build*, whereas the 0 s row above is an unchanged rerun of clippy itself. Those are different caches and **the -100% figure must not be interpreted as an improvement**. A separate paired measurement below reproduces the baseline ordering. The execution-only runs still fail, but at a different point: 3 of 5 `swarmy-api` `cli_auth` tests pass and 2 fail because `swarmy-auth` was not installed in the sandbox. The helper was installed after the timing matrix for subsequent validation. The historical run failed all 5 on its target-triple heuristic. Exit codes are kept with the timings rather than implying a successful suite.
 
+### Baseline-order clippy check
+
+Both repetitions started with an empty target, ran `cargo test --workspace --locked --no-run`, then ran clippy, an unchanged clippy rerun, and clippy after touching `crates/swarmy-core/src/lib.rs`. This duplicates the baseline's *first clippy after a test build* definition, which the earlier cold-clippy row does not.
+
+| Measure | Before (s) | After (s) | Change |
+| --- | ---: | ---: | ---: |
+| First clippy after test build | 414 | 265 (runs: 266, 265) | -36.0% |
+| Unchanged clippy rerun | not measured | 0 (runs: 1, 0) | n/a |
+| Clippy after core touch | 53 | 56 (runs: 56, 57) | +5.7% |
+
+All six clippy executions exited 0. The preceding test builds took 1153 and 1152 s. These numbers still compare different CPU/cgroup shapes.
+
 ### API fake first-token latency
 
 | Measure | Baseline on suite node (`380adde`) | Master on same node (`350ec17`) | Change |
@@ -237,8 +249,8 @@ The historical 1474 s mean used `updatedAt - createdAt`, which **includes queue 
 
 - PR #172 split remote-only dependencies away from ordinary builds; PR #179 extracted cloud provisioning and PR #177 removed the AWS credential chain from the store. The normal CLI build avoids the AWS SDK, while the opt-in remote path still needs it. This is the principal expected cold-build reduction; `aws-*` lockfile entries move only slightly because optional remote dependencies remain in the lockfile.
 - PR #173 retired dead paths; PR #174 split the model catalog and feature-gated cloud providers; PR #175 extracted process-spawning tests into e2e. PR #193 removed duplicate tests and parallelized CI. Changes in per-crate test counts mostly reflect relocation and deduplication rather than a broad deletion of coverage.
-- PR #193 is the direct cause of the shorter six-job CI wall time. The sum of job durations is the better indicator of total work; mixing pre-split and post-split runs in the last-ten mean hides the full parallelization effect.
-- PR #194 changed compaction behavior and PR #196 added worker kill points, neither primarily targets build time. The ongoing size of the store and worker crates and remote-feature AWS dependencies remain. An unchanged cached build is already near zero and cannot fall meaningfully.
+- PR #193 is the direct cause of the shorter six-job CI wall time. The sum of job durations is the better indicator of total work; mixing pre-split and post-split runs in the last-ten mean hides the full parallelization effect. The six post-split runs average 437 s created-to-updated and 1403 s summed job time; the four earlier runs average 1484 s and 1485 s respectively. Most of the wall-time drop is concurrent scheduling, not a 70% drop in total compute.
+- PR #194 changed compaction behavior and PR #196 added worker kill points, neither primarily targets build time. The ongoing size of the store and worker crates and remote-feature AWS dependencies remain. The sequential gateway and `swarmyd` builds got slower (+6.6% and +469.2%); unlike the CLI, they benefit less from the newly slimmer CLI build that precedes them, and the new crate split changes what must compile for each binary. An unchanged cached build is already near zero and cannot fall meaningfully.
 - The baseline `cli_auth` execution failed because its helper interpreted the hyphenated target directory as a target triple. That failure is not a compilation regression; execution status is reported explicitly. CPU/memory shape and CI runner changes also prevent attributing all wall-time differences solely to code cleanup.
 
 ## Appendix: current metrics output
