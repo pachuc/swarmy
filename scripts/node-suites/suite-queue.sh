@@ -48,7 +48,9 @@ for branch in "$@"; do
         else
           bash "$here/rerun-suite.sh" "$branch" "$1" "$2"
         fi ;;
-    esac > "$log" 2>&1
+    # Close the lock descriptor for the run itself: the dev stack's daemons
+    # outlive a failed run and would otherwise hold the lock forever.
+    esac > "$log" 2>&1 9>&-
     if grep -qE "SUITES_EXIT=1|test result: FAILED|checkout failed" "$log"; then rc=1; else rc=0; fi
     echo "QUEUE_DONE $branch${rev:+@$rev} $mode${only:+ $only} SUITES_EXIT=$rc" >> ~/suite-queue.log
   ) 9> ~/suite.lock
