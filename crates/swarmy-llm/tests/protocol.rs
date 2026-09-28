@@ -322,7 +322,7 @@ fn image_request_body_for_each_protocol() {
         },
     )
     .unwrap();
-    let gemini_model = catalog.model("google", "gemini-2.5-flash").unwrap();
+    let gemini_model = catalog.model("google", "gemini-3-flash-preview").unwrap();
     let mut gemini_req = req.clone();
     gemini_req.settings.model = gemini_model.id.clone();
     let gemini = gemini::request_json(&gemini_req, "google", gemini_model).unwrap();
