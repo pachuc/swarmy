@@ -167,12 +167,11 @@ const EFFORTS: [ReasoningEffort; 7] = [
 
 impl ModelInfo {
     /// Summarization threshold in input tokens for this model.
-    /// An explicit per-model value wins; otherwise three quarters of the
-    /// context window keeps long tasks well under the provider limit.
+    /// An explicit per-model value wins; otherwise reserve 16,384 tokens.
     #[must_use]
     pub fn summarize_at_tokens(&self) -> u64 {
         self.summarize_at
-            .unwrap_or_else(|| self.limit.context - self.limit.context / 4)
+            .unwrap_or_else(|| self.limit.context.saturating_sub(16_384))
     }
 
     /// Efforts in ascending order. Budgets and toggles expose the ordinary

@@ -495,6 +495,7 @@ mod job_tests {
             step: 7,
             request_id: RequestId::for_step(session_id, 7),
             request: Request {
+                no_cache: false,
                 system_prompt: "test".into(),
                 messages: Vec::new(),
                 tools: vec![ToolDefinition {

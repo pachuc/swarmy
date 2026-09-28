@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::{
     Context, Event, HeldLease, InferenceJob, MessageId, Nudge, RequestId, Result, SessionId,
     SessionRecord, Snapshot, Timestamp, Ulid, WorkQueue, Worker, runnable_partition,
@@ -40,6 +42,92 @@ impl Worker {
             .is_some_and(|job| job.summary))
     }
 
+    /// Pi agent-session.ts:2583-2696 allows one compact-and-retry after overflow
+    /// or an early length stop. The archived predecessor records the attempt.
+    pub(super) async fn recover_context_overflow(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        snapshot: &Snapshot,
+        events: &[Event],
+    ) -> Result<bool> {
+        if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
+            return Ok(false);
+        }
+        let Some(last) = events.iter().rev().find(|event| {
+            matches!(
+                event,
+                Event::InferenceCompleted { .. } | Event::InferenceFailed { .. }
+            )
+        }) else {
+            return Ok(false);
+        };
+        let request_id = match last {
+            Event::InferenceFailed {
+                request_id,
+                error,
+                retryable: false,
+                ..
+            } if error.to_ascii_lowercase().contains("context overflow") => *request_id,
+            Event::InferenceCompleted { request_id, .. } => {
+                let Some(job) = self
+                    .store
+                    .get_inference_input::<InferenceJob>(*request_id)
+                    .await?
+                else {
+                    return Ok(false);
+                };
+                let response = self
+                    .store
+                    .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                    .await?;
+                if !response.is_some_and(|response| {
+                    response.is_ok_and(|response| {
+                        response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens
+                            && response.usage.output_tokens
+                                < job
+                                    .request
+                                    .settings
+                                    .max_output_tokens
+                                    .or_else(|| {
+                                        self.config
+                                            .catalog
+                                            .model(
+                                                self.job_provider(&job),
+                                                &job.request.settings.model,
+                                            )
+                                            .and_then(|model| model.limit.output)
+                                    })
+                                    .unwrap_or(0)
+                    })
+                }) {
+                    return Ok(false);
+                }
+                *request_id
+            }
+            _ => return Ok(false),
+        };
+        let Some(job) = self
+            .store
+            .get_inference_input::<InferenceJob>(request_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if job.summary {
+            return Ok(false);
+        }
+        if let Some(previous) = self.store.previous_session(session.session_id).await? {
+            let prior = self.store.read_events(previous, 0, 10_000).await?;
+            if prior.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))) {
+                tracing::warn!(session_id = %session.session_id, "context overflow recovery failed after one attempt");
+                return Ok(false);
+            }
+        }
+        self.issue_summary(session, lease, snapshot, events, &job, (&[], true))
+            .await
+    }
+
     /// Mid-turn checks use event usage first, avoiding store reads on every
     /// tool round. Turn-end checks also handle the summary archive path.
     pub(super) async fn summarize(
@@ -47,7 +135,7 @@ impl Worker {
         session: &mut SessionRecord,
         lease: &HeldLease,
         snapshot: &Snapshot,
-        events: &mut Vec<Event>,
+        events: &mut [Event],
         mid_turn: Option<&Event>,
     ) -> Result<bool> {
         if !matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
@@ -120,7 +208,7 @@ impl Worker {
             snapshot,
             events,
             &job,
-            mid_turn.map_or(&[][..], std::slice::from_ref),
+            (mid_turn.map_or(&[][..], std::slice::from_ref), false),
         )
         .await
     }
@@ -175,8 +263,9 @@ impl Worker {
         snapshot: &Snapshot,
         events: &[Event],
         job: &InferenceJob,
-        preceding: &[Event],
+        context: (&[Event], bool),
     ) -> Result<bool> {
+        let (preceding, recovery) = context;
         let mut history = snapshot.replay(events).messages().to_vec();
         for event in preceding {
             if let Event::MessageAppended { message, .. } = event {
@@ -188,6 +277,10 @@ impl Worker {
             .first()
             .and_then(|first| history.iter().position(|message| message.id == first.id))
             .unwrap_or(history.len());
+        let cut = if recovery { history.len() } else { cut };
+        if cut == 0 {
+            return Ok(false);
+        }
         let request = summary_request(
             &self.config,
             self.job_provider(job),
@@ -254,14 +347,14 @@ impl Worker {
             tracing::warn!(session_id = %session.session_id, "invalid or truncated summary; retaining current session");
             return Ok(false);
         }
+        let file_lists = file_lists(snapshot.replay(events).messages());
         let opening = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::User,
             parts: vec![swarmy_core::Part::Text {
                 text: format!(
-                    "{}{}{}",
+                    "{}{text}{file_lists}{}",
                     swarmy_harness::COMPACTION_SUMMARY_PREFIX,
-                    text,
                     swarmy_harness::COMPACTION_SUMMARY_SUFFIX
                 ),
             }],
@@ -274,17 +367,15 @@ impl Worker {
                     session.head_seq,
                     token.as_ref().context("lease released")?,
                     &opening,
-                    &Self::side_successor_tail(snapshot.replay(events).messages(), message),
+                    &Self::successor_tail(snapshot, events, message),
                 )
                 .await?
         } else {
             // Carry recent tool rounds forward so the successor keeps
             // immediate context alongside the summary; the next request stays
-            // small. A mid-task rollover ends with a synthetic continue note
-            // so the turn continues in the successor with the same pending
-            // user intent; a chat-shaped rollover waits for input.
-            let history = snapshot.replay(events).messages().to_vec();
-            let tail = Self::side_successor_tail(&history, message);
+            // small. A mid-task rollover replays the retained tool results
+            // directly, without a synthetic user instruction.
+            let tail = Self::successor_tail(snapshot, events, message);
             let (successor, archived_event) = self
                 .store
                 .summarize_side_session(
@@ -308,6 +399,18 @@ impl Worker {
         self.publish_events(session.session_id, &[archived]).await?;
         Ok(true)
     }
+    fn successor_tail(
+        snapshot: &Snapshot,
+        events: &[Event],
+        summary: &swarmy_core::Message,
+    ) -> Vec<swarmy_core::Message> {
+        // On overflow the old context cannot be replayed unchanged.
+        if events.iter().any(|event| matches!(event, Event::InferenceFailed { error, .. } if error.to_ascii_lowercase().contains("context overflow"))) {
+            return Vec::new();
+        }
+        Self::side_successor_tail(snapshot.replay(events).messages(), summary)
+    }
+
     /// Retain complete tool rounds and continue a mid-task successor without
     /// losing tool results awaiting the next inference.
     pub(super) fn side_successor_tail(
@@ -411,6 +514,9 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
     while cut < messages.len() && !is_safe_tail_cut(messages, cut) {
         cut += 1;
     }
+    if cut == 0 && messages.len() > 1 && messages[1].role == Assistant {
+        cut = 1;
+    }
     // The budget bounds what comes before the last round, never the round
     // itself: a single oversized tool result still travels with its assistant
     // call instead of orphaning the call with a synthetic error.
@@ -494,9 +600,11 @@ pub(super) fn summary_request(
     });
     let mut prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n");
     if let Some(previous) = previous {
-        prompt.push_str(&format!(
+        write!(
+            prompt,
             "<previous-summary>\n{previous}\n</previous-summary>\n\n"
-        ));
+        )
+        .expect("write to String");
     }
     prompt.push_str(if previous.is_some() {
         swarmy_harness::UPDATE_SUMMARIZATION_PROMPT
@@ -606,4 +714,57 @@ pub(super) fn summary_fits(
     }
     let estimated = chars.div_ceil(4);
     estimated.saturating_add(output) <= context
+}
+
+/// Pi utils.ts:25-94 and compaction.ts:1079-1080 track explicit file-tool paths.
+fn file_lists(messages: &[swarmy_core::Message]) -> String {
+    use std::collections::BTreeSet;
+    let (mut read, mut modified) = (BTreeSet::new(), BTreeSet::new());
+    for message in messages {
+        for part in &message.parts {
+            match part {
+                swarmy_core::Part::ToolCall { tool, input, .. } => {
+                    if let Some(path) = input.get("path").and_then(serde_json::Value::as_str) {
+                        match tool.as_str() {
+                            "read" => {
+                                read.insert(path.to_owned());
+                            }
+                            "write" | "edit" => {
+                                modified.insert(path.to_owned());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                swarmy_core::Part::Text { text }
+                    if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX) =>
+                {
+                    for (tag, paths) in
+                        [("read-files", &mut read), ("modified-files", &mut modified)]
+                    {
+                        if let Some(body) = text
+                            .split_once(&format!("<{tag}>\n"))
+                            .and_then(|(_, rest)| rest.split_once(&format!("\n</{tag}>")))
+                        {
+                            paths.extend(body.0.lines().map(str::to_owned));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    read.retain(|path| !modified.contains(path));
+    let mut result = String::new();
+    for (tag, paths) in [("read-files", &read), ("modified-files", &modified)] {
+        if !paths.is_empty() {
+            write!(
+                result,
+                "\n\n<{tag}>\n{}\n</{tag}>",
+                paths.iter().cloned().collect::<Vec<_>>().join("\n")
+            )
+            .expect("write to String");
+        }
+    }
+    result
 }

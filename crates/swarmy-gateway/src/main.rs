@@ -75,11 +75,6 @@ fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
     }
 }
 
-/// Default side-session threshold in input tokens when the catalog has no
-/// window for the model. This mirrors the worker default so the gateway
-/// diverts the same completions the worker would summarize.
-const DEFAULT_SIDE_SUMMARIZE_AT_TOKENS: u64 = 400_000;
-
 /// The fake provider yields whole parts without streaming text deltas, so a
 /// completed part is the first observable content for those turns.
 fn part_has_content(part: &swarmy_core::Part) -> bool {
@@ -1101,20 +1096,14 @@ impl Gateway {
         Ok(())
     }
 
-    /// Warning level at 75 percent of the side-session threshold, mirroring
-    /// the worker so the gateway only diverts completions that could warn or
-    /// summarize. An explicit override wins, then a stack-wide window
-    /// override, then the catalog value, else a conservative default.
-    fn side_pressure_threshold(&self, provider: &str, model: &str) -> u64 {
-        let threshold = self
-            .summarize_at_tokens
+    fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
+        self.summarize_at_tokens
             .or_else(|| {
                 self.model_context_window_tokens
-                    .map(|context| context - context / 4)
+                    .map(|context| context.saturating_sub(16_384))
             })
             .or_else(|| self.providers.catalog.summarize_at(provider, model))
-            .unwrap_or(DEFAULT_SIDE_SUMMARIZE_AT_TOKENS);
-        threshold - threshold / 4
+            .unwrap_or(u64::MAX)
     }
 
     async fn terminal_snapshot(
@@ -1148,7 +1137,7 @@ impl Gateway {
                 Event::InferenceFailed { .. } => return Ok(None),
                 _ => 0,
             };
-            if input >= self.side_pressure_threshold(provider, &job.request.settings.model) {
+            if input >= self.side_summarization_threshold(provider, &job.request.settings.model) {
                 return Ok(None);
             }
         }

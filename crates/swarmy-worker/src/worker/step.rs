@@ -264,6 +264,12 @@ impl Worker {
         {
             return Ok(None);
         }
+        if self
+            .recover_context_overflow(session, lease, &snapshot, events)
+            .await?
+        {
+            return Ok(None);
+        }
         if self.summary_completed(session, events).await? {
             if let Some(Event::InferenceFailed {
                 error,
