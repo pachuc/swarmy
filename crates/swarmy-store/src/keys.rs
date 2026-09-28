@@ -250,6 +250,7 @@ const INFERENCE_BREAKER: &str = "inference_breaker";
 const INFERENCE_CLAIM: &str = "inference_claim";
 const INFERENCE_INPUT: &str = "inference_input";
 const INFERENCE_REQUEST: &str = "inference_request";
+const INFERENCE_RETRY: &str = "inference_retry";
 const INFERENCE_RESULT: &str = "inference_result";
 const INFERENCE_WAIT: &str = "inference_wait";
 const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
@@ -1012,6 +1013,11 @@ impl<'a> Keys<'a> {
     pub(crate) fn inference_request_space(&self) -> Subspace {
         self.root.subspace(&(INFERENCE_REQUEST,))
     }
+    pub(crate) fn inference_retry(&self, id: RequestId) -> Vec<u8> {
+        self.root
+            .subspace(&(INFERENCE_RETRY,))
+            .pack(&(id.as_bytes().as_slice(),))
+    }
     pub(crate) fn inference_claim(&self, id: RequestId) -> Vec<u8> {
         self.inference_claim_space()
             .pack(&(id.as_bytes().as_slice(),))
@@ -1283,6 +1289,7 @@ mod registry_tests {
             ("inference_claim", keys.inference_claim(requestid)),
             ("inference_input", keys.inference_input(requestid)),
             ("inference_request", keys.inference_request(requestid)),
+            ("inference_retry", keys.inference_retry(requestid)),
             ("inference_result", keys.inference_result(requestid)),
             ("inference_wait", keys.inference_wait(sessionid)),
             ("inference_wait_due", keys.inference_wait_due(at, sessionid)),
