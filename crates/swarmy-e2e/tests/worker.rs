@@ -1684,6 +1684,37 @@ async fn check_overflow_recovery(second_overflow: bool) {
 }
 
 #[tokio::test]
+async fn early_length_stop_compacts_without_replaying_truncated_reply() {
+    run(|f| Box::pin(async move {
+        f.provider = "openai".into();
+        f.keyring();
+        f.put_entry("primary").await;
+        let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
+        truncated.stop_reason = StopReason::MaxOutputTokens;
+        truncated.usage.output_tokens = 1;
+        let summary = "## Goal\nFinish the work\n\n## Next Steps\n- Retry";
+        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
+            "responses": {"0": truncated, "1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)}
+        })).unwrap()).unwrap();
+        let image = image_fixture::image(&f.store).await;
+        let agent = f.store.create_agent("length-agent", image, "", Timestamp::now(), None).await.unwrap();
+        let id = side_id();
+        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
+        f.compactable_user_message(id).await;
+        f.start("swarmy-scheduler", None);
+        f.start("swarmy-worker", None);
+        f.start("swarmy-gateway", None);
+        f.wake(id).await;
+        let successor = wait_successor(f, id).await;
+        let events = f.idle(successor).await;
+        assert_eq!(f.calls(), 3);
+        assert!(read_all_events(f, id).await.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT")))));
+        assert!(!successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("TRUNCATED_ATTEMPT")))));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+    })).await;
+}
+
+#[tokio::test]
 async fn empty_summary_preserves_session() {
     rejected_summary_preserves_session("", StopReason::EndTurn).await;
 }
