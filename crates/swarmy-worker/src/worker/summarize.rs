@@ -271,8 +271,8 @@ impl Worker {
                 return Ok(false);
             }
             if !job.summary_prefix {
-                let (history, _) = self.compaction_history(snapshot, events).await?;
-                let cut = raw_cut(&history);
+                let (history, recovery) = self.compaction_history(snapshot, events).await?;
+                let cut = compaction_cut(&history, recovery);
                 if let Some(start) = split_turn_start(&history, cut) {
                     if !message.as_ref().is_some_and(|message| {
                         valid_summary(&summary_text(message), message, Some(&Ok(response.clone())))
@@ -402,7 +402,7 @@ impl Worker {
         {
             history.retain(|kept| kept.id != message.id);
         }
-        let cut = raw_cut(&history);
+        let cut = compaction_cut(&history, recovery);
         if cut == 0 {
             return Ok(false);
         }
@@ -412,7 +412,7 @@ impl Worker {
                 prefix_summary_request(
                     &self.config,
                     self.job_provider(job),
-                    &history[..cut],
+                    &history[start..cut],
                     job.request.settings.clone(),
                 )
             } else {
@@ -487,7 +487,7 @@ impl Worker {
         let (text, history, recovery) = self
             .archived_history(snapshot, events, job, message, text)
             .await?;
-        let cut = raw_cut(&history);
+        let cut = compaction_cut(&history, recovery);
         let file_lists = file_lists(&history[..cut]);
         let tail = history[cut..].to_vec();
         let opening = swarmy_core::Message {
@@ -691,6 +691,19 @@ fn raw_cut(history: &[swarmy_core::Message]) -> usize {
         .unwrap_or(history.len())
 }
 
+/// Keep the current user request in the retry context even when its tool
+/// output exceeds the target tail size.
+fn compaction_cut(history: &[swarmy_core::Message], recovery: bool) -> usize {
+    let cut = raw_cut(history);
+    if !recovery {
+        return cut;
+    }
+    history.iter().rposition(|message| {
+        message.role == swarmy_core::MessageRole::User
+            && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::Text { text } if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)))
+    }).map_or(cut, |user| cut.min(user))
+}
+
 /// Pi compaction.ts:453-508 splits when the active turn began before the cut.
 fn split_turn_start(history: &[swarmy_core::Message], cut: usize) -> Option<usize> {
     if cut >= history.len() || history[cut].role == swarmy_core::MessageRole::User {
@@ -806,8 +819,6 @@ pub(super) fn select_side_tail(messages: &[swarmy_core::Message]) -> Vec<swarmy_
             .cloned()
             .map_or_else(Vec::new, |message| vec![message]);
     }
-    // Keep at least the last complete tool round: the latest assistant
-    // message carrying tool calls plus the tool results after it.
     if let Some(round) = round
         && cut > round
     {
@@ -1208,6 +1219,18 @@ mod pi_compaction_tests {
         assert!(text.starts_with("# Conversation\n[User]: Keep working"));
         assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
         assert!(prefix.tools.is_empty() && prefix.no_cache);
+    }
+
+    #[test]
+    fn overflow_tail_keeps_latest_user_even_with_oversized_tool_round() {
+        let mut history = vec![text(MessageRole::User, "Earlier task")];
+        history.extend((0..30).map(|_| text(MessageRole::Assistant, &"x".repeat(3_000))));
+        history.push(text(MessageRole::User, "Retry this request"));
+        history.extend((0..30).map(|_| text(MessageRole::Assistant, &"x".repeat(3_000))));
+        let normal = compaction_cut(&history, false);
+        let recovery = compaction_cut(&history, true);
+        assert!(normal > 31);
+        assert_eq!(recovery, 31);
     }
 
     #[test]

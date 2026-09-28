@@ -2211,7 +2211,7 @@ fn assert_successor_opening(new_events: &[Event], summary: &str) {
         &format!(
             "{}{}{}",
             "The conversation history before this point was compacted into the following summary:\n\n<summary>\n",
-            summary,
+            &format!("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n{summary}"),
             "\n</summary>"
         )
     );
