@@ -10,8 +10,8 @@ use anyhow::Result;
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 use super::{
-    Cloud, Host, Machine, MachineSpec, ObjectBucket, down, retry_profile_propagation, state::State,
-    up, wait_running,
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, down, retry_profile_propagation,
+    state::State, up, wait_running,
 };
 
 #[derive(Default)]
@@ -19,6 +19,8 @@ struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
     teardown: RefCell<Vec<String>>,
     absent: Cell<bool>,
+    untagged: Cell<bool>,
+    tagged: RefCell<Vec<String>>,
     bucket_ensures: RefCell<Vec<(String, String, String)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
@@ -113,11 +115,44 @@ impl Cloud for FakeCloud {
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
     }
-    fn delete_bucket(&self, name: &str) -> impl Future<Output = Result<bool>> {
+    fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
+        std::future::ready(Ok(if self.absent.get() {
+            Ownership::Absent
+        } else if self.untagged.get() {
+            Ownership::Unmanaged
+        } else {
+            Ownership::Owned
+        }))
+    }
+    fn role_ownership(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> impl Future<Output = Result<(Ownership, Ownership)>> {
+        let status = if self.absent.get() {
+            Ownership::Absent
+        } else if self.untagged.get() {
+            Ownership::Unmanaged
+        } else {
+            Ownership::Owned
+        };
+        std::future::ready(Ok((status, status)))
+    }
+    fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+        self.tagged.borrow_mut().push(format!("bucket {name}"));
+        std::future::ready(Ok(()))
+    }
+    fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+        self.tagged
+            .borrow_mut()
+            .push(format!("role and profile {name}"));
+        std::future::ready(Ok(()))
+    }
+    fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
         self.teardown.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(!self.absent.get()))
     }
-    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<(bool, bool)>> {
+    fn delete_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<(bool, bool)>> {
         self.teardown.borrow_mut().push(format!("role {name}"));
         std::future::ready(Ok((!self.absent.get(), !self.absent.get())))
     }
@@ -1609,9 +1644,169 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
     assert!(state.read("cleanup").unwrap().is_none());
 }
 
-#[test]
-fn down_requires_confirmation_for_json_and_non_terminal_calls() {
-    assert!(down::confirm(false, false, true).is_err());
-    assert!(down::confirm(true, false, true).is_ok());
-    assert!(down::confirm(false, true, true).is_ok());
+#[tokio::test]
+async fn down_requires_confirmation_for_json_and_non_terminal_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    assert!(
+        down::confirm(&cloud, &state, &node, false, false, true)
+            .await
+            .is_err()
+    );
+    assert!(
+        down::confirm(&cloud, &state, &node, true, false, true)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn down_leaves_untagged_resources_and_removes_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    cloud.untagged.set(true);
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(state.read("cleanup").unwrap().is_none());
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|call| call.starts_with("bucket ") || call.starts_with("role "))
+    );
+}
+
+#[tokio::test]
+async fn down_refuses_bucket_shared_by_another_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    let mut other = node.clone();
+    other.name = "other".into();
+    state.save(&other).unwrap();
+    cloud.observations.borrow_mut().push_back(None);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|call| call == "bucket test-bucket")
+    );
+    assert!(state.read("other").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confirmations() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &FakeHost::default(),
+        &state,
+        &RemoteSettings {
+            bucket: Some("test-bucket".into()),
+            ..settings()
+        },
+        up::NewNode {
+            name: "cleanup",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.require("cleanup").unwrap();
+    let mut prompted = Vec::new();
+    down::tag_with_confirmation(&cloud, &state, &node, |kind, name| {
+        prompted.push((kind.to_owned(), name.to_owned()));
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        prompted,
+        [
+            ("bucket".into(), "test-bucket".into()),
+            ("role".into(), "swarmy-cleanup".into()),
+            ("instance profile".into(), "swarmy-cleanup".into())
+        ]
+    );
+    assert_eq!(
+        *cloud.tagged.borrow(),
+        ["bucket test-bucket", "role and profile swarmy-cleanup"]
+    );
+    assert!(
+        down::tag_with_confirmation(&cloud, &state, &node, |_, _| anyhow::bail!("no"))
+            .await
+            .is_err()
+    );
+    assert_eq!(cloud.tagged.borrow().len(), 2);
 }

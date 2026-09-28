@@ -228,7 +228,16 @@ provider teardown queries with the run. Remove the rule even after a failure.
 ## Persistent object storage
 
 Pass `--bucket NAME` to `swarmy remote up` (or set `[remote] bucket = "NAME"`).
-`remote down` empties and deletes the bucket, including previous object versions.
+`remote down` empties and deletes the bucket, including previous object versions,
+only if both `managed-by=swarmy` and `swarmy-remote=NAME` tags match. It also
+checks that no other local remote state file records the bucket. Untagged or
+mismatched resources are left in place with a message; local state is still
+removed. A remote created before ownership tags were introduced needs manual
+migration: inspect the exact bucket, role, and instance profile in its local
+state and run `swarmy remote tag NAME` interactively. Type each resource name
+to authorize tagging; never adopt a resource belonging to another swarm. The
+command will not run without a terminal. Newly created resources are tagged
+by `remote up`; already-existing resources are not silently adopted.
 Use `remote down --keep-bucket` to retain the bucket, role, and instance profile
 as a fallback. The instance profile grants access only to that
 bucket. Only the services on the nodes talk to S3, using the instance role;
@@ -245,7 +254,7 @@ Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`, `iam:DetachRolePolicy`, `iam:DeleteRolePolicy`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
-`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+`iam:DeleteInstanceProfile`, `iam:TagRole`, `iam:TagInstanceProfile`, `s3:GetBucketTagging`, `s3:PutBucketTagging`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
 
 ## Costs and recovery
 
@@ -515,7 +524,9 @@ volume and key-pair lists. `down` waits for termination, deletes imported keys,
 empties and deletes its bucket, removes the instance profile and role,
 and removes local state. Use `--keep-bucket` to leave the bucket and its
 guarding role and instance profile intact. Without that flag, `down` asks for
-confirmation on a terminal; `--json` requires `--yes`. It permanently deletes this stack's backing data;
+confirmation naming every owned resource it will delete on a terminal; `--json`
+requires `--yes` when there are owned resources to remove. `--keep-bucket`
+terminates the instances without a prompt. It permanently deletes this stack's backing data;
 checkpoints here do not survive teardown of the first node. Failed provisioning
 retains its state for `remote down`; failed cleanup retains state for retry.
 Never delete that state to work around an error while resources still exist.

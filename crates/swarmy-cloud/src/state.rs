@@ -58,6 +58,23 @@ impl State {
             .with_context(|| format!("no remote node named {name}; run swarmy remote up {name}"))
     }
 
+    /// Refuse bucket deletion while any other saved remote still refers to it.
+    pub fn bucket_shared(&self, owner: &str, bucket: &str) -> Result<bool> {
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)
+                .with_context(|| format!("reading remote state {}", path.display()))?;
+            if other.name != owner && other.bucket() == Some(bucket) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn save(&self, node: &RemoteNode) -> Result<()> {
         let path = self.path(&node.name, "json")?;
         let mut bytes = serde_json::to_vec_pretty(node)?;

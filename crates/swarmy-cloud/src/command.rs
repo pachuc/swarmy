@@ -68,6 +68,8 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Explicitly adopt an older remote's bucket, role, and profile for teardown
+    Tag { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
     Connect { name: String },
     /// Stop the recorded SSH tunnel

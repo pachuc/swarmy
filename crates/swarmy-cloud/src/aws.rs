@@ -9,7 +9,7 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{Cloud, Machine, MachineSpec, ObjectBucket, retry_profile_propagation};
+use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation};
 
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
@@ -33,6 +33,22 @@ impl Aws {
             s3: aws_sdk_s3::Client::new(&config),
             iam: aws_sdk_iam::Client::new(&config),
         }
+    }
+
+    async fn write_bucket_tags(&self, name: &str, owner: &str) -> Result<()> {
+        self.s3
+            .put_bucket_tagging()
+            .bucket(name)
+            .tagging(
+                aws_sdk_s3::types::Tagging::builder()
+                    .tag_set(s3_tag("managed-by", "swarmy"))
+                    .tag_set(s3_tag("swarmy-remote", owner))
+                    .build()?,
+            )
+            .send()
+            .await
+            .context("s3:PutBucketTagging")?;
+        Ok(())
     }
 
     async fn delete_role_policies(&self, name: &str) -> Result<()> {
@@ -69,7 +85,8 @@ impl Aws {
                 break;
             }
             for policy in policies.attached_policies() {
-                if let Some(arn) = policy.policy_arn() {
+                let arn = policy.policy_arn().context("attached policy has no ARN")?;
+                {
                     self.iam
                         .detach_role_policy()
                         .role_name(name)
@@ -83,7 +100,7 @@ impl Aws {
         Ok(())
     }
 
-    async fn ensure_bucket_exists(&self, bucket: &str, region: &str) -> Result<()> {
+    async fn ensure_bucket_exists(&self, bucket: &str, region: &str, owner: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
         let mut created = false;
         match location {
@@ -115,6 +132,7 @@ impl Aws {
                     .await
                     .context("s3:CreateBucket (bucket may belong to another account)")?;
                 created = true;
+                self.write_bucket_tags(bucket, owner).await?;
             }
             Err(error) => {
                 return Err(error)
@@ -183,7 +201,7 @@ impl Aws {
         Ok(())
     }
 
-    async fn ensure_profile(&self, bucket: &str, role: &str) -> Result<()> {
+    async fn ensure_profile(&self, bucket: &str, role: &str, owner: &str) -> Result<()> {
         let mut created = false;
         let existing = self.iam.get_role().role_name(role).send().await;
         if let Err(error) = existing {
@@ -196,6 +214,8 @@ impl Aws {
             }
             self.iam.create_role().role_name(role)
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
+                .tags(iam_tag("managed-by", "swarmy"))
+                .tags(iam_tag("swarmy-remote", owner))
                 .send().await.context("iam:CreateRole")?;
             created = true;
         }
@@ -227,6 +247,8 @@ impl Aws {
                 self.iam
                     .create_instance_profile()
                     .instance_profile_name(role)
+                    .tags(iam_tag("managed-by", "swarmy"))
+                    .tags(iam_tag("swarmy-remote", owner))
                     .send()
                     .await
                     .context("iam:CreateInstanceProfile")?;
@@ -252,6 +274,37 @@ impl Aws {
             tokio::time::sleep(Duration::from_secs(20)).await;
         }
         Ok(())
+    }
+}
+
+fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
+    aws_sdk_iam::types::Tag::builder()
+        .key(key)
+        .value(value)
+        .build()
+        .expect("tag fields")
+}
+
+fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
+    aws_sdk_s3::types::Tag::builder()
+        .key(key)
+        .value(value)
+        .build()
+        .expect("tag fields")
+}
+
+fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
+    let tags: Vec<_> = tags.collect();
+    if tags
+        .iter()
+        .any(|(key, value)| *key == "managed-by" && *value == "swarmy")
+        && tags
+            .iter()
+            .any(|(key, value)| *key == "swarmy-remote" && *value == owner)
+    {
+        Ownership::Owned
+    } else {
+        Ownership::Unmanaged
     }
 }
 
@@ -327,13 +380,14 @@ fn bucket_policy(bucket: &str) -> serde_json::Value {
 
 impl Cloud for Aws {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.ensure_bucket_exists(&bucket.name, &bucket.region)
+        self.ensure_bucket_exists(&bucket.name, &bucket.region, &bucket.owner)
             .await?;
         let role = bucket
             .node_credentials
             .clone()
             .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
-        self.ensure_profile(&bucket.name, &role).await
+        self.ensure_profile(&bucket.name, &role, &bucket.owner)
+            .await
     }
 
     async fn base_image(&self) -> Result<String> {
@@ -468,8 +522,112 @@ impl Cloud for Aws {
         }
     }
 
-    async fn delete_bucket(&self, name: &str) -> Result<bool> {
+    async fn bucket_ownership(&self, name: &str, owner: &str) -> Result<Ownership> {
+        let output = match self.s3.get_bucket_tagging().bucket(name).send().await {
+            Ok(output) => output,
+            Err(error) => {
+                return match error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                {
+                    Some("NoSuchBucket") => Ok(Ownership::Absent),
+                    Some("NoSuchTagSet") => Ok(Ownership::Unmanaged),
+                    _ => Err(error).context("s3:GetBucketTagging"),
+                };
+            }
+        };
+        Ok(owned(
+            output.tag_set().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        ))
+    }
+
+    async fn role_ownership(&self, name: &str, owner: &str) -> Result<(Ownership, Ownership)> {
+        let profile = match self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+        {
+            Ok(output) => output
+                .instance_profile
+                .map_or(Ownership::Absent, |profile| {
+                    owned(
+                        profile.tags().iter().map(|tag| (tag.key(), tag.value())),
+                        owner,
+                    )
+                }),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                Ownership::Absent
+            }
+            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+        };
+        let role = match self.iam.get_role().role_name(name).send().await {
+            Ok(output) => output.role.map_or(Ownership::Absent, |role| {
+                owned(
+                    role.tags().iter().map(|tag| (tag.key(), tag.value())),
+                    owner,
+                )
+            }),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                Ownership::Absent
+            }
+            Err(error) => return Err(error).context("iam:GetRole"),
+        };
+        Ok((profile, role))
+    }
+
+    async fn tag_bucket(&self, name: &str, owner: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.bucket_ownership(name, owner).await? != Ownership::Absent,
+            "bucket is absent"
+        );
+        self.write_bucket_tags(name, owner).await
+    }
+
+    async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
+        let (profile, role) = self.role_ownership(name, owner).await?;
+        anyhow::ensure!(
+            profile != Ownership::Absent && role != Ownership::Absent,
+            "role or instance profile is absent"
+        );
+        self.iam
+            .tag_role()
+            .role_name(name)
+            .tags(iam_tag("managed-by", "swarmy"))
+            .tags(iam_tag("swarmy-remote", owner))
+            .send()
+            .await
+            .context("iam:TagRole")?;
+        self.iam
+            .tag_instance_profile()
+            .instance_profile_name(name)
+            .tags(iam_tag("managed-by", "swarmy"))
+            .tags(iam_tag("swarmy-remote", owner))
+            .send()
+            .await
+            .context("iam:TagInstanceProfile")?;
+        Ok(())
+    }
+
+    async fn delete_bucket(&self, name: &str, owner: &str) -> Result<bool> {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+        match self.bucket_ownership(name, owner).await? {
+            Ownership::Absent => return Ok(false),
+            Ownership::Unmanaged => anyhow::bail!("bucket ownership tags do not match"),
+            Ownership::Owned => {}
+        }
         let mut count = 0usize;
         // Re-read the first page after every deletion. Markers would skip keys
         // when the page just deleted changes the listing beneath the cursor.
@@ -545,7 +703,12 @@ impl Cloud for Aws {
         }
     }
 
-    async fn delete_node_role(&self, name: &str) -> Result<(bool, bool)> {
+    async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
+        let (profile_status, role_status) = self.role_ownership(name, owner).await?;
+        anyhow::ensure!(
+            profile_status != Ownership::Unmanaged && role_status != Ownership::Unmanaged,
+            "IAM ownership tags do not match"
+        );
         let profile = match self
             .iam
             .get_instance_profile()
