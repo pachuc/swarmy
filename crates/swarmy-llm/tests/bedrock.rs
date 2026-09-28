@@ -17,6 +17,7 @@ async fn live_bedrock_turn() {
     });
     model.limit.output = Some(1024);
     let request = Request {
+        no_cache: false,
         system_prompt: "Reply briefly.".into(),
         messages: vec![Message {
             id: MessageId::from_ulid(ulid::Ulid::nil()),

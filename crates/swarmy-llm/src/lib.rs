@@ -163,6 +163,9 @@ pub struct InferenceJob {
     /// Index into the resolved route for this attempt.
     #[serde(default)]
     pub route_step: u32,
+    /// Compaction job marker, independent of its system prompt.
+    #[serde(default)]
+    pub summary: bool,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -203,6 +206,9 @@ pub struct Request {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub settings: GenerationSettings,
+    /// Disable provider prompt-cache writes for one-off summarization.
+    #[serde(default)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -480,6 +486,7 @@ mod job_tests {
     fn inference_jobs_with_tool_schemas_round_trip() {
         let session_id = SessionId::from_ulid(ulid::Ulid::generate());
         let job = InferenceJob {
+            summary: false,
             provider: "fake".into(),
             entry: Some("primary".into()),
             route: Some("fallback".into()),

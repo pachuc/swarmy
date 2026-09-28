@@ -338,6 +338,7 @@ mod tests {
                 .await;
         }
         let request = || Request {
+            no_cache: false,
             system_prompt: String::new(),
             messages: vec![],
             tools: vec![],

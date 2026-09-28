@@ -61,6 +61,7 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     // collect repository instructions, but route resolution must add none.
     f.worker.session_display(&session).await.unwrap();
     let mut request = swarmy_llm::Request {
+        no_cache: false,
         system_prompt: String::new(),
         messages: Vec::new(),
         tools: Vec::new(),

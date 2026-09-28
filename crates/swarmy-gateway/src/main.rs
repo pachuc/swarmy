@@ -456,6 +456,7 @@ impl Gateway {
             "stored inference selection differs from delivery"
         );
         let stored = InferenceJob {
+            summary: request.no_cache,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,
@@ -1324,6 +1325,7 @@ mod retry_tests {
             .unwrap();
         runtime.block_on(async {
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1352,6 +1354,7 @@ mod retry_tests {
         runtime.block_on(async {
             use swarmy_llm::Provider as _;
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1400,6 +1403,7 @@ mod retry_tests {
         runtime.block_on(async {
             use swarmy_llm::Provider as _;
             let request = swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),
@@ -1542,10 +1546,12 @@ mod retry_tests {
         let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let step = 1;
         swarmy_llm::InferenceJob {
+            summary: false,
             session_id,
             step,
             request_id: swarmy_core::RequestId::for_step(session_id, step),
             request: swarmy_llm::Request {
+                no_cache: false,
                 system_prompt: String::new(),
                 messages: Vec::new(),
                 tools: Vec::new(),

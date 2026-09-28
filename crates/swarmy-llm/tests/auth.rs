@@ -31,6 +31,7 @@ fn jwt(account: &str) -> String {
 }
 fn request() -> Request {
     Request {
+        no_cache: false,
         system_prompt: "Be brief.".into(),
         messages: vec![],
         tools: vec![],
