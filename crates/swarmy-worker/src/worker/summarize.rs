@@ -154,7 +154,7 @@ impl Worker {
                 if let Event::InferenceCompleted { request_id, .. } = event
                     && let Some(Ok(response)) = self
                         .store
-                        .get_inference_result::<Result<swarmy_llm::Response, String>>(*request_id)
+                        .get_inference_result::<Result<swarmy_llm::Response, String>>(request_id)
                         .await?
                     && response.stop_reason != swarmy_llm::StopReason::MaxOutputTokens
                 {
