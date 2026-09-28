@@ -1865,7 +1865,8 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
         let mut summary_response = side_response(summary.into(), 20);
         summary_response.stop_reason = stop_reason;
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response}
+            "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response,
+                "2": side_response("Next answer".into(), 20)}
         })).unwrap()).unwrap();
         let image = image_fixture::image(&f.store).await;
         let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
@@ -1880,6 +1881,13 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
         assert_eq!(f.calls(), 2);
         assert!(f.store.next_session(id).await.unwrap().is_none());
         assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer")))));
+        f.user_message(id).await;
+        f.wake(id).await;
+        f.idle(id).await;
+        assert_eq!(f.calls(), 3);
+        let next_prompt = f.histories().pop().expect("next inference prompt");
+        assert!(next_prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer"))));
+        assert!(!next_prompt.iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == summary))));
     })).await;
 }
 
