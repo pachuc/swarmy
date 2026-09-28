@@ -16,7 +16,7 @@ impl Config {
         let settings = swarmy_config::Settings::load()?.settings;
         Ok(Self {
             partitions: swarmy_config::parse_partitions(&settings.scheduler_partitions)
-                .map_err(anyhow::Error::msg)?,
+                .map_err(|error| anyhow::anyhow!("SWARMY_SCHEDULER_PARTITIONS: {error}"))?,
             scan_interval: interval(settings.scheduler_scan_interval_ms)?,
             resend_interval: interval(settings.scheduler_resend_interval_ms)?,
             provider: settings.provider,

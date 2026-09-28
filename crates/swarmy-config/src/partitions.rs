@@ -19,7 +19,7 @@ pub fn parse_partitions(value: &str) -> Result<BTreeSet<u16>, String> {
         let (first, last) = (parse(first)?, parse(last)?);
         if first > last || last >= RUNNABLE_PARTITIONS {
             return Err(format!(
-                "{value}: partitions must be in 0-{} with ascending ranges",
+                "partitions must be in 0-{} with ascending ranges",
                 RUNNABLE_PARTITIONS - 1
             ));
         }

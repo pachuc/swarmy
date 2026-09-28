@@ -80,7 +80,7 @@ impl Config {
                 max_deliver: settings.bus_max_deliver,
             },
             partitions: swarmy_config::parse_partitions(&settings.worker_partitions)
-                .map_err(anyhow::Error::msg)?,
+                .map_err(|error| anyhow::anyhow!("SWARMY_WORKER_PARTITIONS: {error}"))?,
             provider,
             lease_duration: duration(settings.worker_lease_ms)?,
             placement_lease: Duration::from_secs(settings.placement_lease_seconds.get()),
