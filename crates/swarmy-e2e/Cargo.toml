@@ -34,7 +34,6 @@ foundationdb.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 jiff.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

@@ -4345,7 +4345,6 @@ dependencies = [
  "jiff",
  "object_store",
  "portable-pty",
- "serde",
  "serde_json",
  "swarmy-api",
  "swarmy-api-types",

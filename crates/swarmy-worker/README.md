@@ -129,14 +129,11 @@ use distinct wording about the final checkpoint.
 waiting-inference publication gap. An instrumented process exits at its first
 matching point; restart it without the variable to resume processing.
 
-`cargo test --workspace --locked` builds the service binaries used by the
-integration tests. For a package-only run, first use
-`cargo build --workspace --bins --locked`, then
-`cargo test -p swarmy-worker --locked`. Tests locate scheduler and gateway binaries
-beside Cargo's `CARGO_BIN_EXE_swarmy-worker` executable. Each test uses a fresh ULID
-for its store directory and bus prefix, kills its child processes, and removes
-its snapshots, database directory, and NATS streams. Tests skip with an explanation when
-FoundationDB, NATS, or S3 connection settings are absent.
+Build sibling binaries with `cargo build --workspace --locked`, then run
+`cargo test --locked -p swarmy-e2e --test worker -- --test-threads=1` against
+the dev stack (`scripts/dev-stack.sh start; source .dev/env`). The store unit
+tests remain in `swarmy-store`; the real-binary worker suite lives in
+`crates/swarmy-e2e/tests/worker.rs` and skips without service settings.
 
 The integration suite covers a scripted clock-tool turn, every logged event on
 the live subject, SIGKILL/restart between turns with snapshot replay, unknown-tool

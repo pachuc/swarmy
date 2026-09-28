@@ -1,8 +1,7 @@
 # Remote development nodes
 
-For the complete laptop-to-chat workflow, credential handling, costs, and
-teardown queries, start with [the developer guide](DEV.md#remote-node-workflow).
-This page describes provisioning and the saved node state.
+This is the operations guide for provisioning, upgrades, recovery and teardown.
+For fleet-driver commands see [fleet-runbook.md](fleet-runbook.md).
 
 Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
 EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
@@ -10,14 +9,12 @@ NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
 `images/base-ubuntu` as root with `/etc/swarmy/node.env` and registers
 `base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
 the image build duration is printed separately from the total provisioning time.
-The local machine needs `ssh`,
-`ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
+The default laptop-services mode runs scheduler, worker, and gateway on the
+client, while `--services node` runs them under systemd on the control node.
+The local machine needs `ssh`, `ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
 provides the `remote` subcommands below; `make install-client` enables it,
 while a plain `cargo build` leaves it out for the slimmer node binary and
 such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
-The current FoundationDB client additionally connects to the advertised private
-address on TCP 4500; the client machine needs a route to it. The SSH coordinator
-forward alone does not establish an external-laptop deployment.
 The subnet must provide outbound internet access and the security group must
 allow SSH from your machine and between group members. All backing services
 bind to loopback. FoundationDB advertises `127.0.0.1:4500`, and every client,
@@ -248,3 +245,616 @@ Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
 `iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
 `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
 `iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+
+## Costs and recovery
+
+Check current EC2 prices for the control and sandbox shapes, plus EBS,
+object storage requests and inference. Use `--sandboxes 0` for a control-only
+node; sandbox nodes need local NVMe. Check `df -h /` for the store and
+`df -h /mnt/swarmy-local` for scratch. The collector and snapshot retention
+settings are described in [gc-benchmarks.md](gc-benchmarks.md) and
+[volume-benchmarks.md](volume-benchmarks.md).
+
+A joining node failure does not replicate the backing store: replace the
+sandbox node with `swarmy remote add-node NAME` after checking its record with
+`swarmy remote status`. If the first node fails, its development stack and
+backing data are lost unless stored elsewhere; `remote down` cleans up the
+saved deployment, and `remote up` creates a new one. Pushed branches survive.
+If the client disconnects, `swarmy remote connect NAME` restores its profile
+without stopping workers. Run `swarmy remote down NAME` only after collecting
+open work; it terminates instances and removes the managed key pair, while
+bucket resources remain for separate cleanup.
+
+## Client prerequisites
+
+From a checkout with the pinned Rust toolchain, C/C++ compiler, pkg-config,
+clang/libclang, `ssh`, `ssh-keygen`, and `rsync`, install user-owned backing
+tools and build the remote-enabled CLI:
+
+```sh
+scripts/install-dev-tools.sh
+rustup show
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked --features swarmy-cli/remote
+export PATH="$PWD/target/debug:$PATH"
+```
+
+The client itself does not link FoundationDB; a source workspace build still
+needs its library for services. Supply AWS provisioning credentials through
+the SDK credential chain, not the checkout. No local root, NBD device, cloud
+CLI, or container runtime is required by `swarmy remote`; provisioning needs
+passwordless sudo on the Ubuntu node. The supported client and supervisor
+target for this procedure is Linux x86-64. See
+[DEV.md](DEV.md) for local-stack prerequisites and
+[remote implementation](../crates/swarmy-cloud/src/lib.rs) for provisioning.
+
+## Workflow and reference procedures
+
+The following examples exercise client behavior and recovery on a disposable
+remote; the provisioning and tunnel contracts above still apply.
+
+### Up, authenticate, and chat
+
+
+```bash
+chmod 600 .swarmy/config.toml
+swarmy dev down                 # stop any local stack before reserving port 4500
+swarmy remote up demo           # builds binaries and base-ubuntu:demo; prints build times and SSH command
+swarmy remote connect demo
+swarmy auth login              # dedicated ChatGPT login, on the laptop
+swarmy dev up --remote demo
+swarmy doctor --remote demo
+swarmy remote status
+```
+
+FoundationDB must bind local `127.0.0.1:4500` exactly. A local stack using that
+port prevents a usable remote connection. Stop a conflicting local stack, disconnect, and reconnect.
+NATS and S3 alone can use automatically selected alternative local ports.
+
+`up` finishes by building `images/base-ubuntu` as root on the node using
+`/etc/swarmy/node.env`. It streams the build progress, reports its duration,
+and registers `base-ubuntu:demo`. `connect` copies that image into the remote
+profile's `default_image`, so new sessions need no image flag or local image
+configuration. Image construction needs node root; it never needs laptop root.
+`swarmy remote status` lists registered images while the remote is connected.
+
+Start a chat on the laptop and ask the agent to run `pwd` in its sandbox:
+
+```bash
+swarmy chat --remote demo
+# Alternatively, start a session and resume its printed id:
+swarmy run --remote demo 'Run pwd in the sandbox, then wait for my next instruction.'
+swarmy chat --remote demo SESSION_ID
+```
+
+Use `swarmy remote up demo --image-recipe images/custom` to build another recipe
+directory within the checkout. Relative paths are resolved from the checkout
+root; absolute paths must also be inside that checkout. The registered name
+remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
+without a saved default; provide an already registered image through `--image`
+or `default_image` before starting a new session. The two options cannot be
+combined. An explicit session `--image NAME:TAG` overrides the profile default.
+
+In the session, ask the agent to use `process_start` to run
+`python3 -u -m http.server 18765 --bind 127.0.0.1`. In the next turn ask it to
+fetch `http://127.0.0.1:18765/` with `bash` and verify the server is still listed
+by `process_list`. Then ask it to write a marker file and call `checkpoint`.
+An acknowledged checkpoint makes the disk durable; it does not save running
+processes. Escape or Ctrl-C closes chat while the session remains stored.
+
+In the older file-backed laptop-services mode, a local gateway read the
+configured credential file; current credentials are encrypted in the store. Remote provisioning
+copies the checkout while excluding `.swarmy/`, `.dev/`, `.git/`, `target/`,
+`.env`, and `.env.*`; it does not copy the laptop's home or credential cache.
+The configured credential path is also excluded from the checkout copy.
+Do not share its refresh writer with a running Codex login. Node services have
+the explicit credential-transfer option described below. Prompts, outputs, and session
+history do live in the remote backing services. The fake-provider acceptance
+run requires no ChatGPT credential; see the dated benchmark evidence.
+
+
+### Ephemeral sessions and named agents
+
+
+Without `--agent`, each new conversation gets its own computer and writable disk:
+
+```bash
+swarmy chat --remote demo
+# In another terminal, create a separate ephemeral conversation:
+swarmy chat --remote demo
+swarmy session ls --remote demo
+swarmy chat --remote demo SESSION_ID   # resume an existing conversation
+swarmy session close SESSION_ID --remote demo
+swarmy session show SESSION_ID --remote demo --json
+```
+
+Escape, Ctrl-C, or EOF in `chat --json` closes the client only. The session
+and computer remain available for resume. `session close` completes an ephemeral
+session and deletes its computer while keeping its transcript. The scheduler
+also closes Idle ephemeral sessions after 24 hours by default. For a disposable
+retention test, set the interval on the scheduler before starting services:
+
+```bash
+swarmy dev down
+SWARMY_EPHEMERAL_RETENTION_SECONDS=90 swarmy dev up --remote demo
+```
+
+This override applies to local services in the default laptop mode. Node services
+need the override in their systemd environment and a scheduler restart. The sweep
+runs every 60 seconds or every retention interval if shorter. Only idle sessions
+strictly older than the cutoff qualify; active sessions and named agents do not.
+
+Create a named agent to keep a computer independently of any one conversation:
+
+```bash
+swarmy agent create tommy --remote demo --description 'Shared development computer'
+swarmy chat --agent tommy --remote demo
+# In a second terminal, open another session on the same computer:
+swarmy chat --agent tommy --new --remote demo
+swarmy agent ls --remote demo
+swarmy agent show tommy --remote demo --json
+swarmy run --agent tommy --remote demo 'Read the files created in the other chat'
+```
+
+Ask the first chat to write a file and use `process_start` to start
+`python3 -u -m http.server 18765 --bind 127.0.0.1`. Ask the second to read that
+file, fetch the server with `curl`, and list managed processes. Both sessions
+share those files and processes. Simultaneous tool calls queue for the shared
+computer, with one call running at a time. Each conversation has its own log.
+`agent show` reports the sampled holder session, queued call count, node, epoch,
+and observation expiry, plus the last committed disk snapshot time. Missing
+or stale samples mean unknown activity. Busy includes computer startup.
+
+Creation pins `default_image` or an explicit `--image NAME:TAG`. New sessions
+on the named agent use that pin, so `--agent` cannot be combined with `--image`
+or a resume session id. Names and agent ids both work. `chat --agent` and
+`run --agent` resume the main session by default, creating it if absent. `--new`
+opens a side conversation without changing that pointer. Quitting either client
+leaves the agent available, and ephemeral retention never deletes it.
+
+Ask for `checkpoint` before the daemon-kill procedure below. After recovery,
+both transcripts receive the same rebuild notice, including idle chats. Read
+the checkpointed file from both sessions and restart the server: files survive
+at the snapshot boundary, while background processes and memory are lost.
+Then delete the shared computer:
+
+```bash
+swarmy agent delete tommy --remote demo            # interactive confirmation
+# For scripts, use --yes on the same command.
+swarmy session show FIRST_SESSION_ID --remote demo --json
+swarmy session show SECOND_SESSION_ID --remote demo --json
+```
+
+`session close` refuses the main session and points to `agent delete` instead.
+Side sessions can be closed while retaining the shared computer.
+Deletion removes the identity, placement, and disk references immediately;
+physical processes and attachments disappear on the node's next failed renewal.
+Transcripts remain readable and further sandbox tools are refused. Recreating
+`tommy` makes a new identity and computer.
+
+Chunks are reclaimed separately. On an isolated disposable stack with no
+pending writes, wait beyond a short grace window, inspect candidates, collect,
+and confirm a subsequent pass has nothing more to delete:
+
+`swarmy gc` starts the run on the control plane and follows its progress,
+so the collection policy comes from the API host's configuration, not the
+client's environment. For this disposable-stack procedure, set the short grace
+in the API service's environment and restart it first:
+
+```bash
+swarmy gc --remote demo --dry-run --json
+swarmy gc --remote demo --json
+swarmy gc --remote demo --dry-run --json
+```
+
+Use the normal six-hour grace for ongoing work. Images, other volumes, and
+retained snapshots protect shared chunks, so freed bytes need not equal the
+logical disk size. These commands report object bytes, not SeaweedFS filesystem
+space after compaction. See the dated lifecycle run in
+[volume benchmarks](volume-benchmarks.md) for transcript and reclamation evidence.
+
+
+### Add capacity and exercise recovery
+
+
+```bash
+swarmy remote add-node demo
+swarmy remote status
+swarmy remote logs demo         # Ctrl-C stops following the primary's journal
+swarmy dev logs worker          # local routing and placement diagnostics
+```
+
+`add-node` launches another `swarmyd` using the saved launch settings and the
+first node's private backing-service endpoints. It adds compute, not database
+replicas. The first node must remain available. For a controlled failure, locate
+the hosting node from worker/node logs and the saved JSON in
+`.swarmy/remote/demo.json`. SSH to that node with its saved key and address,
+then run `sudo systemctl kill --signal=SIGKILL swarmyd` **there**. The unit
+restarts automatically after five seconds. Submit another tool turn in chat;
+recovery must wait for expired placement and volume-writer leases. Check that
+the durable rebuild notice reports the restart, lost processes, and latest
+snapshot. An interrupted call may return the notice as an error; retry the
+read-only marker check after recovery. The checkpointed marker should survive;
+the HTTP server must be started again. A kill does not guarantee migration to the added node.
+
+
+### Costs, inspection, and teardown
+
+
+EC2 time, the 100 GiB gp3 root disk on each node, public IPv4 addresses, and
+applicable network transfer cost money. Instance storage is part of the instance
+allocation. Every `add-node` adds another instance and disk. Real inference also
+uses the operator's provider account. Without `--bucket`, the development stack uses SeaweedFS on the first node.
+With `--bucket`, the instance role accesses retained S3 objects. Disconnecting, closing
+chat, or stopping local services leaves cloud resources running and billable.
+
+`swarmy dev status` shows local processes. `swarmy remote status` shows saved
+instances, SSH reachability, and node heartbeat ages; it does **not** query EC2
+power state or billing. Use the AWS console or provider queries for that.
+Save the instance ids and key names before teardown, since `down` removes the
+local record. With the optional AWS CLI installed as your user:
+
+```bash
+aws ec2 describe-instances --region us-east-1 \
+  --filters Name=tag:Name,Values=demo,demo-2 \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Key:KeyName}'
+swarmy dev down
+swarmy remote disconnect demo
+swarmy remote down demo
+# Replace the following values with every id/key saved above.
+aws ec2 describe-instances --region us-east-1 --instance-ids i-<first-id> i-<second-id> \
+  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
+aws ec2 describe-volumes --region us-east-1 \
+  --filters Name=tag:Name,Values=demo,demo-2 --query 'Volumes[].VolumeId'
+aws ec2 describe-key-pairs --region us-east-1 \
+  --filters Name=key-name,Values=swarmy-FIRST,swarmy-SECOND --query 'KeyPairs[].KeyName'
+```
+
+Expect `terminated` for all recorded instances (or eventual absence), and empty
+volume and key-pair lists. `down` waits for termination, deletes imported keys,
+and removes local state. It permanently deletes this stack's backing data;
+checkpoints here do not survive teardown of the first node. Failed provisioning
+retains its state for `remote down`; failed cleanup retains state for retry.
+Never delete that state to work around an error while resources still exist.
+See the state and service contract above.
+
+
+### Tunnel and profile reference
+
+
+Only one remote tunnel can be active on the laptop: FoundationDB requires
+its local port 4500 and rejects a remapped coordinator. Disconnect the old
+remote before connecting another; the remote workers continue running while
+the laptop is disconnected.
+
+`swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
+SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
+defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
+can select another directory. Provisioning and tunnel commands share the
+`swarmy_config::RemoteNode` JSON contract. For an existing host, a state file
+can be written directly:
+
+```json
+{
+  "name": "test",
+  "region": "us-east-1",
+  "instance_id": "i-<instance-id>",
+  "public_ip": "<public-address>",
+  "private_ip": "<private-address>",
+  "key_path": "<path-to-test-key>",
+  "ssh_user": "ubuntu",
+  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
+  "nodes": [],
+  "created_at": "2026-09-16T00:00:00Z"
+}
+```
+
+```sh
+swarmy remote connect test
+swarmy dev up --remote test
+swarmy doctor --remote test
+swarmy run --remote test 'what time is it'
+swarmy chat --remote test
+swarmy remote status
+swarmy remote logs test
+swarmy dev down
+swarmy remote disconnect test
+```
+
+Selection also works with `export SWARMY_REMOTE=test` or `profile = "test"`
+in the config's `[remote]` table. The flag takes precedence over the variable,
+which takes precedence over the config setting. The selected profile overrides
+the FoundationDB cluster file, NATS URL, and S3 endpoint after other environment
+overrides. Credentials, bucket, object prefix, and store directory retain their
+normal configuration. Scheduler, worker, and gateway binaries honor the same
+variable and config setting without additional flags.
+
+Remote `dev up` starts scheduler, gateway, and worker locally only for a
+remote created with laptop services. A remote created with node services starts
+none locally, including when local service binaries are not installed. It records that
+choice so `dev down` leaves the backing services running, even without a remote
+flag. Disconnect stops only the SSH control master and removes its profile and
+cluster file; instance state and logs remain. Reconnecting a healthy tunnel is
+idempotent. SSH uses the configured identity, batch authentication, normal host
+key verification with first-use acceptance, and keepalives. SSH diagnostics are
+saved in `NAME.ssh.log`. `remote logs` follows the `swarmyd` systemd journal until
+interrupted; the SSH user needs permission to read that journal.
+
+Local ports prefer 4500, 4222, and 8333, with free ephemeral ports chosen on
+collision. All forwards bind only to `127.0.0.1`. The profile records the actual
+ports, PID, and control socket. Port selection and SSH binding cannot be atomic;
+if another process claims a selected port, SSH fails startup and no profile is
+published. Retry connect after resolving the collision.
+
+FoundationDB needs special care: the local coordinator file preserves the
+remote cluster identity and rewrites its address to the local tunnel. New
+remotes and joining nodes forward to the first node's loopback address. Its transport verifies that the connected
+port matches the server's advertised port. A remapped coordinator port fails
+that check even when the destination is localhost. The local `127.0.0.1:4500` endpoint must reach the same remote database.
+Free that port before connecting, or use a separate network namespace. Connect
+still records and opens the alternative forward for inspection, but warns;
+doctor reports the mapping failure, and configuration loading rejects it before
+starting the native client. NATS and S3 support alternative ports normally.
+See the port assertion in [FoundationDB's transport source](https://github.com/apple/foundationdb/blob/7.3.63/fdbrpc/FlowTransport.actor.cpp).
+
+Doctor verifies a real FoundationDB session read transaction and NATS
+publish/subscribe round trip through the selected profile. It fails if server
+advertising sends database traffic outside the tunnel, even when the control
+master is healthy. Database and NATS probes have eight- and five-second limits;
+S3 remains a TCP check. Joining nodes use a systemd SSH tunnel for all three
+services; see [remote provisioning](REMOTE.md).
+
+Connect prints total elapsed time, address probing time, and tunnel startup
+time. JSON adds these seconds under `timing`, alongside `reused`; an existing
+healthy tunnel reports zero for the skipped probe and startup phases.
+
+Status reports saved instance IDs and SSH reachability. An unreachable host has
+unknown instance state; this command does not query a cloud API. For each
+connected stack it scans all registered swarmyd nodes, including stale records,
+and shows heartbeat age (live means at most 30 seconds old). Registrations belong
+to the stack; they are not attributed to an instance because node records contain
+no instance address. Store failures and disconnected tunnels report unknown
+registration rather than claiming the node is absent. `--json` emits the same
+information for scripts.
+
+### Maintainer tunnel acceptance tests
+
+These localhost tests are separate from the no-root EC2 workflow above.
+To run the SSH acceptance test on the launcher, authorize a temporary SSH key for
+`ubuntu@127.0.0.1`, then run:
+
+```sh
+cargo build --workspace --locked --features swarmy-cli/remote
+scripts/dev-stack.sh start
+SWARMY_REMOTE_TEST_KEY=<path-to-test-key> scripts/test-remote.sh
+```
+
+The default run checks collisions against localhost, forwarded NATS traffic,
+profile recording, the FoundationDB mapping diagnostic, and disconnect. Full
+service acceptance needs a separate client network namespace, with the host's
+sshd reachable over a veth pair and port 4500 free in the client. For example, use an unused subnet and namespace name:
+
+```sh
+sudo ip netns add swarmy-remote-test
+sudo ip link add swarmy-host type veth peer name swarmy-client
+sudo ip link set swarmy-client netns swarmy-remote-test
+sudo ip addr add <host-veth-address>/30 dev swarmy-host
+sudo ip link set swarmy-host up
+sudo ip netns exec swarmy-remote-test ip addr add <client-veth-address>/30 dev swarmy-client
+sudo ip netns exec swarmy-remote-test ip link set swarmy-client up
+sudo ip netns exec swarmy-remote-test ip link set lo up
+sudo ip netns exec swarmy-remote-test sudo -u ubuntu env \
+  SWARMY_REMOTE_TEST_KEY=<path-to-test-key> \
+  SWARMY_REMOTE_TEST_HOST=<host-veth-address> scripts/test-remote.sh
+sudo ip netns delete swarmy-remote-test
+```
+
+That run uses an isolated project, starts the three local services, runs the
+fake provider end to end, checks doctor and a live swarmyd registration, and
+verifies that backing process IDs remain unchanged. The script removes its
+services and tunnel on exit. Without `SWARMY_REMOTE_TEST_KEY` it skips cleanly.
+Remove the temporary authorized key and network namespace after testing.
+
+
+### Running control-plane services on the node
+
+
+Laptop services are the default. They keep ChatGPT credentials local and make
+worker/gateway development convenient, but every store transaction crosses the
+tunnel. For lower turn latency, run the control plane under systemd beside the
+store:
+
+```sh
+# With provider = "fake", no credential is copied.
+swarmy remote up demo --services node
+swarmy remote connect demo
+swarmy dev up --remote demo
+swarmy chat --remote demo
+```
+
+Alternatively set `services = "node"` in `[remote]` before `remote up`.
+`--services laptop` overrides that setting. The selected mode is saved in the
+remote's launch settings; later edits to local config do not switch an existing
+node. Node mode uses the configured provider, model, reasoning effort, system
+prompt, store/bus namespace, and fake script. The fake script is sent over SSH;
+if no script exists, the default greeting script is installed.
+
+For a ChatGPT gateway, use `swarmy remote up demo --services node
+--copy-credential`. This explicit flag acknowledges that the configured
+`credential_file` leaves the laptop. A warning precedes transfer. SSH sends the
+contents on stdin, and `/etc/swarmy/auth.json` is owned by ubuntu with mode 0600.
+The ordinary checkout copy excludes the configured credential path as well as
+`.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node launch
+fails before creating resources. Do not run a laptop gateway that refreshes the
+same account concurrently. Stopping the services does not erase the copied file;
+`remote down` terminates the node and its root disk.
+
+`dev up --remote demo` stops any recorded local control-plane processes, checks
+the tunnel, and starts nothing locally in node mode. The services continue when
+the laptop disconnects. `dev down` stops only local processes; use SSH and
+`sudo systemctl stop swarmy-{scheduler,worker,gateway}` to pause node services.
+Inspect their logs with `sudo journalctl -u swarmy-worker -u swarmy-gateway
+-u swarmy-scheduler`. `remote logs` continues to follow the execution node log.
+
+Both configurations use the same port-4500 tunnel requirement, tool placement,
+rebuild notices, and teardown commands:
+
+```sh
+swarmy dev down
+swarmy remote disconnect demo
+swarmy remote down demo
+```
+
+See the dated measurements in [volume benchmarks](volume-benchmarks.md) for
+latency results and the remaining round trips. Node services are a development
+mode on one backing-store node, without replicated storage or high availability.
+
+
+
+### Agent memory files
+
+The worker includes memory files in named-agent inference, including side
+sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to
+`/home/agent/memory`, and `memory_max_bytes` (`SWARMY_MEMORY_MAX_BYTES`)
+defaults to 32768. The node reads regular files in filename order and notes
+when the byte budget truncates content; it skips directories, symlinks, and
+special files. Use an absolute directory without symlink components. See
+[worker memory handling](../crates/swarmy-worker/src/worker.rs).
+
+## Fleet-specific node operations
+
+
+
+| Piece | Value | Why |
+|---|---|---|
+| Control node | minimum `m6i.large` (8 GiB RAM), 40 GiB root disk, `--sandboxes 0` | release build needs at least 6 GiB available; node CLI omits EC2 provisioning SDKs |
+| Sandbox node | `m6id.4xlarge`, 100 GiB root disk, local NVMe | worker builds use instance-store scratch |
+| Sandboxes per sandbox node | 4 | one worker per lane |
+| Control plane | on the node (`--services node`) | the laptop can disconnect |
+| Image | `images/swarmy-dev` registered as `base-ubuntu:dev`, the node's default | toolchain, dev stack, fetched crates; no warm build |
+| Snapshots and collection | retention 3, collector grace 30 min, interval 10 min (set by provisioning) | build caches churn; ten snapshots and six hours of grace filled a 100 GB root disk in an hour |
+| Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
+| Cost | check current EC2 prices for both shapes, plus S3 and inference | separate control and sandbox nodes |
+
+The node build uses the default features, which omit provisioning commands
+and the EC2, S3, IAM, and SSM clients; those belong on the laptop, where
+`make install` builds the client with the `remote` feature. A 6 GiB fleet
+sandbox measured 957,428 KiB peak resident memory for the release build without
+the `remote` feature. The build with it reached 6,123,248 KiB in the EC2
+compiler and was killed by its memory limit. The node checks for 6 GiB
+`MemAvailable` before building; use at least an 8 GiB instance so the OS and
+backing services have room too. Inference's Bedrock SDK remains part of the
+session binary; the node build omits the provisioning clients, not inference.
+
+Observed with three workers building at once: 3 GiB used, load 4. The root
+disk, which holds the node's object store, filled to 96 percent within an
+hour because every build cache chunk was uploaded and kept; scratch mounts
+(a dev-fleet task) move caches off the durable volume, and the retention and
+collection settings above bound what remains. Watch `df -h /` on the node
+until scratch lands.
+
+### Fleet bring-up
+
+1. Local config: `.swarmy/config.toml` has `[remote]` with region, subnet,
+   security group, and `instance_type = "m6id.2xlarge"`. The standard AWS credential chain
+   holds an identity with the EC2 permissions in this guide.
+   Run `swarmy auth login` for a permitted login; keep the local keyring private.
+2. Build and install the CLI from the commit you want the swarm to run:
+   `make install`. The version guard refuses a mismatch later.
+3. Launch the control node: `swarmy remote up dev --services node
+   --sandboxes 0 --instance-type m6i.large --disk-gb 40 --copy-credential
+   --image-recipe images/swarmy-dev --bucket <swarm-bucket>`. Then add each
+   sandbox node: `swarmy remote add-node dev --instance-type m6id.4xlarge
+   --disk-gb 100 --sandboxes 4`. The first node runs backing and control
+   services, swarmyd (for image registration), and no sandboxes; the joining
+   nodes host the sandboxes on local NVMe. For a quick single-node setup on
+   an NVMe-backed type, omit `--sandboxes 0` and the add-node commands.
+4. Connect: `swarmy remote connect dev`. FoundationDB and NATS use tunnels;
+   Only provisioning uses the laptop AWS identity; node services use the instance role for S3.
+5. Credentials go into the swarm's encrypted store, not into files:
+   `swarmy auth import --remote dev` for the ChatGPT login,
+   `swarmy auth set openrouter --file <key-file> --remote dev` for OpenRouter.
+   The gateway watches the credential store; no manual restart is needed.
+6. Check: `swarmy doctor --remote dev` shows each provider as
+   `gateway=served`; `swarmy remote status` shows the node heartbeat and the
+   image. A live turn: `swarmy --remote dev run --provider openrouter --model
+   openai/gpt-6-sol "reply with the word ready"`.
+7. Fleet config: copy `scripts/fleet/fleet.example.toml` to
+   `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod
+   600`. The file is ignored by git.
+
+
+### Disk and upgrades
+
+
+
+Build output lives in scratch on the NVMe; only clones and home files reach
+the durable volume. Three workers running full test builds hold about 110 GB
+of scratch. The collector deletes unreferenced chunks ten minutes after
+their thirty-minute grace, but SeaweedFS returns the space only when it
+compacts a volume file, on its own schedule and threshold. To get space back
+now, ask its master to compact anything more than ten percent garbage:
+
+```sh
+curl -s "127.0.0.1:9333/vol/vacuum?garbageThreshold=0.1" >/dev/null
+```
+
+Watch `df -h /` for the root disk (the store), `df -h /mnt/swarmy-local` for
+scratch, and `curl -s 127.0.0.1:9333/vol/status` for deleted bytes awaiting
+compaction. The node daemon evicts the least recently hosted scratch when
+the NVMe passes 80 percent.
+
+Snapshots of worker disks run every 30 minutes on provisioned nodes
+(`SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS=1800` in `node.env`). Each snapshot
+uploads only changed chunks, and on a real bucket every chunk is one PUT
+request, so the period is the main lever on request cost; retention of
+three snapshots plus the 30-minute collection grace keeps live data bounded
+to the disks' contents plus recent churn.
+
+### Adding a node
+
+`swarmy remote add-node dev` joins a second node to the same backing
+services and doubles the lanes; raise `workers` in `fleet.toml`. Nodes do
+not replicate the backing services: the first node holds the store.
+
+### Updating the swarm in place
+
+Commit and install the checkout you want to deploy, then run
+`swarmy remote upgrade dev`. The command prints the local and node versions,
+updates joining nodes before the first node, and copies the checkout with the
+same credential exclusions as `remote up`. It rebuilds changed binaries and
+restarts only the affected services. A changed `swarmyd` waits for managed
+sandbox commands to finish before restarting; this evicts every placement on
+that node (all idle after the drain).
+Use `--drain-timeout 1200` for long builds, or `--services-only` when node
+sandboxes must stay untouched. A dirty local checkout requires the explicit
+`--allow-dirty` acknowledgement. `--json` prints one summary per node.
+Upgrade all gateway nodes together: a new gateway migrates provider records
+to labelled entries on first read, and an old gateway sharing the store loses
+the provider once its legacy record is migrated.
+
+
+### Fleet recovery
+
+
+
+- Node died or was terminated: `swarmy remote up dev` again and repeat
+  bring-up steps 4 to 7. Everything on the node's disk is gone, including
+  the store, so workers and their caches are recreated on first launch.
+  Sessions are one pull request each, so nothing precious is lost; pushed
+  branches survive on GitHub.
+- A worker's disk in a bad state: `scripts/fleet/fleet reset worker-N`
+  deletes it; the next launch recreates it from the image.
+- The laptop closed: nothing stops. Reconnect with `swarmy remote connect
+  dev` and `fleet status`.
+- Tear down: `swarmy remote down dev` terminates the instance and deletes
+  its key pair. Collect and merge open pull requests first.
+
+
+## Root suites and the nightly timer
+
+Root-only NBD and sandbox suites are a manual operator responsibility under
+[AGENTS.md](../AGENTS.md#building-and-testing). The former nightly node-suite
+timer was removed; do not expect a scheduled root run. Use the scripts in
+[`scripts/node-suites/`](../scripts/node-suites/) on a suitable node and record
+results in the pull request. CI's reduced chaos checks are defined in
+[ci.yml](../.github/workflows/ci.yml).

@@ -101,7 +101,7 @@ is the cheaper first move.
 
 ## Related
 
-- `docs/DESIGN.md` sections 8 and 11, and the cancelled `sandbox-pause-resume`
+- `docs/ROADMAP.md`, and the cancelled `sandbox-pause-resume`
   goal in tasky, whose spec is still readable there.
 - What agent-substrate shows: both runtimes behind a pause-then-suspend model,
   request parking under saturation, golden snapshots per base image, and an

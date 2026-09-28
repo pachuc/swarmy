@@ -2,7 +2,7 @@
 //!
 //! An agent is data: an append-only event log, a snapshot, and a durable volume. This
 //! crate defines the identifiers, events, and state machines those services agree on.
-//! See `docs/DESIGN.md` for the design this crate implements.
+//! See `docs/ARCHITECTURE.md` for the design this crate implements.
 
 mod encoding;
 mod event;

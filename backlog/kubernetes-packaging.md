@@ -79,7 +79,7 @@ picked up and the team preferring operators over hand-run clusters.
 
 ## Related
 
-- `docs/DESIGN.md` section 11 (compute abstraction and substrate decision),
+- `docs/ROADMAP.md` (compute abstraction and substrate decision),
   which still names Kubernetes as the eventual substrate.
 - [control-plane-high-availability](control-plane-high-availability.md): the
   part of this item's value that can be had without Kubernetes.

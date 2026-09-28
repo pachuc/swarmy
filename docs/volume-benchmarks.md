@@ -692,7 +692,7 @@ to 1,233.974 s; the measured update/install/flush sum rose from 905.760 s to
 and accumulated 1,256.260 s of dirty-lock waiting. Both clouds retained the
 installed compiler after flush, clone, cache clearing, and reattachment.
 
-The [proposed budget in the design](DESIGN.md#74-proposed-tool-boundary-latency-budget)
+The [operational constraints](ROADMAP.md#historical-proposed-latency-budgets)
 uses the measured request costs, a 32-upload concurrency assumption, conservative
 planning throughput, and explicit metadata/freeze allowances. It targets both
 unstaged completion latency and avoidance of installation regressions. Neither
@@ -1351,7 +1351,7 @@ swarmy chat --remote no-root-proof 01M2PBXXR5TCHDEST70BZ8QCJ0
 swarmy remote add-node no-root-proof
 ```
 
-The real ChatGPT flow is documented in [DEV.md](DEV.md#remote-node-workflow).
+The real ChatGPT flow is documented in [REMOTE.md](REMOTE.md#up-authenticate-and-chat).
 There was deliberately no ChatGPT credential in this run. The gateway used the
 existing scripted fake provider from `swarmy-gateway`, with `latency_ms = 30`
 and an indexed `responses` map in `.dev/remote-fake.json`. A response has the
@@ -1934,7 +1934,7 @@ shape passes through that window three times, compared with once for text.
 The shorter timers remove most of that wait, but client polling and the
 remaining scheduling/store work still exceed the proposed budget. Immediate
 fake inference is only a small part of end-to-end time. These observations
-motivate the per-stage targets in [design section 5.1](DESIGN.md#51-turn-timeline-and-proposed-latency-budget):
+motivate the per-stage targets in [historical proposed budget](ROADMAP.md#historical-proposed-latency-budgets):
 under 100 ms locally and under three round trips plus 100 ms remotely. Neither
 configuration demonstrates that target. Meeting it needs readiness-driven
 scheduling that distinguishes new steps from resends, prompt client idle
