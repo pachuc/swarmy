@@ -163,7 +163,7 @@ impl Store {
     }
 
     /// Count provider failures by request, not by queue delivery: recovery can
-    /// publish a fresh JetStream message with delivery count one.
+    /// publish a fresh `JetStream` message with delivery count one.
     /// Returns the number of provider calls recorded for this request.
     /// # Errors
     /// Rejects a replaced claim and propagates storage failures.
@@ -175,9 +175,9 @@ impl Store {
         self.transaction(|trx| async move {
             let keys = crate::keys::Keys::new(&self.root);
             let claim_key = keys.inference_claim(claim.request_id);
-            if !read::<InferenceClaim>(&trx, &claim_key)
+            if read::<InferenceClaim>(&trx, &claim_key)
                 .await?
-                .is_some_and(|old| old.owner == claim.owner)
+                .is_none_or(|old| old.owner != claim.owner)
             {
                 return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
