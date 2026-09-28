@@ -726,6 +726,26 @@ mod tests {
     }
 
     #[test]
+    fn queued_event_has_frozen_binary_layout() {
+        let event = Event::MessageQueued {
+            seq: 1,
+            message: Message {
+                id: crate::MessageId::from_ulid(ulid::Ulid::from_bytes([0; 16])),
+                role: crate::MessageRole::User,
+                parts: vec![],
+            },
+            queued_at: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let bytes = crate::encode(&event).unwrap();
+        let mut expected = vec![1, 10, 1, 26];
+        expected.extend_from_slice(b"00000000000000000000000000");
+        expected.extend_from_slice(&[1, 0, 20]);
+        expected.extend_from_slice(b"1970-01-01T00:00:00Z");
+        assert_eq!(bytes, expected);
+        assert_eq!(crate::decode::<Event>(&bytes).unwrap(), event);
+    }
+
+    #[test]
     fn attributed_completions_default_route_fields_for_old_rows() {
         let request_id = crate::RequestId::for_step(
             crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),

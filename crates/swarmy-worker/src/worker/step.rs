@@ -141,6 +141,30 @@ impl Worker {
         }
         Ok(snapshot)
     }
+    async fn deliver_at_boundary(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+    ) -> Result<()> {
+        let delivered = {
+            let token = lease.lock().await;
+            self.store
+                .deliver_queued(
+                    session.session_id,
+                    session.head_seq,
+                    token.as_ref().context("lease released")?,
+                )
+                .await?
+        };
+        if !delivered.is_empty() {
+            session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");
+            self.publish_events(session.session_id, &delivered).await?;
+            events.extend(delivered);
+        }
+        Ok(())
+    }
+
     pub(super) async fn step(&self, ctx: &mut StepContext) -> Result<()> {
         let Some(snapshot) = self.prepare_step(ctx).await? else {
             return Ok(());
@@ -166,29 +190,9 @@ impl Worker {
             // queued user input can affect the next inference without dropping a
             // tool result or changing an already submitted request.
             if pending_inference(events).is_none() && pending_tools(events).is_empty() {
-                let delivered = {
-                    let token = lease.lock().await;
-                    self.store
-                        .deliver_queued(
-                            id,
-                            session.head_seq,
-                            token.as_ref().context("lease released")?,
-                        )
-                        .await?
-                };
-                if !delivered.is_empty() {
-                    session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");
-                    self.publish_events(id, &delivered).await?;
-                    events.extend(delivered);
-                }
+                self.deliver_at_boundary(session, lease, events).await?;
             }
-            let message_id = fold_id(
-                id,
-                session
-                    .head_seq
-                    .checked_add(1)
-                    .context("sequence overflow")?,
-            );
+            let message_id = next_fold_id(session)?;
             match self
                 .config
                 .harness
@@ -538,7 +542,11 @@ impl Worker {
         {
             return Ok(());
         }
-        events.push(folded.clone());
+        // Fold the completed tool result before accepting user input. The
+        // queue drain then commits its delivery and removal together, so a
+        // worker restart cannot replay the message twice.
+        self.append(session, lease, events, &[folded]).await?;
+        self.deliver_at_boundary(session, lease, events).await?;
         let Action::BuildInference(request) = self
             .config
             .harness
@@ -546,8 +554,7 @@ impl Worker {
         else {
             anyhow::bail!("folded tool results did not produce inference");
         };
-        self.build_inference(session, lease, &[folded], request)
-            .await
+        self.build_inference(session, lease, &[], request).await
     }
 
     pub(super) fn can_dispatch_tool(&self, call: &ToolCallRecord, display: bool) -> bool {
@@ -774,6 +781,16 @@ impl Worker {
         self.publish_events(session.session_id, &[event]).await
     }
 }
+fn next_fold_id(session: &SessionRecord) -> Result<MessageId> {
+    Ok(fold_id(
+        session.session_id,
+        session
+            .head_seq
+            .checked_add(1)
+            .context("sequence overflow")?,
+    ))
+}
+
 pub(super) fn fold_id(id: SessionId, step: u64) -> MessageId {
     let request = RequestId::for_step(id, step);
     let mut bytes = [0; 16];

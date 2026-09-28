@@ -724,3 +724,36 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     assert_eq!(rollup.output_tokens, 4);
     assert!(rollup.latencies.contains_key("append_to_idle"));
 }
+
+#[tokio::test]
+async fn queue_on_idle_starts_a_turn() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let session = f.create("queue-idle", None, false).await;
+    let id = SessionId::from_ulid(session.id.parse().unwrap());
+    let response = f
+        .client
+        .post(format!("{}/v1/sessions/{}/messages", f.base, session.id))
+        .bearer_auth("test-token")
+        .json(&AppendMessage {
+            queue: true,
+            idempotency_key: "queued-idle".into(),
+            expected_head: 0,
+            text: "start now".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let appended: AppendedMessage = response.json().await.unwrap();
+    assert_eq!(appended.sequence, 1);
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    assert!(matches!(
+        &f.store.read_events(id, 0, 10).await.unwrap()[..],
+        [swarmy_core::Event::MessageAppended { .. }]
+    ));
+}

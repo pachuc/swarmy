@@ -301,6 +301,8 @@ impl Conversation {
         self.send_with_queue(text, false).await
     }
 
+    /// # Errors
+    /// Returns API and transport errors or an invalid message error.
     pub async fn send_with_queue(&mut self, text: String, queue: bool) -> Result<String> {
         ensure!(!text.trim().is_empty(), "message is empty");
         self.last_text.clear();

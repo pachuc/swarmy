@@ -67,6 +67,9 @@ impl Store {
                         message: message.clone(),
                         queued_at: self.now(),
                     });
+                    if crate::encode(&queue)?.len() > crate::MAX_BATCH_BYTES {
+                        return Err(StoreError::Storage(crate::StorageError::TooLarge));
+                    }
                     write(&trx, queued_key, &queue)?;
                 }
                 write(&trx, replay_key, &(head, idle))?;
@@ -81,6 +84,8 @@ impl Store {
     /// after an uncertain commit or a worker restart.
     /// # Errors
     /// Rejects stale leases or heads and storage failures.
+    /// # Panics
+    /// Panics only if a bounded in-memory queue cannot fit in u64.
     pub async fn deliver_queued(
         &self,
         id: SessionId,
@@ -127,6 +132,22 @@ impl Store {
                     self.write_session(&trx, &session)?;
                 }
                 Ok(events)
+            }
+        })
+        .await
+    }
+
+    /// Whether a successor has pending input that should wake it.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn has_queued(&self, id: SessionId) -> Result<bool> {
+        let key = self.queued_key(id);
+        self.transaction(|trx| {
+            let key = &key;
+            async move {
+                Ok(read::<Vec<QueuedMessage>>(&trx, key)
+                    .await?
+                    .is_some_and(|queue| !queue.is_empty()))
             }
         })
         .await

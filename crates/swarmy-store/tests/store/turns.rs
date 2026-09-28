@@ -493,7 +493,10 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         return;
     };
     let store = &test.store;
-    let session = session();
+    let session = SessionRecord {
+        state: SessionState::Idle,
+        ..session()
+    };
     let id = session.session_id;
     store
         .create_session(

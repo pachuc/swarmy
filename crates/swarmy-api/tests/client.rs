@@ -278,34 +278,18 @@ async fn client_round_trips_real_routes() {
         .unwrap();
     assert_eq!(client.session(&session.id).await.unwrap().id, session.id);
     assert_eq!(client.sessions(None, 10).await.unwrap().len(), 2);
-    let append = client
-        .append_message(
-            &session.id,
-            &api::AppendMessage {
-                queue: false,
-                idempotency_key: "append".into(),
-                expected_head: session.head_sequence,
-                text: "hello".into(),
-            },
-        )
-        .await
-        .unwrap();
+    let body = api::AppendMessage {
+        queue: false,
+        idempotency_key: "append".into(),
+        expected_head: session.head_sequence,
+        text: "hello".into(),
+    };
+    let append = client.append_message(&session.id, &body).await.unwrap();
     assert_eq!(
         client.events(&session.id, 0, 10).await.unwrap()[0].sequence,
         append.sequence
     );
-    let replay = client
-        .append_message(
-            &session.id,
-            &api::AppendMessage {
-                queue: false,
-                idempotency_key: "append".into(),
-                expected_head: session.head_sequence,
-                text: "hello".into(),
-            },
-        )
-        .await
-        .unwrap();
+    let replay = client.append_message(&session.id, &body).await.unwrap();
     assert_eq!(append, replay);
     let Err(Error::Api { body, .. }) = client.session("missing").await else {
         panic!("expected error")

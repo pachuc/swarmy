@@ -84,7 +84,7 @@ pub enum Event {
         failure_kind: FailureKind,
     },
     /// Recorded at delivery with the original enqueue time; the following
-    /// MessageAppended is the user input seen by inference.
+    /// `MessageAppended` is the user input seen by inference.
     MessageQueued {
         seq: u64,
         message: Message,
