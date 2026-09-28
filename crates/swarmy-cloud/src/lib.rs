@@ -186,8 +186,8 @@ pub trait Cloud {
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
     /// Empty and delete a bucket; return false if it was already absent.
     fn delete_bucket(&self, name: &str) -> impl Future<Output = Result<bool>>;
-    /// Delete the instance profile and its role; return false if both were absent.
-    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<bool>>;
+    /// Delete the instance profile and its role; return whether the profile and role were present.
+    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<(bool, bool)>>;
     /// Delete an SSH key; missing keys are success.
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>>;
 }
@@ -290,12 +290,12 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             keep_bucket,
             yes,
         } => {
-            down::confirm(keep_bucket, yes, json)?;
             let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
                 println!("No remote node named {name}");
                 return Ok(());
             };
+            down::confirm(keep_bucket, yes, json)?;
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;

@@ -117,9 +117,9 @@ impl Cloud for FakeCloud {
         self.teardown.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(!self.absent.get()))
     }
-    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<bool>> {
+    fn delete_node_role(&self, name: &str) -> impl Future<Output = Result<(bool, bool)>> {
         self.teardown.borrow_mut().push(format!("role {name}"));
-        std::future::ready(Ok(!self.absent.get()))
+        std::future::ready(Ok((!self.absent.get(), !self.absent.get())))
     }
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>> {
         self.teardown.borrow_mut().push(format!("key {name}"));
@@ -977,6 +977,13 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         .await
         .unwrap();
     // The role and profile stay with the bucket; a later up reuses them.
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|event| event.starts_with("bucket ") || event.starts_with("role "))
+    );
     assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
     observe_running(&cloud);
     up::run(

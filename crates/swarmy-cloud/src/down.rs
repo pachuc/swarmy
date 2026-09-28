@@ -84,6 +84,8 @@ pub async fn run(
                 permission(&error, "ec2:DescribeKeyPairs", "ec2:DeleteKeyPair"),
                 &error,
             );
+        } else {
+            println!("Key pair {key}: removed or absent");
         }
     }
     report.print();
@@ -94,7 +96,10 @@ pub async fn run(
         );
     }
     if let Some(bucket) = node.bucket() {
-        let role = format!("swarmy-{}", node.name);
+        let role = node
+            .cloud_settings()
+            .instance_profile(&node.name)
+            .ok_or_else(|| anyhow::anyhow!("bucket has no node role"))?;
         if keep_bucket {
             println!("Kept bucket {bucket} and guarding role and instance profile {role}");
         } else {
@@ -103,10 +108,14 @@ pub async fn run(
                 "Bucket {bucket}: {}",
                 if removed { "removed" } else { "absent" }
             );
-            let removed = cloud.delete_node_role(&role).await?;
+            let (profile, role_removed) = cloud.delete_node_role(&role).await?;
             println!(
-                "Role and instance profile {role}: {}",
-                if removed { "removed" } else { "absent" }
+                "Instance profile {role}: {}",
+                if profile { "removed" } else { "absent" }
+            );
+            println!(
+                "Role {role}: {}",
+                if role_removed { "removed" } else { "absent" }
             );
         }
     }

@@ -497,7 +497,7 @@ impl Cloud for Aws {
         }
     }
 
-    async fn delete_node_role(&self, name: &str) -> Result<bool> {
+    async fn delete_node_role(&self, name: &str) -> Result<(bool, bool)> {
         let profile = match self
             .iam
             .get_instance_profile()
@@ -516,7 +516,7 @@ impl Cloud for Aws {
             }
             Err(error) => return Err(error).context("iam:GetInstanceProfile"),
         };
-        let mut removed = profile.is_some();
+        let profile_removed = profile.is_some();
         if let Some(profile) = profile {
             for role in profile.roles() {
                 match self
@@ -565,7 +565,6 @@ impl Cloud for Aws {
             Err(error) => return Err(error).context("iam:GetRole"),
         };
         if role.is_some() {
-            removed = true;
             loop {
                 let policies = self
                     .iam
@@ -620,7 +619,7 @@ impl Cloud for Aws {
                 Err(error) => return Err(error).context("iam:DeleteRole"),
             }
         }
-        Ok(removed)
+        Ok((profile_removed, role.is_some()))
     }
 
     async fn delete_ssh_key(&self, name: &str) -> Result<()> {
