@@ -2,3 +2,6 @@ item	commit	run	condition	seconds	exit_code
 build	baseline	1	cold	1581	0
 build	baseline	1	unchanged	0	0
 build	baseline	1	core_touch	68	0
+build	master	1	cold	974	0
+build	master	1	unchanged	0	0
+build	master	1	core_touch	74	0
