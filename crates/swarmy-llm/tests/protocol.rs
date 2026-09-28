@@ -351,8 +351,8 @@ fn image_request_body_for_each_protocol() {
             json!({"inlineData":{"mimeType":"image/png", "data":"AQID"}}),
         ),
         (
-            completions["messages"][0]["content"][0].clone(),
-            json!({"type":"image_url", "image_url":{"url":"data:image/png;base64,AQID"}}),
+            completions["messages"][1]["content"][0].clone(),
+            json!({"type":"image_url", "image_url":{"url":"data:image/png;base64,AQID", "detail":"low"}}),
         ),
     ] {
         assert_eq!(actual, expected);

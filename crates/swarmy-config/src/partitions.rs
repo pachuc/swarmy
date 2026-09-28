@@ -3,6 +3,9 @@ use std::collections::BTreeSet;
 
 /// Parse a comma-separated list of partition numbers and inclusive ranges.
 /// The runnable partition space is fixed at 256 entries.
+///
+/// # Errors
+/// Returns an error for malformed or out-of-range components.
 pub fn parse_partitions(value: &str) -> Result<BTreeSet<u16>, String> {
     let mut partitions = BTreeSet::new();
     for component in value.split(',').map(str::trim) {

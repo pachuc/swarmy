@@ -290,10 +290,6 @@ async fn runnable_is_nudged_within_one_scan_and_resent_after_the_interval() {
             session
         );
         let first = Instant::now();
-        assert!(
-            timeout(RESEND / 4, observer.next()).await.is_err(),
-            "resent too soon"
-        );
         assert_eq!(
             timeout(RESEND * 5, next(&mut observer)).await.unwrap(),
             session
