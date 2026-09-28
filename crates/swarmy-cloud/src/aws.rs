@@ -9,7 +9,7 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{Cloud, Machine, MachineSpec, ObjectBucket, retry_profile_propagation};
+use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation};
 
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
@@ -35,7 +35,93 @@ impl Aws {
         }
     }
 
-    async fn ensure_bucket_exists(&self, bucket: &str, region: &str) -> Result<()> {
+    async fn write_bucket_tags(
+        &self,
+        name: &str,
+        owner: &str,
+        existing: Vec<aws_sdk_s3::types::Tag>,
+    ) -> Result<()> {
+        let tags = merged_bucket_tags(existing, owner);
+        self.s3
+            .put_bucket_tagging()
+            .bucket(name)
+            .tagging(
+                aws_sdk_s3::types::Tagging::builder()
+                    .set_tag_set(Some(tags))
+                    .build()?,
+            )
+            .send()
+            .await
+            .context("s3:PutBucketTagging")?;
+        Ok(())
+    }
+
+    async fn delete_role_policies(&self, name: &str) -> Result<()> {
+        loop {
+            let policies = self
+                .iam
+                .list_role_policies()
+                .role_name(name)
+                .send()
+                .await
+                .context("iam:ListRolePolicies")?;
+            if policies.policy_names().is_empty() {
+                break;
+            }
+            for policy in policies.policy_names() {
+                self.iam
+                    .delete_role_policy()
+                    .role_name(name)
+                    .policy_name(policy)
+                    .send()
+                    .await
+                    .context("iam:DeleteRolePolicy")?;
+            }
+        }
+        loop {
+            let policies = self
+                .iam
+                .list_attached_role_policies()
+                .role_name(name)
+                .send()
+                .await
+                .context("iam:ListAttachedRolePolicies")?;
+            if policies.attached_policies().is_empty() {
+                break;
+            }
+            for policy in policies.attached_policies() {
+                let arn = policy.policy_arn().context("attached policy has no ARN")?;
+                {
+                    self.iam
+                        .detach_role_policy()
+                        .role_name(name)
+                        .policy_arn(arn)
+                        .send()
+                        .await
+                        .context("iam:DetachRolePolicy")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_bucket(&self, bucket: &str, region: &str) -> Result<()> {
+        let mut request = self.s3.create_bucket().bucket(bucket);
+        if region != "us-east-1" {
+            request = request.create_bucket_configuration(
+                aws_sdk_s3::types::CreateBucketConfiguration::builder()
+                    .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(region))
+                    .build(),
+            );
+        }
+        request
+            .send()
+            .await
+            .context("s3:CreateBucket (bucket may belong to another account)")?;
+        Ok(())
+    }
+
+    async fn ensure_bucket_exists(&self, bucket: &str, region: &str, owner: &str) -> Result<()> {
         let location = self.s3.get_bucket_location().bucket(bucket).send().await;
         let mut created = false;
         match location {
@@ -52,21 +138,11 @@ impl Aws {
                     .and_then(ProvideErrorMetadata::code)
                     == Some("NoSuchBucket") =>
             {
-                let mut request = self.s3.create_bucket().bucket(bucket);
-                if region != "us-east-1" {
-                    request = request.create_bucket_configuration(
-                        aws_sdk_s3::types::CreateBucketConfiguration::builder()
-                            .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(
-                                region,
-                            ))
-                            .build(),
-                    );
-                }
-                request
-                    .send()
-                    .await
-                    .context("s3:CreateBucket (bucket may belong to another account)")?;
+                self.create_bucket(bucket, region).await?;
                 created = true;
+                if let Err(error) = self.write_bucket_tags(bucket, owner, Vec::new()).await {
+                    warn_tag_denied(&error, "s3:PutBucketTagging", bucket, owner)?;
+                }
             }
             Err(error) => {
                 return Err(error)
@@ -135,7 +211,7 @@ impl Aws {
         Ok(())
     }
 
-    async fn ensure_profile(&self, bucket: &str, role: &str) -> Result<()> {
+    async fn ensure_profile(&self, bucket: &str, role: &str, owner: &str) -> Result<()> {
         let mut created = false;
         let existing = self.iam.get_role().role_name(role).send().await;
         if let Err(error) = existing {
@@ -146,9 +222,25 @@ impl Aws {
             {
                 return Err(error).context("iam:GetRole");
             }
-            self.iam.create_role().role_name(role)
-                .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#)
-                .send().await.context("iam:CreateRole")?;
+            let request = self.iam.create_role().role_name(role)
+                .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#);
+            if let Err(error) = request
+                .clone()
+                .tags(iam_tag("managed-by", "swarmy"))
+                .tags(iam_tag("swarmy-remote", owner))
+                .send()
+                .await
+            {
+                if !access_denied(&error.to_string()) {
+                    return Err(error).context("iam:CreateRole");
+                }
+                // IAM can reject tags on CreateRole separately from role creation.
+                request
+                    .send()
+                    .await
+                    .context("iam:CreateRole (without tags)")?;
+                warn_untagged("iam:TagRole", role, owner);
+            }
             created = true;
         }
         let policy = bucket_policy(bucket);
@@ -176,12 +268,26 @@ impl Aws {
                     .and_then(ProvideErrorMetadata::code)
                     == Some("NoSuchEntity") =>
             {
-                self.iam
+                let request = self
+                    .iam
                     .create_instance_profile()
-                    .instance_profile_name(role)
+                    .instance_profile_name(role);
+                if let Err(error) = request
+                    .clone()
+                    .tags(iam_tag("managed-by", "swarmy"))
+                    .tags(iam_tag("swarmy-remote", owner))
                     .send()
                     .await
-                    .context("iam:CreateInstanceProfile")?;
+                {
+                    if !access_denied(&error.to_string()) {
+                        return Err(error).context("iam:CreateInstanceProfile");
+                    }
+                    request
+                        .send()
+                        .await
+                        .context("iam:CreateInstanceProfile (without tags)")?;
+                    warn_untagged("iam:TagInstanceProfile", role, owner);
+                }
                 created = true;
                 false
             }
@@ -204,6 +310,86 @@ impl Aws {
             tokio::time::sleep(Duration::from_secs(20)).await;
         }
         Ok(())
+    }
+}
+
+fn access_denied(message: &str) -> bool {
+    message.contains("AccessDenied") || message.contains("Access denied")
+}
+
+fn warn_untagged(permission: &str, resource: &str, owner: &str) {
+    eprintln!(
+        "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission} and run swarmy remote tag {owner} later."
+    );
+}
+
+fn warn_tag_denied(
+    error: &anyhow::Error,
+    permission: &str,
+    resource: &str,
+    owner: &str,
+) -> Result<()> {
+    if !access_denied(&format!("{error:#}")) {
+        return Err(anyhow::anyhow!("{error:#}"));
+    }
+    warn_untagged(permission, resource, owner);
+    Ok(())
+}
+
+fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
+    aws_sdk_iam::types::Tag::builder()
+        .key(key)
+        .value(value)
+        .build()
+        .expect("tag fields")
+}
+
+fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
+    aws_sdk_s3::types::Tag::builder()
+        .key(key)
+        .value(value)
+        .build()
+        .expect("tag fields")
+}
+
+fn merged_bucket_tags(
+    existing: Vec<aws_sdk_s3::types::Tag>,
+    owner: &str,
+) -> Vec<aws_sdk_s3::types::Tag> {
+    let mut tags: Vec<_> = existing
+        .into_iter()
+        .filter(|tag| tag.key() != "managed-by" && tag.key() != "swarmy-remote")
+        .collect();
+    tags.push(s3_tag("managed-by", "swarmy"));
+    tags.push(s3_tag("swarmy-remote", owner));
+    tags
+}
+
+fn ensure_not_another_remote<'a>(
+    tags: impl Iterator<Item = (&'a str, &'a str)>,
+    owner: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !tags
+            .into_iter()
+            .any(|(key, value)| key == "swarmy-remote" && value != owner),
+        "resource is tagged for another remote"
+    );
+    Ok(())
+}
+
+fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
+    let tags: Vec<_> = tags.collect();
+    if tags
+        .iter()
+        .any(|(key, value)| *key == "managed-by" && *value == "swarmy")
+        && tags
+            .iter()
+            .any(|(key, value)| *key == "swarmy-remote" && *value == owner)
+    {
+        Ownership::Owned
+    } else {
+        Ownership::Unmanaged
     }
 }
 
@@ -279,13 +465,14 @@ fn bucket_policy(bucket: &str) -> serde_json::Value {
 
 impl Cloud for Aws {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.ensure_bucket_exists(&bucket.name, &bucket.region)
+        self.ensure_bucket_exists(&bucket.name, &bucket.region, &bucket.owner)
             .await?;
         let role = bucket
             .node_credentials
             .clone()
             .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
-        self.ensure_profile(&bucket.name, &role).await
+        self.ensure_profile(&bucket.name, &role, &bucket.owner)
+            .await
     }
 
     async fn base_image(&self) -> Result<String> {
@@ -420,6 +607,305 @@ impl Cloud for Aws {
         }
     }
 
+    async fn bucket_ownership(&self, name: &str, owner: &str) -> Result<Ownership> {
+        let output = match self.s3.get_bucket_tagging().bucket(name).send().await {
+            Ok(output) => output,
+            Err(error) => {
+                return match error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                {
+                    Some("NoSuchBucket") => Ok(Ownership::Absent),
+                    Some("NoSuchTagSet") => Ok(Ownership::Unmanaged),
+                    _ => Err(error).context("s3:GetBucketTagging"),
+                };
+            }
+        };
+        Ok(owned(
+            output.tag_set().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        ))
+    }
+
+    async fn role_ownership(&self, name: &str, owner: &str) -> Result<(Ownership, Ownership)> {
+        let profile = match self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+        {
+            Ok(output) => output
+                .instance_profile
+                .map_or(Ownership::Absent, |profile| {
+                    owned(
+                        profile.tags().iter().map(|tag| (tag.key(), tag.value())),
+                        owner,
+                    )
+                }),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                Ownership::Absent
+            }
+            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+        };
+        let role = match self.iam.get_role().role_name(name).send().await {
+            Ok(output) => output.role.map_or(Ownership::Absent, |role| {
+                owned(
+                    role.tags().iter().map(|tag| (tag.key(), tag.value())),
+                    owner,
+                )
+            }),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                Ownership::Absent
+            }
+            Err(error) => return Err(error).context("iam:GetRole"),
+        };
+        Ok((profile, role))
+    }
+
+    async fn tag_bucket(&self, name: &str, owner: &str) -> Result<()> {
+        let tags = match self.s3.get_bucket_tagging().bucket(name).send().await {
+            Ok(output) => output.tag_set().to_vec(),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchTagSet") =>
+            {
+                Vec::new()
+            }
+            Err(error) => return Err(error).context("s3:GetBucketTagging"),
+        };
+        ensure_not_another_remote(tags.iter().map(|tag| (tag.key(), tag.value())), owner)?;
+        self.write_bucket_tags(name, owner, tags).await
+    }
+
+    async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
+        let role = self
+            .iam
+            .get_role()
+            .role_name(name)
+            .send()
+            .await
+            .context("iam:GetRole")?
+            .role
+            .context("role is absent")?;
+        let profile = self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+            .context("iam:GetInstanceProfile")?
+            .instance_profile
+            .context("instance profile is absent")?;
+        // Check both before changing either one, so a conflicting profile cannot leave a tagged role.
+        ensure_not_another_remote(
+            role.tags().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        )?;
+        ensure_not_another_remote(
+            profile.tags().iter().map(|tag| (tag.key(), tag.value())),
+            owner,
+        )?;
+        self.iam
+            .tag_role()
+            .role_name(name)
+            .tags(iam_tag("managed-by", "swarmy"))
+            .tags(iam_tag("swarmy-remote", owner))
+            .send()
+            .await
+            .context("iam:TagRole")?;
+        self.iam
+            .tag_instance_profile()
+            .instance_profile_name(name)
+            .tags(iam_tag("managed-by", "swarmy"))
+            .tags(iam_tag("swarmy-remote", owner))
+            .send()
+            .await
+            .context("iam:TagInstanceProfile")?;
+        Ok(())
+    }
+
+    async fn delete_bucket(&self, name: &str, owner: &str) -> Result<bool> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+        match self.bucket_ownership(name, owner).await? {
+            Ownership::Absent => return Ok(false),
+            Ownership::Unmanaged => anyhow::bail!("bucket ownership tags do not match"),
+            Ownership::Owned => {}
+        }
+        let mut count = 0usize;
+        // Re-read the first page after every deletion. Markers would skip keys
+        // when the page just deleted changes the listing beneath the cursor.
+        loop {
+            let page = match self
+                .s3
+                .list_object_versions()
+                .bucket(name)
+                .max_keys(1000)
+                .send()
+                .await
+            {
+                Ok(page) => page,
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchBucket") =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error).context("s3:ListBucketVersions"),
+            };
+            let objects: Vec<_> = page
+                .versions()
+                .iter()
+                .map(|object| {
+                    ObjectIdentifier::builder()
+                        .key(object.key().unwrap_or_default())
+                        .set_version_id(object.version_id().map(str::to_owned))
+                        .build()
+                })
+                .chain(page.delete_markers().iter().map(|object| {
+                    ObjectIdentifier::builder()
+                        .key(object.key().unwrap_or_default())
+                        .set_version_id(object.version_id().map(str::to_owned))
+                        .build()
+                }))
+                .collect::<std::result::Result<_, _>>()?;
+            if objects.is_empty() {
+                break;
+            }
+            let size = objects.len();
+            let result = self
+                .s3
+                .delete_objects()
+                .bucket(name)
+                .delete(Delete::builder().set_objects(Some(objects)).build()?)
+                .send()
+                .await
+                .context("s3:DeleteObjects")?;
+            anyhow::ensure!(
+                result.errors().is_empty(),
+                "s3:DeleteObjects failed for {} objects",
+                result.errors().len()
+            );
+            count += size;
+            if count / 10_000 != (count - size) / 10_000 {
+                println!("Deleted {count} objects from bucket {name}");
+            }
+        }
+        match self.s3.delete_bucket().bucket(name).send().await {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchBucket") =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error).context("s3:DeleteBucket"),
+        }
+    }
+
+    async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
+        let (profile_status, role_status) = self.role_ownership(name, owner).await?;
+        anyhow::ensure!(
+            profile_status != Ownership::Unmanaged && role_status != Ownership::Unmanaged,
+            "IAM ownership tags do not match"
+        );
+        let profile = match self
+            .iam
+            .get_instance_profile()
+            .instance_profile_name(name)
+            .send()
+            .await
+        {
+            Ok(output) => output.instance_profile,
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                None
+            }
+            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+        };
+        let profile_removed = profile.is_some();
+        if let Some(profile) = profile {
+            for role in profile.roles() {
+                match self
+                    .iam
+                    .remove_role_from_instance_profile()
+                    .instance_profile_name(name)
+                    .role_name(role.role_name())
+                    .send()
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(error)
+                        if error
+                            .as_service_error()
+                            .and_then(ProvideErrorMetadata::code)
+                            == Some("NoSuchEntity") => {}
+                    Err(error) => return Err(error).context("iam:RemoveRoleFromInstanceProfile"),
+                }
+            }
+            match self
+                .iam
+                .delete_instance_profile()
+                .instance_profile_name(name)
+                .send()
+                .await
+            {
+                Ok(_) => {}
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchEntity") => {}
+                Err(error) => return Err(error).context("iam:DeleteInstanceProfile"),
+            }
+        }
+        let role = match self.iam.get_role().role_name(name).send().await {
+            Ok(output) => output.role,
+            Err(error)
+                if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("NoSuchEntity") =>
+            {
+                None
+            }
+            Err(error) => return Err(error).context("iam:GetRole"),
+        };
+        if role.is_some() {
+            self.delete_role_policies(name).await?;
+            match self.iam.delete_role().role_name(name).send().await {
+                Ok(_) => {}
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("NoSuchEntity") => {}
+                Err(error) => return Err(error).context("iam:DeleteRole"),
+            }
+        }
+        Ok((profile_removed, role.is_some()))
+    }
+
     async fn delete_ssh_key(&self, name: &str) -> Result<()> {
         let keys = self
             .ec2
@@ -546,5 +1032,65 @@ mod tests {
                     .any(|tag| tag.key() == Some("Name") && tag.value() == Some("test"))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tag_tests {
+    use super::{ensure_not_another_remote, merged_bucket_tags, s3_tag};
+
+    #[test]
+    fn adoption_preserves_unrelated_bucket_tags() {
+        let tags = merged_bucket_tags(
+            vec![s3_tag("purpose", "backup"), s3_tag("managed-by", "legacy")],
+            "mine",
+        );
+        assert_eq!(tags.len(), 3);
+        assert!(
+            tags.iter()
+                .any(|tag| tag.key() == "purpose" && tag.value() == "backup")
+        );
+        assert!(
+            tags.iter()
+                .any(|tag| tag.key() == "swarmy-remote" && tag.value() == "mine")
+        );
+    }
+
+    #[test]
+    fn adoption_rejects_foreign_owner_even_without_managed_by() {
+        let tags = [s3_tag("swarmy-remote", "other")];
+        assert!(
+            ensure_not_another_remote(tags.iter().map(|t| (t.key(), t.value())), "mine").is_err()
+        );
+        assert!(
+            ensure_not_another_remote(tags.iter().map(|t| (t.key(), t.value())), "other").is_ok()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tag_denial_tests {
+    use super::warn_tag_denied;
+
+    #[test]
+    fn denied_tagging_does_not_abort_creation_but_other_errors_do() {
+        assert!(
+            warn_tag_denied(
+                &anyhow::anyhow!("s3:PutBucketTagging: AccessDenied"),
+                "s3:PutBucketTagging",
+                "swarmy-NAME",
+                "NAME"
+            )
+            .is_ok()
+        );
+        assert!(
+            warn_tag_denied(
+                &anyhow::anyhow!("s3:PutBucketTagging: network failure"),
+                "s3:PutBucketTagging",
+                "swarmy-NAME",
+                "NAME"
+            )
+            .is_err()
+        );
     }
 }
