@@ -243,9 +243,6 @@ const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
 const MANIFEST: &str = "manifest";
 const MANIFEST_PARENT: &str = "manifest_parent";
 const METERING_HOUR: &str = "metering_hour";
-const METERING_LEGACY_PRUNED: &str = "metering_legacy_pruned";
-const METERING_PRUNE_CURSOR: &str = "metering_prune_cursor";
-const METERING_UPGRADE_AT: &str = "metering_upgrade_at";
 const NODE: &str = "node";
 const PLACED_TOOL_CLAIM: &str = "placed_tool_claim";
 const PLACEMENT: &str = "placement";
@@ -605,24 +602,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn metering_hour_space_root(&self) -> Subspace {
         self.root.subspace(&(METERING_HOUR,))
     }
-    pub(crate) fn metering_legacy_pruned(&self) -> Vec<u8> {
-        self.metering_legacy_pruned_space().pack(&())
-    }
-    pub(crate) fn metering_legacy_pruned_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_LEGACY_PRUNED,))
-    }
-    pub(crate) fn metering_prune_cursor(&self) -> Vec<u8> {
-        self.metering_prune_cursor_space().pack(&())
-    }
-    pub(crate) fn metering_prune_cursor_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_PRUNE_CURSOR,))
-    }
-    pub(crate) fn metering_upgrade_at(&self) -> Vec<u8> {
-        self.metering_upgrade_at_space().pack(&())
-    }
-    pub(crate) fn metering_upgrade_at_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_UPGRADE_AT,))
-    }
+
     pub(crate) fn node(&self, id: NodeId) -> Vec<u8> {
         self.node_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -1187,9 +1167,6 @@ mod registry_tests {
                 "metering_hour",
                 keys.metering_hour_single("dimension", 3600, "key", "field"),
             ),
-            ("metering_legacy_pruned", keys.metering_legacy_pruned()),
-            ("metering_prune_cursor", keys.metering_prune_cursor()),
-            ("metering_upgrade_at", keys.metering_upgrade_at()),
             ("node", keys.node(nodeid)),
             ("placed_tool_claim", keys.placed_tool_claim(requestid)),
             ("placement", keys.placement(agentid)),

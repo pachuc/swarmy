@@ -682,56 +682,16 @@ impl Store {
     }
 
     /// Delete raw completion records at or before `before`, keeping rollups.
-    /// New records write a `(recorded_at hour, request id)` index entry in
-    /// the same completion transaction, so pruning scans that index from the
-    /// oldest hour up to the cutoff in bounded batches. Deleting the index
-    /// entry with its record advances the scan, so repeated ticks drain more
-    /// than one batch. Records without `recorded_at` predate the index and
-    /// are prunable once the retention window has passed since the upgrade
-    /// marker recorded on first prune.
+    /// Prune raw usage through the time index in bounded pages.
     /// # Errors
     /// Returns decoding or storage errors.
     pub async fn prune_metering_raw(&self, before: Timestamp, limit: usize) -> Result<usize> {
         crate::check_limit(limit)?;
-        if limit == 0 {
-            return Ok(0);
-        }
-        let upgrade_key = crate::keys::Keys::new(&self.root).metering_upgrade_at();
-        let upgrade_at: Option<Timestamp> = self
-            .transaction(|trx| {
-                let upgrade_key = &upgrade_key;
-                async move { read(&trx, upgrade_key).await }
-            })
-            .await?;
-        let upgrade_at = if let Some(at) = upgrade_at {
-            at
-        } else {
-            let now = self.now();
-            let bytes = crate::encode(&now)?;
-            self.transaction(|trx| {
-                let upgrade_key = &upgrade_key;
-                let bytes = &bytes;
-                async move {
-                    trx.set(upgrade_key, bytes);
-                    Ok(())
-                }
-            })
-            .await?;
-            now
-        };
         let cutoff_hour = crate::metering::hour_floor(before.as_second());
-        let mut pruned = 0;
-        pruned += self
-            .prune_index_hours_before(cutoff_hour, limit - pruned)
-            .await?;
+        let mut pruned = self.prune_index_hours_before(cutoff_hour, limit).await?;
         if pruned < limit {
             pruned += self
                 .prune_index_hour_exact(cutoff_hour, before, limit - pruned)
-                .await?;
-        }
-        if pruned < limit {
-            pruned += self
-                .prune_legacy_raw(before, upgrade_at, limit - pruned)
                 .await?;
         }
         Ok(pruned)
@@ -850,88 +810,6 @@ impl Store {
             async move {
                 for key in stale {
                     trx.clear(key);
-                }
-                Ok(())
-            }
-        })
-        .await?;
-        Ok(pruned)
-    }
-
-    async fn prune_legacy_raw(
-        &self,
-        before: Timestamp,
-        upgrade_at: Timestamp,
-        limit: usize,
-    ) -> Result<usize> {
-        if limit == 0 || upgrade_at > before {
-            return Ok(0);
-        }
-        let cursor_key = crate::keys::Keys::new(&self.root).metering_prune_cursor();
-        let done_key = crate::keys::Keys::new(&self.root).metering_legacy_pruned();
-        let (cursor, done): (Option<Vec<u8>>, Option<bool>) = self
-            .transaction(|trx| {
-                let cursor_key = &cursor_key;
-                let done_key = &done_key;
-                async move {
-                    let cursor = read(&trx, cursor_key).await?;
-                    let done = read(&trx, done_key).await?;
-                    Ok((cursor, done))
-                }
-            })
-            .await?;
-        if done.unwrap_or(false) {
-            return Ok(0);
-        }
-        let prefix = crate::keys::Keys::new(&self.root).usage_record_space();
-        let (range_start, range_end) = prefix.range();
-        let mut begin = range_start.clone();
-        if let Some(last) = cursor {
-            begin = last;
-            begin.push(0);
-        }
-        let rows = self
-            .transaction(|trx| {
-                let range = (begin.clone(), range_end.clone());
-                async move { scan(&trx, range, limit).await }
-            })
-            .await?;
-        if rows.is_empty() {
-            // The scan reached the end of the subspace: every pre-index
-            // record has been examined, and new writes carry the index, so
-            // mark legacy cleanup complete instead of restarting from the
-            // beginning and decoding every raw record on each tick.
-            self.transaction(|trx| {
-                let cursor_key = &cursor_key;
-                let done_key = &done_key;
-                async move {
-                    trx.clear(cursor_key);
-                    crate::write(&trx, done_key, &true)?;
-                    Ok(())
-                }
-            })
-            .await?;
-            return Ok(0);
-        }
-        let mut stale = Vec::new();
-        for (key, value) in &rows {
-            let record: crate::usage::UsageRecord = crate::decode(value)?;
-            if record.recorded_at.is_none() {
-                stale.push(key.clone());
-            }
-        }
-        let last_key = rows.last().map(|(key, _)| key.clone());
-        let pruned = stale.len();
-        self.transaction(|trx| {
-            let stale = &stale;
-            let last_key = &last_key;
-            let cursor_key = &cursor_key;
-            async move {
-                for key in stale {
-                    trx.clear(key);
-                }
-                if let Some(last) = last_key {
-                    crate::write(&trx, cursor_key, last)?;
                 }
                 Ok(())
             }
