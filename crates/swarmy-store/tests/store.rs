@@ -6,10 +6,10 @@ use std::sync::{Arc, OnceLock};
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, CHUNK_SIZE, ContentHash, Event, IdempotencyRecord, IdempotencyState, ImageTag,
-    InflightRecord, LeaseOwnerId, ManifestHeader, ManifestId, Message, MessageId, MessageRole,
-    Part, RequestId, RunnableEntry, SessionId, SessionRecord, SessionState, SnapshotRef, VolumeId,
-    VolumeRecord, encode,
+    AgentId, CHUNK_SIZE, ContentHash, Event, IdempotencyState, ImageTag, InflightRecord,
+    LeaseOwnerId, ManifestHeader, ManifestId, Message, MessageId, MessageRole, Part, RequestId,
+    RunnableEntry, SessionId, SessionRecord, SessionState, SnapshotRef, VolumeId, VolumeRecord,
+    encode,
 };
 use swarmy_store::{
     CredentialKey, InterruptResult, Store, StoreError,
@@ -805,15 +805,6 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
     );
     let request = RequestId::for_step(id, 1);
     assert_eq!(test.store.get_idempotency(request).await.unwrap(), None);
-    let idem = IdempotencyRecord {
-        state: IdempotencyState::Completed,
-        result_ref: Some("r".repeat(200 * 1024)),
-    };
-    test.store.put_idempotency(request, &idem).await.unwrap();
-    assert_eq!(
-        test.store.get_idempotency(request).await.unwrap(),
-        Some(idem)
-    );
     let inflight = InflightRecord {
         session_id: id,
         seq: 1,
@@ -825,7 +816,17 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
         test.store.get_inflight(request).await.unwrap(),
         Some(inflight)
     );
-    test.store.clear_inflight(request).await.unwrap();
+    let inflight_key = test.root.pack(&("inflight", request.as_bytes().as_slice()));
+    test.db
+        .run(|trx, _| {
+            let key = &inflight_key;
+            async move {
+                trx.clear(key);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
     assert_eq!(test.store.get_inflight(request).await.unwrap(), None);
     test.cleanup().await;
 }

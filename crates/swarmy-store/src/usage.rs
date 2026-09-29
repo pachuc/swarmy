@@ -4,30 +4,20 @@ use swarmy_core::{AgentId, RequestId, SessionId, TokenUsage, UsageTotals};
 use crate::{Result, Store, read};
 
 /// Per-completion attribution; totals remain available under their existing keys.
-///
-/// New trailing fields keep old records readable: a missing presence byte
-/// decodes to its default, while a truncated new value is still rejected.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UsageRecord {
     pub provider: String,
     pub entry: Option<String>,
     pub usage: TokenUsage,
     pub cost_micros: u64,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub session: Option<SessionId>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub agent: Option<AgentId>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub model: String,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub entry_kind: Option<String>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub recorded_at: Option<jiff::Timestamp>,
     /// Route that selected the entry, when a named route resolved it.
-    #[serde(default, with = "swarmy_core::trailing")]
     pub route: Option<String>,
     /// Index into the resolved route, so metering names the exact step.
-    #[serde(default, with = "swarmy_core::trailing")]
     pub route_step: Option<u32>,
 }
 

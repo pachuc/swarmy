@@ -5320,7 +5320,7 @@
           "dropped_inference": {
             "type": "integer",
             "format": "int64",
-            "description": "Remainder of the `inference` array omitted by `inference_limit`, plus\nrows omitted from a paged response.",
+            "description": "Remainder of the `inference` array omitted by `inference_limit`.",
             "minimum": 0
           },
           "dropped_stages": {
@@ -5332,7 +5332,7 @@
           "dropped_tools": {
             "type": "integer",
             "format": "int64",
-            "description": "Remainder of the `tools` array omitted by `tools_limit`, plus rows\nrows omitted from a paged response.",
+            "description": "Remainder of the `tools` array omitted by `tools_limit`.",
             "minimum": 0
           },
           "error": {
