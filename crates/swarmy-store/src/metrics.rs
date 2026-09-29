@@ -308,27 +308,27 @@ struct StoredInferenceMetricCurrent {
     error: Option<String>,
 }
 
-impl StoredInferenceMetricCurrent {
-    fn into_public(self) -> InferenceMetric {
-        InferenceMetric {
-            request_id: self.request_id,
-            provider: self.provider,
-            model: self.model,
-            input_tokens: self.input_tokens,
-            cached_input_tokens: self.cached_input_tokens,
-            output_tokens: self.output_tokens,
-            reasoning_tokens: self.reasoning_tokens,
-            cost_micros: self.cost_micros,
-            time_to_first_token_ms: self.time_to_first_token_ms,
-            streaming_duration_ms: self.streaming_duration_ms,
-            request_duration_ms: self.request_duration_ms,
-            streamed: self.streamed,
-            output_tokens_per_second: self.output_tokens_per_second,
-            retries: self.retries,
-            rate_limit_waits: self.rate_limit_waits,
-            gateway_waits: self.gateway_waits,
-            provider_failures: self.provider_failures,
-            error: self.error,
+impl From<StoredInferenceMetricCurrent> for InferenceMetric {
+    fn from(value: StoredInferenceMetricCurrent) -> Self {
+        Self {
+            request_id: value.request_id,
+            provider: value.provider,
+            model: value.model,
+            input_tokens: value.input_tokens,
+            cached_input_tokens: value.cached_input_tokens,
+            output_tokens: value.output_tokens,
+            reasoning_tokens: value.reasoning_tokens,
+            cost_micros: value.cost_micros,
+            time_to_first_token_ms: value.time_to_first_token_ms,
+            streaming_duration_ms: value.streaming_duration_ms,
+            request_duration_ms: value.request_duration_ms,
+            streamed: value.streamed,
+            output_tokens_per_second: value.output_tokens_per_second,
+            retries: value.retries,
+            rate_limit_waits: value.rate_limit_waits,
+            gateway_waits: value.gateway_waits,
+            provider_failures: value.provider_failures,
+            error: value.error,
         }
     }
 }
@@ -350,18 +350,18 @@ struct StoredToolMetricCurrent {
     process_wall_ms: Option<f64>,
 }
 
-impl StoredToolMetricCurrent {
-    fn into_public(self) -> ToolMetric {
-        ToolMetric {
-            request_id: self.request_id,
-            name: self.name,
-            dispatched_ns: self.dispatched_ns,
-            started_ns: self.started_ns,
-            completed_ns: self.completed_ns,
-            exit_status: self.exit_status,
-            output_bytes: self.output_bytes,
-            queue_ms: self.queue_ms,
-            process_wall_ms: self.process_wall_ms,
+impl From<StoredToolMetricCurrent> for ToolMetric {
+    fn from(value: StoredToolMetricCurrent) -> Self {
+        Self {
+            request_id: value.request_id,
+            name: value.name,
+            dispatched_ns: value.dispatched_ns,
+            started_ns: value.started_ns,
+            completed_ns: value.completed_ns,
+            exit_status: value.exit_status,
+            output_bytes: value.output_bytes,
+            queue_ms: value.queue_ms,
+            process_wall_ms: value.process_wall_ms,
         }
     }
 }
@@ -1006,12 +1006,9 @@ fn assemble_turn(
         stages,
         inference: inference_page
             .into_iter()
-            .map(|row| row.metric.into_public())
+            .map(|row| InferenceMetric::from(row.metric))
             .collect(),
-        tools: tools_page
-            .into_iter()
-            .map(StoredToolMetricCurrent::into_public)
-            .collect(),
+        tools: tools_page.into_iter().map(ToolMetric::from).collect(),
         computer: summary.computer.clone(),
         append_to_first_token_ms: None,
         inference_duration_ms: None,

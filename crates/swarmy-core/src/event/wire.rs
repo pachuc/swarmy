@@ -172,9 +172,9 @@ impl<'de> Deserialize<'de> for Event {
         }
     }
 }
-/// Encode a completion with route attribution.
-#[allow(clippy::too_many_arguments)]
-fn completion_to_binary(
+/// The 13 completion fields shared by the public event, the binary row, and
+/// the two conversions below. One struct keeps the field list in one place.
+struct CompletionFields {
     seq: u64,
     request_id: RequestId,
     message: Message,
@@ -188,21 +188,24 @@ fn completion_to_binary(
     entry: Option<String>,
     route: Option<String>,
     route_step: Option<u32>,
-) -> BinaryEvent {
+}
+
+/// Encode a completion with route attribution.
+fn completion_to_binary(fields: CompletionFields) -> BinaryEvent {
     BinaryEvent::InferenceCompleted {
-        seq,
-        request_id,
-        message,
-        provider,
-        model,
-        effort_used,
-        usage,
-        cost_micros,
-        effort_requested,
-        effort_clamped,
-        entry,
-        route,
-        route_step,
+        seq: fields.seq,
+        request_id: fields.request_id,
+        message: fields.message,
+        provider: fields.provider,
+        model: fields.model,
+        effort_used: fields.effort_used,
+        usage: fields.usage,
+        cost_micros: fields.cost_micros,
+        effort_requested: fields.effort_requested,
+        effort_clamped: fields.effort_clamped,
+        entry: fields.entry,
+        route: fields.route,
+        route_step: fields.route_step,
     }
 }
 
@@ -226,36 +229,21 @@ fn failed_completion(
 }
 
 /// Decode a metered completion with route attribution.
-#[allow(clippy::too_many_arguments)]
-fn metered_completion(
-    seq: u64,
-    request_id: RequestId,
-    message: Message,
-    provider: String,
-    model: String,
-    effort_used: Option<crate::ReasoningEffort>,
-    usage: crate::TokenUsage,
-    cost_micros: u64,
-    effort_requested: Option<crate::ReasoningEffort>,
-    effort_clamped: bool,
-    entry: Option<String>,
-    route: Option<String>,
-    route_step: Option<u32>,
-) -> Event {
+fn metered_completion(fields: CompletionFields) -> Event {
     Event::InferenceCompleted {
-        seq,
-        request_id,
-        message,
-        provider,
-        model,
-        effort_used,
-        usage,
-        cost_micros,
-        effort_requested,
-        effort_clamped,
-        entry,
-        route,
-        route_step,
+        seq: fields.seq,
+        request_id: fields.request_id,
+        message: fields.message,
+        provider: fields.provider,
+        model: fields.model,
+        effort_used: fields.effort_used,
+        usage: fields.usage,
+        cost_micros: fields.cost_micros,
+        effort_requested: fields.effort_requested,
+        effort_clamped: fields.effort_clamped,
+        entry: fields.entry,
+        route: fields.route,
+        route_step: fields.route_step,
     }
 }
 
@@ -295,7 +283,7 @@ impl From<Event> for BinaryEvent {
                 entry,
                 route,
                 route_step,
-            } => completion_to_binary(
+            } => completion_to_binary(CompletionFields {
                 seq,
                 request_id,
                 message,
@@ -309,7 +297,7 @@ impl From<Event> for BinaryEvent {
                 entry,
                 route,
                 route_step,
-            ),
+            }),
             Event::ToolCallRequested {
                 seq,
                 request_id,
@@ -441,7 +429,7 @@ impl From<BinaryEvent> for Event {
                 entry,
                 route,
                 route_step,
-            } => metered_completion(
+            } => metered_completion(CompletionFields {
                 seq,
                 request_id,
                 message,
@@ -455,7 +443,7 @@ impl From<BinaryEvent> for Event {
                 entry,
                 route,
                 route_step,
-            ),
+            }),
         }
     }
 }
