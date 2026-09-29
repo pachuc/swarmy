@@ -170,8 +170,7 @@ impl Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().tool_job_space().range();
                 if let Some(id) = after {
-                    begin = self.keys().tool_job(id);
-                    begin = crate::next_cursor(&begin);
+                    begin = crate::next_cursor(&self.keys().tool_job(id));
                 }
                 scan(&trx, (begin, end), limit).await
             })

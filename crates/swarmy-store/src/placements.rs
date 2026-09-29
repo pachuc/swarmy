@@ -6,7 +6,7 @@ use swarmy_core::{
     AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
 };
 
-use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, check_limit, read, scan, write};
+use crate::{Result, Store, StoreError, check_limit, read, scan, scan_all, write};
 
 /// Last node reporting local scratch for a computer. Bytes are an estimate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -187,31 +187,20 @@ impl Store {
         node: NodeId,
         exclude: AgentId,
     ) -> Result<u64> {
-        let (start, end) = self.keys().placement_by_node_space(node).range();
-        let mut begin = start;
+        let (begin, end) = self.keys().placement_by_node_space(node).range();
         let mut total: u64 = 0;
-        loop {
-            let page = scan(trx, (begin.clone(), end.clone()), MAX_SCAN_LIMIT).await?;
-            let full = page.len() == MAX_SCAN_LIMIT;
-            for (key, value) in page {
-                let record: PlacementRecord = decode(&value)?;
-                if record.agent_id == exclude {
-                    begin = key;
-                    begin = crate::next_cursor(&begin);
-                    continue;
-                }
-                total = total
-                    .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
-                    .ok_or(StoreError::Storage(
-                        crate::StorageError::MemoryCapacityOverflow,
-                    ))?;
-                begin = key;
-                begin = crate::next_cursor(&begin);
+        for (_, value) in scan_all(trx, (begin, end)).await? {
+            let record: PlacementRecord = decode(&value)?;
+            if record.agent_id == exclude {
+                continue;
             }
-            if !full {
-                return Ok(total);
-            }
+            total = total
+                .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
+                .ok_or(StoreError::Storage(
+                    crate::StorageError::MemoryCapacityOverflow,
+                ))?;
         }
+        Ok(total)
     }
 
     async fn reserve_computer(
@@ -516,8 +505,7 @@ impl Store {
         self.transaction(|trx| async move {
             let (mut begin, end) = self.keys().placement_by_node_space(node).range();
             if let Some(agent) = after {
-                begin = self.keys().placement_by_node(node, agent);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().placement_by_node(node, agent));
             }
             scan(&trx, (begin, end), limit)
                 .await?

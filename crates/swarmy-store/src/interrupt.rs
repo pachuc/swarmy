@@ -60,7 +60,7 @@ impl Store {
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
-                    trx.clear(&self.wait_due_key(id, wait.wake_at));
+                    trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
                     trx.clear(&self.keys().inference_wait(id));
                     Ok(InterruptResult::Finished)
                 }
@@ -110,7 +110,7 @@ impl Store {
             if let Some(wait) =
                 read::<crate::InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
             {
-                trx.clear(&self.wait_due_key(id, wait.wake_at));
+                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
                 trx.clear(&self.keys().inference_wait(id));
             }
             Ok(true)

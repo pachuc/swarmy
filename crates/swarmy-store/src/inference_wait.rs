@@ -121,10 +121,6 @@ impl Store {
             .inference_breaker(key.provider.as_str(), key.label.as_deref().unwrap_or(""))
     }
 
-    pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
-        self.keys().inference_wait_due(at, id)
-    }
-
     /// Grant one entry probe after the open period, or return the next eligible time.
     /// # Errors
     /// Returns storage failures.
@@ -298,7 +294,7 @@ impl Store {
             }
             wait.wake_at = until.min(limit);
             write(&trx, &key, &wait)?;
-            write(&trx, &self.wait_due_key(id, wait.wake_at), &())?;
+            write(&trx, &self.keys().inference_wait_due(wait.wake_at, id), &())?;
             self.transition(&trx, session, SessionState::Sleeping, now)
                 .await?;
             Ok(true)
@@ -364,7 +360,7 @@ impl Store {
             .checked_add(max_wait)
             .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         if wait.last_failure_seq != 0 {
-            trx.clear(&self.wait_due_key(id, wait.wake_at));
+            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
         }
         wait.last_failure_seq = failure.seq;
         wait.wake_at = if now >= limit {
@@ -373,7 +369,7 @@ impl Store {
             failure.wake_at.min(limit)
         };
         write(trx, &key, &wait)?;
-        write(trx, &self.wait_due_key(id, wait.wake_at), &())?;
+        write(trx, &self.keys().inference_wait_due(wait.wake_at, id), &())?;
         self.transition(trx, session, SessionState::Sleeping, now)
             .await?;
         Ok(true)
@@ -416,7 +412,7 @@ impl Store {
             if wait.wake_at > now {
                 return Ok(false);
             }
-            trx.clear(&self.wait_due_key(id, wait.wake_at));
+            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
             let session = self.session(&trx, id).await?;
             if session.state == SessionState::Sleeping {
                 self.transition(&trx, session, SessionState::Runnable, now)
@@ -437,7 +433,7 @@ impl Store {
         self.transaction(|trx| async move {
             if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
             {
-                trx.clear(&self.wait_due_key(id, wait.wake_at));
+                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
                 trx.clear(&self.keys().inference_wait(id));
             }
             let mut session = self.session(&trx, id).await?;

@@ -6,7 +6,7 @@ use swarmy_core::{
     SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord, computer_rebuilt_message,
 };
 
-use crate::{Result, Store, StoreError, read, scan, write};
+use crate::{Result, Store, StoreError, read, scan, scan_all, write};
 
 impl Store {
     /// Publish sampled call occupancy only for the current live placement.
@@ -298,22 +298,14 @@ impl Store {
         let explanation = text.clone();
         // The index read conflicts with concurrent session creation, so every
         // session present at delivery receives the same epoch atomically.
-        let (mut begin, end) = self
+        let (begin, end) = self
             .keys()
             .session_by_agent_space(placement.agent_id)
             .range();
-        loop {
-            let page = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-            if page.is_empty() {
-                break;
-            }
-            for (key, value) in page {
-                let session = swarmy_core::decode::<SessionId>(&value)?;
-                self.append_computer_notice(trx, session, placement.epoch, &message)
-                    .await?;
-                begin = key;
-                begin = crate::next_cursor(&begin);
-            }
+        for (_, value) in scan_all(trx, (begin, end)).await? {
+            let session = swarmy_core::decode::<SessionId>(&value)?;
+            self.append_computer_notice(trx, session, placement.epoch, &message)
+                .await?;
         }
         Ok(Some(explanation))
     }

@@ -574,8 +574,7 @@ impl Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().session_space().range();
                 if let Some(id) = after {
-                    begin = self.keys().session(id);
-                    begin = crate::next_cursor(&begin);
+                    begin = crate::next_cursor(&self.keys().session(id));
                 }
                 let mut sessions = Vec::new();
                 for (_, value) in scan(&trx, (begin, end), limit).await? {
@@ -772,8 +771,7 @@ impl Store {
         let values = self
             .transaction(|trx| async move {
                 let space = self.keys().event_space(id);
-                let mut begin = self.keys().event(id, after);
-                begin = crate::next_cursor(&begin);
+                let begin = crate::next_cursor(&self.keys().event(id, after));
                 scan(&trx, (begin, space.range().1), limit).await
             })
             .await?;

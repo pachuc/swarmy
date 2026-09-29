@@ -9,6 +9,8 @@ use swarmy_core::{
     VolumeRecord,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::scan_all;
 use crate::{Result, Store, StoreError, read, scan, write};
 
 impl Store {
@@ -223,8 +225,7 @@ impl Store {
             let space = self.keys().image_space();
             let (mut begin, end) = space.range();
             if let Some((name, tag)) = after {
-                begin = self.keys().image(name, tag);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().image(name, tag));
             }
             let mut images = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
@@ -441,8 +442,7 @@ impl Store {
             let space = self.keys().volume_space();
             let (mut begin, end) = space.range();
             if let Some(id) = after {
-                begin = self.keys().volume(id);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().volume(id));
             }
             let mut volumes = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
@@ -507,38 +507,29 @@ impl Store {
                     "agent" => self.keys().agent_space(),
                     _ => unreachable!("unknown manifest source family"),
                 };
-                let (mut begin, end) = space.range();
-                loop {
-                    let page =
-                        scan(&trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-                    if page.is_empty() {
-                        break;
-                    }
-                    for (key, value) in page {
-                        if kind == "agent" {
-                            live.insert(
-                                swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
-                                    .image
-                                    .manifest_id,
-                            );
-                        } else if kind == "image" {
-                            live.insert(swarmy_core::decode::<ManifestId>(&value)?);
-                        } else {
-                            let volume: VolumeRecord = swarmy_core::decode(&value)?;
-                            let (bytes,): (Vec<u8>,) = space
-                                .unpack(&key)
-                                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                            let bytes: [u8; 16] = bytes
-                                .try_into()
-                                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                            let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
-                            live.extend(self.snapshots(&trx, id).await?);
-                            if volume.writer_lease.is_some() {
-                                live.insert(volume.head_manifest);
-                            }
+                let (begin, end) = space.range();
+                for (key, value) in scan_all(&trx, (begin, end)).await? {
+                    if kind == "agent" {
+                        live.insert(
+                            swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
+                                .image
+                                .manifest_id,
+                        );
+                    } else if kind == "image" {
+                        live.insert(swarmy_core::decode::<ManifestId>(&value)?);
+                    } else {
+                        let volume: VolumeRecord = swarmy_core::decode(&value)?;
+                        let (bytes,): (Vec<u8>,) = space
+                            .unpack(&key)
+                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                        let bytes: [u8; 16] = bytes
+                            .try_into()
+                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                        let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
+                        live.extend(self.snapshots(&trx, id).await?);
+                        if volume.writer_lease.is_some() {
+                            live.insert(volume.head_manifest);
                         }
-                        begin = key;
-                        begin = crate::next_cursor(&begin);
                     }
                 }
             }

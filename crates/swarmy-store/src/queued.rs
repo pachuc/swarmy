@@ -119,7 +119,7 @@ impl Store {
             async move {
                 self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
-crate::check_head(session.head_seq, head)?;
+                crate::check_head(session.head_seq, head)?;
                 let queue = self.queued_in(&trx, id).await?;
                 let mut events = Vec::with_capacity(before.len() + queue.len() * 2);
                 let mut delivered_keys = Vec::new();

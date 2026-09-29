@@ -109,8 +109,7 @@ impl Store {
             let space = self.keys().runnable_space(partition);
             let (mut begin, end) = space.range();
             if let Some(entry) = after {
-                begin = self.runnable_key(entry);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.runnable_key(entry));
             }
             let mut entries = Vec::new();
             for (key, _) in scan(&trx, (begin, end), limit).await? {

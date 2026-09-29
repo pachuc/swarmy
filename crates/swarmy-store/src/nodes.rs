@@ -42,8 +42,7 @@ impl Store {
         self.transaction(|trx| async move {
             let (mut begin, end) = self.keys().node_space().range();
             if let Some(id) = after {
-                begin = self.keys().node(id);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().node(id));
             }
             let mut live = Vec::new();
             let mut cursor = None;

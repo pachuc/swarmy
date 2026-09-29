@@ -17,7 +17,7 @@ use crate::{
     CredentialKey, InferenceFailureWait, InferenceWait, Result, Store, StoreError,
     credentials::{decode_entry, entry_ready},
     inference_wait::Breaker,
-    read, scan, write,
+    read, scan_all, write,
 };
 
 /// One stored entry label with its readiness hint, in creation order.
@@ -285,31 +285,18 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn list_routes(&self) -> Result<Vec<RouteRecord>> {
         let space = self.keys().route_space();
-        let (mut begin, end) = space.range();
+        let (begin, end) = space.range();
         let mut routes = Vec::new();
-        loop {
-            let rows = self
-                .transaction(|trx| {
-                    let range = (begin.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if rows.is_empty() {
-                break;
+        for (key, value) in self.scan_all_pages(begin, end).await? {
+            let (name,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let mut record: RouteRecord = swarmy_core::decode(&value)?;
+            if record.name != name {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
             }
-            for (key, value) in rows {
-                let (name,): (String,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                let mut record: RouteRecord = swarmy_core::decode(&value)?;
-                if record.name != name {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                record.name = name;
-                routes.push(record);
-                begin = key;
-                begin = crate::next_cursor(&begin);
-            }
+            record.name = name;
+            routes.push(record);
         }
         Ok(routes)
     }
@@ -340,29 +327,19 @@ impl Store {
         let space = self
             .keys()
             .credential_entry_space_provider(CredentialScope::Cluster, provider);
-        let (mut begin, end) = space.range();
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
-        loop {
-            let rows = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-            let complete = rows.len() < crate::MAX_SCAN_LIMIT;
-            for (key, value) in rows {
-                let (label,): (String,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                let entry = decode_entry(&value)?;
-                entries.push((
-                    entry.created_at,
-                    PoolEntry {
-                        label,
-                        ready: entry_ready(entry.needs_login, entry.expires_at, now),
-                    },
-                ));
-                begin = key;
-                begin = crate::next_cursor(&begin);
-            }
-            if complete {
-                break;
-            }
+        for (key, value) in scan_all(trx, space.range()).await? {
+            let (label,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let entry = decode_entry(&value)?;
+            entries.push((
+                entry.created_at,
+                PoolEntry {
+                    label,
+                    ready: entry_ready(entry.needs_login, entry.expires_at, now),
+                },
+            ));
         }
         // Creation order is the failover order; labels break ties for
         // entries written in the same transaction.

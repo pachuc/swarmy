@@ -3,7 +3,8 @@ use jiff::Timestamp;
 use swarmy_core::{Lease, LeaseOwnerId, RunnableEntry, SessionId, SessionState, can_transition};
 
 use crate::{
-    Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read, scan, write,
+    Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read, scan, scan_all,
+    write,
 };
 
 impl Store {
@@ -27,13 +28,9 @@ impl Store {
         .await
     }
 
-    fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        self.keys().lease_by_expiry(expires, id)
-    }
-
     async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
         if let Some(lease) = read::<Lease>(trx, &self.keys().lease(id)).await? {
-            trx.clear(&self.expiry_key(id, lease.expires_at));
+            trx.clear(&self.keys().lease_by_expiry(lease.expires_at, id));
             trx.clear(&self.keys().lease(id));
         }
         Ok(())
@@ -41,7 +38,11 @@ impl Store {
 
     fn store_lease(&self, trx: &Transaction, id: SessionId, lease: &Lease) -> Result<()> {
         write(trx, &self.keys().lease(id), lease)?;
-        write(trx, &self.expiry_key(id, lease.expires_at), lease)
+        write(
+            trx,
+            &self.keys().lease_by_expiry(lease.expires_at, id),
+            lease,
+        )
     }
 
     /// Claim only a Runnable session and atomically transition it to Leased.
@@ -103,11 +104,11 @@ impl Store {
                     read(&trx, &turn_key),
                 )?;
                 let space = self.keys().event_space(id);
-                let mut begin = self.keys().event(id, session.snapshot_seq.unwrap_or(0));
-                begin = crate::next_cursor(&begin);
+                let begin =
+                    crate::next_cursor(&self.keys().event(id, session.snapshot_seq.unwrap_or(0)));
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
-                    scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
+                    scan_all(&trx, (begin, space.range().1)),
                 )?;
                 Ok((lease, session, snapshot, turn, values))
             })
@@ -270,8 +271,7 @@ impl Store {
             let space = self.keys().lease_by_expiry_space_root();
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
-                begin = self.expiry_key(*id, lease.expires_at);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().lease_by_expiry(lease.expires_at, *id));
             }
             let end = self.keys().lease_by_expiry_space(now).range().1;
             if begin >= end {

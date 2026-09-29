@@ -16,7 +16,7 @@ use swarmy_core::{
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::{BreakerCandidate, CredentialKey, inference_wait::Breaker};
-use crate::{Result, Store, StoreError, read, scan, scan_all, write};
+use crate::{Result, Store, StoreError, read, scan_all, write};
 use foundationdb::RetryableTransaction;
 
 /// No secrets are returned by list operations. Each encrypted value is read once.
@@ -151,7 +151,7 @@ impl Store {
         let rows = self
             .transaction(|trx| {
                 let range = (begin.clone(), end.clone());
-                async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                async move { scan_all(&trx, range).await }
             })
             .await?;
         let mut labels = Vec::new();
@@ -239,27 +239,14 @@ impl Store {
         provider: &str,
     ) -> Result<Option<[u8; 32]>> {
         let space = self.keys().credential_entry_space_provider(scope, provider);
-        let (mut begin, end) = space.range();
+        let (begin, end) = space.range();
         let mut hash = blake3::Hasher::new();
         let mut found = false;
-        loop {
-            let rows = self
-                .transaction(|trx| {
-                    let range = (begin.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if rows.is_empty() {
-                break;
-            }
-            for (key, bytes) in rows {
-                found = true;
-                hash.update(&key);
-                let entry: EntryValue = decode_entry(&bytes)?;
-                hash.update(&entry.ciphertext);
-                begin = key;
-                begin = crate::next_cursor(&begin);
-            }
+        for (key, bytes) in self.scan_all_pages(begin, end).await? {
+            found = true;
+            hash.update(&key);
+            let entry: EntryValue = decode_entry(&bytes)?;
+            hash.update(&entry.ciphertext);
         }
         Ok(found.then(|| *hash.finalize().as_bytes()))
     }
@@ -282,7 +269,7 @@ impl CredentialStore {
             &entry_identity(provider, label),
             record,
         )?;
-        let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
+        let key = self.store.keys().credential_entry(scope, provider, label);
         let (needs_login, expires_at) = entry_readiness(record, self.store.now());
         self.store
             .transaction(|trx| {
@@ -303,7 +290,9 @@ impl CredentialStore {
                         },
                     )?;
                     trx.clear(
-                        &crate::keys::Keys::new(&self.store.root)
+                        &self
+                            .store
+                            .keys()
                             .credential_entry_lease(scope, provider, label),
                     );
                     Ok(())
@@ -321,7 +310,7 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<Option<CredentialRecord>> {
-        let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
+        let key = self.store.keys().credential_entry(scope, provider, label);
         let entry: Option<EntryValue> = self
             .store
             .transaction(|trx| {
@@ -350,7 +339,7 @@ impl CredentialStore {
         provider: &str,
         label: &str,
     ) -> Result<()> {
-        let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
+        let key = self.store.keys().credential_entry(scope, provider, label);
         self.store
             .transaction(|trx| {
                 let key = &key;
@@ -375,12 +364,11 @@ impl CredentialStore {
     ) -> Result<()> {
         self.store
             .transaction(|trx| async move {
+                trx.clear(&self.store.keys().credential_entry(scope, provider, label));
                 trx.clear(
-                    &crate::keys::Keys::new(&self.store.root)
-                        .credential_entry(scope, provider, label),
-                );
-                trx.clear(
-                    &crate::keys::Keys::new(&self.store.root)
+                    &self
+                        .store
+                        .keys()
                         .credential_entry_lease(scope, provider, label),
                 );
                 Ok(())
@@ -395,39 +383,25 @@ impl CredentialStore {
     /// # Errors
     /// Returns decryption, encoding, or database errors.
     pub async fn list_entries(&self, scope: CredentialScope) -> Result<Vec<CredentialSummary>> {
-        let space = crate::keys::Keys::new(&self.store.root).credential_entry_space(scope);
-        let (mut begin, end) = space.range();
+        let space = self.store.keys().credential_entry_space(scope);
+        let (begin, end) = space.range();
         let mut result = Vec::new();
-        loop {
-            let rows = self
-                .store
-                .transaction(|trx| {
-                    let range = (begin.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if rows.is_empty() {
-                break;
-            }
-            for (key, value) in rows {
-                let (provider, label): (String, String) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                let entry: EntryValue = decode_entry(&value)?;
-                let record = decrypt(
-                    &self.keyring,
-                    scope,
-                    &entry_identity(&provider, &label),
-                    &entry.ciphertext,
-                )?;
-                let mut summary = CredentialSummary::new(provider, &record, self.store.now());
-                summary.label = label;
-                summary.created_at = entry.created_at;
-                summary.last_used_at = entry.last_used_at;
-                result.push(summary);
-                begin = key;
-                begin = crate::next_cursor(&begin);
-            }
+        for (key, value) in self.store.scan_all_pages(begin, end).await? {
+            let (provider, label): (String, String) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let entry: EntryValue = decode_entry(&value)?;
+            let record = decrypt(
+                &self.keyring,
+                scope,
+                &entry_identity(&provider, &label),
+                &entry.ciphertext,
+            )?;
+            let mut summary = CredentialSummary::new(provider, &record, self.store.now());
+            summary.label = label;
+            summary.created_at = entry.created_at;
+            summary.last_used_at = entry.last_used_at;
+            result.push(summary);
         }
         result.sort_by_key(|entry| {
             (
@@ -448,14 +422,16 @@ impl CredentialStore {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<(String, CredentialRecord)>> {
-        let space = crate::keys::Keys::new(&self.store.root)
+        let space = self
+            .store
+            .keys()
             .credential_entry_space_provider(scope, provider);
         let (begin, end) = space.range();
         let rows = self
             .store
             .transaction(|trx| {
                 let range = (begin.clone(), end.clone());
-                async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
+                async move { scan_all(&trx, range).await }
             })
             .await?;
         let mut entries = Vec::new();
@@ -517,9 +493,11 @@ impl CredentialStore {
         if ttl.is_zero() {
             return Err(StoreError::Domain(crate::DomainError::InvalidLeaseTtl));
         }
-        let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
-        let lease_key =
-            crate::keys::Keys::new(&self.store.root).credential_entry_lease(scope, provider, label);
+        let key = self.store.keys().credential_entry(scope, provider, label);
+        let lease_key = self
+            .store
+            .keys()
+            .credential_entry_lease(scope, provider, label);
         let observed: EntryValue = self
             .store
             .transaction(|trx| {

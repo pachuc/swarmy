@@ -440,8 +440,7 @@ impl crate::Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().turn_metrics_space(session).range();
                 if let Some(turn) = after {
-                    begin = self.keys().turn_metrics(session, turn);
-                    begin = crate::next_cursor(&begin);
+                    begin = crate::next_cursor(&self.keys().turn_metrics(session, turn));
                 }
                 scan(&trx, (begin, end), limit).await
             })

@@ -194,8 +194,7 @@ impl Store {
         self.transaction(|trx| async move {
             let (mut begin, end) = self.keys().agent_space().range();
             if let Some(id) = after {
-                begin = self.keys().agent(id);
-                begin = crate::next_cursor(&begin);
+                begin = crate::next_cursor(&self.keys().agent(id));
             }
             scan(&trx, (begin, end), limit)
                 .await?
@@ -800,8 +799,7 @@ impl Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().session_by_agent_space(agent).range();
                 if let Some(id) = after {
-                    begin = self.keys().session_by_agent(agent, id);
-                    begin = crate::next_cursor(&begin);
+                    begin = crate::next_cursor(&self.keys().session_by_agent(agent, id));
                 }
                 scan(&trx, (begin, end), limit)
                     .await?

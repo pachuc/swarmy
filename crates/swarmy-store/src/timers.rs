@@ -197,8 +197,7 @@ impl Store {
         let space = self.keys().timer_due_space_root();
         let (mut begin, _) = space.range();
         if let Some(after) = after {
-            begin = self.timer_due_key(after);
-            begin = crate::next_cursor(&begin);
+            begin = crate::next_cursor(&self.timer_due_key(after));
         }
         let end = self.keys().timer_due_space(now).range().1;
         self.transaction(|trx| {

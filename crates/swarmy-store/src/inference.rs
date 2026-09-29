@@ -501,8 +501,7 @@ impl Store {
                 let space = self.keys().inflight_space();
                 let mut begin = space.range().0;
                 if let Some(id) = after {
-                    begin = self.keys().inflight(id);
-                    begin = crate::next_cursor(&begin);
+                    begin = crate::next_cursor(&self.keys().inflight(id));
                 }
                 crate::scan(&trx, (begin, space.range().1), limit).await
             })
