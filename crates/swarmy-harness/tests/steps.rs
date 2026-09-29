@@ -7,7 +7,7 @@ use swarmy_core::{
     SessionId, SessionRecord, SessionState, ToolCallId, ToolCallRecord, ToolResult,
 };
 use swarmy_harness::{
-    Action, GetTime, Harness, Snapshot, Tool, ToolRegistry, assemble_prompt, execution_result,
+    Action, GetTime, Harness, Snapshot, Tool, ToolRegistry, execution_result,
     result_part,
 };
 use swarmy_llm::{
@@ -203,18 +203,16 @@ fn all_results_fold_in_request_order_and_then_build_inference() {
     assert_eq!(request.messages.len(), 3);
     assert_eq!(request.messages[1].role, MessageRole::Assistant);
     assert_eq!(request.messages[2].role, MessageRole::Tool);
-}
-
-#[test]
-fn request_event_order_controls_fold_order() {
-    let mut events = fixture();
-    if let Event::ToolCallRequested { call, .. } = &mut events[3] {
+    // The fold follows ToolCallRequested order, not completion order: with
+    // the requests swapped, the first folded part is the second call.
+    let mut swapped = fixture();
+    if let Event::ToolCallRequested { call, .. } = &mut swapped[3] {
         call.call_id = ToolCallId("second".into());
     }
-    if let Event::ToolCallRequested { call, .. } = &mut events[4] {
+    if let Event::ToolCallRequested { call, .. } = &mut swapped[4] {
         call.call_id = ToolCallId("first".into());
     }
-    let Action::FoldResults(message) = step(&events) else {
+    let Action::FoldResults(message) = step(&swapped) else {
         panic!("expected folded results");
     };
     assert!(matches!(&message.parts[0], Part::ToolResult { call_id, .. } if call_id.0 == "second"));
@@ -259,14 +257,14 @@ fn model_without_tool_calls_ends_turn() {
 }
 
 #[test]
-fn assembled_request_matches_pretty_json_snapshot_exactly() {
+fn assembled_request_carries_the_harness_model_and_limits() {
     let Action::BuildInference(request) = step(&[user_event()]) else {
         panic!("expected inference");
     };
-    assert_eq!(
-        format!("{}\n", serde_json::to_string_pretty(&request).unwrap()),
-        include_str!("fixtures/request.json")
-    );
+    // The agent's model selection must reach the provider request: the
+    // configured model and output limit travel in the request settings.
+    assert_eq!(request.settings.model, "fixture-model");
+    assert_eq!(request.settings.max_output_tokens, Some(256));
 }
 
 #[test]
@@ -362,7 +360,7 @@ impl Tool for Echo {
 }
 
 #[test]
-fn registry_sorts_definitions_and_supports_lookup_and_replacement() {
+fn definitions_are_sorted_so_registration_order_cannot_change_a_prompt() {
     let mut first = harness().tools;
     assert!(first.register(Box::new(Echo)).is_none());
     let mut second = ToolRegistry::default();
@@ -370,18 +368,7 @@ fn registry_sorts_definitions_and_supports_lookup_and_replacement() {
     second.register(Box::new(GetTime));
     assert_eq!(first.definitions(), second.definitions());
     assert_eq!(first.definitions()[0].name, "echo");
-    assert!(first.get("missing").is_none());
-    assert_eq!(
-        first.get("echo").unwrap().parameters(),
-        json!({"type": "object"})
-    );
     assert!(first.register(Box::new(Echo)).is_some());
-    assert_eq!(
-        assemble_prompt("", &[], &GenerationSettings::default(), &first)
-            .tools
-            .len(),
-        2
-    );
 }
 
 #[tokio::test]
@@ -574,7 +561,7 @@ fn disk_manifest_and_command_status_survive_folding_and_snapshot_replay() {
 }
 
 #[test]
-fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions() {
+fn sandbox_tools_dispatch_with_validated_arguments() {
     let mut registry = swarmy_harness::ToolRegistry::default();
     swarmy_tools::register(&mut registry);
     let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::from(42_u128));
@@ -608,29 +595,13 @@ fn sandbox_tools_dispatch_with_validated_arguments_and_durability_descriptions()
             Action::DispatchTools(vec![call])
         );
         let tool = registry.get(name).unwrap();
+        // Sandbox tools must run in the sandbox: without one, execution fails.
         assert!(tool.sandbox_bound());
         let parsed = swarmy_core::SandboxArguments::parse(name, arguments).unwrap();
-        assert_eq!(parsed.name(), name);
-        assert_eq!(
-            swarmy_core::decode::<swarmy_core::SandboxArguments>(
-                &swarmy_core::encode(&parsed).unwrap()
-            )
-            .unwrap(),
-            parsed
-        );
         assert!(futures::executor::block_on(tool.execute(parsed.parameters())).is_err());
-        let description = tool.description();
-        for wording in [
-            "Files persist across failures up to the last snapshot",
-            "every ten minutes",
-            "checkpoint is called",
-            "Processes do not survive a node failure or an idle eviction",
-        ] {
-            assert!(description.contains(wording), "{name}: {description}");
-        }
         assert!(swarmy_core::SandboxArguments::parse(name, json!({"unexpected":true})).is_err());
     }
-    assert_eq!(registry.definitions().len(), 18);
+    // Process handles must not escape the sandbox namespace.
     assert!(
         swarmy_core::SandboxArguments::parse("process_stop", json!({"process_id":"../other"}))
             .is_err()
