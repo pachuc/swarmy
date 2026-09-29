@@ -192,8 +192,41 @@ fn reports_keyring_presence_and_permissions() {
     assert_eq!(check(&invalid, "keyring")["ok"], false);
 }
 
-fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) {
+/// Serve one fixed HTTP response. Every wait has a deadline so a fixture
+/// mismatch panics fast: the accept loop gives up after 10 s and the read
+/// after 5 s, instead of blocking `server.join()` forever. The hang that
+/// held CI runners was the join waiting on an accept that never arrived
+/// because the CLI made fewer requests than the hard-coded body list.
+fn serve_one(listener: &std::net::TcpListener, body: &str) {
     use std::io::{Read, Write};
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(pair) => break pair,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("fixture accept failed: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut request = [0_u8; 4096];
+    let _ = stream.read(&mut request).unwrap();
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .unwrap();
+}
+
+fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = Fixture::new();
     fixture.config(&format!(
@@ -219,25 +252,7 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
             ),
             "[]".to_owned(),
         ] {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok(pair) => break pair,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && std::time::Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("fixture accept failed: {error}"),
-                }
-            };
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).unwrap();
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            serve_one(&listener, &body);
         }
     });
     (fixture, handle)
@@ -272,7 +287,6 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
 
 #[test]
 fn api_check_accepts_same_major_api_despite_binary_drift() {
-    use std::io::{Read, Write};
     for (api_version, status) in [("1.9.0", "pass"), ("2.0.0", "fail")] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let fixture = Fixture::new();
@@ -297,25 +311,7 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
                 \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
                 \"images\":[],\"default_image\":null,\"credentials\":[]}";
             for body in [health, snapshot.to_owned(), "[]".to_owned()] {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                let (mut stream, _) = loop {
-                    match listener.accept() {
-                        Ok(pair) => break pair,
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::WouldBlock
-                                && std::time::Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        }
-                        Err(error) => panic!("fixture accept failed: {error}"),
-                    }
-                };
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = [0_u8; 4096];
-                let _ = stream.read(&mut request).unwrap();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                serve_one(&listener, &body);
             }
         });
         let output = fixture.doctor(true);

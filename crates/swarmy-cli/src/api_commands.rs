@@ -420,17 +420,17 @@ async fn show_session(
             .as_ref()
             .map_or("-".to_owned(), |scratch| scratch.node_id.clone());
         let scratch_bytes = record.scratch.as_ref().map_or(0, |scratch| scratch.bytes);
-        let requirements =
-            record
-                .requirements
-                .clone()
-                .unwrap_or(swarmy_api_types::SandboxRequirements {
-                    memory_mib: 0,
-                    gpu: swarmy_api_types::GpuMode::None,
-                });
+        let sandbox_memory = record
+            .requirements
+            .as_ref()
+            .map_or_else(|| "-".into(), |requirements| requirements.memory_mib.to_string());
+        let sandbox_gpu = record
+            .requirements
+            .as_ref()
+            .map_or("-", |requirements| requirements.gpu.as_str());
         println!(
-            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
-            state_name(record.state),
+            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={} sandbox_address={}",
+            record.state.as_str(),
             record.interrupt_requested,
             selection.provider,
             inherited(record.provider.is_some()),
@@ -441,8 +441,8 @@ async fn show_session(
             record.route.as_deref().unwrap_or("(swarm default)"),
             scratch_node,
             scratch_bytes,
-            requirements.memory_mib,
-            requirements.gpu,
+            sandbox_memory,
+            sandbox_gpu,
             record.sandbox_address.as_deref().unwrap_or("-")
         );
         if let Some(usage) = &record.usage {
@@ -496,10 +496,6 @@ async fn show_session(
         }
     }
     Ok(())
-}
-
-fn state_name(state: swarmy_api_types::SessionState) -> &'static str {
-    state.as_str()
 }
 
 async fn image(
@@ -562,14 +558,14 @@ async fn image(
 
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={:?}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
         agent.provider.as_deref().unwrap_or("(stack default)"),
         agent.system_prompt.as_deref().unwrap_or("(stack default)"),
         agent.model.as_deref().unwrap_or("(stack default)"),
         agent.effort.map_or("(stack default)", |v| v.as_str()),
         agent.route.as_deref().unwrap_or("(stack default)"),
         agent.requirements.memory_mib,
-        agent.requirements.gpu,
+        agent.requirements.gpu.as_str(),
     )
 }
 struct AgentFlags {
@@ -1088,11 +1084,11 @@ fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool
         }
     } else {
         println!(
-            "{}\t{:?}\t{}\t{:?}\t{}{}",
+            "{}\t{}\t{}\t{}\t{}{}",
             summary.provider,
-            summary.kind,
+            summary.kind.as_str(),
             summary.label,
-            summary.status,
+            summary.status.as_str(),
             summary.updated_at,
             if expiry {
                 seconds.map_or_else(String::new, |n| format!("\texpires in {n}s"))

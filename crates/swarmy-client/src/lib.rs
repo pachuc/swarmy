@@ -180,7 +180,7 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("agents/{}", segment(id)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest { idempotency_key: key.to_owned() },
         )
         .await
     }
@@ -496,7 +496,7 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("credentials/{}", segment(provider)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest { idempotency_key: key.to_owned() },
         )
         .await
     }
@@ -526,7 +526,7 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("credentials/{}/{}", segment(provider), segment(label)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest { idempotency_key: key.to_owned() },
         )
         .await
     }
@@ -652,7 +652,7 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("routes/{}", segment(name)),
-            &serde_json::json!({"idempotency_key": key}),
+            &api::DeleteRequest { idempotency_key: key.to_owned() },
         )
         .await
     }

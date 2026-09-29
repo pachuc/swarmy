@@ -356,7 +356,7 @@ impl View {
                     .as_ref()
                     .map_or_else(|| "default".into(), |v| v.reasoning_effort.clone())
             },
-            |v| format!("{v:?}").to_lowercase(),
+            |v| v.as_str().to_owned(),
         );
         Self {
             entries: predecessor_notice(conversation),
@@ -367,7 +367,7 @@ impl View {
             tools: HashMap::new(),
             ready: false,
             queued: None,
-            state: format!("{:?}", conversation.session.state),
+            state: conversation.session.state.as_str().to_owned(),
             selection: format!("{provider}/{model} {effort}"),
         }
     }
@@ -446,7 +446,7 @@ impl View {
                 };
                 match record {
                     swarmy_core::Event::StateChanged { to, .. } => {
-                        self.state = format!("{to:?}");
+                        self.state = api::SessionState::from(to).as_str().to_owned();
                         self.ready = to == swarmy_core::SessionState::Idle;
                         if self.ready {
                             self.partial.clear();
