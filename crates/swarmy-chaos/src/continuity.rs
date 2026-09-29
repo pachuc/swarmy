@@ -101,32 +101,49 @@ async fn settled(
                     session.head_seq > after
                 }
             {
-                let mut events = Vec::new();
-                let old = f
-                    .store
-                    .fetch_session(previous)
-                    .await?
-                    .context("old missing")?;
-                crate::read_through(&f.store, previous, &mut events, old.head_seq).await?;
-                for event in events.iter().filter(|event| event.seq() > after) {
-                    if let Event::ToolCallCompleted { result, .. } = event {
-                        let ToolResult::Completed { title, output, .. } = result else {
-                            anyhow::bail!("tool failed: {result:?}")
-                        };
-                        if title == "bash" {
-                            let value: Value = serde_json::from_str(output)?;
-                            ensure!(value["exit_code"] == 0, "bash failed: {value}");
-                        }
-                        tracing::info!(tool = title, %output, "continuity transcript");
-                    }
-                }
-                return Ok(id);
+                return verify_transcript(f, previous, after, id).await;
             }
             sleep(Duration::from_millis(50)).await;
         }
     })
     .await
     .context("continuity turn timed out")?
+}
+
+/// Check the settled turn's transcript: every tool call completed and every
+/// bash call exited zero. Returns the new main session.
+async fn verify_transcript(
+    f: &Fixture,
+    previous: SessionId,
+    after: u64,
+    id: SessionId,
+) -> Result<SessionId> {
+    let mut events = Vec::new();
+    let old = f
+        .store
+        .fetch_session(previous)
+        .await?
+        .context("old missing")?;
+    crate::read_through(&f.store, previous, &mut events, old.head_seq).await?;
+    for event in events.iter().filter(|event| event.seq() > after) {
+        check_tool_event(event)?;
+    }
+    Ok(id)
+}
+
+fn check_tool_event(event: &Event) -> Result<()> {
+    let Event::ToolCallCompleted { result, .. } = event else {
+        return Ok(());
+    };
+    let ToolResult::Completed { title, output, .. } = result else {
+        anyhow::bail!("tool failed: {result:?}")
+    };
+    if title == "bash" {
+        let value: Value = serde_json::from_str(output)?;
+        ensure!(value["exit_code"] == 0, "bash failed: {value}");
+    }
+    tracing::info!(tool = title, %output, "continuity transcript");
+    Ok(())
 }
 
 pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {

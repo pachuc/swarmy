@@ -942,9 +942,12 @@ struct Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .status();
+        ignore_best_effort(
+            std::process::Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status(),
+            "terminate node child",
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while matches!(self.child.try_wait(), Ok(None)) {
             if std::time::Instant::now() >= deadline {
@@ -957,19 +960,25 @@ impl Drop for Node {
         // Also clean an interrupted boot whose node could not shut down normally.
         if let Ok(bundles) = std::fs::read_dir(self.root.join("bundles")) {
             for bundle in bundles.flatten() {
-                let _ = std::process::Command::new("runc")
-                    .arg("--root")
-                    .arg(self.root.join("runc"))
-                    .args(["delete", "--force"])
-                    .arg(bundle.file_name())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = std::process::Command::new("umount")
-                    .arg(bundle.path().join("rootfs"))
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    std::process::Command::new("runc")
+                        .arg("--root")
+                        .arg(self.root.join("runc"))
+                        .args(["delete", "--force"])
+                        .arg(bundle.file_name())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "force-remove leftover bundle",
+                );
+                ignore_best_effort(
+                    std::process::Command::new("umount")
+                        .arg(bundle.path().join("rootfs"))
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "unmount leftover rootfs",
+                );
                 if let Ok(device) = std::fs::read_to_string(bundle.path().join("device"))
                     && device
                         .trim()

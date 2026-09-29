@@ -175,7 +175,7 @@ async fn assert_agent_reads(client: &reqwest::Client, base: &str, first: &Agent)
     assert_eq!(created_value, shown_value);
 }
 
-/// Providers list and the public OpenAPI document both answer.
+/// Providers list and the public `OpenAPI` document both answer.
 async fn assert_provider_and_docs_reads(client: &reqwest::Client, base: &str) {
     let providers: Vec<Provider> = client
         .get(format!("{base}/v1/providers"))

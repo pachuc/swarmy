@@ -190,79 +190,92 @@ impl Drop for Node {
         // Cleanup does not rely on swarmyd being alive or the test succeeding.
         if let Ok(bundles) = std::fs::read_dir(root.join("bundles")) {
             for bundle in bundles.flatten() {
-                ignore_best_effort(
-                    Command::new("runc")
-                        .arg("--root")
-                        .arg(root.join("runc"))
-                        .args(["delete", "--force"])
-                        .arg(bundle.file_name())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status(),
-                    "force-remove leftover bundle",
-                );
-                // The runtime writes the pasta PID under /run (see
-                // swarmy_sandbox::pasta_pid_file); resolve it through that
-                // accessor rather than the bundle directory.
-                if let Ok(ulid) = bundle.file_name().to_string_lossy().parse::<ulid::Ulid>() {
-                    let pid_path = swarmy_sandbox::pasta_pid_file(AgentId::from_ulid(ulid));
-                    if let Ok(pid) = std::fs::read_to_string(&pid_path)
-                        && let Ok(pid) = pid.trim().parse::<u32>()
-                    {
-                        let command =
-                            std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-                        if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
-                            && command
-                                .windows(pid_path.as_os_str().as_encoded_bytes().len())
-                                .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
-                        {
-                            ignore_best_effort(
-                                Command::new("kill")
-                                    .arg(pid.to_string())
-                                    .stdout(Stdio::null())
-                                    .stderr(Stdio::null())
-                                    .status(),
-                                "kill stale pasta process",
-                            );
-                        }
-                    }
-                }
-                ignore_best_effort(
-                    Command::new("ip")
-                        .args(["netns", "delete"])
-                        .arg(format!(
-                            "swarmy-{}-{}",
-                            self.id,
-                            bundle.file_name().to_string_lossy()
-                        ))
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status(),
-                    "delete leftover network namespace",
-                );
-                let mount = bundle.path().join("rootfs");
-                let source = Command::new("findmnt")
-                    .args(["--noheadings", "--output", "SOURCE", "--mountpoint"])
-                    .arg(&mount)
-                    .output()
-                    .ok()
-                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-                ignore_best_effort(
-                    Command::new("umount")
-                        .arg(&mount)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status(),
-                    "unmount leftover rootfs",
-                );
-                if let Some(source) = source.filter(|source| {
-                    source
-                        .strip_prefix("/dev/nbd")
-                        .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
-                }) {
+                Self::cleanup_bundle(&self.id, &root, &bundle);
+            }
+        }
+    }
+}
+
+impl Node {
+    /// Remove one leftover sandbox bundle: its runtime, pasta process,
+    /// network namespace, mount, and NBD device.
+    fn cleanup_bundle(id: &NodeId, root: &std::path::Path, bundle: &std::fs::DirEntry) {
+        ignore_best_effort(
+            Command::new("runc")
+                .arg("--root")
+                .arg(root.join("runc"))
+                .args(["delete", "--force"])
+                .arg(bundle.file_name())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            "force-remove leftover bundle",
+        );
+        Self::kill_stale_pasta(bundle);
+        ignore_best_effort(
+            Command::new("ip")
+                .args(["netns", "delete"])
+                .arg(format!(
+                    "swarmy-{}-{}",
+                    id,
+                    bundle.file_name().to_string_lossy()
+                ))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            "delete leftover network namespace",
+        );
+        let mount = bundle.path().join("rootfs");
+        let source = Command::new("findmnt")
+            .args(["--noheadings", "--output", "SOURCE", "--mountpoint"])
+            .arg(&mount)
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+        ignore_best_effort(
+            Command::new("umount")
+                .arg(&mount)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            "unmount leftover rootfs",
+        );
+        if let Some(source) = source.filter(|source| {
+            source
+                .strip_prefix("/dev/nbd")
+                .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
+        }) {
+            ignore_best_effort(
+                swarmy_volume::kernel::cleanup_stale(Path::new(&source)),
+                "clean up stale kernel state",
+            );
+        }
+    }
+
+    /// Kill the pasta process still bound to a leftover bundle, verified
+    /// through its PID file and command line rather than the bundle
+    /// directory. The runtime writes the pasta PID under /run (see
+    /// `swarmy_sandbox::pasta_pid_file`); resolve it through that accessor
+    /// rather than the bundle directory.
+    fn kill_stale_pasta(bundle: &std::fs::DirEntry) {
+        if let Ok(ulid) = bundle.file_name().to_string_lossy().parse::<ulid::Ulid>() {
+            let pid_path = swarmy_sandbox::pasta_pid_file(AgentId::from_ulid(ulid));
+            if let Ok(pid) = std::fs::read_to_string(&pid_path)
+                && let Ok(pid) = pid.trim().parse::<u32>()
+            {
+                let command = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                if command.split(|byte| *byte == 0).any(|arg| arg == b"pasta")
+                    && command
+                        .windows(pid_path.as_os_str().as_encoded_bytes().len())
+                        .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
+                {
                     ignore_best_effort(
-                        swarmy_volume::kernel::cleanup_stale(Path::new(&source)),
-                        "clean up stale kernel state",
+                        Command::new("kill")
+                            .arg(pid.to_string())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status(),
+                        "kill stale pasta process",
                     );
                 }
             }
