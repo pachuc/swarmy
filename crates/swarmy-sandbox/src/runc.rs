@@ -1,8 +1,7 @@
 use crate::{
     BlockDevice, Error, ExecOutput, ExecRequest, ExecResult, PauseHandle, Result, RuntimeCaps,
-    Sandbox, SandboxRuntime, SandboxSpec,
+    Sandbox, SandboxSpec,
 };
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -814,8 +813,7 @@ impl RuncRuntime {
     }
 }
 
-#[async_trait]
-impl SandboxRuntime for RuncRuntime {
+impl RuncRuntime {
     // Creation keeps attachment cleanup and journal publication in one fenced path.
     #[allow(clippy::too_many_lines)]
     async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
