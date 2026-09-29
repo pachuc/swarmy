@@ -34,7 +34,7 @@ struct Status {
 
 #[derive(Debug, Serialize)]
 struct ServiceSummary {
-    role: String,
+    role: swarmy_api_types::ServiceRole,
     instance_id: String,
     alive: bool,
 }
@@ -164,7 +164,7 @@ fn print_human(statuses: Vec<Status>) {
         for service in status.services {
             cloud_out!(
                 "  service {} {} {}",
-                service.role,
+                service.role.as_str(),
                 service.instance_id,
                 if service.alive { "live" } else { "stale" }
             );
@@ -455,7 +455,7 @@ mod tests {
                     manifest_id: swarmy_core::ManifestId::from_ulid(ulid::Ulid::generate()),
                 }],
                 vec![ServiceSummary {
-                    role: "node".into(),
+                    role: swarmy_api_types::ServiceRole::Node,
                     instance_id: "i-node".into(),
                     alive: true,
                 }],
