@@ -323,6 +323,31 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
         return;
     };
     let store = &test.store;
+    // Without any write the view is empty: no limit and no remaining values,
+    // so a caller with nothing configured sees an observed view with no data.
+    let empty = store.entry_quota("openai", "primary").await.unwrap();
+    assert!(matches!(empty.source, swarmy_store::QuotaSource::Observed));
+    assert!(empty.remaining.is_empty());
+    assert_eq!(empty.requests_remaining, None);
+    // Empty observations are ignored, so a caller that saw no headers writes
+    // nothing durable.
+    store
+        .observe_entry_quota(
+            "openai",
+            "primary",
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .entry_quota("openai", "primary")
+            .await
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
     let id = test.create().await;
     let now = Timestamp::now();
     let (tokens, cost) = usage(2, 2, 10);

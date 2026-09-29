@@ -274,6 +274,131 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
 }
 
 #[tokio::test]
+async fn leased_park_dedupes_repeated_failures_and_extends_on_new_sequences() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    fn failure(
+        seq: u64,
+        reason: &'static str,
+        wake: i64,
+    ) -> swarmy_store::InferenceFailureWait<'static> {
+        swarmy_store::InferenceFailureWait {
+            seq,
+            reason,
+            wake_at: timestamp(wake),
+        }
+    }
+    // Parking through the leased path releases the worker lease and sleeps
+    // until the route retry time, recording one attempt for the failure.
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .park_inference(
+                id,
+                &lease,
+                &failure(1, "openai/primary: quota reached", 160),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        test.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    assert_eq!(wait.attempts, 1);
+    assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
+    // A stale lease cannot park through the leased path.
+    let stale = swarmy_core::Lease {
+        owner: owner(),
+        ..lease.clone()
+    };
+    assert!(matches!(
+        test.store
+            .park_inference(
+                id,
+                &stale,
+                &failure(1, "openai/primary: quota reached", 160),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
+    // Waking and reclaiming, then re-parking the same failure sequence,
+    // records no new attempt: the wait already covers that failure.
+    assert!(
+        test.store
+            .wake_inference_wait(id, timestamp(160))
+            .await
+            .unwrap()
+    );
+    let second = test
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .park_inference(
+                id,
+                &second,
+                &failure(1, "openai/primary: quota reached", 200),
+                timestamp(170),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    assert_eq!(wait.attempts, 1);
+    assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
+    // The next failure sequence extends the same wait with its own attempt.
+    assert!(
+        test.store
+            .wake_inference_wait(id, timestamp(200))
+            .await
+            .unwrap()
+    );
+    let third = test
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .park_inference(
+                id,
+                &third,
+                &failure(2, "openai/backup: quota reached", 300),
+                timestamp(210),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    assert_eq!(wait.attempts, 2);
+    assert_eq!(
+        wait.reasons,
+        [
+            "openai/primary: quota reached",
+            "openai/backup: quota reached"
+        ]
+    );
+    assert_eq!(wait.wake_at, timestamp(300));
+    test.cleanup().await;
+}
+
+#[tokio::test]
 async fn entry_breakers_are_independent_and_label_scans_need_no_keyring() {
     let Some(f) = TestStore::memory() else { return };
     let primary = CredentialKey::entry("openai", "primary");
@@ -1162,6 +1287,120 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
             .unwrap()
     );
     assert_inference_completed(&test.store, id, request_id, response).await;
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
+    use swarmy_store::{FenceError, InferenceClaim};
+
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let lease = test
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    test.store
+        .set_state(
+            id,
+            SessionState::WaitingInference,
+            Some(&lease),
+            timestamp(0),
+        )
+        .await
+        .unwrap();
+    let request_id = RequestId::for_step(id, 1);
+    test.store
+        .put_inflight(
+            request_id,
+            &InflightRecord {
+                session_id: id,
+                seq: 1,
+                provider: "fake".into(),
+                key_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let claim = InferenceClaim {
+        session_id: id,
+        request_id,
+        owner: owner(),
+        expires_at: timestamp(1100),
+    };
+    let start = timestamp(1000);
+    assert!(test.store.start_inference(&claim, start).await.unwrap());
+    // The gateway counts provider calls per request: recovery republishes with
+    // delivery count one, so the durable counter is the only bound.
+    assert_eq!(
+        test.store
+            .record_inference_retry(&claim, start)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        test.store
+            .record_inference_retry(&claim, start)
+            .await
+            .unwrap(),
+        2
+    );
+    // A fresh delivery of the same request must not bypass the backoff.
+    let redelivery = InferenceClaim {
+        owner: owner(),
+        expires_at: timestamp(1100),
+        ..claim.clone()
+    };
+    assert!(
+        !test
+            .store
+            .start_inference(&redelivery, start)
+            .await
+            .unwrap()
+    );
+    // Releasing another owner's claim changes nothing; the holder still owns
+    // the retry counter.
+    test.store.release_inference(&redelivery).await.unwrap();
+    assert_eq!(
+        test.store
+            .record_inference_retry(&claim, start)
+            .await
+            .unwrap(),
+        3
+    );
+    // Releasing the holder's claim clears the delivery without clearing the
+    // backoff, so the next delivery still waits; a retry without a claim is
+    // rejected as replaced.
+    test.store.release_inference(&claim).await.unwrap();
+    assert!(
+        !test
+            .store
+            .start_inference(&redelivery, start)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        test.store.record_inference_retry(&claim, start).await,
+        Err(StoreError::Fence(FenceError::LeaseMismatch))
+    ));
+    // Three attempts back off 100ms, 200ms, then 400ms, so a fresh delivery
+    // after the window restarts the claim: recovery reopens the work instead
+    // of leaving it parked behind a released claim.
+    let reopened = InferenceClaim {
+        owner: owner(),
+        expires_at: timestamp(2000),
+        ..claim.clone()
+    };
+    assert!(
+        test.store
+            .start_inference(&reopened, timestamp(1400))
+            .await
+            .unwrap()
+    );
     test.cleanup().await;
 }
 
@@ -2257,6 +2496,3 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
 
 #[path = "store/timers.rs"]
 mod timers;
-
-#[path = "store/coverage_gaps.rs"]
-mod coverage_gaps;
