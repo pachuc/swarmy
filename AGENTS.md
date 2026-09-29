@@ -257,6 +257,28 @@ is wrong for the whole codebase, say so in the pull request description and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
 
+### Enforced by tools
+
+These structural checks fail CI rather than asking for exceptions. Run them
+locally the same way CI does:
+
+- `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
+  never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
+  `lib.rs` declares no modules). Blocking, milliseconds.
+- `npx --yes @ast-grep/cli@0.45.3 scan --config ast-grep/sgconfig.yml`
+  (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
+  path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
+  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
+  `.map_err(|error| error.to_string())` in a library file fails unless its
+  file's listed exception genuinely applies; fix the code rather than
+  extending the list.
+- Clone report (`clone-report` CI job; locally
+  `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
+  summary for `REVIEWER.md`'s duplication checklist, never a gate.
+- From the CI hygiene task, all in place: `cargo deny check licenses bans
+  sources` blocking with advisories on a weekly schedule (non-blocking),
+  `cargo machete`, and `cargo doc` with `-D warnings`.
+
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
 Source that file before running such tests. Tests must skip cleanly, not

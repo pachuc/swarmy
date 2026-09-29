@@ -1,0 +1,59 @@
+# Library crates must not spawn fire-and-forget background tasks: every
+# `tokio::spawn` below is an owned, bounded task whose handle aborts it on
+# drop (or whose lifetime is tied to a connection, run, or single flight).
+# A new spawn in any other library file fails CI; either own the task the
+# same way and list its file here with a why-comment, or restructure so the
+# caller drives the work. Binaries and tests are out of scope: a binary owns
+# its process, and tests drive servers in-process.
+id: no-spawn-in-libraries
+language: rust
+severity: error
+message: >-
+  tokio::spawn in library code needs an owned bounded task (a handle that
+  aborts on drop, tied to a connection or run). Own the task and list this
+  file below with a why-comment, or restructure so the caller drives it.
+rule:
+  pattern: 'tokio::spawn($$$)'
+files:
+  - 'crates/*/src/**/*.rs'
+ignores:
+  # Binaries own their process; spawning is unrestricted there.
+  - 'crates/swarmy-cli/src/**'
+  - 'crates/swarmy-chaos/src/**'
+  - 'crates/swarmy-devtools/src/**'
+  - 'crates/swarmy-scheduler/src/**'
+  - 'crates/swarmy-worker/src/**'
+  # swarmyd counts as a binary: its lib.rs declares no modules and its code
+  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
+  - 'crates/swarmyd/src/**'
+  # Service entry points assemble connections and own their tasks.
+  - '**/main.rs'
+  # Tests drive fixture servers and clients in-process.
+  - '**/tests/**'
+  - '**/tests.rs'
+  - '**/*tests.rs'
+  # Owned bounded background tasks, one file per entry with its reason:
+  # The store's metrics writer drains one channel into batched transactions.
+  - 'crates/swarmy-store/src/metrics.rs'
+  # The volume lease-renewal loop; AbortTask aborts it on drop.
+  - 'crates/swarmy-volume/src/server.rs'
+  # The periodic snapshot loop; SnapshotLoop aborts it on drop.
+  - 'crates/swarmy-volume/src/snapshot.rs'
+  # The settled-chunk uploader; BackgroundUploader stops it on drop.
+  - 'crates/swarmy-volume/src/flush.rs'
+  # Single-flight readahead prefetch, bounded by the try_lock guard.
+  - 'crates/swarmy-volume/src/device.rs'
+  # The attached NBD server, tied to the Attachment lifetime.
+  - 'crates/swarmy-volume/src/kernel.rs'
+  # The attached NBD server, owned by ServerTask which aborts it on drop.
+  - 'crates/swarmy-sandbox/src/runc.rs'
+  # The per-sandbox credential socket loop; drop aborts it.
+  - 'crates/swarmy-sandbox/src/credentials.rs'
+  # The owned subscription PUT task; the file's other spawns are cfg(test)
+  # fixture servers.
+  - 'crates/swarmy-client/src/lib.rs'
+  # GC completion runs past the HTTP response; the run lease bounds it and
+  # the outcome lands in the durable run record.
+  - 'crates/swarmy-api/src/gc.rs'
+  # The per-connection SSE producer; it ends when the connection drops.
+  - 'crates/swarmy-api/src/stream.rs'
