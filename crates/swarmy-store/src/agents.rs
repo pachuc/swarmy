@@ -505,6 +505,7 @@ impl Store {
     /// Atomically replace the main pointer with an open session belonging to this agent.
     /// # Errors
     /// Rejects missing agents/sessions, foreign or completed sessions, and deleted computers.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn set_main_session(&self, agent: AgentId, id: SessionId) -> Result<()> {
         self.transaction(|trx| async move {
             let mut record = self

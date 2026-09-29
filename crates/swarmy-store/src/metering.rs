@@ -133,7 +133,7 @@ pub fn entry_key(provider: &str, label: &str) -> String {
 /// Entry name for completions recorded without an entry. The provider stays
 /// known, so breakdowns name it and only the entry is missing.
 #[must_use]
-pub fn unknown_entry_key(provider: &str) -> String {
+pub(crate) fn unknown_entry_key(provider: &str) -> String {
     entry_key(provider, "-")
 }
 
@@ -400,7 +400,7 @@ fn year_start(moment: Timestamp) -> Timestamp {
 
 /// Start of the group containing `moment`.
 #[must_use]
-pub fn group_start(moment: Timestamp, group_by: UsageGroupBy) -> Timestamp {
+pub(crate) fn group_start(moment: Timestamp, group_by: UsageGroupBy) -> Timestamp {
     match group_by {
         UsageGroupBy::Day => day_start(moment),
         UsageGroupBy::Week => week_start(moment),
@@ -411,7 +411,7 @@ pub fn group_start(moment: Timestamp, group_by: UsageGroupBy) -> Timestamp {
 
 /// Exclusive end of the group starting at `start`.
 #[must_use]
-pub fn group_end(start: Timestamp, group_by: UsageGroupBy) -> Timestamp {
+pub(crate) fn group_end(start: Timestamp, group_by: UsageGroupBy) -> Timestamp {
     match group_by {
         UsageGroupBy::Day => start.checked_add(24.hours()).unwrap_or(start),
         UsageGroupBy::Week => start.checked_add(168.hours()).unwrap_or(start),

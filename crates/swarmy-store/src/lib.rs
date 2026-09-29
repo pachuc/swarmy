@@ -78,9 +78,12 @@ use foundationdb::{
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use swarmy_core::{
-    AgentRecord, EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId,
-    SessionRecord, SessionState, SnapshotRef, decode, encode,
+    AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId, SessionRecord,
+    SessionState, decode, encode,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+use swarmy_core::{InflightRecord, SnapshotRef};
 
 use blob::{BlobError, BlobStore};
 
@@ -450,6 +453,7 @@ impl Store {
 
     /// Use a deterministic clock for lease and expiry tests.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_clock(
         mut self,
         clock: impl Fn() -> jiff::Timestamp + Send + Sync + 'static,
@@ -992,6 +996,7 @@ impl Store {
     /// Store a snapshot pointer in both the snapshot index and session record.
     /// # Errors
     /// Rejects snapshots ahead of the log or older than the current snapshot.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn write_snapshot(&self, id: SessionId, snapshot: &SnapshotRef) -> Result<()> {
         let value = self.prepare(snapshot).await?;
         self.transaction(|trx| {
@@ -1036,6 +1041,7 @@ impl Store {
 
     /// # Errors
     /// Returns storage or blob upload errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
         self.put_payload(crate::keys::Keys::new(&self.root).inflight(id), record)
             .await
@@ -1043,6 +1049,7 @@ impl Store {
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
         self.get_payload(crate::keys::Keys::new(&self.root).inflight(id))
             .await
@@ -1050,6 +1057,7 @@ impl Store {
 
     /// # Errors
     /// Returns transaction errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn clear_inflight(&self, id: RequestId) -> Result<()> {
         self.transaction(|trx| async move {
             trx.clear(&crate::keys::Keys::new(&self.root).inflight(id));

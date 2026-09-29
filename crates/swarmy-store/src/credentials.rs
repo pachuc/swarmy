@@ -290,8 +290,7 @@ impl CredentialStore {
         label: &str,
         record: &CredentialRecord,
     ) -> Result<()> {
-        let mut record = record.clone();
-        record.migrate_bookkeeping();
+        let record = record.clone();
         let ciphertext = encrypt(
             &self.keyring,
             scope,
@@ -592,7 +591,6 @@ impl CredentialStore {
                 ));
             }
         };
-        replacement.migrate_bookkeeping();
         let bytes = if replacement == current {
             observed.ciphertext.clone()
         } else {
@@ -794,9 +792,7 @@ fn decrypt(
     provider: &str,
     bytes: &[u8],
 ) -> Result<CredentialRecord> {
-    let mut record = decrypt_raw(key, scope, provider, bytes)?;
-    record.migrate_bookkeeping();
-    Ok(record)
+    decrypt_raw(key, scope, provider, bytes)
 }
 
 #[cfg(test)]

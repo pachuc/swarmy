@@ -600,10 +600,7 @@ fn api_key(key: &str) -> CredentialRecord {
 
 fn login_needed() -> CredentialRecord {
     let mut record = api_key("");
-    let CredentialKind::ApiKey { extra, .. } = &mut record.kind else {
-        unreachable!("api_key builds ApiKey records");
-    };
-    extra.insert("needs_login".into(), "true".into());
+    record.bookkeeping.needs_login = true;
     record
 }
 

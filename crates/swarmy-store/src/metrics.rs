@@ -68,7 +68,7 @@ impl InferenceMetric {
     #[must_use]
     // Throughput is an approximate rate; sub-token precision is not meaningful.
     #[allow(clippy::cast_precision_loss)]
-    pub fn tokens_per_second(tokens: u64, duration_ms: f64) -> Option<f64> {
+    pub(crate) fn tokens_per_second(tokens: u64, duration_ms: f64) -> Option<f64> {
         (tokens > 0 && duration_ms > 0.0 && duration_ms.is_finite())
             .then_some(tokens as f64 * 1_000.0 / duration_ms)
     }
@@ -138,7 +138,7 @@ pub struct TurnMetrics {
     #[serde(default)]
     pub dropped_inference: u64,
     /// Remainder of the `tools` array omitted by `tools_limit`, plus rows
-    /// dropped by the legacy capped layout when the turn was migrated.
+    /// rows omitted from a paged response.
     #[serde(default)]
     pub dropped_tools: u64,
 }
@@ -1086,18 +1086,6 @@ impl Store {
         crate::keys::Keys::new(&self.root).turn_tool(session, turn, call_id)
     }
 
-    /// Merge one independent observation after its boundary has completed.
-    /// # Errors
-    /// Returns database or encoding failures without changing the conversation.
-    pub async fn record_turn_metric(
-        &self,
-        session: SessionId,
-        turn: MessageId,
-        patch: MetricPatch,
-    ) -> Result<()> {
-        self.record_turn_metrics(session, turn, vec![patch]).await
-    }
-
     /// Merge several independent observations in one read-modify-write
     /// transaction. A dispatch folds its tool name into its stage, and a node
     /// completion folds its tool result and completion stage, so each costs
@@ -1952,10 +1940,10 @@ mod integration_tests {
             (TurnStage::Idle, 6_000_000),
         ] {
             store
-                .record_turn_metric(
+                .record_turn_metrics(
                     session,
                     turn,
-                    MetricPatch::Stage(TurnEvent {
+                    vec![MetricPatch::Stage(TurnEvent {
                         session_id: session,
                         turn_id: turn,
                         stage,
@@ -1963,7 +1951,7 @@ mod integration_tests {
                         clock_id: "boot".into(),
                         monotonic_ns: ns,
                         unix_ns: i128::from(ns),
-                    }),
+                    })],
                 )
                 .await
                 .unwrap();
@@ -1971,10 +1959,10 @@ mod integration_tests {
         // The appended and idle anchors carry no request id in production;
         // record them that way so the wall-time derivation matches.
         store
-            .record_turn_metric(
+            .record_turn_metrics(
                 session,
                 turn,
-                MetricPatch::Stage(TurnEvent {
+                vec![MetricPatch::Stage(TurnEvent {
                     session_id: session,
                     turn_id: turn,
                     stage: TurnStage::Appended,
@@ -1982,15 +1970,15 @@ mod integration_tests {
                     clock_id: "boot".into(),
                     monotonic_ns: 1_000_000,
                     unix_ns: 1_000_000,
-                }),
+                })],
             )
             .await
             .unwrap();
         store
-            .record_turn_metric(
+            .record_turn_metrics(
                 session,
                 turn,
-                MetricPatch::Stage(TurnEvent {
+                vec![MetricPatch::Stage(TurnEvent {
                     session_id: session,
                     turn_id: turn,
                     stage: TurnStage::Idle,
@@ -1998,21 +1986,21 @@ mod integration_tests {
                     clock_id: "boot".into(),
                     monotonic_ns: 6_000_000,
                     unix_ns: 6_000_000,
-                }),
+                })],
             )
             .await
             .unwrap();
         store
-            .record_turn_metric(
+            .record_turn_metrics(
                 session,
                 turn,
-                MetricPatch::Inference(InferenceMetric {
+                vec![MetricPatch::Inference(InferenceMetric {
                     request_id: request.to_string(),
                     provider: "fake".into(),
                     model: "scripted".into(),
                     output_tokens: 10,
                     ..InferenceMetric::default()
-                }),
+                })],
             )
             .await
             .unwrap();
@@ -2131,10 +2119,10 @@ mod integration_tests {
         let appended_ns: i128 = 1_000_000;
         let idle_ns: i128 = 2_000_000_000;
         store
-            .record_turn_metric(
+            .record_turn_metrics(
                 session,
                 turn,
-                MetricPatch::Stage(TurnEvent {
+                vec![MetricPatch::Stage(TurnEvent {
                     session_id: session,
                     turn_id: turn,
                     stage: TurnStage::Appended,
@@ -2142,7 +2130,7 @@ mod integration_tests {
                     clock_id: "boot".into(),
                     monotonic_ns: 1_000_000,
                     unix_ns: appended_ns,
-                }),
+                })],
             )
             .await
             .unwrap();
@@ -2196,10 +2184,10 @@ mod integration_tests {
         for index in 0..100_u64 {
             let request = RequestId::for_step(session, 10_000 + index);
             store
-                .record_turn_metric(
+                .record_turn_metrics(
                     session,
                     turn,
-                    MetricPatch::Stage(TurnEvent {
+                    vec![MetricPatch::Stage(TurnEvent {
                         session_id: session,
                         turn_id: turn,
                         stage: TurnStage::InferenceStarted,
@@ -2207,29 +2195,29 @@ mod integration_tests {
                         clock_id: "boot".into(),
                         monotonic_ns: 2_000_000 + index,
                         unix_ns: appended_ns + i128::from(500 + index),
-                    }),
+                    })],
                 )
                 .await
                 .unwrap();
             store
-                .record_turn_metric(
+                .record_turn_metrics(
                     session,
                     turn,
-                    MetricPatch::Inference(InferenceMetric {
+                    vec![MetricPatch::Inference(InferenceMetric {
                         request_id: request.to_string(),
                         provider: "fake".into(),
                         model: "scripted".into(),
                         output_tokens: 4,
                         ..InferenceMetric::default()
-                    }),
+                    })],
                 )
                 .await
                 .unwrap();
             store
-                .record_turn_metric(
+                .record_turn_metrics(
                     session,
                     turn,
-                    MetricPatch::Stage(TurnEvent {
+                    vec![MetricPatch::Stage(TurnEvent {
                         session_id: session,
                         turn_id: turn,
                         stage: TurnStage::InferenceFinished,
@@ -2237,7 +2225,7 @@ mod integration_tests {
                         clock_id: "boot".into(),
                         monotonic_ns: 3_000_000 + index,
                         unix_ns: appended_ns + i128::from(600 + index),
-                    }),
+                    })],
                 )
                 .await
                 .unwrap();
@@ -2252,7 +2240,7 @@ mod integration_tests {
             unix_ns: idle_ns,
         };
         store
-            .record_turn_metric(session, turn, MetricPatch::Stage(idle_event))
+            .record_turn_metrics(session, turn, vec![MetricPatch::Stage(idle_event)])
             .await
             .unwrap();
         let records = store.list_turn_metrics(session, None, 10).await.unwrap();

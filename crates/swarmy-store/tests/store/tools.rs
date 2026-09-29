@@ -350,7 +350,9 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         );
     }
     assert!(matches!(
-        store.release_lease(id, &lease, Timestamp::now()).await,
+        store
+            .set_state(id, SessionState::Runnable, Some(&lease), Timestamp::now())
+            .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;

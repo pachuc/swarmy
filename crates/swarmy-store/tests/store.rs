@@ -675,7 +675,7 @@ async fn expiry_scan_reap_and_fresh_claim() {
     );
     assert!(
         test.store
-            .release_lease(id, &lease, timestamp(0))
+            .set_state(id, SessionState::Runnable, Some(&lease), timestamp(0))
             .await
             .is_err()
     );
@@ -896,7 +896,7 @@ async fn lease_renewal_and_state_transitions_update_indexes() {
         .await
         .unwrap();
     test.store
-        .release_lease(id, &lease, timestamp(1))
+        .set_state(id, SessionState::Runnable, Some(&lease), timestamp(1))
         .await
         .unwrap();
     assert_eq!(
@@ -1049,7 +1049,7 @@ async fn large_snapshot_metadata_survives_head_and_lease_updates() {
         .await
         .unwrap();
     test.store
-        .release_lease(id, &lease, timestamp(0))
+        .set_state(id, SessionState::Runnable, Some(&lease), timestamp(0))
         .await
         .unwrap();
     let fetched = test.store.fetch_session(id).await.unwrap().unwrap();

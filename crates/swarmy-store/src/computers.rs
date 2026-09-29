@@ -41,6 +41,7 @@ impl Store {
     /// without an unbounded transaction. Node renewal fails and discards local state.
     /// # Errors
     /// Returns storage or decoding failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn delete_computer(&self, agent: AgentId) -> Result<()> {
         self.transaction(|trx| async move { self.delete_computer_in(&trx, agent).await })
             .await

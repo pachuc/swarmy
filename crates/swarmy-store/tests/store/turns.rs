@@ -80,7 +80,7 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
             .is_none()
     );
     store
-        .release_lease(id, &live, Timestamp::now())
+        .set_state(id, SessionState::Runnable, Some(&live), Timestamp::now())
         .await
         .unwrap();
     test.cleanup().await;
@@ -165,7 +165,9 @@ async fn submission_and_idle_commit_all_records_together() {
     assert_eq!(finished.head_seq, 2);
     assert_eq!(store.read_events(id, 1, 64).await.unwrap(), vec![idle]);
     assert!(matches!(
-        store.release_lease(id, &next, Timestamp::now()).await,
+        store
+            .set_state(id, SessionState::Runnable, Some(&next), Timestamp::now())
+            .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;
@@ -556,7 +558,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
     ));
     // Simulate a worker exit and a new claim before the queued input is drained.
     store
-        .release_lease(id, &lease, Timestamp::now())
+        .set_state(id, SessionState::Runnable, Some(&lease), Timestamp::now())
         .await
         .unwrap();
     let (new_lease, _, _, _) = store

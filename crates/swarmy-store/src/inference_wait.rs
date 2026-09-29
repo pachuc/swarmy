@@ -1,6 +1,8 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use swarmy_core::{Lease, SessionId, SessionState};
+use swarmy_core::{SessionId, SessionState};
+#[cfg(any(test, feature = "test-support"))]
+use swarmy_core::Lease;
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
@@ -311,6 +313,7 @@ impl Store {
     /// Release a worker lease and park the session until the retry time.
     /// # Errors
     /// Rejects a stale lease or returns storage failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn park_inference(
         &self,
         id: SessionId,
@@ -333,8 +336,7 @@ impl Store {
     }
 
     /// Park a session whose lease was already checked in this transaction.
-    /// Shared by `park_inference` and the route failover, so both record
-    /// the same wait history for one failure.
+    /// Route failover and the test-only parked path record the same wait history.
     pub(crate) async fn park_leased_in(
         &self,
         trx: &foundationdb::Transaction,

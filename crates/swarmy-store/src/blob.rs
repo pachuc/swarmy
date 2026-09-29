@@ -112,20 +112,13 @@ mod tests {
             return;
         }
         let mut settings = swarmy_config::Settings::load().unwrap().settings;
-        // Exercise legacy compatibility even when the test runner selects an
-        // explicit namespace. Keep the fixture beneath that namespace.
-        if !settings.s3_prefix.as_str().is_empty() {
-            write!(settings.s3_bucket, "/{}", settings.s3_prefix.as_str()).unwrap();
-            settings.s3_prefix = swarmy_config::ObjectPrefix::default();
-        }
-        write!(
-            settings.s3_bucket,
-            "/prefix-test-{}",
-            ulid::Ulid::generate()
-        )
-        .unwrap();
+        settings.s3_prefix = format!("prefix-test-{}", ulid::Ulid::generate())
+            .parse()
+            .unwrap();
         let root = ObjectBlobStore::from_settings(&settings).unwrap();
-        settings.s3_bucket.push_str("/inside");
+        settings.s3_prefix = format!("{}/inside", settings.s3_prefix.as_str())
+            .parse()
+            .unwrap();
         let scoped = ObjectBlobStore::from_settings(&settings).unwrap();
         let payload = Bytes::from_static(b"prefix regression");
         let outside = root.put("outside", payload.clone()).await;

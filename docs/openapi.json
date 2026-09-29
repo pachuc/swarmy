@@ -3733,12 +3733,6 @@
               "type": "string"
             }
           },
-          "legacy_credential_rows": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Retired single-record credential rows still stored. Boot migrates\nthem to entries; any remainder failed to decrypt. Older servers omit\nthis; clients must treat a missing count as unknown, not zero.",
-            "minimum": 0
-          },
           "nodes": {
             "type": "array",
             "items": {

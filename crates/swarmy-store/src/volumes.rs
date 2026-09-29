@@ -1,7 +1,9 @@
 //! Volume metadata stays inline so cloning and fencing never need object storage.
 use foundationdb::Transaction;
 use jiff::Timestamp;
-use std::{collections::BTreeSet, num::NonZeroUsize};
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use swarmy_core::{
     CHUNK_SIZE, ImageRecord, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
     VolumeRecord,
@@ -424,6 +426,7 @@ impl Store {
     /// Image manifests have no predecessor.
     /// # Errors
     /// Returns decoding and transaction errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn manifest_parent(&self, id: ManifestId) -> Result<Option<ManifestId>> {
         self.transaction(|trx| async move { read(&trx, &self.manifest_parent_key(id)).await })
             .await
@@ -496,6 +499,7 @@ impl Store {
     /// A collector must also protect publications concurrent with its sweep.
     /// # Errors
     /// Returns decoding and transaction errors, including transaction size/time limits.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn live_manifests(&self) -> Result<BTreeSet<ManifestId>> {
         self.transaction(|trx| async move {
             let mut live = BTreeSet::new();
