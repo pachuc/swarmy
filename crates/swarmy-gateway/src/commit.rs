@@ -120,17 +120,14 @@ impl Gateway {
             entry,
             entry_kind,
         } = outcome;
-        let (message, claim, job, provider, turn) = (
-            delivery.message,
-            delivery.claim,
-            delivery.job,
-            delivery.provider,
-            delivery.turn,
-        );
-        let (model, effort_used, effort_requested, effort_clamped) =
-            (effort.model, effort.used, effort.requested, effort.clamped);
         let (class, retry_at) = self
-            .record_breaker(provider, entry.as_deref(), job, &result, blocked)
+            .record_breaker(
+                delivery.provider,
+                entry.as_deref(),
+                delivery.job,
+                &result,
+                blocked,
+            )
             .await?;
         if result.is_err() {
             let kind = if class.is_some_and(|class| class.rate_limited) {
@@ -138,36 +135,51 @@ impl Gateway {
             } else {
                 swarmy_store::WaitKind::ProviderFailure
             };
-            self.observe_wait(job, turn, kind);
+            self.observe_wait(delivery.job, delivery.turn, kind);
             if class.is_some_and(|class| class.retryable) {
-                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
+                self.observe_wait(delivery.job, delivery.turn, swarmy_store::WaitKind::Retry);
             }
         }
         let event = Self::terminal_event(&TerminalInput {
-            job,
-            provider,
-            model,
-            effort_used,
-            effort_requested,
-            effort_clamped,
+            job: delivery.job,
+            provider: delivery.provider,
+            model: effort.model,
+            effort_used: effort.used,
+            effort_requested: effort.requested,
+            effort_clamped: effort.clamped,
             retryable: class.is_some_and(|class| class.retryable),
             retry_at,
             result: &result,
             entry: entry.clone(),
-            route: job.route.clone(),
-            route_step: Some(job.route_step),
+            route: delivery.job.route.clone(),
+            route_step: Some(delivery.job.route_step),
         });
         let attribution = Self::attribution_for(&result, entry, entry_kind);
-        self.touch_entry(provider, attribution.entry.as_deref())
+        self.touch_entry(delivery.provider, attribution.entry.as_deref())
             .await;
         let stored_result = result.map_err(|error| error.to_string());
-        self.persist_response(job, claim, event.clone(), &stored_result, turn, attribution)
-            .await?;
-        self.observe_terminal_metric(job, turn, provider, &event, streamed);
+        self.persist_response(
+            delivery.job,
+            delivery.claim,
+            event.clone(),
+            &stored_result,
+            delivery.turn,
+            attribution,
+        )
+        .await?;
+        self.observe_terminal_metric(
+            delivery.job,
+            delivery.turn,
+            delivery.provider,
+            &event,
+            streamed,
+        );
         if stored_result.is_ok() {
-            self.store.clear_inference_wait(job.session_id).await?;
+            self.store
+                .clear_inference_wait(delivery.job.session_id)
+                .await?;
         }
-        message.acknowledge().await?;
+        delivery.message.acknowledge().await?;
         Ok(())
     }
 

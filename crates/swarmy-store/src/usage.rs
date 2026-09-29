@@ -244,5 +244,20 @@ mod tests {
         );
         let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
         assert_eq!(decoded.provider, "p");
+        // `entry_kind` is stored inline, so `Some(ApiKey)` changes the row
+        // bytes: the option tag flips to 1 and the variant index follows.
+        let keyed = UsageRecord {
+            entry_kind: Some(CredentialEntryKind::ApiKey),
+            ..record
+        };
+        let bytes = swarmy_core::encode(&keyed).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 1, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 109, 1, 1, 0, 0, 0
+            ]
+        );
+        let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(decoded.entry_kind, Some(CredentialEntryKind::ApiKey));
     }
 }

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    AgentId, Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId,
+    Event, InflightRecord, Lease, LeaseOwnerId, ManifestId, MessageId, Nudge, RequestId,
     SandboxArguments, SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob,
     TurnStage, decode, encode,
 };
@@ -20,7 +20,7 @@ use tokio::{
 };
 use ulid::Ulid;
 
-use crate::config::Config;
+use crate::config::{Config, KillPoint};
 
 /// A step lease shared with its heartbeat. Release is explicit only after a
 /// successful fenced store transition.
@@ -89,61 +89,41 @@ fn route_selection<'a>(
     }
 }
 
-/// Chaos kill points crash the worker at fixed step boundaries. The config
-/// carries the selected point as a string so chaos runs can set it without
-/// rebuilding; the enum keeps every call site and the matching check in one
-/// place instead of scattering string literals.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum KillPoint {
-    AfterClaim,
-    BeforeRelease,
-    AfterRequestEvent,
-    AfterRelease,
-    AfterAdvance,
-}
-
-impl KillPoint {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::AfterClaim => "after_claim",
-            Self::BeforeRelease => "before_release",
-            Self::AfterRequestEvent => "after_request_event",
-            Self::AfterRelease => "after_release",
-            Self::AfterAdvance => "after_advance",
-        }
-    }
-}
-
 /// Snapshots cached by content-addressed key alongside the claim that uses
-/// them. Display flags cached by the agent and image pair that determines
-/// them, with a per-session index so hits need no database reads. Caches
+/// them. Display flags cached by the image manifest that determines them,
+/// with a per-session index so hits need no database reads. Caches
 /// clear instead of evicting entries because a worker handles few distinct
 /// keys and a full clear keeps the bound with no per-entry bookkeeping.
 const SNAPSHOT_CACHE_SIZE: usize = 16;
 const DISPLAY_CACHE_SIZE: usize = 64;
 
-/// Display flag per (agent, image), indexed by session. A worker restart
+/// Display flag per image manifest, indexed by session. A worker restart
 /// drops this cache; restart workers after changing an agent's image.
 #[derive(Default)]
 struct DisplayCache {
-    by_image: HashMap<(AgentId, String), bool>,
-    by_session: HashMap<SessionId, (AgentId, String)>,
+    by_image: HashMap<ManifestId, bool>,
+    by_session: HashMap<SessionId, bool>,
 }
 
 impl DisplayCache {
     fn get(&self, session: SessionId) -> Option<bool> {
-        let key = self.by_session.get(&session)?;
-        self.by_image.get(key).copied()
+        self.by_session.get(&session).copied()
     }
 
-    fn insert(&mut self, session: SessionId, agent: AgentId, image: String, display: bool) {
+    fn get_image(&self, manifest: ManifestId) -> Option<bool> {
+        self.by_image.get(&manifest).copied()
+    }
+
+    fn insert(&mut self, session: SessionId, manifest: Option<ManifestId>, display: bool) {
         if self.by_image.len() >= DISPLAY_CACHE_SIZE || self.by_session.len() >= DISPLAY_CACHE_SIZE
         {
             self.by_image.clear();
             self.by_session.clear();
         }
-        self.by_image.insert((agent, image.clone()), display);
-        self.by_session.insert(session, (agent, image));
+        if let Some(manifest) = manifest {
+            self.by_image.insert(manifest, display);
+        }
+        self.by_session.insert(session, display);
     }
 }
 
@@ -174,7 +154,7 @@ impl Worker {
 
     fn kill(&self, point: KillPoint) {
         // Production leaves kill_point unset; the chaos harness opts in at runtime.
-        if self.config.kill_point.as_deref() == Some(point.as_str()) {
+        if self.config.kill_point == Some(point) {
             tracing::warn!(point = point.as_str(), "instrumented worker kill");
             if let Err(error) = rustix::process::kill_process(
                 rustix::process::getpid(),

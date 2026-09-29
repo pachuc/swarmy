@@ -1,6 +1,6 @@
 //! Provider discovery shared by the gateway and local diagnostics.
-pub mod attempt;
-pub mod commit;
+mod attempt;
+mod commit;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;

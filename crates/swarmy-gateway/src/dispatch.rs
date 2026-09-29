@@ -78,34 +78,43 @@ impl Gateway {
 
     /// Serve provider work until the work stream ends or a shutdown signal
     /// arrives, then drain queued turn metrics before exit so shutdown keeps
-    /// every write.
+    /// every write. The flush runs on every exit path, including startup,
+    /// delivery, and semaphore failures, so a failing serve still keeps the
+    /// metrics it queued.
     /// # Errors
     /// Returns store, transport, or decoding failures; per-delivery inference
     /// failures are committed to the session log instead.
     pub async fn serve(self: Arc<Self>, concurrency: usize) -> Result<()> {
+        let outcome = self.serve_inner(concurrency).await;
+        // Drain queued turn metrics before exit so shutdown keeps every write.
+        if let Err(error) = self.store.flush_turn_metrics().await {
+            warn!(%error, "gateway metric flush failed");
+        }
+        outcome
+    }
+
+    async fn serve_inner(self: &Arc<Self>, concurrency: usize) -> Result<()> {
         let mut messages = futures::stream::SelectAll::new();
         let mut subscriptions = BTreeSet::new();
-        let gateway = self.clone();
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let mut tasks = JoinSet::new();
         let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
-        refresh(&gateway, &mut messages, &mut subscriptions).await?;
+        refresh(self, &mut messages, &mut subscriptions).await?;
         ticks.tick().await;
         info!(concurrency, "gateway ready");
-        let flush_store = gateway.store.clone();
         loop {
             while let Some(result) = tasks.try_join_next() {
                 result?;
             }
             let delivery = tokio::select! {
                 _ = ticks.tick() => {
-                    if let Err(error) = refresh(&gateway, &mut messages, &mut subscriptions).await {
+                    if let Err(error) = refresh(self, &mut messages, &mut subscriptions).await {
                         warn!(%error, "provider refresh failed; retaining the previous advertisement");
                     }
                     continue;
                 }
                 delivery = messages.next(), if !subscriptions.is_empty() => delivery,
-                // Break out to flush queued turn metrics below.
+                // Break out to flush queued turn metrics in `serve`.
                 () = swarmy_config::shutdown_signal() => break,
             };
             let Some(delivery) = delivery else {
@@ -118,7 +127,7 @@ impl Gateway {
                     continue;
                 }
             };
-            let gateway = gateway.clone();
+            let gateway = Arc::clone(self);
             let permit = semaphore.clone().acquire_owned().await?;
             tasks.spawn(async move {
                 let _permit = permit;
@@ -126,10 +135,6 @@ impl Gateway {
                     error!(%error, "delivery left unacknowledged");
                 }
             });
-        }
-        // Drain queued turn metrics before exit so shutdown keeps every write.
-        if let Err(error) = flush_store.flush_turn_metrics().await {
-            warn!(%error, "gateway metric flush failed");
         }
         Ok(())
     }

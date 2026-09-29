@@ -4,16 +4,12 @@ mod worker;
 
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::Nudge;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
-use tokio::time::{Duration, interval};
+use swarmy_store::{ServiceDetail, ServiceRole, Store};
 use tokio::{sync::mpsc, task::JoinSet};
-
-/// How often the worker reports health while stepping sessions.
-const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-worker")?;
@@ -50,24 +46,14 @@ async fn run(config: config::Config, settings: swarmy_config::Settings) -> Resul
     let heartbeat_store = store.clone();
     let worker = worker::Worker::new(store, bus, blobs, config);
     let started = Timestamp::now();
-    let health = async {
-        let mut ticks = interval(HEALTH_INTERVAL);
-        loop {
-            ticks.tick().await;
-            let record = ServiceHeartbeat {
-                role: ServiceRole::Worker,
-                instance_id: worker.owner.to_string(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                host: hostname(),
-                started_at: started,
-                last_seen: Timestamp::now(),
-                detail: ServiceDetail::Partitions(partitions.clone()),
-            };
-            if let Err(error) = heartbeat_store.put_service_heartbeat(&record).await {
-                tracing::warn!(%error, "worker health heartbeat failed");
-            }
-        }
-    };
+    let health = heartbeat_store.heartbeat_loop(
+        ServiceRole::Worker,
+        worker.owner.to_string(),
+        env!("CARGO_PKG_VERSION").into(),
+        started,
+        ServiceDetail::Partitions(partitions.clone()),
+        false,
+    );
     tracing::info!(owner = %worker.owner, "worker ready");
     let consume = async {
         while let Some(delivery) = receive.recv().await {
@@ -80,13 +66,13 @@ async fn run(config: config::Config, settings: swarmy_config::Settings) -> Resul
                 Err(error) => tracing::warn!(%error, "invalid nudge"),
             }
         }
-        bail!("runnable streams ended")
+        Err::<(), _>(anyhow!("runnable streams ended"))
     };
-    let outcome = tokio::select! {
+    let outcome: Result<()> = tokio::select! {
         result = consume => result,
-        () = health => bail!("health loop ended"),
-        () = worker.recovery_loop() => bail!("recovery loop ended"),
-        _ = consumers.join_next() => bail!("runnable consumer ended"),
+        () = health => Err(anyhow!("health loop ended")),
+        () = worker.recovery_loop() => Err(anyhow!("recovery loop ended")),
+        _ = consumers.join_next() => Err(anyhow!("runnable consumer ended")),
         () = swarmy_config::shutdown_signal() => Ok(()),
     };
     // Drain queued turn metrics before exit so shutdown keeps every write.
@@ -98,7 +84,3 @@ async fn run(config: config::Config, settings: swarmy_config::Settings) -> Resul
 
 #[cfg(test)]
 mod tests;
-
-fn hostname() -> String {
-    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
-}

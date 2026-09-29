@@ -217,19 +217,23 @@ impl Gateway {
                 entry_kind: None,
             });
         };
-        let (client, entry, entry_kind) =
-            match self.providers.client_pinned(provider, model, pinned).await {
-                Ok(resolved) => resolved,
-                Err(error) => {
-                    return Ok(AttemptOutcome {
-                        result: Err(error),
-                        streamed: None,
-                        blocked: false,
-                        entry: pinned.map(str::to_owned),
-                        entry_kind: None,
-                    });
-                }
-            };
+        let resolved = match self.providers.client_pinned(provider, model, pinned).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Ok(AttemptOutcome {
+                    result: Err(error),
+                    streamed: None,
+                    blocked: false,
+                    entry: pinned.map(str::to_owned),
+                    entry_kind: None,
+                });
+            }
+        };
+        let crate::providers::ResolvedClient {
+            client,
+            entry,
+            entry_kind,
+        } = resolved;
         let key = CredentialKey::for_label(provider, entry.clone());
         if let Some(until) = self.store.claim_entry(&key, Timestamp::now()).await? {
             let reason = self

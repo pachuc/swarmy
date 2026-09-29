@@ -46,7 +46,9 @@ impl NbdServer {
 
 impl Drop for NbdServer {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            tracing::warn!(path = %self.path.display(), %error, "nbd socket file not removed");
+        }
     }
 }
 

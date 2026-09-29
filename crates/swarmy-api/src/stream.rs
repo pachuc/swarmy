@@ -415,6 +415,20 @@ async fn catch_all(
     }
     Replay::Done
 }
+
+/// Apply a pending subscription change before rebuilding feeds.
+/// Both `produce` entry points share this instead of repeating the block.
+fn apply_subscription(
+    changes: &mut watch::Receiver<Subscription>,
+    current: &mut Subscription,
+    pending_update: &mut bool,
+    first: &mut Option<SelectAll<BoxStream<'static, FeedItem>>>,
+) {
+    *current = changes.borrow_and_update().clone();
+    *pending_update = true;
+    *first = None;
+}
+
 async fn produce(
     state: AppState,
     mut changes: watch::Receiver<Subscription>,
@@ -427,10 +441,7 @@ async fn produce(
     let mut pending_update = false;
     'reconfigure: loop {
         if changes.has_changed().unwrap_or(false) {
-            let requested = changes.borrow_and_update().clone();
-            current = requested;
-            pending_update = true;
-            first = None;
+            apply_subscription(&mut changes, &mut current, &mut pending_update, &mut first);
         }
         // Register live feeds before reading the log. A notification is only a
         // nudge; rereading the store also repairs a dropped NATS publication.
@@ -478,9 +489,7 @@ async fn produce(
             // The change notification was consumed inside `drive`; apply the
             // pending subscription before rebuilding feeds.
             Drive::Changed => {
-                current = changes.borrow_and_update().clone();
-                pending_update = true;
-                first = None;
+                apply_subscription(&mut changes, &mut current, &mut pending_update, &mut first);
             }
             Drive::Rebuild => {}
             Drive::End => return,

@@ -585,10 +585,10 @@ impl Worker {
     }
 
     pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        // The display flag varies only by agent image, so the cache is keyed
-        // by that pair with a per-session index for read-free hits. The lock
-        // is released before the database reads below so concurrent steps do
-        // not block on them.
+        // The display flag varies only by image manifest, so the cache is
+        // keyed by manifest id with a per-session index for read-free hits.
+        // The lock is released before the database reads below so concurrent
+        // steps do not block on them.
         {
             let cache = self.display.lock().await;
             if let Some(display) = cache.get(session.session_id) {
@@ -600,19 +600,23 @@ impl Worker {
             // have no display. Remember the miss so repeated lookups cost no
             // reads, as a hit would.
             let mut cache = self.display.lock().await;
-            cache.insert(session.session_id, session.agent_id, String::new(), false);
+            cache.insert(session.session_id, None, false);
             return Ok(false);
         };
-        // ImageRecord has no Hash impl, so flatten the identity that
-        // `image_display` reads (name, tag, manifest) into one string.
-        let image_key = format!(
-            "{}:{}:{}",
-            agent.image.name, agent.image.tag.0, agent.image.manifest_id
-        );
+        let manifest = agent.image.manifest_id;
+        {
+            let cache = self.display.lock().await;
+            if let Some(display) = cache.get_image(manifest) {
+                drop(cache);
+                let mut cache = self.display.lock().await;
+                cache.insert(session.session_id, Some(manifest), display);
+                return Ok(display);
+            }
+        }
         let display = self.store.image_display(&agent.image).await?;
         {
             let mut cache = self.display.lock().await;
-            cache.insert(session.session_id, session.agent_id, image_key, display);
+            cache.insert(session.session_id, Some(manifest), display);
         }
         Ok(display)
     }

@@ -13,17 +13,6 @@ use swarmy_core::{
 use crate::scan_all;
 use crate::{Result, Store, StoreError, read, scan, write};
 
-/// Which key space a collector row comes from. The live-manifest scan
-/// decodes each source differently, so the loop carries this instead of a
-/// string tag matched back to the same spaces.
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ManifestSource {
-    Volume,
-    Image,
-    Agent,
-}
-
 impl Store {
     /// Register an immutable header after its objects have been uploaded.
     /// Repeating the same registration is safe.
@@ -511,43 +500,38 @@ impl Store {
     pub async fn live_manifests(&self) -> Result<BTreeSet<ManifestId>> {
         self.transaction(|trx| async move {
             let mut live = BTreeSet::new();
-            // Each manifest source decodes its rows differently, so the loop
-            // carries the source enum instead of a string tag.
-            for kind in [
-                ManifestSource::Volume,
-                ManifestSource::Image,
-                ManifestSource::Agent,
-            ] {
-                let space = match kind {
-                    ManifestSource::Volume => self.keys().volume_space(),
-                    ManifestSource::Image => self.keys().image_space(),
-                    ManifestSource::Agent => self.keys().agent_space(),
-                };
-                let (begin, end) = space.range();
-                for (key, value) in scan_all(&trx, (begin, end)).await? {
-                    if kind == ManifestSource::Agent {
-                        live.insert(
-                            swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
-                                .image
-                                .manifest_id,
-                        );
-                    } else if kind == ManifestSource::Image {
-                        live.insert(swarmy_core::decode::<ManifestId>(&value)?);
-                    } else {
-                        let volume: VolumeRecord = swarmy_core::decode(&value)?;
-                        let (bytes,): (Vec<u8>,) = space
-                            .unpack(&key)
-                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                        let bytes: [u8; 16] = bytes
-                            .try_into()
-                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                        let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
-                        live.extend(self.snapshots(&trx, id).await?);
-                        if volume.writer_lease.is_some() {
-                            live.insert(volume.head_manifest);
-                        }
-                    }
+            // Each manifest source decodes its rows differently, so each key
+            // space gets its own scan rather than a tag loop matched back to
+            // the same spaces.
+            let volume_space = self.keys().volume_space();
+            let (begin, end) = volume_space.range();
+            for (key, value) in scan_all(&trx, (begin, end)).await? {
+                let volume: VolumeRecord = swarmy_core::decode(&value)?;
+                let (bytes,): (Vec<u8>,) = volume_space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let bytes: [u8; 16] = bytes
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
+                live.extend(self.snapshots(&trx, id).await?);
+                if volume.writer_lease.is_some() {
+                    live.insert(volume.head_manifest);
                 }
+            }
+            let image_space = self.keys().image_space();
+            let (begin, end) = image_space.range();
+            for (_, value) in scan_all(&trx, (begin, end)).await? {
+                live.insert(swarmy_core::decode::<ManifestId>(&value)?);
+            }
+            let agent_space = self.keys().agent_space();
+            let (begin, end) = agent_space.range();
+            for (_, value) in scan_all(&trx, (begin, end)).await? {
+                live.insert(
+                    swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
+                        .image
+                        .manifest_id,
+                );
             }
             Ok(live)
         })

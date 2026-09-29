@@ -5,6 +5,11 @@ use super::{
     WorkQueue, Worker, execution_result, runnable_partition,
 };
 
+enum StoreTool {
+    Plan,
+    Timer,
+}
+
 enum Dispatch<'a> {
     Calls(&'a [ToolCallRecord]),
     Pending(&'a [ToolJob]),
@@ -36,13 +41,18 @@ impl Worker {
     }
 
     /// Store-side tools (plan, timers) complete without leaving the worker.
-    /// Kept in sync with `complete_store_tool`, which runs the fenced store
-    /// transition for exactly these names.
+    /// One classifier drives both the inline check and the fenced store
+    /// transition below, so the tool list cannot drift.
+    fn store_tool_kind(tool: &str) -> Option<StoreTool> {
+        match tool {
+            "update_plan" => Some(StoreTool::Plan),
+            "set_timer" | "list_timers" | "cancel_timer" => Some(StoreTool::Timer),
+            _ => None,
+        }
+    }
+
     fn is_inline_store_tool(tool: &str) -> bool {
-        matches!(
-            tool,
-            "update_plan" | "set_timer" | "list_timers" | "cancel_timer"
-        )
+        Self::store_tool_kind(tool).is_some()
     }
 
     /// Complete one inline store tool: run the fenced transition, fold plan
@@ -165,26 +175,30 @@ impl Worker {
     ) -> Result<Event> {
         let token = lease.lock().await;
         let token = token.as_ref().context("lease released")?;
-        let event = if call.tool == "update_plan" {
-            self.store
-                .complete_plan_tool(
-                    session.session_id,
-                    session.head_seq,
-                    token,
-                    request_id,
-                    call,
-                )
-                .await?
-        } else {
-            self.store
-                .complete_timer_tool(
-                    session.session_id,
-                    session.head_seq,
-                    token,
-                    request_id,
-                    call,
-                )
-                .await?
+        let event = match Self::store_tool_kind(&call.tool) {
+            Some(StoreTool::Plan) => {
+                self.store
+                    .complete_plan_tool(
+                        session.session_id,
+                        session.head_seq,
+                        token,
+                        request_id,
+                        call,
+                    )
+                    .await?
+            }
+            Some(StoreTool::Timer) => {
+                self.store
+                    .complete_timer_tool(
+                        session.session_id,
+                        session.head_seq,
+                        token,
+                        request_id,
+                        call,
+                    )
+                    .await?
+            }
+            None => anyhow::bail!("not a store tool: {}", call.tool),
         };
         Ok(event)
     }

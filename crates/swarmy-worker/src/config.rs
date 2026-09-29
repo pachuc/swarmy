@@ -4,6 +4,42 @@ use swarmy_bus::Config as BusConfig;
 use swarmy_harness::{GetTime, Harness, ToolRegistry};
 use swarmy_llm::GenerationSettings;
 
+/// Chaos kill points crash the worker at fixed step boundaries. The config
+/// carries the selected point as an enum so chaos runs set it by name
+/// without rebuilding; every call site and the setting parser share this
+/// one list instead of repeating string literals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KillPoint {
+    AfterClaim,
+    BeforeRelease,
+    AfterRequestEvent,
+    AfterRelease,
+    AfterAdvance,
+}
+
+impl KillPoint {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterClaim => "after_claim",
+            Self::BeforeRelease => "before_release",
+            Self::AfterRequestEvent => "after_request_event",
+            Self::AfterRelease => "after_release",
+            Self::AfterAdvance => "after_advance",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "after_claim" => Some(Self::AfterClaim),
+            "before_release" => Some(Self::BeforeRelease),
+            "after_request_event" => Some(Self::AfterRequestEvent),
+            "after_release" => Some(Self::AfterRelease),
+            "after_advance" => Some(Self::AfterAdvance),
+            _ => None,
+        }
+    }
+}
+
 pub struct Config {
     pub nats: String,
     pub bus: BusConfig,
@@ -18,7 +54,7 @@ pub struct Config {
     pub catalog: swarmy_llm::catalog::Catalog,
     pub memory_dir: PathBuf,
     pub memory_max_bytes: usize,
-    pub kill_point: Option<String>,
+    pub kill_point: Option<KillPoint>,
     pub max_inference_wait: Duration,
     pub gateway_wait: Duration,
     pub allowed_providers: Option<Vec<String>>,
@@ -34,18 +70,15 @@ impl Config {
             "unsupported SWARMY_PROVIDER"
         );
         let effort = settings.selection.effort;
-        let kill_point = settings.worker.kill_point.clone();
-        ensure!(
-            kill_point.as_deref().is_none_or(|value| matches!(
-                value,
-                "after_claim"
-                    | "after_request_event"
-                    | "before_release"
-                    | "after_release"
-                    | "after_advance"
-            )),
-            "invalid SWARMY_WORKER_KILL_POINT"
-        );
+        let kill_point = settings
+            .worker
+            .kill_point
+            .as_deref()
+            .map(|value| {
+                KillPoint::parse(value)
+                    .ok_or_else(|| anyhow::anyhow!("invalid SWARMY_WORKER_KILL_POINT"))
+            })
+            .transpose()?;
         let mut tools = ToolRegistry::default();
         tools.register(Box::new(GetTime));
         swarmy_tools::register(&mut tools);
