@@ -123,7 +123,13 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(images[0], shown);
+    assert_eq!(images[0].id, shown.id);
+    assert_eq!(images[0].name, shown.name);
+    assert_eq!(images[0].tag, shown.tag);
+    assert!(
+        shown.header.is_some(),
+        "image detail includes the manifest header"
+    );
     let listed: Vec<Agent> = client
         .get(format!("{base}/v1/agents"))
         .bearer_auth("test-token")
