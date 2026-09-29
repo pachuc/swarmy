@@ -59,9 +59,7 @@ impl Fixture {
             return None;
         }
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            if swarmy_core::test_support::stack_env_os(variable).is_none() {
-                return None;
-            }
+            swarmy_core::test_support::stack_env_os(variable)?;
         }
         NETWORK.get_or_init(swarmy_store::boot);
         let settings = swarmy_config::Settings::load().unwrap().settings;
