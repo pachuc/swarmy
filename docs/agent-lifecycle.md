@@ -52,7 +52,7 @@ If a sandbox tool returns a managed process while interruption is pending, the
 node stops that process before committing the tool result.
 
 The scheduler runs `sweep_ephemeral_sessions` every sixty seconds, or every
-retention interval when that is shorter. `ephemeral_retention` defaults
+retention interval when that is shorter. `[scheduler] ephemeral_retention_secs` defaults
 to 86400 seconds and must be positive. The environment override is
 `SWARMY_EPHEMERAL_RETENTION_SECONDS`. Only Idle ephemeral sessions whose idle
 timestamp is strictly older than the cutoff close. Creation and transitions

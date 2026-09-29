@@ -184,7 +184,9 @@ The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):
 
 ```toml
-store_directory = "swarmy"
+[store]
+directory = "swarmy"
+cluster_file = ".dev/fdb.cluster"
 
 [bus]
 prefix = ""
@@ -216,16 +218,21 @@ Image construction requires root. The computer is materialized on first sandbox
 tool use, so a fake-provider conversation without sandbox tools needs no node.
 Resuming an existing session keeps its pinned image.
 
-The connection keys are `fdb_cluster_file`, `[bus] nats_url`, `[s3] endpoint`,
+The connection keys are `[store] cluster_file`, `[bus] nats_url`, `[s3] endpoint`,
 `[s3] access_key`, `[s3] secret_key`, `[s3] bucket`, `[s3] prefix`, and
 `[s3] region`. `[s3] prefix` defaults to empty. Use it to select a namespace
 within the bucket; see the [namespace and migration
 rules](../crates/swarmy-store/src/objects.rs). Additional settings are
-`[scheduler] scan_interval`, `[scheduler] resend_interval`, `[worker] lease`,
-`[worker] recovery_interval`, `[bus] ack_wait`, `[bus] max_deliver`,
-`[gateway] concurrency`, and `[context] system_prompt`. The optional
-`[worker] kill_point` retains the worker failure-injection setting. The
-documented `SWARMY_*` names still work; TOML keys live in the tables above.
+`[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
+`[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
+`[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
+`[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
+`[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
+`[inference] max_wait_secs`, `[inference] max_backoff_secs`,
+`[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
+`[context] system_prompt`. The optional `[worker] kill_point` retains the
+worker failure-injection setting. The documented `SWARMY_*` names still work;
+TOML keys live in the tables above.
 Exceptions are `[selection] credential_file` (`SWARMY_CHATGPT_AUTH`),
 `[fake].script` (`SWARMY_FAKE_SCRIPT`), and `[fake].call_log`
 (`SWARMY_FAKE_CALL_LOG`).

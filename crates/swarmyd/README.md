@@ -35,9 +35,9 @@ secondary count cap.
 | `node_memory_reserve_mib` (derive budget from host RAM) | `SWARMY_NODE_MEMORY_RESERVE_MIB` | unset |
 | `node_capacity.disk_bytes` | `SWARMY_NODE_DISK_BYTES` | `34359738368` |
 | `node_capacity.sandboxes` | `SWARMY_NODE_SANDBOXES` | `1` |
-| `node_heartbeat_interval_ms` | `SWARMY_NODE_HEARTBEAT_INTERVAL_MS` | `5000` |
-| `sandbox_idle_seconds` | `SWARMY_SANDBOX_IDLE_SECONDS` | `1800` |
-| `placement_lease_seconds` | `SWARMY_PLACEMENT_LEASE_SECONDS` | `30` |
+| `[node] heartbeat_interval_ms` | `SWARMY_NODE_HEARTBEAT_INTERVAL_MS` | `5000` |
+| `[sandbox] idle_secs` | `SWARMY_SANDBOX_IDLE_SECONDS` | `1800` |
+| `[scheduler] placement_lease_secs` | `SWARMY_PLACEMENT_LEASE_SECONDS` | `30` |
 
 `Store::get_node` reads `("node", node_id)`. `scan_live_nodes` takes a minimum
 heartbeat timestamp, an exclusive node-id cursor, and a page size. It returns

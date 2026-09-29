@@ -264,7 +264,7 @@ attachments. Both values must be positive:
 
 ```toml
 [volume_snapshots]
-period_seconds = 600
+period_secs = 600
 retention = 10
 ```
 

@@ -55,3 +55,25 @@ GET /v1/cli/doctor removed the optional property `legacy_credential_rows` from t
 GET /v1/sessions/{id}/events removes legacy_context_notice from notice kind values
 # 2026-09-29: Stored event rows no longer decode the unmetered completion variant or missing failure-kind and route-attribution fields. Current event discriminants after the removed completion shift by one. TokenUsage now requires six fields; five-field usage rows are rejected. Wipe the development store before deployment.
 # 2026-09-29: Turn metric envelopes use the current summary (tag 0), inference (tag 1), and tool (tag 2) variants only; older capped-metrics tags and bare detail rows are rejected.
+
+# 2026-09-29: `swarmy-config` TOML keys are grouped and durations carry their
+# unit in the key. Old laptop and node `config.toml` files fail to load
+# (`deny_unknown_fields`). Re-render with `swarmy dev up` (or re-run the
+# remote provisioning that wrote the node file), or edit the file by hand
+# with the renames below. `SWARMY_*` environment names are unchanged.
+# - top-level `fdb_cluster_file` moves to `[store] cluster_file`
+# - top-level `store_directory` moves to `[store] directory`
+# - top-level `placement_lease` moves to `[scheduler] placement_lease_secs`
+# - top-level `ephemeral_retention` moves to `[scheduler] ephemeral_retention_secs`
+# - `[volume_snapshots] period` becomes `[volume_snapshots] period_secs`
+# - `[gc] grace` becomes `[gc] grace_secs`; `[gc] interval` becomes `[gc] interval_secs`
+# - `[inference] max_wait` becomes `[inference] max_wait_secs`; `max_backoff` becomes `max_backoff_secs`; `gateway_wait` becomes `gateway_wait_secs`
+# - `[bus] ack_wait` becomes `[bus] ack_wait_ms`
+# - `[worker] lease` becomes `[worker] lease_ms`; `[worker] recovery_interval` becomes `[worker] recovery_interval_ms`
+# - `[scheduler] scan_interval` becomes `[scheduler] scan_interval_ms`; `[scheduler] resend_interval` becomes `[scheduler] resend_interval_ms`
+# - `[node] heartbeat_interval` becomes `[node] heartbeat_interval_ms`
+# - `[sandbox] idle` becomes `[sandbox] idle_secs`
+# Logging: api, scheduler, and gateway used to log to stdout with ANSI colour;
+# every service now logs plain text to stderr. `swarmyd vol`/`upgrade` now
+# opens the store through the shared helper, so `upgrade` needs a valid S3
+# config like every other service.
