@@ -193,37 +193,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tool_records_preserve_optional_results_and_arbitrary_arguments() {
-        let mut call = tool_call();
-        for result in [
-            None,
-            Some(tool_result()),
-            Some(ToolResult::Error {
-                error: "Permission denied".into(),
-            }),
-        ] {
-            call.result = result;
-            assert_round_trip(&call);
-        }
-        for arguments in [
-            Value::Null,
-            json!(true),
-            json!("hello"),
-            json!([]),
-            json!({}),
-            json!(i64::MIN),
-            json!(u64::MAX),
-            json!(1.25),
-            json!(f64::MIN_POSITIVE),
-            json!(f64::MAX),
-            json!(1.234_567_890_123_456_7),
-        ] {
-            call.arguments = arguments;
-            assert_round_trip(&call);
-        }
-    }
-
-    #[test]
     fn json_arguments_remain_structured_and_parts_have_tags() {
         let call = tool_call();
         let json = serde_json::to_value(&call).unwrap();

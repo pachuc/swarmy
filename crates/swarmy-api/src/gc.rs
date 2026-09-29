@@ -87,8 +87,10 @@ pub(crate) async fn start(
     // zero grace would collect chunks still being published, so reject it.
     let mut policy = state.gc;
     if let Some(grace) = body.grace_seconds {
-        policy.grace_seconds = std::num::NonZeroU64::new(grace)
-            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        if grace == 0 {
+            return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
+        }
+        policy.grace_secs = std::time::Duration::from_secs(grace);
     }
     let (run, lease, cutoff, started) = match swarmy_volume::gc::begin_with_owner(
         &state.store,

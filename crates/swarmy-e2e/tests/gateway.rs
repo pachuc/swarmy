@@ -66,7 +66,9 @@ impl Fixture {
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("gateway_{}", Ulid::generate());
         let store = Store::open(
-            Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap()),
+            Some(std::path::Path::new(
+                &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+            )),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env().unwrap()),
         )
@@ -222,7 +224,10 @@ impl Fixture {
         let session_id = SessionId::from_ulid(Ulid::generate());
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
-            default_image: Some(image_fixture::image(&self.store).await.into()),
+            selection: swarmy_config::SelectionSettings {
+                default_image: Some(image_fixture::image(&self.store).await.into()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         self.store

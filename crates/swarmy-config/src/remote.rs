@@ -276,21 +276,27 @@ impl RemoteProfile {
 
     /// Apply stack endpoints and its default image, preserving credentials and namespaces.
     pub fn apply(&self, settings: &mut Settings) {
-        settings.fdb_cluster_file = self.fdb_cluster_file.to_string_lossy().into_owned();
-        settings.nats_url.clone_from(&self.nats_url);
-        settings.s3_endpoint.clone_from(&self.s3_endpoint);
+        settings
+            .store
+            .cluster_file
+            .clone_from(&self.fdb_cluster_file);
+        settings.bus.nats_url.clone_from(&self.nats_url);
+        settings.s3.endpoint.clone_from(&self.s3_endpoint);
         settings.api.url.clone_from(&self.api_url);
         if let Some(token) = &self.api_token {
             settings.api.token.clone_from(token);
         }
         if let (Some(bucket), Some(region)) = (&self.s3_bucket, &self.s3_region) {
-            settings.s3_bucket.clone_from(bucket);
-            settings.s3_region.clone_from(region);
-            settings.s3_access_key.clear();
-            settings.s3_secret_key.clear();
+            settings.s3.bucket.clone_from(bucket);
+            settings.s3.region.clone_from(region);
+            settings.s3.access_key.clear();
+            settings.s3.secret_key.clear();
         }
         if self.default_image.is_some() {
-            settings.default_image.clone_from(&self.default_image);
+            settings
+                .selection
+                .default_image
+                .clone_from(&self.default_image);
         }
     }
 
@@ -443,11 +449,17 @@ mod tests {
         let profile: RemoteProfile = serde_json::from_str(r#"{"name":"old","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"http://localhost:8333"}"#).unwrap();
         assert!(profile.default_image.is_none());
         let mut settings = Settings {
-            default_image: Some("configured:tag".into()),
+            selection: crate::SelectionSettings {
+                default_image: Some("configured:tag".into()),
+                ..crate::SelectionSettings::default()
+            },
             ..Settings::default()
         };
         profile.apply(&mut settings);
-        assert_eq!(settings.default_image.as_deref(), Some("configured:tag"));
+        assert_eq!(
+            settings.selection.default_image.as_deref(),
+            Some("configured:tag")
+        );
     }
 
     #[test]
@@ -458,7 +470,7 @@ mod tests {
         std::fs::create_dir_all(root.path().join("nested")).unwrap();
         std::fs::write(
             state.join("config.toml"),
-            "provider = 'fake'\n[remote]\nprofile = 'test'\n",
+            "[selection]\nprovider = 'fake'\n[remote]\nprofile = 'test'\n",
         )
         .unwrap();
         let profile = RemoteProfile {
@@ -488,11 +500,11 @@ mod tests {
         regional_profile.s3_endpoint.clear();
         let mut regional_settings = Settings::default();
         regional_profile.apply(&mut regional_settings);
-        assert_eq!(regional_settings.s3_bucket, "bucket");
-        assert_eq!(regional_settings.s3_region, "eu-west-1");
-        assert!(regional_settings.s3_endpoint.is_empty());
-        assert!(regional_settings.s3_access_key.is_empty());
-        assert!(regional_settings.s3_secret_key.is_empty());
+        assert_eq!(regional_settings.s3.bucket, "bucket");
+        assert_eq!(regional_settings.s3.region, "eu-west-1");
+        assert!(regional_settings.s3.endpoint.is_empty());
+        assert!(regional_settings.s3.access_key.is_empty());
+        assert!(regional_settings.s3.secret_key.is_empty());
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
             serde_json::to_vec(&profile).unwrap(),
@@ -505,7 +517,7 @@ mod tests {
         ]);
         let loaded = load_with_remote(&root.path().join("nested"), &env).unwrap();
         assert_eq!(
-            loaded.settings.default_image.as_deref(),
+            loaded.settings.selection.default_image.as_deref(),
             Some("base-ubuntu:test")
         );
         assert_eq!(
@@ -519,15 +531,12 @@ mod tests {
                 .unwrap(),
             "custom:override"
         );
-        assert_eq!(loaded.settings.nats_url, profile.nats_url);
-        assert_eq!(loaded.settings.s3_endpoint, profile.s3_endpoint);
+        assert_eq!(loaded.settings.bus.nats_url, profile.nats_url);
+        assert_eq!(loaded.settings.s3.endpoint, profile.s3_endpoint);
         assert_eq!(loaded.settings.api.url, profile.api_url);
         assert_eq!(loaded.settings.api.token, "fixture-token");
-        assert_eq!(
-            Path::new(&loaded.settings.fdb_cluster_file),
-            profile.fdb_cluster_file
-        );
-        assert_eq!(loaded.settings.s3_bucket, "custom");
+        assert_eq!(loaded.settings.store.cluster_file, profile.fdb_cluster_file);
+        assert_eq!(loaded.settings.s3.bucket, "custom");
         assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
         let mut invalid = profile;
         invalid.ports.fdb = 14500;

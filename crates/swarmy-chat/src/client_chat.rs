@@ -352,19 +352,19 @@ impl View {
         let provider = conversation
             .provider
             .as_deref()
-            .or_else(|| settings.as_ref().map(|v| v.provider.as_str()))
+            .or_else(|| settings.as_ref().map(|v| v.selection.provider.as_str()))
             .unwrap_or("default");
         let model = conversation
             .session
             .model
             .as_deref()
-            .or_else(|| settings.as_ref().map(|v| v.model.as_str()))
+            .or_else(|| settings.as_ref().map(|v| v.selection.model.as_str()))
             .unwrap_or("default");
         let effort = conversation.session.effort.as_ref().map_or_else(
             || {
                 settings
                     .as_ref()
-                    .map_or_else(|| "default".into(), |v| v.reasoning_effort.clone())
+                    .map_or_else(|| "default".into(), |v| v.selection.effort.to_string())
             },
             |v| v.as_str().to_owned(),
         );

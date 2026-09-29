@@ -780,8 +780,8 @@ mode on one backing-store node, without replicated storage or high availability.
 ### Agent memory files
 
 The worker includes memory files in named-agent inference, including side
-sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to
-`/home/agent/memory`, and `memory_max_bytes` (`SWARMY_MEMORY_MAX_BYTES`)
+sessions. `[memory] dir` (`SWARMY_MEMORY_DIR`) defaults to
+`/home/agent/memory`, and `[memory] max_bytes` (`SWARMY_MEMORY_MAX_BYTES`)
 defaults to 32768. The node reads regular files in filename order and notes
 when the byte budget truncates content; it skips directories, symlinks, and
 special files. Use an absolute directory without symlink components. See

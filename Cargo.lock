@@ -4103,7 +4103,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
  "unicode-width",
  "utoipa",
@@ -4170,7 +4169,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
 ]
 
@@ -4283,11 +4281,13 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "swarmy-bus",
  "swarmy-catalog",
  "swarmy-core",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "tracing-subscriber",
  "ulid",
 ]
 
@@ -4377,7 +4377,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
  "wiremock",
 ]
@@ -4473,7 +4472,6 @@ dependencies = [
  "swarmy-volume",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
 ]
 
@@ -4570,7 +4568,6 @@ dependencies = [
  "swarmy-version",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
 ]
 
@@ -4597,7 +4594,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ulid",
 ]
 

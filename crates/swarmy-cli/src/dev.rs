@@ -401,12 +401,10 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
             swarmy_config::parse_exports(&fs::read_to_string(layout.repo.join(".dev/env"))?)?;
         settings.apply_environment(&exports)?;
     }
-    if settings.credential_file.is_empty() {
-        settings.credential_file = std::env::var_os("HOME")
+    if settings.selection.credential_file.as_os_str().is_empty() {
+        settings.selection.credential_file = std::env::var_os("HOME")
             .map_or_else(|| layout.root.clone(), PathBuf::from)
-            .join(".swarmy/auth.json")
-            .to_string_lossy()
-            .into_owned();
+            .join(".swarmy/auth.json");
     }
     settings.resolve_paths(&layout.root);
     if settings.api.token.is_empty() {
@@ -416,8 +414,8 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     write_private(&layout.config, &settings.to_toml()?)?;
     // Load again so environment overrides win, without persisting those overrides.
     settings = Settings::load()?.settings;
-    if settings.provider == "fake" {
-        let script = Path::new(&settings.fake.script);
+    if settings.selection.provider == "fake" {
+        let script = &settings.fake.script;
         if let Some(parent) = script.parent() {
             fs::create_dir_all(parent)?;
         }

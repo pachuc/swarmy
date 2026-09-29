@@ -94,7 +94,8 @@ Azure CLI on the host using the credential. For key credentials use
 for a Foundry resource; the URL is stored with the key.
 
 All logins write the cluster store directly. `auth import` copies an existing
-ChatGPT file without changing it; without `--file`, it reads `credential_file`
+ChatGPT file without changing it; without `--file`, it reads
+`[selection] credential_file`
 (normally `~/.swarmy/auth.json`, also overridden by `--auth-file` or
 `SWARMY_CHATGPT_AUTH`). Stop other refresh owners before importing. Gateways do
 not fall back to that file.
@@ -337,11 +338,11 @@ only results and failure diagnostics; it does not read credential files.
 ## Custom providers and models
 
 ```toml
-[custom_providers.private]
+[selection.custom_providers.private]
 api = "OpenAiCompletions"
 base_url = "http://localhost:8000/v1"
 
-[[models]]
+[[selection.models]]
 provider = "private"
 id = "team/coder"
 name = "Private coder"
@@ -351,7 +352,7 @@ reasoning = ["none", "low", "medium", "high"]
 cost = { input = 0.5, output = 1.5, cache_read = 0.1, cache_write = 0.5 }
 compat = { max_tokens_field = "max_tokens", supports_developer_role = false }
 
-[[models]]
+[[selection.models]]
 provider = "openai"
 id = "gpt-5.5"
 context_window = 128000
@@ -360,7 +361,7 @@ context_window = 128000
 Put these entries in `.swarmy/config.toml` or the discovered user configuration.
 Store private endpoint credentials with `swarmy auth set private --file PATH`.
 New provider tables require `api` and `base_url`; existing ones keep omitted
-fields. A top-level `providers = [...]` restricts gateway discovery.
+fields. A `[selection] providers = [...]` restricts gateway discovery.
 
 Models require `provider` and `id`. Optional fields are `name`, `api`, `base_url`,
 `context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`. New

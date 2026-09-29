@@ -655,7 +655,8 @@ async fn new_commands_use_the_selected_remote_profile() {
             s3_endpoint: swarmy_config::Settings::load()
                 .unwrap()
                 .settings
-                .s3_endpoint,
+                .s3
+                .endpoint,
             api_url: Some(fixture.api_url.clone()),
             api_token: Some(fixture.api_token.clone()),
             s3_bucket: None,

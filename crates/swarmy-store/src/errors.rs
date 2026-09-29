@@ -26,6 +26,8 @@ pub enum StorageError {
     Corrupt,
     #[error("commit outcome is unknown; read durable state before retrying")]
     CommitUnknown,
+    #[error("cluster file path is not UTF-8")]
+    NonUtf8ClusterFile,
 }
 
 #[derive(Debug, thiserror::Error)]

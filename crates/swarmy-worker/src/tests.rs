@@ -52,12 +52,10 @@ impl Tool for SlowTool {
     }
 }
 
-fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -> Config {
+fn config(url: String, prefix: &str, calls: Arc<AtomicUsize>) -> Config {
     let mut tools = ToolRegistry::default();
     tools.register(Box::new(SlowTool(calls)));
     Config {
-        cluster,
-        directory: vec![prefix.into()],
         nats: url,
         bus: BusConfig {
             prefix: Some(SubjectToken::new(prefix).unwrap()),
@@ -157,11 +155,15 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(cluster.clone(), url.clone(), &prefix, calls.clone());
+    let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
-        .await
-        .unwrap();
+    let store = Store::open(
+        Some(std::path::Path::new(&cluster)),
+        Some(std::slice::from_ref(&prefix)),
+        blobs.clone(),
+    )
+    .await
+    .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
@@ -346,11 +348,15 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(cluster.clone(), url.clone(), &prefix, calls.clone());
+    let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
-        .await
-        .unwrap();
+    let store = Store::open(
+        Some(std::path::Path::new(&cluster)),
+        Some(std::slice::from_ref(&prefix)),
+        blobs.clone(),
+    )
+    .await
+    .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
@@ -429,19 +435,17 @@ mod agent_settings;
 
 #[test]
 fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
-    let mut config = config(
-        String::new(),
-        String::new(),
-        "context_fixture",
-        Arc::default(),
-    );
+    let mut config = config(String::new(), "context_fixture", Arc::default());
     config.catalog = swarmy_config::Settings {
-        models: vec![swarmy_config::CustomModel {
-            provider: "fake".into(),
-            id: "small-context".into(),
-            context_window: Some(1000),
+        selection: swarmy_config::SelectionSettings {
+            models: vec![swarmy_config::CustomModel {
+                provider: "fake".into(),
+                id: "small-context".into(),
+                context_window: Some(1000),
+                ..Default::default()
+            }],
             ..Default::default()
-        }],
+        },
         ..Default::default()
     }
     .catalog()
@@ -469,23 +473,26 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
 
 #[test]
 fn side_threshold_prefers_model_provider_and_has_no_unknown_default() {
-    let mut config = config(String::new(), String::new(), "side_fixture", Arc::default());
+    let mut config = config(String::new(), "side_fixture", Arc::default());
     config.catalog = swarmy_config::Settings {
-        models: vec![
-            swarmy_config::CustomModel {
-                provider: "fake".into(),
-                id: "small-context".into(),
-                context_window: Some(1000),
-                summarize_at: Some(600),
-                ..Default::default()
-            },
-            swarmy_config::CustomModel {
-                provider: "fake".into(),
-                id: "window-only".into(),
-                context_window: Some(1000),
-                ..Default::default()
-            },
-        ],
+        selection: swarmy_config::SelectionSettings {
+            models: vec![
+                swarmy_config::CustomModel {
+                    provider: "fake".into(),
+                    id: "small-context".into(),
+                    context_window: Some(1000),
+                    summarize_at: Some(600),
+                    ..Default::default()
+                },
+                swarmy_config::CustomModel {
+                    provider: "fake".into(),
+                    id: "window-only".into(),
+                    context_window: Some(1000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
         ..Default::default()
     }
     .catalog()
