@@ -1307,7 +1307,7 @@ async fn all_entries_open_parks_until_earliest_retry() {
             // Both entries are open, so the session parks instead of calling.
             // The first park may blame a missing advertisement before the
             // gateway is ready; wait for the entry-named breaker reason.
-            let wait = wait_for_wait_reason(&f, id, "openai/primary", "quota reached").await;
+            let wait = wait_for_wait_reason(f, id, "openai/primary", "quota reached").await;
             assert!(
                 wait.reasons
                     .iter()
@@ -2608,7 +2608,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         let mut found_prefix = false;
         let mut found_history = false;
         for event in &old {
-            check_summary_request(&f, event, &mut found_prefix, &mut found_history).await;
+            check_summary_request(f, event, &mut found_prefix, &mut found_history).await;
         }
         assert!(summary_id.is_some() && found_history && found_prefix);
         let events = read_all_events(f, successor).await;
@@ -2785,13 +2785,13 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // replacement starts: the kill fires synchronously after the
             // submit, so a durable request means the death already
             // happened, with a short grace for the event publish.
-            wait_for_durable_request(&f, id).await;
+            wait_for_durable_request(f, id).await;
             sleep(Duration::from_secs(3)).await;
             // The second worker recovers attempt one, records the 429 as a
             // failover to the second step, and dies with the step lease
             // still held, before it can submit attempt two.
             f.start("swarmy-worker", Some("after_advance"));
-            wait_for_route_step(&f, id, 1).await;
+            wait_for_route_step(f, id, 1).await;
             // The replacement resumes after the failover: the handled
             // failure advances nothing again and parks nothing behind the
             // in-flight successor, so the turn completes on the second

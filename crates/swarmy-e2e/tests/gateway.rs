@@ -326,7 +326,7 @@ impl Fixture {
                 ..
             })
         ));
-        let reference = session.snapshot_ref.unwrap();
+        let reference = session.snapshot_ref.as_ref().unwrap();
         assert_eq!(reference.seq, session.head_seq);
         let bytes = ObjectBlobStore::from_env()
             .unwrap()
