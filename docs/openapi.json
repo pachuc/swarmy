@@ -2365,7 +2365,10 @@
             ]
           },
           "session_count": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "sessions": {
