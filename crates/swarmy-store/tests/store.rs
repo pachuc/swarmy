@@ -2257,3 +2257,6 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
 
 #[path = "store/timers.rs"]
 mod timers;
+
+#[path = "store/coverage_gaps.rs"]
+mod coverage_gaps;

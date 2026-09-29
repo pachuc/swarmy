@@ -775,6 +775,22 @@ mod tests {
     }
 
     #[test]
+    fn entry_ready_matches_record_status_without_decrypting() {
+        // The scheduler skips entries needing login or past expiry without
+        // decrypting. The plaintext hints must agree with `status`: login
+        // never consults the clock, and only OAuth records expire.
+        let now = Timestamp::from_second(1000).unwrap();
+        let future = Timestamp::from_second(2000).unwrap();
+        let past = Timestamp::from_second(999).unwrap();
+        assert!(entry_ready(false, None, now));
+        assert!(!entry_ready(true, None, now));
+        assert!(entry_ready(false, Some(future), now));
+        assert!(!entry_ready(false, Some(past), now));
+        assert!(!entry_ready(false, Some(now), now));
+        assert!(!entry_ready(true, Some(future), now));
+    }
+
+    #[test]
     fn authenticated_round_trip() {
         let key = Keyring::from_bytes([1; 32]);
         let record = CredentialRecord {
