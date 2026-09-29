@@ -28,6 +28,8 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+    #[error("request timed out")]
+    Timeout,
 }
 
 /// A locally built image streamed to the control plane for publication.
@@ -67,8 +69,23 @@ pub fn upload_timeout(size_bytes: u64) -> Duration {
 
 /// Timeout for one API request. Image uploads use [`upload_timeout`],
 /// sized from the body on disk, because the server chunks and stores the
-/// whole image before answering.
+/// whole image before answering. The CLI and the chat library share it:
+/// [`api_client::call`] wraps [`timed_call`] with the endpoint context the
+/// binary prints, and the chat library maps [`Error::Timeout`] to its own
+/// endpoint-carrying timeout error.
 pub const API_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run one API future with the standard timeout, keeping the typed error.
+///
+/// # Errors
+/// Fails if the request times out or the API rejects it.
+pub async fn timed_call<T>(
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(API_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout)?
+}
 
 impl Client {
     /// The base URL is the server origin, not a `/v1` URL.

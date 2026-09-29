@@ -4176,7 +4176,6 @@ dependencies = [
 name = "swarmy-chat"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "futures-util",
  "ratatui",
@@ -4186,6 +4185,7 @@ dependencies = [
  "swarmy-client",
  "swarmy-config",
  "swarmy-core",
+ "thiserror 2.0.20",
  "tokio",
  "ulid",
  "unicode-width",

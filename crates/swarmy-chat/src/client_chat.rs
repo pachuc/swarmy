@@ -2,8 +2,8 @@
 
 use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
+use crate::client_conversation::{Error, OpenArgs, call, terminal_error};
 use crate::input::Input;
-use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -20,7 +20,8 @@ use std::{
 };
 use swarmy_api_types as api;
 use swarmy_client::{Client, StreamItem};
-use swarmy_core::InferenceSelection;
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 struct RestoreTerminal;
 impl Drop for RestoreTerminal {
@@ -31,12 +32,35 @@ impl Drop for RestoreTerminal {
 }
 
 fn terminal() -> Result<(DefaultTerminal, RestoreTerminal)> {
-    enable_raw_mode()?;
+    enable_raw_mode().map_err(terminal_error)?;
     let restore = RestoreTerminal;
-    execute!(io::stdout(), EnterAlternateScreen)?;
-    let mut terminal = DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
+    execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
+    let mut terminal = DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))
+        .map_err(terminal_error)?;
+    terminal.clear().map_err(terminal_error)?;
     Ok((terminal, restore))
+}
+
+/// Pick the session to resume. The picker shows only when no flag pins the
+/// target; otherwise the flag-selected id (if any) is used as is. `None`
+/// means the operator quit the picker, and `Some(None)` starts a session.
+async fn pick_session(
+    client: &Client,
+    endpoint: &str,
+    terminal: &mut DefaultTerminal,
+    keys: &mut EventStream,
+    args: &OpenArgs,
+) -> Result<Option<Option<String>>> {
+    if args.id.is_none()
+        && args.agent.is_none()
+        && args.selection.provider.is_none()
+        && args.selection.model.is_none()
+        && args.selection.effort.is_none()
+    {
+        picker(client, endpoint, terminal, keys).await
+    } else {
+        Ok(Some(args.id.clone()))
+    }
 }
 
 fn quit(key: KeyEvent) -> bool {
@@ -44,12 +68,12 @@ fn quit(key: KeyEvent) -> bool {
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
-    let mut sessions = client.sessions(None, 100).await?;
+async fn recent(client: &Client, endpoint: &str) -> Result<Vec<(String, String)>> {
+    let mut sessions = call(endpoint, client.sessions(None, 100)).await?;
     sessions.reverse();
     let mut result = Vec::new();
     for session in sessions.into_iter().take(20) {
-        let events = client.events(&session.id, 0, 50).await?;
+        let events = call(endpoint, client.events(&session.id, 0, 50)).await?;
         let text = events
             .into_iter()
             .find_map(|event| {
@@ -74,25 +98,30 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
 
 async fn picker(
     client: &Client,
+    endpoint: &str,
     terminal: &mut DefaultTerminal,
     keys: &mut EventStream,
 ) -> Result<Option<Option<String>>> {
-    let sessions = recent(client).await?;
+    let sessions = recent(client, endpoint).await?;
     let mut selection = ListState::default().with_selected(Some(0));
     loop {
-        terminal.draw(|frame| {
-            let items = std::iter::once(ListItem::new("New session")).chain(
-                sessions
-                    .iter()
-                    .map(|(id, text)| ListItem::new(format!("{id}  {}", text.replace('\n', " ")))),
-            );
-            frame.render_stateful_widget(
-                List::new(items).highlight_symbol("> "),
-                frame.area(),
-                &mut selection,
-            );
-        })?;
-        if let Event::Key(key) = keys.next().await.context("terminal input closed")??
+        terminal
+            .draw(|frame| {
+                let items =
+                    std::iter::once(ListItem::new("New session")).chain(sessions.iter().map(
+                        |(id, text)| ListItem::new(format!("{id}  {}", text.replace('\n', " "))),
+                    ));
+                frame.render_stateful_widget(
+                    List::new(items).highlight_symbol("> "),
+                    frame.area(),
+                    &mut selection,
+                );
+            })
+            .map_err(terminal_error)?;
+        let Some(event) = keys.next().await else {
+            return Err(terminal_error("terminal input closed"));
+        };
+        if let Event::Key(key) = event.map_err(Error::Io)?
             && key.kind != KeyEventKind::Release
         {
             if quit(key) {
@@ -117,48 +146,39 @@ async fn picker(
 /// Returns an error if terminal setup, the API, or the event stream fails.
 pub async fn run(
     client: Client,
-    id: Option<ulid::Ulid>,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    selection: InferenceSelection,
-    route: Option<String>,
+    endpoint: String,
+    args: OpenArgs,
+    on_problem: &mut impl FnMut(&str),
 ) -> Result<()> {
-    ensure!(
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "chat requires an interactive terminal"
-    );
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        return Err(terminal_error("chat requires an interactive terminal"));
+    }
     let (mut terminal, _restore) = terminal()?;
     let mut keys = EventStream::new();
-    let choice = if id.is_none()
-        && agent.is_none()
-        && selection.provider.is_none()
-        && selection.model.is_none()
-        && selection.effort.is_none()
-    {
-        let Some(choice) = picker(&client, &mut terminal, &mut keys).await? else {
-            return Ok(());
-        };
-        choice
-    } else {
-        id.map(|value| value.to_string())
+    let Some(choice) = pick_session(&client, &endpoint, &mut terminal, &mut keys, &args).await?
+    else {
+        return Ok(());
     };
-    let mut conversation =
-        Conversation::open(client.clone(), choice, image, agent, new, selection, route).await?;
+    let mut conversation = Conversation::open(
+        client.clone(),
+        endpoint.clone(),
+        OpenArgs { id: choice, ..args },
+    )
+    .await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    disable_raw_mode().map_err(terminal_error)?;
+    execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)?;
     conversation
-        .wait_healthy(conversation.provider.as_deref())
+        .wait_healthy(conversation.provider.as_deref(), on_problem)
         .await?;
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
-    terminal.clear()?;
+    enable_raw_mode().map_err(terminal_error)?;
+    execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
+    terminal.clear().map_err(terminal_error)?;
     let mut view = View::new(&conversation);
     // History is read after subscribing, so a concurrent append cannot be lost.
     let mut after = 0;
     while after < conversation.session.head_sequence {
-        let events = client.events(&conversation.id, after, 100).await?;
+        let events = call(&endpoint, client.events(&conversation.id, after, 100)).await?;
         if events.is_empty() {
             break;
         }
@@ -170,37 +190,42 @@ pub async fn run(
     view.ready = conversation.session.state == api::SessionState::Idle;
     let mut input = Input::default();
     loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let rows = ratatui::layout::Layout::vertical([
-                ratatui::layout::Constraint::Min(0),
-                ratatui::layout::Constraint::Length(1),
-                ratatui::layout::Constraint::Length(1),
-            ])
-            .split(area);
-            let body = view.body();
-            let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
-            let offset = paragraph
-                .line_count(rows[0].width)
-                .saturating_sub(usize::from(rows[0].height));
-            frame.render_widget(
-                paragraph.scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
-                rows[0],
-            );
-            frame.render_widget(Paragraph::new(view.status(&conversation)), rows[1]);
-            let (line, cursor) = input.view(rows[2].width);
-            frame.render_widget(Paragraph::new(line), rows[2]);
-            if rows[2].width > 0 {
-                frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
-            }
-        })?;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let rows = ratatui::layout::Layout::vertical([
+                    ratatui::layout::Constraint::Min(0),
+                    ratatui::layout::Constraint::Length(1),
+                    ratatui::layout::Constraint::Length(1),
+                ])
+                .split(area);
+                let body = view.body();
+                let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+                let offset = paragraph
+                    .line_count(rows[0].width)
+                    .saturating_sub(usize::from(rows[0].height));
+                frame.render_widget(
+                    paragraph.scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
+                    rows[0],
+                );
+                frame.render_widget(Paragraph::new(view.status(&conversation)), rows[1]);
+                let (line, cursor) = input.view(rows[2].width);
+                frame.render_widget(Paragraph::new(line), rows[2]);
+                if rows[2].width > 0 {
+                    frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
+                }
+            })
+            .map_err(terminal_error)?;
         tokio::select! {
             event = conversation.next() => {
                 view.event(event?);
                 flush_queued(&mut view, &mut conversation).await?;
             }
             key = keys.next() => {
-                if let Event::Key(key) = key.context("terminal input closed")??
+                let Some(event) = key else {
+                    return Err(terminal_error("terminal input closed"));
+                };
+                if let Event::Key(key) = event.map_err(Error::Io)?
                     && key.kind != KeyEventKind::Release {
                     if quit(key) {
                         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { conversation.interrupt().await?; }
@@ -282,13 +307,12 @@ async fn send_or_queue(
 }
 
 /// Requeue only an idle guard or an API append conflict known to be transient.
-fn is_busy_send_error(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<super::client_conversation::SessionNotIdle>()
-        .is_some()
-        || error
-            .downcast_ref::<swarmy_client::Error>()
-            .is_some_and(is_busy_client_error)
+fn is_busy_send_error(error: &Error) -> bool {
+    match error {
+        Error::SessionNotIdle => true,
+        Error::Client { source, .. } => is_busy_client_error(source),
+        _ => false,
+    }
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
@@ -670,16 +694,18 @@ mod tests {
         assert!(input.text.is_empty());
     }
 
-    fn api_error(status: reqwest::StatusCode, code: &str) -> anyhow::Error {
-        swarmy_client::Error::Api {
-            status,
-            body: swarmy_api_types::ApiError {
-                code: code.into(),
-                message: code.into(),
-                provider_text: None,
+    fn api_error(status: reqwest::StatusCode, code: &str) -> Error {
+        Error::Client {
+            endpoint: "http://127.0.0.1:1".into(),
+            source: swarmy_client::Error::Api {
+                status,
+                body: swarmy_api_types::ApiError {
+                    code: code.into(),
+                    message: code.into(),
+                    provider_text: None,
+                },
             },
         }
-        .into()
     }
 
     #[test]
@@ -698,23 +724,7 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
-        assert!(is_busy_send_error(
-            &crate::client_conversation::SessionNotIdle.into()
-        ));
-        // The API wrapper retains the typed source through context.
-        let wrapped = swarmy_client::api_client::api_error(
-            swarmy_client::Error::Api {
-                status: reqwest::StatusCode::CONFLICT,
-                body: swarmy_api_types::ApiError {
-                    code: "stale_head".into(),
-                    message: "stale head".into(),
-                    provider_text: None,
-                },
-            },
-            "test endpoint",
-        );
-        assert!(is_busy_send_error(&wrapped));
-        assert!(!is_busy_send_error(&anyhow::anyhow!("409 Conflict")));
+        assert!(is_busy_send_error(&Error::SessionNotIdle));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
         assert!(!is_busy_send_error(&api_error(
@@ -725,8 +735,8 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             "unauthorized"
         )));
-        assert!(!is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: request timed out"
-        )));
+        assert!(!is_busy_send_error(&Error::ApiTimeout {
+            endpoint: "http://example".into()
+        }));
     }
 }

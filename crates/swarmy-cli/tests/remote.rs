@@ -90,7 +90,7 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
         serde_json::json!({"aws":{"instance_type":"m6id.4xlarge"},"disk_gb":100});
     node["nodes"] = serde_json::json!([child]);
     std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
-    let output = cli(root.path(), &["remote", "status", "--json"]);
+    let output = cli(root.path(), &["remote", "ls", "--json"]);
     assert!(
         output.status.success(),
         "{}",
@@ -101,7 +101,7 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
     assert_eq!(value[0]["nodes"][0]["instance_id"], "i-second");
     assert_eq!(value[0]["instance_type"], "m6i.large");
     assert_eq!(value[0]["nodes"][0]["instance_type"], "m6id.4xlarge");
-    let human = cli(root.path(), &["remote", "status"]);
+    let human = cli(root.path(), &["remote", "ls"]);
     let text = String::from_utf8(human.stdout).unwrap();
     assert!(text.contains("test instance=i-test type=m6i.large"));
     assert!(text.contains("api_token=not-applicable"));
@@ -190,7 +190,7 @@ fn status_uses_private_ssh_when_public_address_is_unreachable() {
     )
     .unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let output = cli(root.path(), &["remote", "status", "--json"]);
+    let output = cli(root.path(), &["remote", "ls", "--json"]);
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value[0]["instance_state"], "running (SSH reachable)");

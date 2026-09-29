@@ -20,17 +20,16 @@ pub enum Command {
 }
 
 pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
-    // Probes use the control plane credential resolver, not laptop credentials.
-    if let Command::Probe(args) = command {
-        return crate::models_probe::run(args, json).await;
-    }
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    // One match owns every variant. Probes resolve credentials through the
+    // control plane without a prior listing connection; every listing arm
+    // connects on its own path.
     match command {
-        Command::Probe(_) => unreachable!("probes dispatch before listing"),
+        Command::Probe(args) => crate::models_probe::run(args, json).await,
         Command::Ls {
             provider,
             reasoning,
         } => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
             if let Some(id) = &provider {
                 known_provider(&client, &endpoint, id).await?;
             }
@@ -39,9 +38,10 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
                 client.models_filtered(None, provider.as_deref(), reasoning),
             )
             .await?;
-            print_models(&rows, json)?;
+            print_models(&rows, json)
         }
         Command::Show { model } => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
             let (provider, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
             known_provider(&client, &endpoint, provider).await?;
             let rows = swarmy_client::api_client::call(
@@ -53,22 +53,23 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
                 .iter()
                 .find(|row| row.key == model)
                 .with_context(|| format!("unknown model: {model}"))?;
-            if json {
-                println!("{}", serde_json::to_string(row)?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(row)?);
-            }
+            // A single model prints the same compact JSON document with or
+            // without `--json`: one line, like the list commands.
+            println!("{}", serde_json::to_string(row)?);
+            Ok(())
         }
         Command::Search { pattern } => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
             let rows = swarmy_client::api_client::call(
                 &endpoint,
                 client.models_filtered(Some(&pattern), None, false),
             )
             .await?;
             ensure!(!rows.is_empty(), "no models found matching {pattern:?}");
-            print_models(&rows, json)?;
+            print_models(&rows, json)
         }
         Command::Providers => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
             let rows = swarmy_client::api_client::call(&endpoint, client.providers()).await?;
             if json {
                 println!("{}", serde_json::to_string(&rows)?);
@@ -83,9 +84,9 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
                     ));
                 }
             }
+            Ok(())
         }
     }
-    Ok(())
 }
 async fn known_provider(
     client: &swarmy_client::Client,
