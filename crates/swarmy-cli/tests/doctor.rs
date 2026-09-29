@@ -202,11 +202,15 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
     ));
     let handle = std::thread::spawn(move || {
         for body in [
-            format!(
-                "{{\"version\":\"{}\",\"git_commit\":\"{}\"}}",
-                swarmy_version::VERSION,
-                swarmy_version::GIT_COMMIT
-            ),
+            serde_json::json!({
+                "version": swarmy_version::VERSION,
+                "git_commit": swarmy_version::GIT_COMMIT,
+                "api_version": swarmy_api_types::API_VERSION,
+                "default_provider": "fake",
+                "services": [],
+                "node_count": 0,
+            })
+            .to_string(),
             format!(
                 "{{\"services\":[{{\"role\":\"scheduler\",\"instance_id\":\"s1\",\"version\":\"0.1.0\",\"alive\":{scheduler_alive},\"providers\":[],\"capacity\":null}},{{\"role\":\"worker\",\"instance_id\":\"w1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}},{{\"role\":\"gateway\",\"instance_id\":\"g1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[\"fake\"],\"capacity\":null}}],\"images\":[\"fixture:test\"],\"default_image\":\"fixture:test\",\"credentials\":[]}}"
             ),
@@ -262,10 +266,15 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
             listener.local_addr().unwrap()
         ));
         let server = std::thread::spawn(move || {
-            let health = format!(
-                "{{\"version\":\"9.9.9\",\"git_commit\":\"other\",\
-                \"api_version\":\"{api_version}\",\"services\":[],\"node_count\":0}}"
-            );
+            let health = serde_json::json!({
+                "version": "9.9.9",
+                "git_commit": "other",
+                "api_version": api_version,
+                "default_provider": "fake",
+                "services": [],
+                "node_count": 0,
+            })
+            .to_string();
             let snapshot = "{\"services\":[{\"role\":\"scheduler\",\"instance_id\":\"s1\",\
                 \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
                 \"images\":[],\"default_image\":null,\"credentials\":[]}";
