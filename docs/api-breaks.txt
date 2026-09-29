@@ -64,3 +64,4 @@ POST /v1/cli/routes removed duplicate route mutation
 GET /v1/cli/routes/{name} removed duplicate route detail
 DELETE /v1/cli/routes/{name} removed duplicate route deletion
 PATCH /v1/cli/sessions/{id}/route removed duplicate session route mutation
+GET /v1/cli/sessions/{id} removed duplicate session detail; use GET /v1/sessions/{id}/detail

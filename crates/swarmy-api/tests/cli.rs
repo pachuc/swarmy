@@ -119,7 +119,7 @@ async fn assert_resource_projections(
         serde_json::to_value(stored.state).unwrap()
     );
     let detail =
-        serde_json::to_value(client.cli_session(&session.to_string()).await.unwrap()).unwrap();
+        serde_json::to_value(client.session_detail(&session.to_string()).await.unwrap()).unwrap();
     assert_eq!(detail["session"]["session_id"], session.to_string());
     assert_eq!(
         client.cli_image("fixture", "test").await.unwrap().name,

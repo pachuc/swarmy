@@ -886,25 +886,39 @@ pub struct CliSession {
     pub record: std::collections::BTreeMap<String, serde_json::Value>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSessionDetail {
-    pub session: serde_json::Value,
-    pub resolved: serde_json::Value,
-    pub usage: serde_json::Value,
+pub struct SessionDetail {
+    #[schema(value_type = serde_json::Value)]
+    pub session: swarmy_core::SessionRecord,
+    #[schema(value_type = serde_json::Value)]
+    pub resolved: swarmy_core::ResolvedSelection,
+    #[schema(value_type = serde_json::Value)]
+    pub usage: swarmy_core::UsageTotals,
     pub cost_dollars: String,
-    /// Per-entry shares of the session totals, costliest first, read from
-    /// the session-entry rollups rather than completion records.
-    #[serde(default)]
     pub entries: Vec<EntryUsageView>,
-    /// Providers involved in the session, derived from the entry names.
-    #[serde(default)]
     pub providers: Vec<String>,
-    pub scratch: serde_json::Value,
-    pub requirements: serde_json::Value,
-    pub placement: serde_json::Value,
+    pub scratch: Option<ScratchView>,
+    #[schema(value_type = serde_json::Value)]
+    pub requirements: swarmy_core::SandboxRequirements,
+    #[schema(value_type = serde_json::Value)]
+    pub placement: Option<swarmy_core::PlacementRecord>,
     pub address: Option<String>,
-    pub wait: serde_json::Value,
-    pub events: Vec<serde_json::Value>,
+    pub wait: Option<InferenceWaitView>,
+    #[schema(value_type = Vec<serde_json::Value>)]
+    pub events: Vec<swarmy_core::Event>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct ScratchView {
+    pub node_id: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct InferenceWaitView {
+    pub wake_at: String,
+    pub reasons: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliAgent {
     pub agent_id: String,
@@ -970,7 +984,7 @@ pub struct CliCredentialInput {
 pub mod cli_paths {
     use super::{
         ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
-        CliSession, CliSessionDetail, DoctorSnapshot,
+        CliSession, DoctorSnapshot,
     };
     #[utoipa::path(get, path = "/v1/cli/doctor",
         responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
@@ -978,9 +992,6 @@ pub mod cli_paths {
     #[utoipa::path(get, path = "/v1/cli/sessions",
         responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
     pub fn cli_sessions() {}
-    #[utoipa::path(get, path = "/v1/cli/sessions/{id}",
-        responses((status = 200, body = CliSessionDetail), (status = 400, body = ApiError)))]
-    pub fn cli_session() {}
     #[utoipa::path(get, path = "/v1/cli/agents",
         responses((status = 200, body = Vec<CliAgent>), (status = 400, body = ApiError)))]
     pub fn cli_agents() {}
@@ -1017,8 +1028,9 @@ pub mod api_paths {
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
         InterruptSession, Model, ProbeModel, ProbeResult, Provider, PutCredentialRecord,
-        QuotaEntry, Route, RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute,
-        SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent, UsageResponse,
+        QuotaEntry, Route, RouteDeleted, Session, SessionClosed, SessionDetail, SetEntryQuota,
+        SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent,
+        UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1069,6 +1081,10 @@ pub mod api_paths {
         params(("id" = String, Path, description = "Session id")),
         responses((status = 200, body = Session), (status = 404, body = ApiError)))]
     pub fn show_session() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/detail",
+        params(("id" = String, Path, description = "Session id")),
+        responses((status = 200, body = SessionDetail), (status = 404, body = ApiError)))]
+    pub fn session_detail() {}
     #[utoipa::path(delete, path = "/v1/sessions/{id}",
         params(("id" = String, Path, description = "Session id")),
         request_body = CloseSession,
@@ -1288,6 +1304,7 @@ pub mod api_paths {
         api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
+        api_paths::session_detail,
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
         api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
         api_paths::agent_metrics,
@@ -1303,7 +1320,7 @@ pub mod api_paths {
         api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
-        cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
+        cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
         cli_paths::cli_credential
@@ -1321,7 +1338,7 @@ pub mod api_paths {
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
-    Event, EventPayload, ApiError, CliSession, CliSessionDetail,
+    Event, EventPayload, ApiError, CliSession, SessionDetail,
     CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]

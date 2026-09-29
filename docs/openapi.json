@@ -632,36 +632,6 @@
         }
       }
     },
-    "/v1/cli/sessions/{id}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_session",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSessionDetail"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/credentials": {
       "get": {
         "tags": [
@@ -2115,6 +2085,47 @@
         }
       }
     },
+    "/v1/sessions/{id}/detail": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "session_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -3030,56 +3041,6 @@
           }
         },
         "additionalProperties": {}
-      },
-      "CliSessionDetail": {
-        "type": "object",
-        "required": [
-          "session",
-          "resolved",
-          "usage",
-          "cost_dollars",
-          "scratch",
-          "requirements",
-          "placement",
-          "wait",
-          "events"
-        ],
-        "properties": {
-          "address": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cost_dollars": {
-            "type": "string"
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EntryUsageView"
-            },
-            "description": "Per-entry shares of the session totals, costliest first, read from\nthe session-entry rollups rather than completion records."
-          },
-          "events": {
-            "type": "array",
-            "items": {}
-          },
-          "placement": {},
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Providers involved in the session, derived from the entry names."
-          },
-          "requirements": {},
-          "resolved": {},
-          "scratch": {},
-          "session": {},
-          "usage": {},
-          "wait": {}
-        }
       },
       "CloseSession": {
         "type": "object",
@@ -4272,6 +4233,24 @@
           }
         }
       },
+      "InferenceWaitView": {
+        "type": "object",
+        "required": [
+          "wake_at",
+          "reasons"
+        ],
+        "properties": {
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wake_at": {
+            "type": "string"
+          }
+        }
+      },
       "InterruptOutcome": {
         "type": "object",
         "required": [
@@ -4788,6 +4767,23 @@
           }
         }
       },
+      "ScratchView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
       "ServiceHealth": {
         "type": "object",
         "required": [
@@ -4944,6 +4940,72 @@
         "properties": {
           "closed": {
             "type": "boolean"
+          }
+        }
+      },
+      "SessionDetail": {
+        "type": "object",
+        "required": [
+          "session",
+          "resolved",
+          "usage",
+          "cost_dollars",
+          "entries",
+          "providers",
+          "requirements",
+          "placement",
+          "events"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_dollars": {
+            "type": "string"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryUsageView"
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {}
+          },
+          "placement": {},
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements": {},
+          "resolved": {},
+          "scratch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScratchView"
+              }
+            ]
+          },
+          "session": {},
+          "usage": {},
+          "wait": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InferenceWaitView"
+              }
+            ]
           }
         }
       },

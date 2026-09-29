@@ -433,88 +433,89 @@ async fn show_session(
     session_id: ulid::Ulid,
     json: bool,
 ) -> Result<()> {
-    let details = projection(endpoint, client.cli_session(&session_id.to_string())).await?;
-    let record = &details["session"];
-    let selection = &details["resolved"];
+    let details = request(endpoint, client.session_detail(&session_id.to_string())).await?;
+    let record = &details.session;
+    let selection = &details.resolved;
     let id = session_id.to_string();
-    let value = json!({"event":"session_selection","session_id":id,"state":record["state"],
-                "interrupt_requested":record["interrupt_requested"],"inference":record["inference"],"resolved":selection,
-                "scratch":details["scratch"],"sandbox_requirements":details["requirements"],
-                "memory_limit_mib":details["requirements"]["memory_mib"],"placement":details["placement"],
-                "sandbox_address":details["address"],"sandbox_status":if details["placement"].is_null() {"waiting_for_capacity_or_first_tool"} else {"placed"}});
-    let inherited = |field: &str| {
-        if record["inference"][field].is_null() {
-            " (inherited)"
-        } else {
-            ""
-        }
-    };
-    let scratch = &details["scratch"];
-    let requirements = &details["requirements"];
-    let gpu = match str_field(requirements, "gpu") {
-        "none" => "None",
-        "shared" => "Shared",
-        "dedicated" => "Dedicated",
-        other => other,
-    };
+    let value = json!({"event":"session_selection","session_id":id,"state":record.state,
+                "interrupt_requested":record.interrupt_requested,"inference":record.inference,"resolved":selection,
+                "scratch":details.scratch,"sandbox_requirements":details.requirements,
+                "memory_limit_mib":details.requirements.memory_mib,"placement":details.placement,
+                "sandbox_address":details.address,"sandbox_status":if details.placement.is_none() {"waiting_for_capacity_or_first_tool"} else {"placed"}});
+    let inherited = |present: bool| if present { "" } else { " (inherited)" };
+    let scratch_node = details
+        .scratch
+        .as_ref()
+        .map_or("-".to_owned(), |scratch| scratch.node_id.clone());
+    let scratch_bytes = details.scratch.as_ref().map_or(0, |scratch| scratch.bytes);
     print(
         &value,
         &format!(
-            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={gpu} sandbox_address={}",
-            display_state(record),
-            record["interrupt_requested"],
-            str_field(selection, "provider"),
-            inherited("provider"),
-            str_field(selection, "model"),
-            inherited("model"),
-            str_field(selection, "effort"),
-            inherited("effort"),
-            record["route"].as_str().unwrap_or("(swarm default)"),
-            str_field(scratch, "node_id"),
-            scratch["bytes"].as_u64().unwrap_or(0),
-            requirements["memory_mib"],
-            text_value_or_dash(&details["address"])
+            "Session {id}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
+            record.state,
+            record.interrupt_requested,
+            selection.provider,
+            inherited(record.inference.provider.is_some()),
+            selection.model,
+            inherited(record.inference.model.is_some()),
+            selection.effort,
+            inherited(record.inference.effort.is_some()),
+            record.route.as_deref().unwrap_or("(swarm default)"),
+            scratch_node,
+            scratch_bytes,
+            details.requirements.memory_mib,
+            details.requirements.gpu,
+            details.address.as_deref().unwrap_or("-")
         ),
         json,
     );
-    let usage = &details["usage"];
-    print_session_usage(usage, &details["cost_dollars"], &details, json);
-    if record["state"] == "sleeping" && !details["wait"].is_null() {
-        let wait = &details["wait"];
-        let reasons = wait["reasons"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
-            .unwrap_or_default();
+    let tokens = &details.usage.usage;
+    print(
+        &json!({"session_usage":details.usage,"cost_dollars":details.cost_dollars,"entries":details.entries,"providers":details.providers}),
+        &format!(
+            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+            tokens.input_tokens,
+            tokens.cached_input_tokens,
+            tokens.cache_write_input_tokens,
+            tokens.output_tokens,
+            tokens.reasoning_output_tokens,
+            tokens.total_tokens,
+            details.cost_dollars
+        ),
+        json,
+    );
+    if !json {
+        for entry in &details.entries {
+            println!(
+                "entry {} cost=${} input={} output={} total={} completions={}",
+                entry.entry,
+                entry.totals.cost_dollars,
+                entry.totals.input_tokens,
+                entry.totals.output_tokens,
+                entry.totals.total_tokens,
+                entry.totals.completions
+            );
+        }
+        println!("providers={}", details.providers.join(","));
+    }
+    if record.state == swarmy_core::SessionState::Sleeping
+        && let Some(wait) = &details.wait
+    {
         print(
-            &json!({"state":"waiting_for_inference","wake_at":wait["wake_at"],"reasons":wait["reasons"]}),
+            &json!({"state":"waiting_for_inference","wake_at":wait.wake_at,"reasons":wait.reasons}),
             &format!(
-                "WaitingForInference until {}: {reasons}",
-                text_value(&wait["wake_at"])
+                "WaitingForInference until {}: {}",
+                wait.wake_at,
+                wait.reasons.join("; ")
             ),
             json,
         );
     }
-    for event in details["events"]
-        .as_array()
-        .context("invalid event response")?
-    {
+    for event in &details.events {
         if json {
-            println!("{event}");
+            println!("{}", serde_json::to_string(event)?);
         } else {
-            println!(
-                "{} {event}",
-                event
-                    .as_object()
-                    .and_then(|map| map.values().next())
-                    .and_then(|inner| inner["seq"].as_u64())
-                    .unwrap_or(0)
-            );
+            println!("{} {}", event.seq(), serde_json::to_string(event)?);
         }
     }
     Ok(())
@@ -651,33 +652,6 @@ fn text_value_or_dash(value: &Value) -> String {
         text_value(value)
     }
 }
-fn print_entry_breakdown(details: &Value, json: bool) {
-    if !json && let Some(entries) = entries_text(details) {
-        println!("{entries}");
-    }
-}
-
-/// Print one session's billed totals with the entries behind them. The
-/// JSON line carries the same entries so scripts see what the text shows.
-fn print_session_usage(usage: &Value, cost_dollars: &Value, details: &Value, json: bool) {
-    let tokens = &usage["usage"];
-    print(
-        &json!({"session_usage":usage,"cost_dollars":cost_dollars,"entries":details["entries"],"providers":details["providers"]}),
-        &format!(
-            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-            tokens["input_tokens"],
-            tokens["cached_input_tokens"],
-            tokens["cache_write_input_tokens"],
-            tokens["output_tokens"],
-            tokens["reasoning_output_tokens"],
-            tokens["total_tokens"],
-            optional_text(cost_dollars),
-        ),
-        json,
-    );
-    print_entry_breakdown(details, json);
-}
-
 /// Render one owner's per-entry cost shares with the providers involved.
 /// The server reads these from the entry rollups, so they survive the raw
 /// completion record retention window.

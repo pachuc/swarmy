@@ -605,8 +605,8 @@ impl Client {
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_session(&self, id: &str) -> Result<api::CliSessionDetail, Error> {
-        self.get(&format!("cli/sessions/{}", segment(id)), &[])
+    pub async fn session_detail(&self, id: &str) -> Result<api::SessionDetail, Error> {
+        self.get(&format!("sessions/{}/detail", segment(id)), &[])
             .await
     }
     /// Read a CLI compatibility projection.

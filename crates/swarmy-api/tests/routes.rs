@@ -589,8 +589,8 @@ async fn route_session(client: &swarmy_client::Client) -> swarmy_api_types::Sess
         .await
         .unwrap();
     assert_eq!(session.route.as_deref(), Some("fallback"));
-    let detail = client.cli_session(&session.id).await.unwrap();
-    assert_eq!(detail.session["route"], "fallback");
+    let detail = client.session_detail(&session.id).await.unwrap();
+    assert_eq!(detail.session.route.as_deref(), Some("fallback"));
     let session = client
         .set_session_route(
             &session.id,

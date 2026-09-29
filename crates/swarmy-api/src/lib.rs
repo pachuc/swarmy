@@ -290,7 +290,6 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/cli/doctor", get(cli::doctor))
         .route("/v1/cli/sessions", get(cli::sessions))
-        .route("/v1/cli/sessions/{id}", get(cli::session_show))
         .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
         .route(
             "/v1/cli/agents/{name}/settings",
@@ -313,6 +312,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}",
             get(show_session).delete(conversation::close),
         )
+        .route("/v1/sessions/{id}/detail", get(cli::session_show))
         .route(
             "/v1/sessions/{id}/messages",
             axum::routing::post(conversation::append),

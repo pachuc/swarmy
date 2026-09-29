@@ -207,7 +207,7 @@ pub(crate) async fn sessions(
 pub(crate) async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
-) -> ApiResult<api::CliSessionDetail> {
+) -> ApiResult<api::SessionDetail> {
     let session_id = id(&text, SessionId::from_ulid)?;
     let record = state
         .store
@@ -295,10 +295,26 @@ pub(crate) async fn session_show(
         after = page.last().map_or(after, swarmy_core::Event::seq);
         events.extend(page);
     }
-    Ok(Json(typed(
-        json!({"session":record,"resolved":selection,"usage":usage,"cost_dollars":usage.dollars(),"entries":entries,"providers":providers,"scratch":scratch,
-        "requirements":requirements,"placement":placement,"address":address,"wait":wait,"events":events}),
-    )?))
+    Ok(Json(api::SessionDetail {
+        session: record,
+        resolved: selection,
+        cost_dollars: usage.dollars(),
+        usage,
+        entries,
+        providers,
+        scratch: scratch.map(|value| api::ScratchView {
+            node_id: value.node_id.to_string(),
+            bytes: value.bytes,
+        }),
+        requirements,
+        placement,
+        address: address.map(|value| value.to_string()),
+        wait: wait.map(|value| api::InferenceWaitView {
+            wake_at: value.wake_at.to_string(),
+            reasons: value.reasons,
+        }),
+        events,
+    }))
 }
 
 pub(crate) async fn agents(
