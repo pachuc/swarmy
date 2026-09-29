@@ -326,7 +326,7 @@ fn cache_last(blocks: &mut [Value]) {
 }
 
 fn tool_id(id: &str) -> String {
-    crate::protocol::sanitize_tool_id(id, "toolu_", 38)
+    crate::protocol::sanitize_tool_id(id, "toolu_", 64)
 }
 
 fn content(part: &Part, request: &Request, endpoint: &Endpoint) -> Option<Value> {

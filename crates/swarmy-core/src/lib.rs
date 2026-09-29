@@ -104,3 +104,17 @@ pub struct LiveTokenDelta {
 pub fn backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(100) * (1_u32 << attempt.saturating_sub(1).min(5))
 }
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::backoff;
+    use std::time::Duration;
+
+    #[test]
+    fn starts_at_one_hundred_millis_and_caps_at_three_point_two_seconds() {
+        assert_eq!(backoff(0), Duration::from_millis(100));
+        assert_eq!(backoff(1), Duration::from_millis(100));
+        assert_eq!(backoff(3), Duration::from_millis(400));
+        assert_eq!(backoff(u32::MAX), Duration::from_millis(3_200));
+    }
+}
