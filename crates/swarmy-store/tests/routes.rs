@@ -74,11 +74,13 @@ impl Fixture {
         self.store
             .route_snapshot(
                 agent,
-                session_route,
-                session_provider,
-                None,
-                "fake",
-                Timestamp::now(),
+                swarmy_store::RouteSelection {
+                    session_route: session_route,
+                    session_provider: session_provider,
+                    default_route: None,
+                    default_provider: "fake",
+                    now: Timestamp::now(),
+                },
             )
             .await
             .unwrap()
@@ -167,11 +169,13 @@ async fn resolution_prefers_session_agent_default_then_implicit() {
         .store
         .route_snapshot(
             agent,
-            None,
-            Some("openai"),
-            Some("default-route"),
-            "fake",
-            Timestamp::now(),
+            swarmy_store::RouteSelection {
+                session_route: None,
+                session_provider: Some("openai"),
+                default_route: Some("default-route"),
+                default_provider: "fake",
+                now: Timestamp::now(),
+            },
         )
         .await
         .unwrap();
@@ -181,11 +185,13 @@ async fn resolution_prefers_session_agent_default_then_implicit() {
         .store
         .route_snapshot(
             agent,
-            Some("session-route"),
-            Some("openai"),
-            Some("default-route"),
-            "fake",
-            Timestamp::now(),
+            swarmy_store::RouteSelection {
+                session_route: Some("session-route"),
+                session_provider: Some("openai"),
+                default_route: Some("default-route"),
+                default_provider: "fake",
+                now: Timestamp::now(),
+            },
         )
         .await
         .unwrap();
@@ -516,11 +522,13 @@ async fn failover(
             swarmy_core::FailureKind::Unknown,
             retry_at,
             step,
-            Some("fallback"),
-            Some("openai"),
-            None,
-            "openai",
-            now,
+            swarmy_store::RouteSelection {
+                session_route: Some("fallback"),
+                session_provider: Some("openai"),
+                default_route: None,
+                default_provider: "openai",
+                now: now,
+            },
             Duration::from_secs(3600),
         )
         .await
@@ -673,12 +681,14 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 swarmy_core::FailureKind::Unknown,
                 retry_at,
                 0,
-                Some("fallback"),
-                Some("openai"),
-                None,
-                "openai",
-                now,
-                Duration::from_secs(3600),
+                swarmy_store::RouteSelection {
+                    session_route: Some("fallback"),
+                    session_provider: Some("openai"),
+                    default_route: None,
+                    default_provider: "openai",
+                    now: now
+                },
+                Duration::from_secs(3600)
             )
             .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
@@ -812,11 +822,13 @@ async fn failover_resume_after_advance_is_a_noop() {
             swarmy_core::FailureKind::Unknown,
             retry_at,
             route_step,
-            Some("fallback"),
-            Some("openai"),
-            None,
-            "openai",
-            Timestamp::now(),
+            swarmy_store::RouteSelection {
+                session_route: Some("fallback"),
+                session_provider: Some("openai"),
+                default_route: None,
+                default_provider: "openai",
+                now: Timestamp::now(),
+            },
             Duration::from_secs(3600),
         )
     };
@@ -880,11 +892,13 @@ async fn failover_and_park_cost_one_transaction_each() {
             swarmy_core::FailureKind::Unknown,
             retry_at,
             0,
-            Some("fallback"),
-            Some("openai"),
-            None,
-            "openai",
-            now,
+            swarmy_store::RouteSelection {
+                session_route: Some("fallback"),
+                session_provider: Some("openai"),
+                default_route: None,
+                default_provider: "openai",
+                now: now,
+            },
             Duration::from_secs(3600),
         )
         .await
@@ -914,11 +928,13 @@ async fn failover_and_park_cost_one_transaction_each() {
             swarmy_core::FailureKind::Unknown,
             retry_at,
             1,
-            Some("fallback"),
-            Some("openai"),
-            None,
-            "openai",
-            now,
+            swarmy_store::RouteSelection {
+                session_route: Some("fallback"),
+                session_provider: Some("openai"),
+                default_route: None,
+                default_provider: "openai",
+                now: now,
+            },
             Duration::from_secs(3600),
         )
         .await
@@ -963,11 +979,13 @@ async fn cached_scheduler_pick_matches_transactional_snapshot() {
         .store
         .route_snapshot(
             session.agent_id,
-            session.route.as_deref(),
-            session.inference.provider.as_deref(),
-            None,
-            "openai",
-            now,
+            swarmy_store::RouteSelection {
+                session_route: session.route.as_deref(),
+                session_provider: session.inference.provider.as_deref(),
+                default_route: None,
+                default_provider: "openai",
+                now: now,
+            },
         )
         .await
         .unwrap();

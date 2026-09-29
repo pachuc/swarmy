@@ -504,11 +504,13 @@ impl Worker {
                     failure_kind,
                     retry_at,
                     session.route_step,
-                    session.route.as_deref(),
-                    session.inference.provider.as_deref(),
-                    self.config.default_route.as_deref(),
-                    &self.config.provider,
-                    now,
+                    swarmy_store::RouteSelection {
+                        session_route: session.route.as_deref(),
+                        session_provider: session.inference.provider.as_deref(),
+                        default_route: self.config.default_route.as_deref(),
+                        default_provider: &self.config.provider,
+                        now,
+                    },
                     self.config.max_inference_wait,
                 )
                 .await?

@@ -40,8 +40,8 @@ mod gc;
 mod leases;
 mod routes;
 pub use routes::{
-    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteSnapshot,
-    RouteStepStatus,
+    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteSelection,
+    RouteSnapshot, RouteStepStatus,
 };
 mod nodes;
 pub mod objects;

@@ -535,6 +535,54 @@ struct TurnWrite {
     tools: BTreeMap<String, StoredToolMetricCurrent>,
 }
 
+/// The detail rows one patch batch touches, so the transaction reads only
+/// what it writes. A turn with hundreds of calls still commits one small
+/// transaction per batch.
+#[derive(Clone, Debug, Default)]
+struct TouchedRows {
+    inference: BTreeSet<String>,
+    tools: BTreeSet<String>,
+    has_wait: bool,
+}
+
+fn touched_rows(patches: &[MetricPatch]) -> TouchedRows {
+    let mut touched = TouchedRows::default();
+    for patch in patches {
+        match patch {
+            MetricPatch::Stage(event) => {
+                if let Some(id) = event.request_id {
+                    let key = id.to_string();
+                    match event.stage {
+                        TurnStage::InferenceStarted
+                        | TurnStage::InferenceFinished
+                        | TurnStage::FirstToken => {
+                            touched.inference.insert(key);
+                        }
+                        TurnStage::ToolDispatched | TurnStage::ToolCompleted => {
+                            touched.tools.insert(key);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            MetricPatch::Inference(update) => {
+                touched.inference.insert(update.request_id.clone());
+            }
+            MetricPatch::Tool(update) => {
+                touched.tools.insert(update.request_id.clone());
+            }
+            MetricPatch::Wait { request_id, .. } => {
+                touched.inference.insert(request_id.clone());
+            }
+            MetricPatch::Computer(_) | MetricPatch::Error(_) => {}
+        }
+    }
+    touched.has_wait = patches
+        .iter()
+        .any(|patch| matches!(patch, MetricPatch::Wait { .. }));
+    touched
+}
+
 fn adjust_throughput(summary: &mut StoredTurnSummaryCurrent, old: Option<f64>, new: Option<f64>) {
     match (old, new) {
         (Some(previous), Some(current)) => {
@@ -1053,134 +1101,131 @@ impl Store {
     /// is safe.
     /// # Errors
     /// Returns database or encoding failures without changing the conversation.
-    // One transaction reads the summary and touched rows, then writes them back; splitting would separate the atomic
-    // read-modify-write the fence relies on.
-    #[allow(clippy::too_many_lines)]
     pub async fn record_turn_metrics(
         &self,
         session: SessionId,
         turn: MessageId,
         patches: Vec<MetricPatch>,
     ) -> Result<()> {
+        let touched = touched_rows(&patches);
         let summary_key = self.keys().turn_metrics(session, turn);
-        // Collect the detail rows this batch touches so the transaction reads
-        // only what it writes; a turn with hundreds of calls still commits
-        // one small transaction per boundary.
-        let mut inference_ids = BTreeSet::new();
-        let mut tool_ids = BTreeSet::new();
-        for patch in &patches {
-            match patch {
-                MetricPatch::Stage(event) => {
-                    if let Some(id) = event.request_id {
-                        let key = id.to_string();
-                        match event.stage {
-                            TurnStage::InferenceStarted
-                            | TurnStage::InferenceFinished
-                            | TurnStage::FirstToken => {
-                                inference_ids.insert(key);
-                            }
-                            TurnStage::ToolDispatched | TurnStage::ToolCompleted => {
-                                tool_ids.insert(key);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                MetricPatch::Inference(update) => {
-                    inference_ids.insert(update.request_id.clone());
-                }
-                MetricPatch::Tool(update) => {
-                    tool_ids.insert(update.request_id.clone());
-                }
-                MetricPatch::Wait { request_id, .. } => {
-                    inference_ids.insert(request_id.clone());
-                }
-                MetricPatch::Computer(_) | MetricPatch::Error(_) => {}
-            }
-        }
-        let has_wait = patches
-            .iter()
-            .any(|patch| matches!(patch, MetricPatch::Wait { .. }));
         let mut attempts = 0;
         loop {
             let attempted = self
-                .transaction(|trx| {
-                    let summary_key = &summary_key;
-                    let patches = &patches;
-                    let inference_ids = &inference_ids;
-                    let tool_ids = &tool_ids;
-                    async move {
-                        let mut state = TurnWrite {
-                            summary: match trx.get(summary_key, false).await? {
-                                None => StoredTurnSummaryCurrent {
-                                    session_id: session.to_string(),
-                                    turn_id: turn.to_string(),
-                                    ..StoredTurnSummaryCurrent::default()
-                                },
-                                Some(value) => decode_summary(&value)?,
-                            },
-                            inference: BTreeMap::new(),
-                            tools: BTreeMap::new(),
-                        };
-                        for id in inference_ids {
-                            if !state.inference.contains_key(id) {
-                                let key = self.keys().turn_inference(session, turn, id);
-                                if let Some(bytes) = trx.get(&key, false).await? {
-                                    state
-                                        .inference
-                                        .insert(id.clone(), decode_inference(&bytes)?);
-                                }
-                            }
-                        }
-                        for id in tool_ids {
-                            if !state.tools.contains_key(id) {
-                                let key = self.keys().turn_tool(session, turn, id);
-                                if let Some(bytes) = trx.get(&key, false).await? {
-                                    state.tools.insert(id.clone(), decode_tool(&bytes)?);
-                                }
-                            }
-                        }
-                        for patch in patches {
-                            apply_one(&mut state, patch);
-                        }
-                        write(
-                            &trx,
-                            summary_key,
-                            &StoredTurnMetrics::Summary(Box::new(state.summary.clone())),
-                        )?;
-                        for id in inference_ids {
-                            if let Some(row) = state.inference.get(id) {
-                                write(
-                                    &trx,
-                                    &self.keys().turn_inference(session, turn, id),
-                                    &StoredTurnMetrics::Inference(row.clone()),
-                                )?;
-                            }
-                        }
-                        for id in tool_ids {
-                            if let Some(row) = state.tools.get(id) {
-                                write(
-                                    &trx,
-                                    &self.keys().turn_tool(session, turn, id),
-                                    &StoredTurnMetrics::Tool(row.clone()),
-                                )?;
-                            }
-                        }
-                        Ok(())
-                    }
-                })
+                .commit_turn_batch(session, turn, &summary_key, &patches, &touched)
                 .await;
             match attempted {
                 // Wait batches are not replayed: the increment is not
                 // idempotent, so a landed commit would double-count.
                 Err(StoreError::Storage(crate::StorageError::CommitUnknown))
-                    if attempts == 0 && !has_wait =>
+                    if attempts == 0 && !touched.has_wait =>
                 {
                     attempts += 1;
                 }
                 other => return other,
             }
         }
+    }
+
+    async fn commit_turn_batch(
+        &self,
+        session: SessionId,
+        turn: MessageId,
+        summary_key: &[u8],
+        patches: &[MetricPatch],
+        touched: &TouchedRows,
+    ) -> Result<()> {
+        self.transaction(|trx| {
+            let summary_key = summary_key.to_vec();
+            let patches = patches.to_vec();
+            let touched = touched.clone();
+            async move {
+                let mut state = self
+                    .load_turn_state(&trx, session, turn, &summary_key, &touched)
+                    .await?;
+                for patch in &patches {
+                    apply_one(&mut state, patch);
+                }
+                self.write_turn_state(&trx, session, turn, &summary_key, &state, &touched)
+            }
+        })
+        .await
+    }
+
+    async fn load_turn_state(
+        &self,
+        trx: &foundationdb::Transaction,
+        session: SessionId,
+        turn: MessageId,
+        summary_key: &[u8],
+        touched: &TouchedRows,
+    ) -> Result<TurnWrite> {
+        let mut state = TurnWrite {
+            summary: match trx.get(summary_key, false).await? {
+                None => StoredTurnSummaryCurrent {
+                    session_id: session.to_string(),
+                    turn_id: turn.to_string(),
+                    ..StoredTurnSummaryCurrent::default()
+                },
+                Some(value) => decode_summary(&value)?,
+            },
+            inference: BTreeMap::new(),
+            tools: BTreeMap::new(),
+        };
+        for id in &touched.inference {
+            if !state.inference.contains_key(id) {
+                let key = self.keys().turn_inference(session, turn, id);
+                if let Some(bytes) = trx.get(&key, false).await? {
+                    state
+                        .inference
+                        .insert(id.clone(), decode_inference(&bytes)?);
+                }
+            }
+        }
+        for id in &touched.tools {
+            if !state.tools.contains_key(id) {
+                let key = self.keys().turn_tool(session, turn, id);
+                if let Some(bytes) = trx.get(&key, false).await? {
+                    state.tools.insert(id.clone(), decode_tool(&bytes)?);
+                }
+            }
+        }
+        Ok(state)
+    }
+
+    fn write_turn_state(
+        &self,
+        trx: &foundationdb::Transaction,
+        session: SessionId,
+        turn: MessageId,
+        summary_key: &[u8],
+        state: &TurnWrite,
+        touched: &TouchedRows,
+    ) -> Result<()> {
+        write(
+            trx,
+            summary_key,
+            &StoredTurnMetrics::Summary(Box::new(state.summary.clone())),
+        )?;
+        for id in &touched.inference {
+            if let Some(row) = state.inference.get(id) {
+                write(
+                    trx,
+                    &self.keys().turn_inference(session, turn, id),
+                    &StoredTurnMetrics::Inference(row.clone()),
+                )?;
+            }
+        }
+        for id in &touched.tools {
+            if let Some(row) = state.tools.get(id) {
+                write(
+                    trx,
+                    &self.keys().turn_tool(session, turn, id),
+                    &StoredTurnMetrics::Tool(row.clone()),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Spawn observability after the stage, without waiting on a turn's hot path.

@@ -119,6 +119,18 @@ pub struct RouteCache {
     breakers: HashMap<BreakerKey, BreakerState>,
 }
 
+/// The five route-selection inputs shared by every snapshot and failover
+/// call: the session override, the swarm default, and the clock. The agent
+/// override is read inside the transaction, so it is not part of this group.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteSelection<'a> {
+    pub session_route: Option<&'a str>,
+    pub session_provider: Option<&'a str>,
+    pub default_route: Option<&'a str>,
+    pub default_provider: &'a str,
+    pub now: Timestamp,
+}
+
 // Keep route and provider precedence identical for transactional worker reads
 // and scheduler reads backed by a per-tick cache.
 fn select_route<'a>(
@@ -365,26 +377,14 @@ impl Store {
     /// typo cannot wedge an agent's turns.
     /// # Errors
     /// Returns database or decoding errors.
-    #[allow(clippy::too_many_arguments)]
     pub async fn route_snapshot(
         &self,
         agent: AgentId,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<RouteSnapshot> {
-        self.agent_and_route_snapshot(
-            agent,
-            session_route,
-            session_provider,
-            default_route,
-            default_provider,
-            now,
-        )
-        .await
-        .map(|(_, snapshot)| snapshot)
+        self.agent_and_route_snapshot(agent, selection)
+            .await
+            .map(|(_, snapshot)| snapshot)
     }
 
     /// Read the agent and resolve its session's failover chain in one
@@ -393,15 +393,10 @@ impl Store {
     /// inference settings and its route.
     /// # Errors
     /// Returns database or decoding errors.
-    #[allow(clippy::too_many_arguments)]
     pub async fn agent_and_route_snapshot(
         &self,
         agent: AgentId,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<(Option<AgentRecord>, RouteSnapshot)> {
         self.transaction(|trx| async move {
             let agent = self.read_agent(&trx, agent).await?;
@@ -411,13 +406,9 @@ impl Store {
             let snapshot = self
                 .route_snapshot_in(
                     &trx,
-                    session_route,
                     agent_route.as_deref(),
-                    session_provider,
                     agent_provider.as_deref(),
-                    default_route,
-                    default_provider,
-                    now,
+                    selection,
                 )
                 .await?;
             Ok((agent, snapshot))
@@ -661,25 +652,20 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn route_snapshot_in(
         &self,
         trx: &foundationdb::Transaction,
-        session_route: Option<&str>,
         agent_route: Option<&str>,
-        session_provider: Option<&str>,
         agent_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<RouteSnapshot> {
         let (name, provider) = select_route(
-            session_route,
+            selection.session_route,
             agent_route,
-            default_route,
-            session_provider,
+            selection.default_route,
+            selection.session_provider,
             agent_provider,
-            default_provider,
+            selection.default_provider,
         );
         let name = name.map(str::to_owned);
         let record = match name.as_deref() {
@@ -705,7 +691,7 @@ impl Store {
         for provider in providers {
             pools.insert(
                 provider.to_owned(),
-                self.pool_labels_in(trx, provider, now).await?,
+                self.pool_labels_in(trx, provider, selection.now).await?,
             );
         }
         let chain = Self::expand_chain(record.as_ref(), &pools, provider);
@@ -713,7 +699,8 @@ impl Store {
         for step in chain.steps {
             let key = CredentialKey::for_label(&step.provider, step.label.clone());
             let breaker: Option<Breaker> = read(trx, &self.breaker_key(&key)).await?;
-            let (open_until, reason) = crate::inference_wait::open_state(breaker.as_ref(), now);
+            let (open_until, reason) =
+                crate::inference_wait::open_state(breaker.as_ref(), selection.now);
             steps.push(RouteStepStatus {
                 provider: step.provider,
                 label: step.label,
@@ -799,7 +786,10 @@ impl Store {
     /// failure or parks the session with the successor's request in flight.
     /// # Errors
     /// Rejects stale leases or returns storage failures.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one atomic failover step needs its fence, failure, and route inputs together"
+    )]
     pub async fn failover_route_step(
         &self,
         id: SessionId,
@@ -809,13 +799,10 @@ impl Store {
         failure_kind: swarmy_core::FailureKind,
         retry_at: Timestamp,
         route_step: u32,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
         max_wait: std::time::Duration,
     ) -> Result<FailoverOutcome> {
+        let now = selection.now;
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, now).await?;
             let stored = self.session(&trx, id).await?;
@@ -841,13 +828,9 @@ impl Store {
             let snapshot = self
                 .route_snapshot_in(
                     &trx,
-                    session_route,
                     agent_route.as_deref(),
-                    session_provider,
                     agent_provider.as_deref(),
-                    default_route,
-                    default_provider,
-                    now,
+                    selection,
                 )
                 .await?;
             let route = snapshot.name.clone();
