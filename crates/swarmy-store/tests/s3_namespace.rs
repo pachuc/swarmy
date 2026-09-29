@@ -64,10 +64,7 @@ async fn seed_live_image(
 /// sibling namespace still reads its own object. All orphans share one
 /// shard, so both the direct listing and collector must follow S3
 /// continuation tokens beyond its 1000-object page limit.
-async fn seed_orphans(
-    objects: &Arc<dyn ObjectStore>,
-    sibling: &dyn ObjectStore,
-) -> Vec<Path> {
+async fn seed_orphans(objects: &Arc<dyn ObjectStore>, sibling: &dyn ObjectStore) -> Vec<Path> {
     let paths: Vec<_> = (0..OBJECTS)
         .map(|index| {
             let mut hash = [1; 32];
