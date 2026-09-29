@@ -8,3 +8,5 @@
 # integration tests (see `Cargo.toml`), but the line stays so the exemption
 # is in place if the deny ever becomes scoped enough to enable.
 allow-unwrap-in-tests = true
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 4
