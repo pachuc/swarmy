@@ -56,6 +56,7 @@ pub(crate) fn is_context_overflow(message: &str) -> bool {
     }
     [
         "context_length_exceeded",
+        "context overflow",
         "context length exceeded",
         "maximum context length",
         "exceeds the context window",
