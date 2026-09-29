@@ -214,7 +214,7 @@ async fn assert_catalog_and_credentials(client: &Client) {
     let first = &client.models().await.unwrap()[0];
     assert_eq!(
         client
-            .model(&first.provider_id, &first.id)
+            .model(&first.provider, &first.id)
             .await
             .unwrap()
             .id,

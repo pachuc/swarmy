@@ -344,13 +344,19 @@ pub struct ImageHeader {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Model {
     pub id: String,
-    pub provider_id: String,
+    pub provider: String,
     pub context_window: u64,
     pub key: String,
     pub name: String,
     pub limit: ModelLimit,
     pub cost: ModelCost,
     pub supported_efforts: Vec<ReasoningEffort>,
+    /// Wire protocol the model answers on: its own override or the provider default.
+    pub effective_api: String,
+    /// Base URL the model answers on: its own override or the provider default.
+    pub effective_base_url: String,
+    /// Provider quirk flags from the catalog; readers ignore unknown keys.
+    pub compat: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1475,7 +1481,7 @@ mod tests {
         }
         check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
         check!(Image, {"id":"i","name":"base","tag":"dev"});
-        check!(Model, {"id":"m","provider_id":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[]});
+        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
         check!(Provider, {"id":"p","name":"provider","status":"available","api":"Fake","credential":"unknown","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);

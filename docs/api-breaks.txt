@@ -81,9 +81,13 @@ GET /v1/agents/details api path removed without deprecation
 GET /v1/agents/{id}/detail api path removed without deprecation
 GET /v1/sessions/{id}/detail api path removed without deprecation
 
-# 2026-09-29: Model and provider catalog passthrough removed. The CLI renders only typed limit, cost, effort, auth, and env-key fields; no client read the free-form map.
+# 2026-09-29: Model and provider catalog passthrough removed. The model response carries typed provider, effective_api, effective_base_url, and compat fields instead of the free-form catalog map.
 GET /v1/models removes catalog from response properties
 GET /v1/providers removes catalog from response properties
+# 2026-09-29: The model provider field is `provider`, matching the catalog key and the CLI table. Readers of `provider_id` switch to `provider`.
+GET /v1/models removed the required property `items/provider_id` from the response with the `200` status
+GET /v1/models/search removed the required property `items/provider_id` from the response with the `200` status
+GET /v1/models/{provider}/{model} removed the required property `provider_id` from the response with the `200` status
 
 # 2026-09-29: Session archived flag removed. Readers derive it from next_session being present; the field duplicated the successor link.
 GET /v1/sessions removes archived from response properties

@@ -3945,15 +3945,26 @@
         "type": "object",
         "required": [
           "id",
-          "provider_id",
+          "provider",
           "context_window",
           "key",
           "name",
           "limit",
           "cost",
-          "supported_efforts"
+          "supported_efforts",
+          "effective_api",
+          "effective_base_url",
+          "compat"
         ],
         "properties": {
+          "compat": {
+            "type": "object",
+            "description": "Provider quirk flags from the catalog; readers ignore unknown keys.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "context_window": {
             "type": "integer",
             "format": "int64",
@@ -3961,6 +3972,14 @@
           },
           "cost": {
             "$ref": "#/components/schemas/ModelCost"
+          },
+          "effective_api": {
+            "type": "string",
+            "description": "Wire protocol the model answers on: its own override or the provider default."
+          },
+          "effective_base_url": {
+            "type": "string",
+            "description": "Base URL the model answers on: its own override or the provider default."
           },
           "id": {
             "type": "string"
@@ -3974,7 +3993,7 @@
           "name": {
             "type": "string"
           },
-          "provider_id": {
+          "provider": {
             "type": "string"
           },
           "supported_efforts": {

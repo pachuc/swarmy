@@ -367,7 +367,7 @@ pub(crate) fn model(
 ) -> api::Model {
     api::Model {
         id: entry.id.clone(),
-        provider_id: provider.id.clone(),
+        provider: provider.id.clone(),
         context_window: entry.limit.context,
         key: format!("{}/{}", provider.id, entry.id),
         name: entry.name.clone(),
@@ -384,6 +384,16 @@ pub(crate) fn model(
             .into_iter()
             .map(Into::into)
             .collect(),
+        effective_api: serde_json::to_value(entry.api.unwrap_or(provider.api))
+            .expect("catalog api serializes")
+            .as_str()
+            .expect("catalog api is a string")
+            .to_owned(),
+        effective_base_url: entry
+            .base_url
+            .clone()
+            .unwrap_or_else(|| provider.base_url.clone()),
+        compat: entry.compat.0.clone(),
     }
 }
 
