@@ -106,7 +106,7 @@ impl Display for Partitions {
         while let Some(&start) = iter.next() {
             let mut end = start;
             while let Some(&&next) = iter.peek() {
-                if next != end.checked_add(1).unwrap_or(u16::MAX) {
+                if next != end.saturating_add(1) {
                     break;
                 }
                 end = next;

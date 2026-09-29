@@ -101,22 +101,22 @@ const DEFAULT_INFERENCE_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const DEFAULT_INFERENCE_GATEWAY_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_METERING_RAW_RETENTION_DAYS: std::num::NonZeroU64 =
     std::num::NonZeroU64::new(90).unwrap();
-const DEFAULT_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
-const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const DEFAULT_GC_GRACE: Duration = Duration::from_hours(6);
+const DEFAULT_GC_INTERVAL: Duration = Duration::from_hours(1);
 const DEFAULT_GC_FILTER_BYTES: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
 const DEFAULT_GC_BATCH_SIZE: std::num::NonZeroUsize = std::num::NonZeroUsize::new(256).unwrap();
 const DEFAULT_GC_DELETE_CONCURRENCY: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(32).unwrap();
-const DEFAULT_EPHEMERAL_RETENTION: Duration = Duration::from_secs(86400);
-const DEFAULT_SANDBOX_IDLE: Duration = Duration::from_secs(1800);
+const DEFAULT_EPHEMERAL_RETENTION: Duration = Duration::from_hours(24);
+const DEFAULT_SANDBOX_IDLE: Duration = Duration::from_mins(30);
 const DEFAULT_PLACEMENT_LEASE: Duration = Duration::from_secs(30);
 const DEFAULT_NODE_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(5000);
 const DEFAULT_SCHEDULER_SCAN_INTERVAL: Duration = Duration::from_millis(5000);
 const DEFAULT_SCHEDULER_RESEND_INTERVAL: Duration = Duration::from_millis(5000);
-const DEFAULT_WORKER_LEASE: Duration = Duration::from_millis(30000);
+const DEFAULT_WORKER_LEASE: Duration = Duration::from_secs(30);
 const DEFAULT_WORKER_RECOVERY_INTERVAL: Duration = Duration::from_millis(5000);
-const DEFAULT_BUS_ACK_WAIT: Duration = Duration::from_millis(30000);
+const DEFAULT_BUS_ACK_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MEMORY_MAX_BYTES: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(32 * 1024).unwrap();
 const DEFAULT_NODE_CAPACITY: swarmy_core::NodeCapacity = swarmy_core::NodeCapacity {
@@ -617,7 +617,7 @@ impl Settings {
             .ok_or(Error::MissingImage)
     }
 
-    /// Split the FoundationDB directory namespace into path components.
+    /// Split the `FoundationDB` directory namespace into path components.
     /// # Errors
     /// Rejects empty components such as a leading, trailing, or doubled slash.
     pub fn store_directory_path(&self) -> Result<Vec<String>, Error> {
@@ -750,364 +750,332 @@ impl Settings {
         &mut self,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), Error> {
-        type Setter = fn(&mut Settings, &str, &BTreeMap<String, String>) -> Result<(), Error>;
-        let table: &[(&str, Setter)] = &[
-            ("SWARMY_STATE_DIR", |settings, value, _| {
-                assign(&mut settings.state_dir, value, "SWARMY_STATE_DIR")
-            }),
-            ("SWARMY_REMOTE", |settings, value, _| {
-                settings.remote.profile = Some(value.into());
-                Ok(())
-            }),
-            ("SWARMY_FDB_CLUSTER_FILE", |settings, value, _| {
-                assign(
-                    &mut settings.fdb_cluster_file,
-                    value,
-                    "SWARMY_FDB_CLUSTER_FILE",
-                )
-            }),
-            ("SWARMY_NATS_URL", |settings, value, _| {
-                assign(&mut settings.bus.nats_url, value, "SWARMY_NATS_URL")
-            }),
-            ("SWARMY_S3_ENDPOINT", |settings, value, _| {
-                assign(&mut settings.s3.endpoint, value, "SWARMY_S3_ENDPOINT")
-            }),
-            ("SWARMY_S3_ACCESS_KEY", |settings, value, _| {
-                assign(&mut settings.s3.access_key, value, "SWARMY_S3_ACCESS_KEY")
-            }),
-            ("SWARMY_S3_SECRET_KEY", |settings, value, _| {
-                assign(&mut settings.s3.secret_key, value, "SWARMY_S3_SECRET_KEY")
-            }),
-            ("SWARMY_S3_BUCKET", |settings, value, _| {
-                assign(&mut settings.s3.bucket, value, "SWARMY_S3_BUCKET")
-            }),
-            ("SWARMY_S3_PREFIX", |settings, value, _| {
-                assign(&mut settings.s3.prefix, value, "SWARMY_S3_PREFIX")
-            }),
-            ("SWARMY_S3_REGION", |settings, value, _| {
-                assign(&mut settings.s3.region, value, "SWARMY_S3_REGION")
-            }),
-            ("SWARMY_STORE_DIRECTORY", |settings, value, _| {
-                assign(
-                    &mut settings.store_directory,
-                    value,
-                    "SWARMY_STORE_DIRECTORY",
-                )
-            }),
-            ("SWARMY_BUS_PREFIX", |settings, value, _| {
-                assign(&mut settings.bus.prefix, value, "SWARMY_BUS_PREFIX")
-            }),
-            ("SWARMY_PROVIDER", set_provider),
-            ("SWARMY_PROVIDERS", |settings, value, _| {
-                set_providers(settings, value)
-            }),
-            ("SWARMY_CUSTOM_PROVIDERS", |settings, value, _| {
-                set_custom_providers(settings, value)
-            }),
-            ("SWARMY_MODELS", |settings, value, _| {
-                set_models(settings, value)
-            }),
-            ("SWARMY_MODEL", |settings, value, _| {
-                assign(&mut settings.selection.model, value, "SWARMY_MODEL")
-            }),
-            ("SWARMY_DEFAULT_IMAGE", |settings, value, _| {
-                assign_opt_string(&mut settings.selection.default_image, value);
-                Ok(())
-            }),
-            ("SWARMY_REASONING_EFFORT", |settings, value, _| {
-                assign(
-                    &mut settings.selection.effort,
-                    value,
-                    "SWARMY_REASONING_EFFORT",
-                )
-            }),
-            ("SWARMY_CHATGPT_AUTH", |settings, value, _| {
-                assign(
-                    &mut settings.selection.credential_file,
-                    value,
-                    "SWARMY_CHATGPT_AUTH",
-                )
-            }),
-            ("SWARMY_WORKER_PARTITIONS", |settings, value, _| {
-                assign(
-                    &mut settings.worker.partitions,
-                    value,
-                    "SWARMY_WORKER_PARTITIONS",
-                )
-            }),
-            ("SWARMY_SCHEDULER_PARTITIONS", |settings, value, _| {
-                assign(
-                    &mut settings.scheduler.partitions,
-                    value,
-                    "SWARMY_SCHEDULER_PARTITIONS",
-                )
-            }),
-            ("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", |settings, value, _| {
-                assign_ms(
-                    &mut settings.scheduler.scan_interval,
-                    value,
-                    "SWARMY_SCHEDULER_SCAN_INTERVAL_MS",
-                )
-            }),
-            (
-                "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
-                |settings, value, _| {
-                    assign_ms(
-                        &mut settings.scheduler.resend_interval,
-                        value,
-                        "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
-                    )
-                },
-            ),
-            ("SWARMY_WORKER_LEASE_MS", |settings, value, _| {
-                assign_ms(&mut settings.worker.lease, value, "SWARMY_WORKER_LEASE_MS")
-            }),
-            (
-                "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
-                |settings, value, _| {
-                    assign_ms(
-                        &mut settings.worker.recovery_interval,
-                        value,
-                        "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
-                    )
-                },
-            ),
-            ("SWARMY_BUS_ACK_WAIT_MS", |settings, value, _| {
-                assign_ms(&mut settings.bus.ack_wait, value, "SWARMY_BUS_ACK_WAIT_MS")
-            }),
-            ("SWARMY_BUS_MAX_DELIVER", |settings, value, _| {
-                assign(
-                    &mut settings.bus.max_deliver,
-                    value,
-                    "SWARMY_BUS_MAX_DELIVER",
-                )
-            }),
-            ("SWARMY_GATEWAY_CONCURRENCY", |settings, value, _| {
-                assign(
-                    &mut settings.gateway.concurrency,
-                    value,
-                    "SWARMY_GATEWAY_CONCURRENCY",
-                )
-            }),
-            ("SWARMY_SYSTEM_PROMPT", |settings, value, _| {
-                assign(
-                    &mut settings.context.system_prompt,
-                    value,
-                    "SWARMY_SYSTEM_PROMPT",
-                )
-            }),
-            ("SWARMY_WORKER_KILL_POINT", |settings, value, _| {
-                settings.worker.kill_point = Some(value.into());
-                Ok(())
-            }),
-            ("SWARMY_FAKE_SCRIPT", |settings, value, _| {
-                assign(&mut settings.fake.script, value, "SWARMY_FAKE_SCRIPT")
-            }),
-            ("SWARMY_FAKE_CALL_LOG", |settings, value, _| {
-                assign(&mut settings.fake.call_log, value, "SWARMY_FAKE_CALL_LOG")
-            }),
-            ("SWARMY_IMAGE_UPLOAD_MAX_BYTES", |settings, value, _| {
-                assign(
-                    &mut settings.image.upload_max_bytes,
-                    value,
-                    "SWARMY_IMAGE_UPLOAD_MAX_BYTES",
-                )
-            }),
-            ("SWARMY_SUMMARIZE_AT_TOKENS", |settings, value, _| {
-                assign_opt_nonzero(
-                    &mut settings.context.summarize_at,
-                    value,
-                    "SWARMY_SUMMARIZE_AT_TOKENS",
-                )
-            }),
-            (
-                "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
-                |settings, value, _| {
-                    assign_opt_nonzero(
-                        &mut settings.context.context_window,
-                        value,
-                        "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
-                    )
-                },
-            ),
-            ("SWARMY_MEMORY_MAX_BYTES", |settings, value, _| {
-                assign(
-                    &mut settings.memory.max_bytes,
-                    value,
-                    "SWARMY_MEMORY_MAX_BYTES",
-                )
-            }),
-            ("SWARMY_MEMORY_DIR", |settings, value, _| {
-                assign(&mut settings.memory.dir, value, "SWARMY_MEMORY_DIR")
-            }),
-            (
-                "SWARMY_EPHEMERAL_RETENTION_SECONDS",
-                |settings, value, _| {
-                    assign_secs(
-                        &mut settings.ephemeral_retention,
-                        value,
-                        "SWARMY_EPHEMERAL_RETENTION_SECONDS",
-                    )
-                },
-            ),
-            ("SWARMY_SANDBOX_IDLE_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.sandbox.idle,
-                    value,
-                    "SWARMY_SANDBOX_IDLE_SECONDS",
-                )
-            }),
-            ("SWARMY_PLACEMENT_LEASE_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.placement_lease,
-                    value,
-                    "SWARMY_PLACEMENT_LEASE_SECONDS",
-                )
-            }),
-            ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.inference.max_wait,
-                    value,
-                    "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
-                )
-            }),
-            (
-                "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
-                |settings, value, _| {
-                    assign_secs(
-                        &mut settings.inference.max_backoff,
-                        value,
-                        "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
-                    )
-                },
-            ),
-            (
-                "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
-                |settings, value, _| {
-                    assign_secs(
-                        &mut settings.inference.gateway_wait,
-                        value,
-                        "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
-                    )
-                },
-            ),
-            ("SWARMY_INFERENCE_DEFAULT_ROUTE", |settings, value, _| {
-                assign_opt_string(&mut settings.inference.default_route, value);
-                Ok(())
-            }),
-            (
-                "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
-                |settings, value, _| {
-                    assign_secs(
-                        &mut settings.volume_snapshots.period,
-                        value,
-                        "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
-                    )
-                },
-            ),
-            ("SWARMY_VOLUME_SNAPSHOT_RETENTION", |settings, value, _| {
-                assign(
-                    &mut settings.volume_snapshots.retention,
-                    value,
-                    "SWARMY_VOLUME_SNAPSHOT_RETENTION",
-                )
-            }),
-            ("SWARMY_GC_GRACE_SECONDS", |settings, value, _| {
-                assign_secs(&mut settings.gc.grace, value, "SWARMY_GC_GRACE_SECONDS")
-            }),
-            ("SWARMY_GC_INTERVAL_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.gc.interval,
-                    value,
-                    "SWARMY_GC_INTERVAL_SECONDS",
-                )
-            }),
-            ("SWARMY_GC_FILTER_BYTES", |settings, value, _| {
-                assign(
-                    &mut settings.gc.filter_bytes,
-                    value,
-                    "SWARMY_GC_FILTER_BYTES",
-                )
-            }),
-            ("SWARMY_GC_BATCH_SIZE", |settings, value, _| {
-                assign(&mut settings.gc.batch_size, value, "SWARMY_GC_BATCH_SIZE")
-            }),
-            ("SWARMY_GC_DELETE_CONCURRENCY", |settings, value, _| {
-                assign(
-                    &mut settings.gc.delete_concurrency,
-                    value,
-                    "SWARMY_GC_DELETE_CONCURRENCY",
-                )
-            }),
-            (
-                "SWARMY_METERING_RAW_RETENTION_DAYS",
-                |settings, value, _| {
-                    assign(
-                        &mut settings.metering.raw_retention_days,
-                        value,
-                        "SWARMY_METERING_RAW_RETENTION_DAYS",
-                    )
-                },
-            ),
-            ("SWARMY_API_URL", |settings, value, _| {
-                settings.api.url = Some(value.into());
-                Ok(())
-            }),
-            ("SWARMY_API_TOKEN", |settings, value, _| {
-                assign(&mut settings.api.token, value, "SWARMY_API_TOKEN")
-            }),
-            ("SWARMY_API_LISTEN", |settings, value, _| {
-                assign(&mut settings.api.listen, value, "SWARMY_API_LISTEN")
-            }),
-            ("SWARMY_NODE_ROLES", set_node_roles),
-            ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |settings, value, _| {
-                assign_ms(
-                    &mut settings.node.heartbeat_interval,
-                    value,
-                    "SWARMY_NODE_HEARTBEAT_INTERVAL_MS",
-                )
-            }),
-            ("SWARMY_NODE_CPU_MILLIS", |settings, value, _| {
-                assign(
-                    &mut settings.node.capacity.cpu_millis,
-                    value,
-                    "SWARMY_NODE_CPU_MILLIS",
-                )
-            }),
-            ("SWARMY_NODE_MEMORY_RESERVE_MIB", |settings, value, _| {
-                set_node_memory_reserve(settings, value)
-            }),
-            ("SWARMY_NODE_MEMORY_BYTES", |settings, value, _| {
-                assign(
-                    &mut settings.node.capacity.memory_bytes,
-                    value,
-                    "SWARMY_NODE_MEMORY_BYTES",
-                )
-            }),
-            ("SWARMY_NODE_DISK_BYTES", |settings, value, _| {
-                assign(
-                    &mut settings.node.capacity.disk_bytes,
-                    value,
-                    "SWARMY_NODE_DISK_BYTES",
-                )
-            }),
-            ("SWARMY_NODE_SANDBOXES", |settings, value, _| {
-                assign(
-                    &mut settings.node.capacity.sandboxes,
-                    value,
-                    "SWARMY_NODE_SANDBOXES",
-                )
-            }),
-            ("SWARMY_NODE_ID", set_node_id),
-        ];
+        self.apply_env_connection(environment)?;
+        self.apply_env_selection(environment)?;
+        self.apply_env_timing(environment)?;
+        self.apply_env_retention(environment)?;
+        self.apply_env_node(environment)?;
+        self.store_directory_path()?;
+        self.s3_namespace()?;
+        Ok(())
+    }
+
+    fn apply_env_table(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+        table: &[(&str, EnvSetter)],
+    ) -> Result<(), Error> {
         for (name, set) in table {
             if let Some(value) = environment.get(*name) {
                 set(self, value, environment)?;
             }
         }
-        self.store_directory_path()?;
-        self.s3_namespace()?;
         Ok(())
+    }
+
+    /// Connection endpoints, object namespaces, and API listeners.
+    fn apply_env_connection(
+        &mut self,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        self.apply_env_table(
+            environment,
+            &[
+                ("SWARMY_STATE_DIR", |s, v, _| {
+                    assign(&mut s.state_dir, v, "SWARMY_STATE_DIR")
+                }),
+                ("SWARMY_REMOTE", |s, v, _| {
+                    s.remote.profile = Some(v.into());
+                    Ok(())
+                }),
+                ("SWARMY_FDB_CLUSTER_FILE", |s, v, _| {
+                    assign(&mut s.fdb_cluster_file, v, "SWARMY_FDB_CLUSTER_FILE")
+                }),
+                ("SWARMY_NATS_URL", |s, v, _| {
+                    assign(&mut s.bus.nats_url, v, "SWARMY_NATS_URL")
+                }),
+                ("SWARMY_S3_ENDPOINT", |s, v, _| {
+                    assign(&mut s.s3.endpoint, v, "SWARMY_S3_ENDPOINT")
+                }),
+                ("SWARMY_S3_ACCESS_KEY", |s, v, _| {
+                    assign(&mut s.s3.access_key, v, "SWARMY_S3_ACCESS_KEY")
+                }),
+                ("SWARMY_S3_SECRET_KEY", |s, v, _| {
+                    assign(&mut s.s3.secret_key, v, "SWARMY_S3_SECRET_KEY")
+                }),
+                ("SWARMY_S3_BUCKET", |s, v, _| {
+                    assign(&mut s.s3.bucket, v, "SWARMY_S3_BUCKET")
+                }),
+                ("SWARMY_S3_PREFIX", |s, v, _| {
+                    assign(&mut s.s3.prefix, v, "SWARMY_S3_PREFIX")
+                }),
+                ("SWARMY_S3_REGION", |s, v, _| {
+                    assign(&mut s.s3.region, v, "SWARMY_S3_REGION")
+                }),
+                ("SWARMY_STORE_DIRECTORY", |s, v, _| {
+                    assign(&mut s.store_directory, v, "SWARMY_STORE_DIRECTORY")
+                }),
+                ("SWARMY_BUS_PREFIX", |s, v, _| {
+                    assign(&mut s.bus.prefix, v, "SWARMY_BUS_PREFIX")
+                }),
+                ("SWARMY_API_URL", |s, v, _| {
+                    s.api.url = Some(v.into());
+                    Ok(())
+                }),
+                ("SWARMY_API_TOKEN", |s, v, _| {
+                    assign(&mut s.api.token, v, "SWARMY_API_TOKEN")
+                }),
+                ("SWARMY_API_LISTEN", |s, v, _| {
+                    assign(&mut s.api.listen, v, "SWARMY_API_LISTEN")
+                }),
+            ],
+        )
+    }
+
+    /// Inference selection, credentials, prompts, and memory budgets.
+    fn apply_env_selection(&mut self, environment: &BTreeMap<String, String>) -> Result<(), Error> {
+        self.apply_env_table(
+            environment,
+            &[
+                ("SWARMY_PROVIDER", |s, v, env| {
+                    set_provider(s, v, env);
+                    Ok(())
+                }),
+                ("SWARMY_PROVIDERS", |s, v, _| {
+                    set_providers(s, v);
+                    Ok(())
+                }),
+                ("SWARMY_CUSTOM_PROVIDERS", |s, v, _| {
+                    set_custom_providers(s, v)
+                }),
+                ("SWARMY_MODELS", |s, v, _| set_models(s, v)),
+                ("SWARMY_MODEL", |s, v, _| {
+                    assign(&mut s.selection.model, v, "SWARMY_MODEL")
+                }),
+                ("SWARMY_DEFAULT_IMAGE", |s, v, _| {
+                    assign_opt_string(&mut s.selection.default_image, v);
+                    Ok(())
+                }),
+                ("SWARMY_REASONING_EFFORT", |s, v, _| {
+                    assign(&mut s.selection.effort, v, "SWARMY_REASONING_EFFORT")
+                }),
+                ("SWARMY_CHATGPT_AUTH", |s, v, _| {
+                    assign(&mut s.selection.credential_file, v, "SWARMY_CHATGPT_AUTH")
+                }),
+                ("SWARMY_SYSTEM_PROMPT", |s, v, _| {
+                    assign(&mut s.context.system_prompt, v, "SWARMY_SYSTEM_PROMPT")
+                }),
+                ("SWARMY_SUMMARIZE_AT_TOKENS", |s, v, _| {
+                    assign_opt_nonzero(&mut s.context.summarize_at, v, "SWARMY_SUMMARIZE_AT_TOKENS")
+                }),
+                ("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", |s, v, _| {
+                    assign_opt_nonzero(
+                        &mut s.context.context_window,
+                        v,
+                        "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
+                    )
+                }),
+                ("SWARMY_MEMORY_MAX_BYTES", |s, v, _| {
+                    assign(&mut s.memory.max_bytes, v, "SWARMY_MEMORY_MAX_BYTES")
+                }),
+                ("SWARMY_MEMORY_DIR", |s, v, _| {
+                    assign(&mut s.memory.dir, v, "SWARMY_MEMORY_DIR")
+                }),
+            ],
+        )
+    }
+
+    /// Partition ownership, delivery timing, and worker failure injection.
+    fn apply_env_timing(&mut self, environment: &BTreeMap<String, String>) -> Result<(), Error> {
+        self.apply_env_table(
+            environment,
+            &[
+                ("SWARMY_WORKER_PARTITIONS", |s, v, _| {
+                    assign(&mut s.worker.partitions, v, "SWARMY_WORKER_PARTITIONS")
+                }),
+                ("SWARMY_SCHEDULER_PARTITIONS", |s, v, _| {
+                    assign(
+                        &mut s.scheduler.partitions,
+                        v,
+                        "SWARMY_SCHEDULER_PARTITIONS",
+                    )
+                }),
+                ("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", |s, v, _| {
+                    assign_ms(
+                        &mut s.scheduler.scan_interval,
+                        v,
+                        "SWARMY_SCHEDULER_SCAN_INTERVAL_MS",
+                    )
+                }),
+                ("SWARMY_SCHEDULER_RESEND_INTERVAL_MS", |s, v, _| {
+                    assign_ms(
+                        &mut s.scheduler.resend_interval,
+                        v,
+                        "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
+                    )
+                }),
+                ("SWARMY_WORKER_LEASE_MS", |s, v, _| {
+                    assign_ms(&mut s.worker.lease, v, "SWARMY_WORKER_LEASE_MS")
+                }),
+                ("SWARMY_WORKER_RECOVERY_INTERVAL_MS", |s, v, _| {
+                    assign_ms(
+                        &mut s.worker.recovery_interval,
+                        v,
+                        "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
+                    )
+                }),
+                ("SWARMY_BUS_ACK_WAIT_MS", |s, v, _| {
+                    assign_ms(&mut s.bus.ack_wait, v, "SWARMY_BUS_ACK_WAIT_MS")
+                }),
+                ("SWARMY_BUS_MAX_DELIVER", |s, v, _| {
+                    assign(&mut s.bus.max_deliver, v, "SWARMY_BUS_MAX_DELIVER")
+                }),
+                ("SWARMY_GATEWAY_CONCURRENCY", |s, v, _| {
+                    assign(&mut s.gateway.concurrency, v, "SWARMY_GATEWAY_CONCURRENCY")
+                }),
+                ("SWARMY_WORKER_KILL_POINT", |s, v, _| {
+                    s.worker.kill_point = Some(v.into());
+                    Ok(())
+                }),
+                ("SWARMY_FAKE_SCRIPT", |s, v, _| {
+                    assign(&mut s.fake.script, v, "SWARMY_FAKE_SCRIPT")
+                }),
+                ("SWARMY_FAKE_CALL_LOG", |s, v, _| {
+                    assign(&mut s.fake.call_log, v, "SWARMY_FAKE_CALL_LOG")
+                }),
+                ("SWARMY_IMAGE_UPLOAD_MAX_BYTES", |s, v, _| {
+                    assign(
+                        &mut s.image.upload_max_bytes,
+                        v,
+                        "SWARMY_IMAGE_UPLOAD_MAX_BYTES",
+                    )
+                }),
+            ],
+        )
+    }
+
+    /// Retention windows, inference waits, snapshots, and collection policy.
+    fn apply_env_retention(&mut self, environment: &BTreeMap<String, String>) -> Result<(), Error> {
+        self.apply_env_table(
+            environment,
+            &[
+                ("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| {
+                    assign_secs(
+                        &mut s.ephemeral_retention,
+                        v,
+                        "SWARMY_EPHEMERAL_RETENTION_SECONDS",
+                    )
+                }),
+                ("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| {
+                    assign_secs(&mut s.sandbox.idle, v, "SWARMY_SANDBOX_IDLE_SECONDS")
+                }),
+                ("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| {
+                    assign_secs(&mut s.placement_lease, v, "SWARMY_PLACEMENT_LEASE_SECONDS")
+                }),
+                ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |s, v, _| {
+                    assign_secs(
+                        &mut s.inference.max_wait,
+                        v,
+                        "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
+                    )
+                }),
+                ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |s, v, _| {
+                    assign_secs(
+                        &mut s.inference.max_backoff,
+                        v,
+                        "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
+                    )
+                }),
+                ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |s, v, _| {
+                    assign_secs(
+                        &mut s.inference.gateway_wait,
+                        v,
+                        "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
+                    )
+                }),
+                ("SWARMY_INFERENCE_DEFAULT_ROUTE", |s, v, _| {
+                    assign_opt_string(&mut s.inference.default_route, v);
+                    Ok(())
+                }),
+                ("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS", |s, v, _| {
+                    assign_secs(
+                        &mut s.volume_snapshots.period,
+                        v,
+                        "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
+                    )
+                }),
+                ("SWARMY_VOLUME_SNAPSHOT_RETENTION", |s, v, _| {
+                    assign(
+                        &mut s.volume_snapshots.retention,
+                        v,
+                        "SWARMY_VOLUME_SNAPSHOT_RETENTION",
+                    )
+                }),
+                ("SWARMY_GC_GRACE_SECONDS", |s, v, _| {
+                    assign_secs(&mut s.gc.grace, v, "SWARMY_GC_GRACE_SECONDS")
+                }),
+                ("SWARMY_GC_INTERVAL_SECONDS", |s, v, _| {
+                    assign_secs(&mut s.gc.interval, v, "SWARMY_GC_INTERVAL_SECONDS")
+                }),
+                ("SWARMY_GC_FILTER_BYTES", |s, v, _| {
+                    assign(&mut s.gc.filter_bytes, v, "SWARMY_GC_FILTER_BYTES")
+                }),
+                ("SWARMY_GC_BATCH_SIZE", |s, v, _| {
+                    assign(&mut s.gc.batch_size, v, "SWARMY_GC_BATCH_SIZE")
+                }),
+                ("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| {
+                    assign(
+                        &mut s.gc.delete_concurrency,
+                        v,
+                        "SWARMY_GC_DELETE_CONCURRENCY",
+                    )
+                }),
+                ("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| {
+                    assign(
+                        &mut s.metering.raw_retention_days,
+                        v,
+                        "SWARMY_METERING_RAW_RETENTION_DAYS",
+                    )
+                }),
+            ],
+        )
+    }
+
+    /// Node identity, roles, capacity, and heartbeats.
+    fn apply_env_node(&mut self, environment: &BTreeMap<String, String>) -> Result<(), Error> {
+        self.apply_env_table(
+            environment,
+            &[
+                ("SWARMY_NODE_ROLES", set_node_roles),
+                ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |s, v, _| {
+                    assign_ms(
+                        &mut s.node.heartbeat_interval,
+                        v,
+                        "SWARMY_NODE_HEARTBEAT_INTERVAL_MS",
+                    )
+                }),
+                ("SWARMY_NODE_CPU_MILLIS", |s, v, _| {
+                    assign(&mut s.node.capacity.cpu_millis, v, "SWARMY_NODE_CPU_MILLIS")
+                }),
+                ("SWARMY_NODE_MEMORY_RESERVE_MIB", |s, v, _| {
+                    set_node_memory_reserve(s, v)
+                }),
+                ("SWARMY_NODE_MEMORY_BYTES", |s, v, _| {
+                    assign(
+                        &mut s.node.capacity.memory_bytes,
+                        v,
+                        "SWARMY_NODE_MEMORY_BYTES",
+                    )
+                }),
+                ("SWARMY_NODE_DISK_BYTES", |s, v, _| {
+                    assign(&mut s.node.capacity.disk_bytes, v, "SWARMY_NODE_DISK_BYTES")
+                }),
+                ("SWARMY_NODE_SANDBOXES", |s, v, _| {
+                    assign(&mut s.node.capacity.sandboxes, v, "SWARMY_NODE_SANDBOXES")
+                }),
+                ("SWARMY_NODE_ID", set_node_id),
+            ],
+        )
     }
 
     /// Pass the same effective settings to child processes without mutating globals.
@@ -1189,16 +1157,6 @@ impl Settings {
                 "SWARMY_IMAGE_UPLOAD_MAX_BYTES".into(),
                 self.image.upload_max_bytes.to_string(),
             ),
-            ("SWARMY_API_TOKEN".into(), self.api.token.clone()),
-            ("SWARMY_API_LISTEN".into(), self.api.listen.clone()),
-            (
-                "SWARMY_INFERENCE_MAX_WAIT_SECONDS".into(),
-                self.inference.max_wait.as_secs().to_string(),
-            ),
-            (
-                "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS".into(),
-                self.inference.max_backoff.as_secs().to_string(),
-            ),
         ]
         .into();
         environment.insert(
@@ -1208,9 +1166,7 @@ impl Settings {
         if let Some(name) = &self.remote.profile {
             environment.insert("SWARMY_REMOTE".into(), name.clone());
         }
-        if let Some(url) = &self.api.url {
-            environment.insert("SWARMY_API_URL".into(), url.clone());
-        }
+        self.api_environment(&mut environment);
         self.provider_environment(&mut environment);
         self.session_environment(&mut environment);
         self.node_environment(&mut environment);
@@ -1255,7 +1211,23 @@ impl Settings {
         );
     }
 
+    fn api_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert("SWARMY_API_TOKEN".into(), self.api.token.clone());
+        environment.insert("SWARMY_API_LISTEN".into(), self.api.listen.clone());
+        if let Some(url) = &self.api.url {
+            environment.insert("SWARMY_API_URL".into(), url.clone());
+        }
+    }
+
     fn inference_environment(&self, environment: &mut BTreeMap<String, String>) {
+        environment.insert(
+            "SWARMY_INFERENCE_MAX_WAIT_SECONDS".into(),
+            self.inference.max_wait.as_secs().to_string(),
+        );
+        environment.insert(
+            "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS".into(),
+            self.inference.max_backoff.as_secs().to_string(),
+        );
         environment.insert(
             "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS".into(),
             self.inference.gateway_wait.as_secs().to_string(),
@@ -1374,6 +1346,10 @@ impl Settings {
     }
 }
 
+/// One environment override: its variable name, setter, and parser are a
+/// single table entry in the `apply_env_*` tables below.
+type EnvSetter = fn(&mut Settings, &str, &BTreeMap<String, String>) -> Result<(), Error>;
+
 fn assign<T: std::str::FromStr>(
     field: &mut T,
     value: &str,
@@ -1417,25 +1393,19 @@ fn assign_opt_string(field: &mut Option<String>, value: &str) {
     *field = (!value.is_empty()).then(|| value.to_owned());
 }
 
-fn set_provider(
-    settings: &mut Settings,
-    value: &str,
-    environment: &BTreeMap<String, String>,
-) -> Result<(), Error> {
-    settings.selection.provider = value.to_owned();
+fn set_provider(settings: &mut Settings, value: &str, environment: &BTreeMap<String, String>) {
+    settings.selection.provider = value.into();
     if !environment.contains_key("SWARMY_PROVIDERS") {
         settings.selection.providers = Some(vec![value.to_owned()]);
     }
-    Ok(())
 }
 
-fn set_providers(settings: &mut Settings, value: &str) -> Result<(), Error> {
+fn set_providers(settings: &mut Settings, value: &str) {
     settings.selection.providers = if value.is_empty() {
         None
     } else {
         Some(value.split(',').map(|id| id.trim().to_owned()).collect())
     };
-    Ok(())
 }
 
 fn set_custom_providers(settings: &mut Settings, value: &str) -> Result<(), Error> {
@@ -1775,11 +1745,13 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.store_directory_path().unwrap(), ["swarmy"]);
         for directory in ["", "/swarmy", "swarmy/", "a//b"] {
-            let mut settings = Settings::default();
-            settings.store_directory = directory.into();
+            let settings = Settings {
+                store_directory: directory.into(),
+                ..Settings::default()
+            };
             assert!(settings.store_directory_path().is_err(), "{directory}");
             assert!(
-                settings
+                Settings::default()
                     .apply_environment(&BTreeMap::from([(
                         "SWARMY_STORE_DIRECTORY".into(),
                         directory.into()
