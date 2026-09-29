@@ -37,7 +37,9 @@ fdb-check:
 	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 	$(CARGO) test --locked -p swarmy-llm --no-default-features
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
+	$(CARGO) install cargo-deny --version 0.20.2 --locked
 	$(CARGO) deny check
+	$(CARGO) install cargo-machete --version 0.9.2 --locked
 	$(CARGO) machete
 	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked --exclude swarmy-e2e

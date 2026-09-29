@@ -11,6 +11,7 @@ pub fn stack_env(name: &str) -> Result<String, std::env::VarError> {
 }
 
 /// Check a stack setting without converting it to UTF-8.
+#[must_use = "check whether the stack is configured before running the test"]
 pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
     let value = std::env::var_os(name);
     assert!(
