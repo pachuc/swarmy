@@ -7,8 +7,7 @@ use swarmy_core::{
     SessionId, SessionRecord, SessionState, ToolCallId, ToolCallRecord, ToolResult,
 };
 use swarmy_harness::{
-    Action, GetTime, Harness, Snapshot, Tool, ToolRegistry, execution_result,
-    result_part,
+    Action, GetTime, Harness, Snapshot, Tool, ToolRegistry, execution_result, result_part,
 };
 use swarmy_llm::{
     Delta, GenerationSettings, Provider, Response, StopReason, TokenUsage, fake::FakeProvider,
