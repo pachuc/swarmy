@@ -87,9 +87,6 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     if swarmy_core::test_support::stack_env_os("SWARMY_FDB_CLUSTER_FILE").is_none()
         || swarmy_core::test_support::stack_env_os("SWARMY_NATS_URL").is_none()
     {
-        eprintln!(
-            "skipping dev integration test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset"
-        );
         return;
     }
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

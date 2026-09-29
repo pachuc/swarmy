@@ -175,11 +175,11 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
             return;
         }
     }
-    if swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET").is_err() {
+    let Some(bucket) = swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET") else {
         return;
-    }
+    };
     let mut settings = Settings::load().unwrap().settings;
-    settings.s3_bucket = std::env::var("SWARMY_S3_TEST_BUCKET").unwrap();
+    settings.s3_bucket = bucket;
     settings.s3_prefix = swarmy_config::ObjectPrefix::default();
     assert!(
         !settings.s3_bucket.contains('/'),

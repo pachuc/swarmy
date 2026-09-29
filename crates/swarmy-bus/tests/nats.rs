@@ -27,12 +27,8 @@ impl Fixture {
 }
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
-    let url = match swarmy_core::test_support::stack_env("SWARMY_NATS_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => {
-            return;
-        }
-        Err(error) => panic!("invalid SWARMY_NATS_URL: {error}"),
+    let Some(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
+        return;
     };
     let prefix = Ulid::generate().to_string();
     let config = Config {

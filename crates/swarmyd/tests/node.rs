@@ -858,14 +858,14 @@ async fn network_cycles(node: &Node, store: &Store, head: ManifestId) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_dev_stack_uses_sandbox_loopback() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || std::env::var_os("SWARMY_TEST_DEV_IMAGE").is_none()
-    {
-        eprintln!("skipping dev stack acceptance: root and SWARMY_TEST_DEV_IMAGE are required");
+    let Some(image_spec) = swarmy_core::test_support::optional_env("SWARMY_TEST_DEV_IMAGE") else {
+        return;
+    };
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        eprintln!("skipping dev stack acceptance: root is required");
         return;
     }
     boot_network();
-    let image_spec = std::env::var("SWARMY_TEST_DEV_IMAGE").unwrap();
     let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
     let settings = swarmy_config::Settings::load().unwrap().settings;
     let store = store(&settings).await;

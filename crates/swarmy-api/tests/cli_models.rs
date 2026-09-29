@@ -28,7 +28,7 @@ static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
 
 impl Fixture {
     fn new(config: &str) -> Option<Self> {
-        let (Ok(cluster), Ok(nats)) = (
+        let (Some(cluster), Some(nats)) = (
             swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
             swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
         ) else {

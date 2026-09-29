@@ -489,7 +489,7 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId};
     use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 
-    let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
     let _network = swarmy_store::boot();

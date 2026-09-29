@@ -7,8 +7,10 @@ fn root_persistent_agent_continuity() {
         eprintln!("skipping continuity acceptance: run the built test with sudo");
         return;
     }
+    if swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE").is_none() {
+        return;
+    }
     for variable in [
-        "SWARMY_TEST_IMAGE",
         "SWARMY_FDB_CLUSTER_FILE",
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",

@@ -21,7 +21,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Option<Self> {
         static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);

@@ -15,8 +15,8 @@ async fn fixture() -> Option<(
     Store,
     tokio::task::JoinHandle<Result<(), std::io::Error>>,
 )> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").ok()?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").ok()?;
+    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
     NETWORK.get_or_init(swarmy_store::boot);
     let store = Store::open(
         Some(&cluster),

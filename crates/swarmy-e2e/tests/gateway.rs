@@ -61,7 +61,7 @@ impl Fixture {
             "SWARMY_NATS_URL",
             "SWARMY_S3_ENDPOINT",
         ] {
-            if swarmy_core::test_support::stack_env(variable).is_err() {
+            if swarmy_core::test_support::stack_env(variable).is_none() {
                 return None;
             }
         }

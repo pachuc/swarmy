@@ -389,7 +389,7 @@ struct TestStore {
 impl TestStore {
     fn new(blobs: Arc<dyn BlobStore>) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);
@@ -907,7 +907,7 @@ async fn lease_renewal_and_state_transitions_update_indexes() {
 
 #[tokio::test]
 async fn s3_blob_store_and_large_event_round_trip() {
-    if swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err() {
+    if swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none() {
         return;
     }
     let blobs = Arc::new(ObjectBlobStore::from_env().unwrap());
@@ -944,7 +944,9 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap();
+    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+        return;
+    };
     let path = vec![format!("swarmy-store-test-{}", Ulid::generate())];
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(Some(&cluster), Some(&path), blobs.clone())

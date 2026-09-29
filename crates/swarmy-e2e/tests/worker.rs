@@ -55,7 +55,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let Ok(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
+        let Some(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
             return None;
         };
         Self::new_at(url).await
@@ -64,7 +64,7 @@ impl Fixture {
     async fn new_at(nats_url: String) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            if swarmy_core::test_support::stack_env(variable).is_err() {
+            if swarmy_core::test_support::stack_env(variable).is_none() {
                 return None;
             }
         }
@@ -1304,8 +1304,8 @@ async fn recover_at_each_kill_point() {
 
 #[tokio::test]
 async fn large_request_dispatches_on_default_nats_limit() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }
@@ -1385,8 +1385,8 @@ async fn large_request_dispatches_on_default_nats_limit() {
 
 #[tokio::test]
 async fn permanent_publish_error_ends_turn() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }

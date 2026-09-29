@@ -30,8 +30,8 @@ impl Drop for Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").ok()?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").ok()?;
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let path = vec!["conversation-api-test".into(), Ulid::generate().to_string()];
         let store = Store::open(

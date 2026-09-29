@@ -1,50 +1,74 @@
 //! Shared environment checks for integration tests that need the dev stack.
+//!
+//! Each helper does the whole skip decision so call sites stay one line:
+//! the value comes back as `Some` when present, the test logs a skip and
+//! gets `None` when a developer runs it without the stack, and a missing
+//! required setting panics when `CI` is set so a broken stack setup fails
+//! the suite instead of silently passing it.
 
-/// Read a stack setting, preserving local skips while failing broken CI setup.
+/// Read a required dev-stack setting.
 ///
-/// # Errors
-/// Returns an environment error when the setting is unavailable locally.
+/// A value that is present but not valid UTF-8 panics everywhere: that is a
+/// broken environment, not a missing stack.
 ///
 /// # Panics
-/// Panics when the setting is unavailable in CI.
-pub fn stack_env(name: &str) -> Result<String, std::env::VarError> {
-    let value = std::env::var(name);
-    if value.is_err() {
-        missing_stack(name);
+/// Panics when the setting is missing under `CI`, or when it is present but
+/// not valid UTF-8.
+#[must_use = "check the returned option: missing stack settings skip the test locally"]
+pub fn stack_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => missing_stack(name),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{name} is set but is not valid UTF-8")
+        }
     }
-    value
 }
 
-/// Check a stack setting without converting it to UTF-8.
+/// Check a required dev-stack setting without converting it to UTF-8.
 ///
 /// # Panics
-/// Panics when the setting is unavailable in CI.
-#[must_use = "check whether the stack is configured before running the test"]
+/// Panics when the setting is missing under `CI`.
+#[must_use = "check the returned option: missing stack settings skip the test locally"]
 pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
-    let value = std::env::var_os(name);
-    if value.is_none() {
-        missing_stack(name);
+    match std::env::var_os(name) {
+        Some(value) => Some(value),
+        None => missing_stack(name),
     }
-    value
 }
 
-/// Read an optional fixture setting. Missing images skip even in CI because
-/// kernel-only suites are not provisioned on hosted runners.
-///
-/// # Errors
-/// Returns an environment error when the optional setting is unavailable.
-pub fn optional_env(name: &str) -> Result<String, std::env::VarError> {
-    let value = std::env::var(name);
-    if value.is_err() {
-        eprintln!("skipping integration test: optional {name} unavailable");
+/// Read an optional fixture setting such as a root-built test image.
+/// Missing values skip even under `CI` because kernel-only suites are not
+/// provisioned on hosted runners.
+#[must_use = "check the returned option: missing optional settings skip the test"]
+pub fn optional_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            eprintln!("skipping integration test: optional {name} is unavailable");
+            None
+        }
     }
-    value
 }
 
-fn missing_stack(name: &str) {
+/// Check an opt-in flag that must equal `1`, such as `SWARMY_API_FAKE_BENCH`.
+/// Disabled flags skip even under `CI`; the hint must say how to opt in.
+#[must_use = "check the returned option: disabled opt-in flags skip the test"]
+pub fn opt_in_env(name: &str, hint: &str) -> Option<String> {
+    match std::env::var(name).as_deref() {
+        Ok("1") => Some("1".to_owned()),
+        _ => {
+            eprintln!("skipping opt-in integration test: {hint}");
+            None
+        }
+    }
+}
+
+fn missing_stack<T>(name: &str) -> Option<T> {
     assert!(
         std::env::var_os("CI").is_none(),
         "CI requires {name} for integration tests"
     );
-    eprintln!("skipping integration test: {name} unavailable");
+    eprintln!("skipping integration test: {name} is unavailable");
+    None
 }

@@ -27,10 +27,10 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return None;
         };
-        let Ok(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
+        let Some(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
             return None;
         };
         let dir = tempfile::tempdir().unwrap();

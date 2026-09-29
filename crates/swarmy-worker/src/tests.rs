@@ -146,7 +146,7 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
-    let (Ok(cluster), Ok(url)) = (
+    let (Some(cluster), Some(url)) = (
         swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
         swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
@@ -335,7 +335,7 @@ mod routing;
 
 #[tokio::test]
 async fn deleted_computer_refuses_remote_tools_with_durable_message() {
-    let (Ok(cluster), Ok(url)) = (
+    let (Some(cluster), Some(url)) = (
         swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
         swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
