@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
+use crate::Result;
 use swarmy_config::{RemoteNode, validate_remote_name};
 
 /// The `remote` directory under the state directory: node records, keys, and the lock.
@@ -14,13 +14,10 @@ pub struct State {
 
 impl State {
     pub fn open(directory: &Path) -> Result<Self> {
-        fs::create_dir_all(directory).map_err(crate::Error::LocalStateIo)?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-            .map_err(crate::Error::LocalStateIo)?;
+        fs::create_dir_all(directory)?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
         Ok(Self {
-            directory: directory
-                .canonicalize()
-                .map_err(crate::Error::LocalStateIo)?,
+            directory: directory.canonicalize()?,
         })
     }
 
@@ -31,9 +28,8 @@ impl State {
             .truncate(false)
             .write(true)
             .mode(0o600)
-            .open(self.directory.join(".lock"))
-            .map_err(crate::Error::LocalStateIo)?;
-        fs2::FileExt::try_lock_exclusive(&file).context("another remote command is running")?;
+            .open(self.directory.join(".lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)?;
         Ok(file)
     }
 
@@ -46,14 +42,15 @@ impl State {
         match fs::read(self.path(name, "json")?) {
             Ok(bytes) => {
                 let node: RemoteNode = serde_json::from_slice(&bytes)?;
-                ensure!(
-                    node.name == name,
-                    "remote state name does not match its filename"
-                );
+                if node.name != name {
+                    return Err(crate::Error::other(
+                        "remote state name does not match its filename",
+                    ));
+                }
                 Ok(Some(node))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(crate::Error::LocalStateIo(error)),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -64,8 +61,8 @@ impl State {
 
     /// Only remote records are inspected; tunnel profiles also use JSON here.
     fn shared(&self, owner: &str, matches: impl Fn(&RemoteNode) -> bool) -> Result<bool> {
-        for entry in fs::read_dir(&self.directory).map_err(crate::Error::LocalStateIo)? {
-            let entry = entry.map_err(crate::Error::LocalStateIo)?;
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "json")
                 || path
@@ -75,9 +72,7 @@ impl State {
             {
                 continue;
             }
-            let other: RemoteNode =
-                serde_json::from_slice(&fs::read(&path).map_err(crate::Error::LocalStateIo)?)
-                    .with_context(|| format!("reading remote state {}", path.display()))?;
+            let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)?;
             if other.name != owner && matches(&other) {
                 return Ok(true);
             }
@@ -104,29 +99,24 @@ impl State {
         let mut bytes = serde_json::to_vec_pretty(node)?;
         bytes.push(b'\n');
         write(&path, &bytes)?;
-        File::open(&self.directory)
-            .map_err(crate::Error::LocalStateIo)?
-            .sync_all()
-            .map_err(crate::Error::LocalStateIo)?;
+        File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 
     pub fn remove(&self, node: &RemoteNode) -> Result<()> {
         self.remove_key(node)?;
-        fs::remove_file(self.path(&node.name, "json")?).map_err(crate::Error::LocalStateIo)?;
-        File::open(&self.directory)
-            .map_err(crate::Error::LocalStateIo)?
-            .sync_all()
-            .map_err(crate::Error::LocalStateIo)?;
+        fs::remove_file(self.path(&node.name, "json")?)?;
+        File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 
     pub fn remove_key(&self, node: &RemoteNode) -> Result<()> {
         // Only remove generated files inside our directory, even if state was edited.
-        ensure!(
-            node.key_path.parent() == Some(self.directory.as_path()),
-            "key is outside the remote state directory"
-        );
+        if node.key_path.parent() != Some(self.directory.as_path()) {
+            return Err(crate::Error::other(
+                "key is outside the remote state directory",
+            ));
+        }
         for path in [
             node.key_path.clone(),
             node.key_path.with_extension("pub"),
@@ -135,13 +125,10 @@ impl State {
             match fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(crate::Error::LocalStateIo(error)),
+                Err(error) => return Err(error.into()),
             }
         }
-        File::open(&self.directory)
-            .map_err(crate::Error::LocalStateIo)?
-            .sync_all()
-            .map_err(crate::Error::LocalStateIo)?;
+        File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 }
@@ -149,13 +136,12 @@ impl State {
 /// Replace a file atomically; the temporary file is private to this user.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)
-        .map_err(crate::Error::LocalStateIo)?;
-    file.write_all(bytes).map_err(crate::Error::LocalStateIo)?;
-    file.as_file()
-        .sync_all()
-        .map_err(crate::Error::LocalStateIo)?;
-    file.persist(path)
-        .map_err(|error| crate::Error::LocalStateIo(error.error))?;
+    let Some(parent) = path.parent() else {
+        return Err(crate::Error::other("path has no parent"));
+    };
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path)?;
     Ok(())
 }

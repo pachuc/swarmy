@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{Result, cloud_bail as bail};
+use crate::Result;
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 use super::{
@@ -111,6 +111,9 @@ impl Cloud for FakeCloud {
             return std::future::ready(Err(crate::Error::Aws {
                 operation: "ec2:RunInstances".into(),
                 code: Some("InvalidParameterValue".into()),
+                message: Some(
+                    "Invalid IAM Instance Profile name: fixture-profile".into(),
+                ),
                 source: Box::new(std::io::Error::other(
                     "InvalidParameterValue: Invalid IAM Instance Profile name",
                 )),
@@ -174,8 +177,8 @@ impl Cloud for FakeCloud {
     }
     fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_bucket.get() {
-            return std::future::ready(Err(crate::cloud_error!(
-                "bucket belongs to another remote"
+            return std::future::ready(Err(crate::Error::other(
+                "bucket belongs to another remote",
             )));
         }
         self.tagged.borrow_mut().push(format!("bucket {name}"));
@@ -183,7 +186,7 @@ impl Cloud for FakeCloud {
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_role.get() {
-            return std::future::ready(Err(crate::cloud_error!("role belongs to another remote")));
+            return std::future::ready(Err(crate::Error::other("role belongs to another remote")));
         }
         self.tagged
             .borrow_mut()
@@ -253,7 +256,7 @@ impl Host for FakeHost {
             .borrow_mut()
             .push((node.name.clone(), address.into(), recipe.to_owned()));
         std::future::ready(if self.fail_image {
-            Err(crate::cloud_error!("image build failed"))
+            Err(crate::Error::other("image build failed"))
         } else {
             Ok(())
         })
@@ -272,11 +275,11 @@ impl Host for FakeHost {
         self.provisioned.borrow_mut().push(node.clone());
         self.primaries.borrow_mut().push(primary.cloned());
         if self.fail {
-            return std::future::ready(Err(crate::cloud_error!("SSH failed")));
+            return std::future::ready(Err(crate::Error::other("SSH failed")));
         }
         if self.nvme_failure {
-            return std::future::ready(Err(crate::cloud_error!(
-                "An instance with local NVMe storage is required"
+            return std::future::ready(Err(crate::Error::other(
+                "An instance with local NVMe storage is required",
             )));
         }
         std::future::ready(Ok(node.public_ip.clone()))
@@ -1690,7 +1693,7 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
 }
 
 #[tokio::test]
-async fn down_requires_confirmation_for_json_and_non_terminal_calls() {
+async fn down_plan_reports_owned_resources_for_confirmation() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(dir.path()).unwrap();
     let cloud = FakeCloud::default();
@@ -1713,16 +1716,15 @@ async fn down_requires_confirmation_for_json_and_non_terminal_calls() {
     .await
     .unwrap();
     let node = state.require("cleanup").unwrap();
-    assert!(
-        down::confirm(&cloud, &state, &node, false, false, true)
-            .await
-            .is_err()
-    );
-    assert!(
-        down::confirm(&cloud, &state, &node, true, false, true)
-            .await
-            .is_ok()
-    );
+    // The library reports what would be deleted; the CLI prints the wording
+    // and prompts (including the --json and terminal refusals).
+    let plan = down::plan(&cloud, &state, &node)
+        .await
+        .unwrap()
+        .expect("owned bucket and role need confirmation");
+    assert_eq!(plan.bucket.as_deref(), Some("test-bucket"));
+    assert_eq!(plan.profile.as_deref(), Some("swarmy-cleanup"));
+    assert_eq!(plan.role.as_deref(), Some("swarmy-cleanup"));
 }
 
 #[tokio::test]
@@ -1794,9 +1796,10 @@ async fn down_keeps_mixed_ownership_iam_pairs() {
         // A missing bucket must not make a partially owned IAM pair deletable.
         cloud.absent_bucket.set(true);
         assert!(
-            down::confirm(&cloud, &state, &node, false, false, true)
+            down::plan(&cloud, &state, &node)
                 .await
-                .is_ok()
+                .unwrap()
+                .is_none()
         );
         cloud.observations.borrow_mut().push_back(None);
         down::run(&cloud, &state, &node, Duration::ZERO, false)
@@ -1898,7 +1901,9 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         ["bucket test-bucket", "role and profile swarmy-cleanup"]
     );
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| bail!("no"))
+        down::tag_with_confirmation(&cloud, &state, &node, |_, _| {
+            Err(crate::Error::other("no"))
+        })
             .await
             .is_err()
     );
@@ -2024,12 +2029,12 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
     .unwrap();
     let node = state.require("cleanup").unwrap();
     cloud.deny_tag_read.set(true);
-    let error = down::confirm(&cloud, &state, &node, false, false, false)
+    let error = down::plan(&cloud, &state, &node)
         .await
         .map_err(down::actionable_error)
         .unwrap_err();
     assert!(format!("{error:#}").contains("s3:GetBucketTagging"));
-    assert!(format!("{error:#}").contains("local remote state is retained"));
+    assert!(format!("{error:#}").contains("missing permission"));
     assert!(state.read("cleanup").unwrap().is_some());
     cloud.deny_tag_read.set(false);
     cloud.deny_version_list.set(true);
@@ -2068,9 +2073,10 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
     .unwrap();
     let node = state.require("cleanup").unwrap();
     assert!(
-        down::confirm(&cloud, &state, &node, false, false, true)
+        down::plan(&cloud, &state, &node)
             .await
-            .is_ok()
+            .unwrap()
+            .is_none()
     );
     cloud.observations.borrow_mut().push_back(None);
     down::run(&cloud, &state, &node, Duration::ZERO, false)

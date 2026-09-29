@@ -1,7 +1,5 @@
 use super::ssh;
-#[cfg(test)]
-use crate::cloud_bail as bail;
-use crate::{Result, cloud_ensure as ensure};
+use crate::Result;
 use serde::Serialize;
 use std::{future::Future, path::Path, time::Duration};
 use swarmy_config::{RemoteNode, RemoteProfile, RemoteServices, Settings};
@@ -287,15 +285,17 @@ async fn inventory(
         .url
         .clone()
         .unwrap_or_else(|| format!("http://{}", settings.api.listen));
-    ensure!(
-        !settings.api.token.is_empty(),
-        "no [api] token configured for remote {name}"
-    );
+    if settings.api.token.is_empty() {
+        return Err(crate::Error::other(format!(
+            "no [api] token configured for remote {name}"
+        )));
+    }
     let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
         .await
-        .map_err(|_| crate::cloud_error!("API at {endpoint}: request timed out"))?
-        .map_err(|error| crate::cloud_error!("API at {endpoint}: {error}"))?;
+        .map_err(|_| {
+            crate::Error::other(format!("API at {endpoint}: request timed out"))
+        })??;
     let mut images = Vec::new();
     let mut after = None;
     loop {
@@ -304,8 +304,9 @@ async fn inventory(
             client.images(after.as_deref(), 256),
         )
         .await
-        .map_err(|_| crate::cloud_error!("API at {endpoint}: request timed out"))?
-        .map_err(|error| crate::cloud_error!("API at {endpoint}: {error}"))?;
+        .map_err(|_| {
+            crate::Error::other(format!("API at {endpoint}: request timed out"))
+        })??;
         if page.is_empty() {
             break;
         }
@@ -314,7 +315,7 @@ async fn inventory(
                 .id
                 .parse::<ulid::Ulid>()
                 .map(swarmy_core::ManifestId::from_ulid)
-                .map_err(|_| crate::cloud_error!("invalid manifest id"))?;
+                .map_err(|_| crate::Error::other("invalid manifest id"))?;
             after = Some(format!("{}:{}", image.name, image.tag));
             images.push(ImageRecord {
                 name: image.name,
@@ -329,11 +330,11 @@ async fn inventory(
             .node_id
             .parse::<ulid::Ulid>()
             .map(swarmy_core::NodeId::from_ulid)
-            .map_err(|_| crate::cloud_error!("invalid node id"))?;
+            .map_err(|_| crate::Error::other("invalid node id"))?;
         let last_heartbeat: jiff::Timestamp = node
             .last_heartbeat
             .parse()
-            .map_err(|_| crate::cloud_error!("invalid heartbeat"))?;
+            .map_err(|_| crate::Error::other("invalid heartbeat"))?;
         records.push((
             NodeRecord {
                 node_id,
@@ -480,7 +481,10 @@ mod tests {
         .await;
         assert!(down.image_error.unwrap().contains("disconnected"));
         assert!(down.instance_state.starts_with("unknown"));
-        let failed = inspect(&node, true, true, || async { bail!("fake failure") }).await;
+        let failed = inspect(&node, true, true, || async {
+            Err(crate::Error::other("fake failure"))
+        })
+        .await;
         assert!(failed.image_error.unwrap().contains("fake failure"));
         assert!(failed.registration_error.unwrap().contains("fake failure"));
     }

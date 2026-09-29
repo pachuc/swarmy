@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
+use crate::Result;
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Host, MachineSpec, NodeShape, key_name, state::State, wait_running};
@@ -25,27 +25,24 @@ pub async fn run(
         shape,
     } = request;
     let mut primary = state.require(name)?;
-    let mut settings = primary.launch_settings.clone().context(
-        "remote has no saved launch configuration; recreate it with remote up before adding nodes",
-    )?;
+    let Some(mut settings) = primary.launch_settings.clone() else {
+        return Err(crate::Error::other(
+            "remote has no saved launch configuration; recreate it with remote up before adding nodes",
+        ));
+    };
     shape.apply(&mut settings)?;
-    ensure!(
-        !primary.instance_id.is_empty(),
-        "first node has not launched"
-    );
-    let _: std::net::Ipv4Addr = primary
-        .private_ip
-        .parse()
-        .context("invalid private address")?;
-    ensure!(
-        settings.region == primary.region,
-        "saved launch region differs from remote region"
-    );
-    let image = settings
-        .aws
-        .image
-        .clone()
-        .context("saved launch image is missing")?;
+    if primary.instance_id.is_empty() {
+        return Err(crate::Error::other("first node has not launched"));
+    }
+    let _: std::net::Ipv4Addr = primary.private_ip.parse()?;
+    if settings.region != primary.region {
+        return Err(crate::Error::other(
+            "saved launch region differs from remote region",
+        ));
+    }
+    let Some(image) = settings.aws.image.clone() else {
+        return Err(crate::Error::other("saved launch image is missing"));
+    };
     let node = RemoteNode {
         name: format!("{name}-{}", primary.nodes.len() + 2),
         region: primary.region.clone(),
@@ -103,6 +100,11 @@ pub async fn run(
         Ok::<_, crate::Error>(())
     }
     .await;
-    result
-        .with_context(|| format!("remote add-node failed; cleanup with swarmy remote down {name}"))
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            cloud_err!("remote add-node failed; cleanup with swarmy remote down {name}");
+            Err(error)
+        }
+    }
 }

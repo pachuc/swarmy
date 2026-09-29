@@ -59,9 +59,16 @@ pub use command::{Command, select};
 mod remote;
 mod services;
 #[cfg(feature = "remote")]
-pub use remote::{Aws, ServiceOptions, for_settings, run};
+pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, run};
 
 /// Failures returned to clients of the remote provisioning entry point.
+///
+/// Only failures callers act on have their own variant: missing permissions
+/// (retried or reported with the operation name), AWS failures (reported with
+/// the operation, code, and message from the SDK metadata), missing or
+/// duplicate state, SSH failures (reported with the attempted command), and
+/// control-plane client failures. Everything else is an arbitrary cause kept
+/// as its source for the binary to render with `{:#}`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unknown cloud provider '{0}': only 'aws' is supported")]
@@ -70,136 +77,81 @@ pub enum Error {
     NotFound(String),
     #[error("remote node {0} already exists; run swarmy remote down {0} first")]
     AlreadyExists(String),
-    #[error("{operation}: {source}")]
+    #[error("missing permission for {operation}")]
     MissingPermission {
         operation: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("{operation}: {source}")]
+    #[error("{operation}: {code:?} {message:?}")]
     Aws {
         operation: String,
         code: Option<String>,
+        message: Option<String>,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("{0}")]
-    Message(String),
-    #[error("{command}")]
+    #[error("ssh {command} failed")]
     Ssh {
         command: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("{command} failed with {status}")]
+    #[error("ssh {command} failed with {status}")]
     SshStatus {
         command: String,
         status: std::process::ExitStatus,
     },
     #[error(transparent)]
-    LocalStateIo(std::io::Error),
-    #[error(transparent)]
-    Utf8(#[from] std::string::FromUtf8Error),
-    #[error(transparent)]
     Client(#[from] swarmy_client::Error),
-    #[cfg(feature = "remote")]
     #[error(transparent)]
-    AwsBuild(#[from] aws_sdk_ec2::error::BuildError),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Config(#[from] swarmy_config::Error),
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-    #[error(transparent)]
-    Toml(#[from] toml::de::Error),
-    #[error("{message}: {source}")]
-    Context {
-        message: String,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Error {
+    /// An arbitrary failure with no structured cause to preserve.
+    pub(crate) fn other(message: impl Into<String>) -> Self {
+        Self::Other(Box::new(std::io::Error::other(message.into())))
+    }
+
     #[cfg(feature = "remote")]
     fn permission(&self) -> Option<&str> {
         match self {
             Self::MissingPermission { operation, .. } => Some(operation),
-            Self::Context { source, .. } => {
-                source.downcast_ref::<Self>().and_then(Self::permission)
+            _ => None,
+        }
+    }
+}
+
+macro_rules! other_from {
+    ($($t:ty),* $(,)?) => {
+        $(impl From<$t> for Error {
+            fn from(error: $t) -> Self {
+                Self::Other(Box::new(error))
             }
-            _ => None,
-        }
-    }
-
-    #[cfg(feature = "remote")]
-    fn aws_code(&self, operation_name: &str) -> Option<&str> {
-        match self {
-            Self::Aws {
-                operation, code, ..
-            } if operation == operation_name => code.as_deref(),
-            Self::Context { source, .. } => source
-                .downcast_ref::<Self>()
-                .and_then(|error| error.aws_code(operation_name)),
-            _ => None,
-        }
-    }
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// Add context to an error without discarding the underlying source.
-pub trait ErrorContext<T> {
-    /// # Errors
-    /// Returns the source error with the supplied operation, or an absent-value error.
-    fn context(self, message: impl Into<String>) -> Result<T>;
-    /// # Errors
-    /// Returns the source error with a lazily constructed operation, or an absent-value error.
-    fn with_context(self, message: impl FnOnce() -> String) -> Result<T>;
-}
-
-impl<T, E> ErrorContext<T> for std::result::Result<T, E>
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    fn context(self, message: impl Into<String>) -> Result<T> {
-        self.map_err(|source| Error::Context {
-            message: message.into(),
-            source: Box::new(source),
-        })
-    }
-    fn with_context(self, message: impl FnOnce() -> String) -> Result<T> {
-        self.map_err(|source| Error::Context {
-            message: message(),
-            source: Box::new(source),
-        })
-    }
-}
-
-impl<T> ErrorContext<T> for Option<T> {
-    fn context(self, message: impl Into<String>) -> Result<T> {
-        self.ok_or_else(|| Error::Message(message.into()))
-    }
-    fn with_context(self, message: impl FnOnce() -> String) -> Result<T> {
-        self.ok_or_else(|| Error::Message(message()))
-    }
-}
-
-#[macro_export]
-macro_rules! cloud_bail {
-    ($($arg:tt)*) => { return Err($crate::Error::Message(format!($($arg)*))) };
-}
-#[macro_export]
-macro_rules! cloud_ensure {
-    ($condition:expr, $($arg:tt)*) => {
-        if !$condition { $crate::cloud_bail!($($arg)*); }
+        })*
     };
 }
-#[macro_export]
-macro_rules! cloud_error {
-    ($($arg:tt)*) => { $crate::Error::Message(format!($($arg)*)) };
-}
+
+other_from!(
+    std::io::Error,
+    serde_json::Error,
+    toml::de::Error,
+    std::string::FromUtf8Error,
+    std::num::TryFromIntError,
+    swarmy_config::Error,
+    ulid::DecodeError,
+    jiff::Error,
+    tempfile::PersistError,
+    std::path::StripPrefixError,
+    std::net::AddrParseError,
+    tokio::time::error::Elapsed,
+);
+
+#[cfg(feature = "remote")]
+other_from!(aws_sdk_s3::error::BuildError,);
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 use std::future::Future;
 

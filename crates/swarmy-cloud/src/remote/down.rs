@@ -1,22 +1,19 @@
-use std::{
-    io::{self, IsTerminal},
-    time::Duration,
-};
+use std::{io::IsTerminal, time::Duration};
 
-use crate::{Result, cloud_bail as bail, cloud_ensure as ensure};
+use crate::Result;
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Ownership, key_name, state::State};
 
+/// Explain a denied teardown permission without wrapping the typed error.
+/// The CLI prints the same advice when it reports the failure.
 pub(crate) fn actionable_error(error: crate::Error) -> crate::Error {
     if error.permission().is_some() {
-        crate::Error::Context {
-            message: "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained".into(),
-            source: Box::new(error),
-        }
-    } else {
-        error
+        cloud_err!(
+            "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
+        );
     }
+    error
 }
 
 #[derive(Default)]
@@ -47,24 +44,29 @@ fn permission<'a>(error: &crate::Error, default: &'a str, alternate: &'a str) ->
     }
 }
 
-pub async fn confirm(
+/// Owned resources `remote down` would delete. The CLI prints the
+/// confirmation wording and prompts; the library only reports the plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletionPlan {
+    pub bucket: Option<String>,
+    pub profile: Option<String>,
+    pub role: Option<String>,
+}
+
+/// What `remote down` would delete, or `None` when nothing is owned.
+/// Query only: prints nothing and prompts for nothing.
+pub async fn plan(
     cloud: &impl Cloud,
     state: &State,
     node: &RemoteNode,
-    keep_bucket: bool,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
-    if keep_bucket || yes {
-        return Ok(());
-    }
+) -> Result<Option<DeletionPlan>> {
     let Some(bucket) = node.bucket() else {
-        return Ok(());
+        return Ok(None);
     };
     let role = node
         .cloud_settings()
         .instance_profile(&node.name)
-        .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
+        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
     let bucket_status = cloud.bucket_ownership(bucket, &node.name).await?;
     let bucket_owned =
         !state.bucket_shared(&node.name, bucket)? && bucket_status == Ownership::Owned;
@@ -76,43 +78,27 @@ pub async fn confirm(
     let profile_owned = iam_owned && profile == Ownership::Owned;
     let role_owned = iam_owned && role_status == Ownership::Owned;
     if !bucket_owned && !profile_owned && !role_owned {
-        return Ok(());
+        return Ok(None);
     }
-    if json {
-        bail!("remote down --json requires --yes to delete owned resources");
-    }
-    if !io::stdin().is_terminal() {
-        bail!("remote down requires --yes without a terminal");
-    }
-    cloud_out!("Permanently delete these owned resources and their data:");
-    if bucket_owned {
-        cloud_out!("  bucket {bucket} (all objects and versions)");
-    }
-    if profile_owned {
-        cloud_out!("  instance profile {role}");
-    }
-    if role_owned {
-        cloud_out!("  role {role}");
-    }
-    let answer = crate::prompt("Continue? [y/N] ")?;
-    if answer.trim() != "y" && answer.trim() != "yes" {
-        bail!("remote down cancelled");
-    }
-    Ok(())
+    Ok(Some(DeletionPlan {
+        bucket: bucket_owned.then(|| bucket.to_owned()),
+        profile: profile_owned.then(|| role.clone()),
+        role: role_owned.then(|| role.clone()),
+    }))
 }
 
 /// Adoption is deliberately interactive and requires typing every exact resource name.
 pub async fn tag(cloud: &impl Cloud, state: &State, node: &RemoteNode) -> Result<()> {
     tag_with_confirmation(cloud, state, node, |kind, name| {
-        if !io::stdin().is_terminal() {
-            bail!("remote tag requires a terminal");
+        if !std::io::stdin().is_terminal() {
+            return Err(crate::Error::other("remote tag requires a terminal"));
         }
         let answer = crate::prompt(&format!(
             "Type the exact {kind} name {name} to adopt it for remote {}: ",
             node.name
         ))?;
         if answer.trim() != name {
-            bail!("remote tag cancelled");
+            return Err(crate::Error::other("remote tag cancelled"));
         }
         Ok(())
     })
@@ -127,19 +113,21 @@ pub(crate) async fn tag_with_confirmation(
 ) -> Result<()> {
     let bucket = node
         .bucket()
-        .ok_or_else(|| crate::cloud_error!("remote has no bucket"))?;
+        .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
     let role = node
         .cloud_settings()
         .instance_profile(&node.name)
-        .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
-    ensure!(
-        !state.bucket_shared(&node.name, bucket)?,
-        "bucket is also recorded by another remote"
-    );
-    ensure!(
-        !state.role_shared(&node.name, &role)?,
-        "role is also recorded by another remote"
-    );
+        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
+    if state.bucket_shared(&node.name, bucket)? {
+        return Err(crate::Error::other(
+            "bucket is also recorded by another remote",
+        ));
+    }
+    if state.role_shared(&node.name, &role)? {
+        return Err(crate::Error::other(
+            "role is also recorded by another remote",
+        ));
+    }
     for (kind, name) in [
         ("bucket", bucket),
         ("role", role.as_str()),
@@ -190,10 +178,10 @@ pub async fn run(
     }
     report.print();
     if !report.live.is_empty() {
-        bail!(
+        return Err(crate::Error::other(format!(
             "instances {} may still exist; local state retained for retry",
             report.live.join(", ")
-        );
+        )));
     }
     cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
     for current in nodes {
@@ -214,7 +202,7 @@ async fn cleanup_bucket_and_role(
         let role = node
             .cloud_settings()
             .instance_profile(&node.name)
-            .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
+            .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
         if keep_bucket {
             cloud_out!("Kept bucket {bucket} and guarding role and instance profile {role}");
         } else {
@@ -335,5 +323,5 @@ async fn wait_terminated(cloud: &impl Cloud, id: &str, delay: Duration) -> Resul
             Some(_) => tokio::time::sleep(delay).await,
         }
     }
-    bail!("timed out waiting for {id} to terminate")
+    return Err(crate::Error::other(format!("timed out waiting for {id} to terminate")))
 }

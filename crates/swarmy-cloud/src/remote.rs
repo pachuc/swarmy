@@ -3,7 +3,7 @@ use super::{
     Cloud, Command, Host, Machine, MachineSpec, ObjectBucket, Ownership, RemoteNode,
     RemoteSettings, Result, services, ssh,
 };
-use crate::{cloud_bail as bail, cloud_ensure as ensure};
+
 use state::State;
 use std::{future::Future, path::PathBuf, time::Duration};
 use swarmy_config::Settings;
@@ -23,6 +23,7 @@ mod upgrade;
 
 pub use super::services::Options as ServiceOptions;
 pub use aws::Aws;
+pub use down::DeletionPlan;
 
 /// Build the provider selected by the remote settings.
 ///
@@ -36,24 +37,41 @@ pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws,
     Ok(Aws::new(&settings.region).await)
 }
 
+/// What a `swarmy remote` invocation did. `NeedsConfirmation` carries what
+/// `remote down` would delete; the CLI prints the wording and prompts, then
+/// reruns with confirmation.
+pub enum RunOutcome {
+    Completed,
+    NeedsConfirmation(DeletionPlan),
+}
+
 /// Run the `swarmy remote` subcommand.
 ///
 /// # Errors
 ///
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
-pub async fn run(command: Command, json: bool) -> std::result::Result<(), crate::Error> {
+pub async fn run(
+    command: Command,
+    json: bool,
+) -> std::result::Result<RunOutcome, crate::Error> {
     run_inner(command, json).await
 }
 
-async fn run_inner(command: Command, json: bool) -> Result<()> {
+async fn run_inner(command: Command, json: bool) -> Result<RunOutcome> {
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
     let state = State::open(&state_dir.join("remote"))?;
     match command {
-        Command::Up { .. } => Box::pin(run_up(&state, loaded.settings, command)).await,
-        Command::AddNode { .. } => Box::pin(run_add_node(&state, loaded.settings, command)).await,
+        Command::Up { .. } => {
+            Box::pin(run_up(&state, loaded.settings, command)).await?;
+            Ok(RunOutcome::Completed)
+        }
+        Command::AddNode { .. } => {
+            Box::pin(run_add_node(&state, loaded.settings, command)).await?;
+            Ok(RunOutcome::Completed)
+        }
         Command::Upgrade {
             name,
             services_only,
@@ -65,7 +83,8 @@ async fn run_inner(command: Command, json: bool) -> Result<()> {
                 &name,
                 upgrade::Options::new(allow_dirty, services_only, drain_timeout, json),
             )
-            .await
+            .await?;
+            Ok(RunOutcome::Completed)
         }
         Command::Down {
             name,
@@ -75,17 +94,23 @@ async fn run_inner(command: Command, json: bool) -> Result<()> {
             let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
                 cloud_out!("No remote node named {name}");
-                return Ok(());
+                return Ok(RunOutcome::Completed);
             };
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;
-            down::confirm(&cloud, &state, &node, keep_bucket, yes, json)
-                .await
-                .map_err(down::actionable_error)?;
+            if !keep_bucket && !yes {
+                if let Some(plan) = down::plan(&cloud, &state, &node)
+                    .await
+                    .map_err(down::actionable_error)?
+                {
+                    return Ok(RunOutcome::NeedsConfirmation(plan));
+                }
+            }
             down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket)
                 .await
-                .map_err(down::actionable_error)
+                .map_err(down::actionable_error)?;
+            Ok(RunOutcome::Completed)
         }
         Command::Tag { name } => {
             let _lock = state.lock()?;
@@ -94,12 +119,25 @@ async fn run_inner(command: Command, json: bool) -> Result<()> {
             settings.region.clone_from(&node.region);
             down::tag(&for_settings(&settings).await?, &state, &node)
                 .await
-                .map_err(down::actionable_error)
+                .map_err(down::actionable_error)?;
+            Ok(RunOutcome::Completed)
         }
-        Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
-        Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
-        Command::Logs { name } => logs::run(&state, &name).await,
-        Command::Status => status::run(json).await,
+        Command::Connect { name } => {
+            connect::run(&state_dir, &state, &name, json).await?;
+            Ok(RunOutcome::Completed)
+        }
+        Command::Disconnect { name } => {
+            disconnect::run(&state_dir, &state, &name).await?;
+            Ok(RunOutcome::Completed)
+        }
+        Command::Logs { name } => {
+            logs::run(&state, &name).await?;
+            Ok(RunOutcome::Completed)
+        }
+        Command::Status => {
+            status::run(json).await?;
+            Ok(RunOutcome::Completed)
+        }
     }
 }
 
@@ -180,8 +218,8 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
     let node = state.require(&name)?;
     let host = ssh::Ssh::discover()?;
     let launch = node.launch_settings.clone().ok_or_else(|| {
-        crate::cloud_error!(
-            "remote has no saved launch configuration; recreate it with remote up before adding nodes"
+        crate::Error::other(
+            "remote has no saved launch configuration; recreate it with remote up before adding nodes",
         )
     })?;
     let cloud = for_settings(&launch).await?;
@@ -212,7 +250,9 @@ async fn guard(name: &str, task: impl Future<Output = Result<()>>) -> Result<()>
         result = Box::pin(task) => result,
         result = tokio::signal::ctrl_c() => {
             result?;
-            bail!("interrupted; run swarmy remote down {name} to clean up")
+            return Err(crate::Error::other(format!(
+                "interrupted; run swarmy remote down {name} to clean up"
+            )));
         }
     }
 }
@@ -231,11 +271,12 @@ impl NodeShape {
         if let Some(disk_gb) = self.disk_gb {
             settings.disk_gb = disk_gb;
         }
-        ensure!(
-            !settings.aws.instance_type.is_empty(),
-            "instance type must not be empty"
-        );
-        ensure!(settings.disk_gb > 0, "root disk size must be positive");
+        if settings.aws.instance_type.is_empty() {
+            return Err(crate::Error::other("instance type must not be empty"));
+        }
+        if settings.disk_gb == 0 {
+            return Err(crate::Error::other("root disk size must be positive"));
+        }
         Ok(())
     }
 }
@@ -275,29 +316,50 @@ where
 }
 
 fn profile_not_propagated(error: &crate::Error) -> bool {
-    error.aws_code("ec2:RunInstances") == Some("InvalidParameterValue")
+    // Only the not-yet-propagated identity case retries: the compute API
+    // rejects the launch with InvalidParameterValue naming the instance
+    // profile until the identity system has propagated it.
+    matches!(
+        error,
+        crate::Error::Aws {
+            operation,
+            code: Some(code),
+            message: Some(message),
+            ..
+        } if operation == "ec2:RunInstances"
+            && code == "InvalidParameterValue"
+            && message.contains("Invalid IAM Instance Profile")
+    )
 }
 
 pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {
     for _ in 0..120 {
         if let Some(machine) = cloud.get(id).await? {
-            ensure!(machine.id == id, "provider returned a different machine");
+            if machine.id != id {
+                return Err(crate::Error::other("provider returned a different machine"));
+            }
             match machine.state.as_str() {
                 "running" if !machine.public_ip.is_empty() && !machine.private_ip.is_empty() => {
                     return Ok(machine);
                 }
                 "pending" | "running" => {}
-                state => bail!("machine {id} entered {state} while waiting for running"),
+                state => {
+                    return Err(crate::Error::other(format!(
+                        "machine {id} entered {state} while waiting for running"
+                    )));
+                }
             }
         }
         tokio::time::sleep(delay).await;
     }
-    bail!("timed out waiting for machine {id} to run with an IP address")
+    Err(crate::Error::other(format!(
+        "timed out waiting for machine {id} to run with an IP address"
+    )))
 }
 
 pub(crate) fn key_name(node: &RemoteNode) -> Result<&str> {
     node.key_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| crate::cloud_error!("invalid key path in remote state"))
+        .ok_or_else(|| crate::Error::other("invalid key path in remote state"))
 }

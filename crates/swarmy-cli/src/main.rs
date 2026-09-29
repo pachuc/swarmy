@@ -264,7 +264,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         #[cfg(feature = "remote")]
-        Command::Remote { command } => Box::pin(swarmy_cloud::run(command, cli.json)).await?,
+        Command::Remote { command } => remote(command, cli.json).await?,
         #[cfg(not(feature = "remote"))]
         Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
         Command::Dev { .. } => unreachable!("dev commands run without the database network"),
@@ -341,5 +341,90 @@ fn run_auth_tool(
         anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
     })?;
     anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
+    Ok(())
+}
+
+/// Run a `swarmy remote` subcommand. The library reports what `remote down`
+/// would delete; only the CLI prints the confirmation wording and prompts.
+#[cfg(feature = "remote")]
+async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let name = remote_name(&command);
+    // Keep the deletion target before the command moves into the first run.
+    let down = match &command {
+        swarmy_cloud::Command::Down {
+            name, keep_bucket, ..
+        } => Some((name.clone(), *keep_bucket)),
+        _ => None,
+    };
+    match Box::pin(swarmy_cloud::run(command, json))
+        .await
+        .with_context(|| format!("swarmy remote {name} failed"))?
+    {
+        swarmy_cloud::RunOutcome::Completed => Ok(()),
+        swarmy_cloud::RunOutcome::NeedsConfirmation(plan) => {
+            let Some((node, keep_bucket)) = down else {
+                anyhow::bail!("remote down confirmation expired; rerun the command");
+            };
+            confirm_deletion(&plan, json).await?;
+            Box::pin(swarmy_cloud::run(
+                swarmy_cloud::Command::Down {
+                    name: node,
+                    keep_bucket,
+                    yes: true,
+                },
+                json,
+            ))
+            .await
+            .with_context(|| format!("swarmy remote {name} failed"))?;
+            Ok(())
+        }
+    }
+}
+
+/// The subcommand name for edge error context.
+#[cfg(feature = "remote")]
+fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
+    match command {
+        swarmy_cloud::Command::Up { .. } => "up",
+        swarmy_cloud::Command::AddNode { .. } => "add-node",
+        swarmy_cloud::Command::Upgrade { .. } => "upgrade",
+        swarmy_cloud::Command::Down { .. } => "down",
+        swarmy_cloud::Command::Tag { .. } => "tag",
+        swarmy_cloud::Command::Connect { .. } => "connect",
+        swarmy_cloud::Command::Disconnect { .. } => "disconnect",
+        swarmy_cloud::Command::Logs { .. } => "logs",
+        swarmy_cloud::Command::Status => "status",
+    }
+}
+
+/// Print what `remote down` would delete and prompt, then rerun confirmed.
+/// The rerun cannot need confirmation again: it passes `--yes`.
+#[cfg(feature = "remote")]
+async fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
+    use std::io::{IsTerminal, Write};
+    if json {
+        anyhow::bail!("remote down --json requires --yes to delete owned resources");
+    }
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("remote down requires --yes without a terminal");
+    }
+    println!("Permanently delete these owned resources and their data:");
+    if let Some(bucket) = &plan.bucket {
+        println!("  bucket {bucket} (all objects and versions)");
+    }
+    if let Some(profile) = &plan.profile {
+        println!("  instance profile {profile}");
+    }
+    if let Some(role) = &plan.role {
+        println!("  role {role}");
+    }
+    print!("Continue? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if answer.trim() != "y" && answer.trim() != "yes" {
+        anyhow::bail!("remote down cancelled");
+    }
     Ok(())
 }
