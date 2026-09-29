@@ -50,50 +50,81 @@ pub enum Error {
     Export(usize),
 }
 
-mod secs {
+/// One duration rule for TOML and environment: every duration is positive.
+/// TOML keys carry their unit (`*_secs` or `*_ms`); environment values use
+/// the same unit as the variable suffix. Both paths share this module.
+mod duration {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub(crate) fn serialize<S: Serializer>(
-        value: &Duration,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        value.as_secs().serialize(serializer)
+    #[derive(Clone, Copy)]
+    pub(crate) enum Unit {
+        Secs,
+        Millis,
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Duration, D::Error> {
-        let secs = u64::deserialize(deserializer)?;
-        if secs == 0 {
-            return Err(serde::de::Error::custom("duration must be positive"));
+    fn ensure_positive(value: u64) -> Result<u64, String> {
+        if value == 0 {
+            return Err("duration must be positive".into());
         }
-        Ok(Duration::from_secs(secs))
-    }
-}
-
-mod ms {
-    use std::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(crate) fn serialize<S: Serializer>(
-        value: &Duration,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let millis = u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
-        millis.serialize(serializer)
+        Ok(value)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Duration, D::Error> {
-        let millis = u64::deserialize(deserializer)?;
-        if millis == 0 {
-            return Err(serde::de::Error::custom("duration must be positive"));
+    pub(crate) mod secs {
+        use super::*;
+
+        pub(crate) fn serialize<S: Serializer>(
+            value: &Duration,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value.as_secs().serialize(serializer)
         }
-        Ok(Duration::from_millis(millis))
+
+        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Duration, D::Error> {
+            let secs = u64::deserialize(deserializer)?;
+            super::ensure_positive(secs).map_err(serde::de::Error::custom)?;
+            Ok(Duration::from_secs(secs))
+        }
+    }
+
+    pub(crate) mod ms {
+        use super::*;
+
+        pub(crate) fn serialize<S: Serializer>(
+            value: &Duration,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            let millis = u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
+            millis.serialize(serializer)
+        }
+
+        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Duration, D::Error> {
+            let millis = u64::deserialize(deserializer)?;
+            super::ensure_positive(millis).map_err(serde::de::Error::custom)?;
+            Ok(Duration::from_millis(millis))
+        }
+    }
+
+    /// Parse an environment value in the given unit, rejecting zero.
+    pub(crate) fn parse(value: &str, unit: Unit) -> Result<Duration, ()> {
+        let raw: u64 = value.parse().map_err(|_| ())?;
+        ensure_positive(raw).map_err(|_| ())?;
+        Ok(match unit {
+            Unit::Secs => Duration::from_secs(raw),
+            Unit::Millis => Duration::from_millis(raw),
+        })
+    }
+
+    pub(crate) fn format(value: Duration, unit: Unit) -> String {
+        match unit {
+            Unit::Secs => value.as_secs().to_string(),
+            Unit::Millis => value.as_millis().to_string(),
+        }
     }
 }
 
@@ -134,7 +165,7 @@ const DEFAULT_NODE_CAPACITY: swarmy_core::NodeCapacity = swarmy_core::NodeCapaci
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VolumeSnapshots {
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub period_secs: Duration,
     pub retention: std::num::NonZeroUsize,
 }
@@ -151,9 +182,9 @@ impl Default for VolumeSnapshots {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GarbageCollection {
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub grace_secs: Duration,
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub interval_secs: Duration,
     pub filter_bytes: std::num::NonZeroUsize,
     pub batch_size: std::num::NonZeroUsize,
@@ -163,11 +194,11 @@ pub struct GarbageCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub max_wait_secs: Duration,
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub max_backoff_secs: Duration,
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub gateway_wait_secs: Duration,
     pub default_route: Option<String>,
 }
@@ -257,7 +288,7 @@ impl Default for S3Settings {
 pub struct BusSettings {
     pub nats_url: String,
     pub prefix: String,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub ack_wait_ms: Duration,
     pub max_deliver: u64,
 }
@@ -294,9 +325,9 @@ impl BusSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct WorkerSettings {
     pub partitions: Partitions,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub lease_ms: Duration,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub recovery_interval_ms: Duration,
     pub kill_point: Option<String>,
 }
@@ -316,13 +347,13 @@ impl Default for WorkerSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerSettings {
     pub partitions: Partitions,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub scan_interval_ms: Duration,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub resend_interval_ms: Duration,
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub ephemeral_retention_secs: Duration,
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub placement_lease_secs: Duration,
 }
 impl Default for SchedulerSettings {
@@ -358,7 +389,7 @@ pub struct NodeSettings {
     pub capacity: swarmy_core::NodeCapacity,
     /// When set, advertise RAM minus this reserve as sandbox memory.
     pub memory_reserve_mib: Option<u64>,
-    #[serde(with = "ms")]
+    #[serde(with = "duration::ms")]
     pub heartbeat_interval_ms: Duration,
 }
 impl Default for NodeSettings {
@@ -497,7 +528,7 @@ pub struct Settings {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxSettings {
-    #[serde(with = "secs")]
+    #[serde(with = "duration::secs")]
     pub idle_secs: Duration,
     pub scratch_idle_days: u64,
     pub scratch_high_water: u8,
@@ -762,7 +793,8 @@ impl Settings {
     ) -> Result<(), Error> {
         for entry in ENV_TABLE {
             if let Some(value) = environment.get(entry.name) {
-                (entry.apply)(self, value, environment)?;
+                (entry.apply)(self, value, environment)
+                    .map_err(|()| Error::Environment(entry.name.into()))?;
             }
         }
         self.validate()?;
@@ -823,536 +855,105 @@ struct EnvEntry {
     format: EnvFormat,
 }
 
-type EnvApply = fn(&mut Settings, &str, &BTreeMap<String, String>) -> Result<(), Error>;
+type EnvApply = fn(&mut Settings, &str, &BTreeMap<String, String>) -> Result<(), ()>;
 type EnvFormat = fn(&Settings) -> Option<String>;
+
+macro_rules! e {
+    ($name:literal, $apply:expr, $format:expr) => {
+        EnvEntry {
+            name: $name,
+            apply: $apply,
+            format: $format,
+        }
+    };
+}
 
 /// One table drives both `apply_environment` and `environment`: each variable
 /// is one entry with its setter and formatter. No variable was removed;
 /// every entry below is read by at least one service or test.
+#[rustfmt::skip]
 static ENV_TABLE: &[EnvEntry] = &[
-    EnvEntry {
-        name: "SWARMY_STATE_DIR",
-        apply: |s, v, _| assign(&mut s.state_dir, v, "SWARMY_STATE_DIR"),
-        format: |s| Some(s.state_dir.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_REMOTE",
-        apply: |s, v, _| {
-            s.remote.profile = Some(v.into());
-            Ok(())
-        },
-        format: |s| s.remote.profile.clone(),
-    },
-    EnvEntry {
-        name: "SWARMY_FDB_CLUSTER_FILE",
-        apply: |s, v, _| assign(&mut s.store.cluster_file, v, "SWARMY_FDB_CLUSTER_FILE"),
-        format: |s| Some(s.store.cluster_file.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_NATS_URL",
-        apply: |s, v, _| assign(&mut s.bus.nats_url, v, "SWARMY_NATS_URL"),
-        format: |s| Some(s.bus.nats_url.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_ENDPOINT",
-        apply: |s, v, _| assign(&mut s.s3.endpoint, v, "SWARMY_S3_ENDPOINT"),
-        format: |s| Some(s.s3.endpoint.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_ACCESS_KEY",
-        apply: |s, v, _| assign(&mut s.s3.access_key, v, "SWARMY_S3_ACCESS_KEY"),
-        format: |s| Some(s.s3.access_key.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_SECRET_KEY",
-        apply: |s, v, _| assign(&mut s.s3.secret_key, v, "SWARMY_S3_SECRET_KEY"),
-        format: |s| Some(s.s3.secret_key.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_BUCKET",
-        apply: |s, v, _| assign(&mut s.s3.bucket, v, "SWARMY_S3_BUCKET"),
-        format: |s| Some(s.s3.bucket.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_PREFIX",
-        apply: |s, v, _| assign(&mut s.s3.prefix, v, "SWARMY_S3_PREFIX"),
-        format: |s| Some(s.s3.prefix.as_str().into()),
-    },
-    EnvEntry {
-        name: "SWARMY_S3_REGION",
-        apply: |s, v, _| assign(&mut s.s3.region, v, "SWARMY_S3_REGION"),
-        format: |s| Some(s.s3.region.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_STORE_DIRECTORY",
-        apply: |s, v, _| assign(&mut s.store.directory, v, "SWARMY_STORE_DIRECTORY"),
-        format: |s| Some(s.store.directory.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_BUS_PREFIX",
-        apply: |s, v, _| assign(&mut s.bus.prefix, v, "SWARMY_BUS_PREFIX"),
-        format: |s| Some(s.bus.prefix.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_API_URL",
-        apply: |s, v, _| {
-            s.api.url = Some(v.into());
-            Ok(())
-        },
-        format: |s| s.api.url.clone(),
-    },
-    EnvEntry {
-        name: "SWARMY_API_TOKEN",
-        apply: |s, v, _| assign(&mut s.api.token, v, "SWARMY_API_TOKEN"),
-        format: |s| Some(s.api.token.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_API_LISTEN",
-        apply: |s, v, _| assign(&mut s.api.listen, v, "SWARMY_API_LISTEN"),
-        format: |s| Some(s.api.listen.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_PROVIDER",
-        apply: |s, v, env| {
-            set_provider(s, v, env);
-            Ok(())
-        },
-        format: |s| Some(s.selection.provider.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_PROVIDERS",
-        apply: |s, v, _| {
-            set_providers(s, v);
-            Ok(())
-        },
-        format: |s| {
-            Some(
-                s.selection
-                    .providers
-                    .as_ref()
-                    .map_or_else(String::new, |ids| ids.join(",")),
-            )
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_CUSTOM_PROVIDERS",
-        apply: |s, v, _| set_custom_providers(s, v),
-        format: |s| {
-            Some(
-                serde_json::to_string(&s.selection.custom_providers)
-                    .expect("custom providers serialize"),
-            )
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_MODELS",
-        apply: |s, v, _| set_models(s, v),
-        format: |s| {
-            Some(serde_json::to_string(&s.selection.models).expect("catalog models serialize"))
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_MODEL",
-        apply: |s, v, _| assign(&mut s.selection.model, v, "SWARMY_MODEL"),
-        format: |s| Some(s.selection.model.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_DEFAULT_IMAGE",
-        apply: |s, v, _| {
-            assign_opt_string(&mut s.selection.default_image, v);
-            Ok(())
-        },
-        format: |s| Some(s.selection.default_image.clone().unwrap_or_default()),
-    },
-    EnvEntry {
-        name: "SWARMY_REASONING_EFFORT",
-        apply: |s, v, _| assign(&mut s.selection.effort, v, "SWARMY_REASONING_EFFORT"),
-        format: |s| Some(s.selection.effort.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_CHATGPT_AUTH",
-        apply: |s, v, _| assign(&mut s.selection.credential_file, v, "SWARMY_CHATGPT_AUTH"),
-        format: |s| Some(s.selection.credential_file.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_SYSTEM_PROMPT",
-        apply: |s, v, _| assign(&mut s.context.system_prompt, v, "SWARMY_SYSTEM_PROMPT"),
-        format: |s| Some(s.context.system_prompt.clone()),
-    },
-    EnvEntry {
-        name: "SWARMY_SUMMARIZE_AT_TOKENS",
-        apply: |s, v, _| {
-            assign_opt_nonzero(&mut s.context.summarize_at, v, "SWARMY_SUMMARIZE_AT_TOKENS")
-        },
-        format: |s| {
-            Some(
-                s.context
-                    .summarize_at
-                    .map_or_else(String::new, |n| n.to_string()),
-            )
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
-        apply: |s, v, _| {
-            assign_opt_nonzero(
-                &mut s.context.context_window,
-                v,
-                "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
-            )
-        },
-        format: |s| {
-            Some(
-                s.context
-                    .context_window
-                    .map_or_else(String::new, |n| n.to_string()),
-            )
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_MEMORY_MAX_BYTES",
-        apply: |s, v, _| assign(&mut s.memory.max_bytes, v, "SWARMY_MEMORY_MAX_BYTES"),
-        format: |s| Some(s.memory.max_bytes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_MEMORY_DIR",
-        apply: |s, v, _| assign(&mut s.memory.dir, v, "SWARMY_MEMORY_DIR"),
-        format: |s| Some(s.memory.dir.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_WORKER_PARTITIONS",
-        apply: |s, v, _| assign(&mut s.worker.partitions, v, "SWARMY_WORKER_PARTITIONS"),
-        format: |s| Some(s.worker.partitions.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_SCHEDULER_PARTITIONS",
-        apply: |s, v, _| {
-            assign(
-                &mut s.scheduler.partitions,
-                v,
-                "SWARMY_SCHEDULER_PARTITIONS",
-            )
-        },
-        format: |s| Some(s.scheduler.partitions.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_SCHEDULER_SCAN_INTERVAL_MS",
-        apply: |s, v, _| {
-            assign_ms(
-                &mut s.scheduler.scan_interval_ms,
-                v,
-                "SWARMY_SCHEDULER_SCAN_INTERVAL_MS",
-            )
-        },
-        format: |s| Some(s.scheduler.scan_interval_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
-        apply: |s, v, _| {
-            assign_ms(
-                &mut s.scheduler.resend_interval_ms,
-                v,
-                "SWARMY_SCHEDULER_RESEND_INTERVAL_MS",
-            )
-        },
-        format: |s| Some(s.scheduler.resend_interval_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_WORKER_LEASE_MS",
-        apply: |s, v, _| assign_ms(&mut s.worker.lease_ms, v, "SWARMY_WORKER_LEASE_MS"),
-        format: |s| Some(s.worker.lease_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
-        apply: |s, v, _| {
-            assign_ms(
-                &mut s.worker.recovery_interval_ms,
-                v,
-                "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
-            )
-        },
-        format: |s| Some(s.worker.recovery_interval_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_BUS_ACK_WAIT_MS",
-        apply: |s, v, _| assign_ms(&mut s.bus.ack_wait_ms, v, "SWARMY_BUS_ACK_WAIT_MS"),
-        format: |s| Some(s.bus.ack_wait_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_BUS_MAX_DELIVER",
-        apply: |s, v, _| assign(&mut s.bus.max_deliver, v, "SWARMY_BUS_MAX_DELIVER"),
-        format: |s| Some(s.bus.max_deliver.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GATEWAY_CONCURRENCY",
-        apply: |s, v, _| assign(&mut s.gateway.concurrency, v, "SWARMY_GATEWAY_CONCURRENCY"),
-        format: |s| Some(s.gateway.concurrency.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_WORKER_KILL_POINT",
-        apply: |s, v, _| {
-            s.worker.kill_point = Some(v.into());
-            Ok(())
-        },
-        format: |s| s.worker.kill_point.clone(),
-    },
-    EnvEntry {
-        name: "SWARMY_FAKE_SCRIPT",
-        apply: |s, v, _| assign(&mut s.fake.script, v, "SWARMY_FAKE_SCRIPT"),
-        format: |s| Some(s.fake.script.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_FAKE_CALL_LOG",
-        apply: |s, v, _| assign(&mut s.fake.call_log, v, "SWARMY_FAKE_CALL_LOG"),
-        format: |s| Some(s.fake.call_log.to_string_lossy().into_owned()),
-    },
-    EnvEntry {
-        name: "SWARMY_IMAGE_UPLOAD_MAX_BYTES",
-        apply: |s, v, _| {
-            assign(
-                &mut s.image.upload_max_bytes,
-                v,
-                "SWARMY_IMAGE_UPLOAD_MAX_BYTES",
-            )
-        },
-        format: |s| Some(s.image.upload_max_bytes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_EPHEMERAL_RETENTION_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.scheduler.ephemeral_retention_secs,
-                v,
-                "SWARMY_EPHEMERAL_RETENTION_SECONDS",
-            )
-        },
-        format: |s| Some(s.scheduler.ephemeral_retention_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_SANDBOX_IDLE_SECONDS",
-        apply: |s, v, _| assign_secs(&mut s.sandbox.idle_secs, v, "SWARMY_SANDBOX_IDLE_SECONDS"),
-        format: |s| Some(s.sandbox.idle_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_PLACEMENT_LEASE_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.scheduler.placement_lease_secs,
-                v,
-                "SWARMY_PLACEMENT_LEASE_SECONDS",
-            )
-        },
-        format: |s| Some(s.scheduler.placement_lease_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.inference.max_wait_secs,
-                v,
-                "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
-            )
-        },
-        format: |s| Some(s.inference.max_wait_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.inference.max_backoff_secs,
-                v,
-                "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
-            )
-        },
-        format: |s| Some(s.inference.max_backoff_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.inference.gateway_wait_secs,
-                v,
-                "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
-            )
-        },
-        format: |s| Some(s.inference.gateway_wait_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_INFERENCE_DEFAULT_ROUTE",
-        apply: |s, v, _| {
-            assign_opt_string(&mut s.inference.default_route, v);
-            Ok(())
-        },
-        format: |s| Some(s.inference.default_route.clone().unwrap_or_default()),
-    },
-    EnvEntry {
-        name: "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
-        apply: |s, v, _| {
-            assign_secs(
-                &mut s.volume_snapshots.period_secs,
-                v,
-                "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
-            )
-        },
-        format: |s| Some(s.volume_snapshots.period_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_VOLUME_SNAPSHOT_RETENTION",
-        apply: |s, v, _| {
-            assign(
-                &mut s.volume_snapshots.retention,
-                v,
-                "SWARMY_VOLUME_SNAPSHOT_RETENTION",
-            )
-        },
-        format: |s| Some(s.volume_snapshots.retention.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GC_GRACE_SECONDS",
-        apply: |s, v, _| assign_secs(&mut s.gc.grace_secs, v, "SWARMY_GC_GRACE_SECONDS"),
-        format: |s| Some(s.gc.grace_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GC_INTERVAL_SECONDS",
-        apply: |s, v, _| assign_secs(&mut s.gc.interval_secs, v, "SWARMY_GC_INTERVAL_SECONDS"),
-        format: |s| Some(s.gc.interval_secs.as_secs().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GC_FILTER_BYTES",
-        apply: |s, v, _| assign(&mut s.gc.filter_bytes, v, "SWARMY_GC_FILTER_BYTES"),
-        format: |s| Some(s.gc.filter_bytes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GC_BATCH_SIZE",
-        apply: |s, v, _| assign(&mut s.gc.batch_size, v, "SWARMY_GC_BATCH_SIZE"),
-        format: |s| Some(s.gc.batch_size.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_GC_DELETE_CONCURRENCY",
-        apply: |s, v, _| {
-            assign(
-                &mut s.gc.delete_concurrency,
-                v,
-                "SWARMY_GC_DELETE_CONCURRENCY",
-            )
-        },
-        format: |s| Some(s.gc.delete_concurrency.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_METERING_RAW_RETENTION_DAYS",
-        apply: |s, v, _| {
-            assign(
-                &mut s.metering.raw_retention_days,
-                v,
-                "SWARMY_METERING_RAW_RETENTION_DAYS",
-            )
-        },
-        format: |s| Some(s.metering.raw_retention_days.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_ROLES",
-        apply: set_node_roles,
-        format: |s| {
-            Some(
-                s.node
-                    .roles
-                    .iter()
-                    .map(|role| match role {
-                        swarmy_core::NodeRole::Sandbox => "sandbox",
-                        swarmy_core::NodeRole::Volume => "volume",
-                    })
-                    .collect::<Vec<_>>()
-                    .join(","),
-            )
-        },
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_HEARTBEAT_INTERVAL_MS",
-        apply: |s, v, _| {
-            assign_ms(
-                &mut s.node.heartbeat_interval_ms,
-                v,
-                "SWARMY_NODE_HEARTBEAT_INTERVAL_MS",
-            )
-        },
-        format: |s| Some(s.node.heartbeat_interval_ms.as_millis().to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_CPU_MILLIS",
-        apply: |s, v, _| assign(&mut s.node.capacity.cpu_millis, v, "SWARMY_NODE_CPU_MILLIS"),
-        format: |s| Some(s.node.capacity.cpu_millis.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_MEMORY_RESERVE_MIB",
-        apply: set_node_memory_reserve,
-        format: |s| s.node.memory_reserve_mib.map(|v| v.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_MEMORY_BYTES",
-        apply: |s, v, _| {
-            assign(
-                &mut s.node.capacity.memory_bytes,
-                v,
-                "SWARMY_NODE_MEMORY_BYTES",
-            )
-        },
-        format: |s| Some(s.node.capacity.memory_bytes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_DISK_BYTES",
-        apply: |s, v, _| assign(&mut s.node.capacity.disk_bytes, v, "SWARMY_NODE_DISK_BYTES"),
-        format: |s| Some(s.node.capacity.disk_bytes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_SANDBOXES",
-        apply: |s, v, _| assign(&mut s.node.capacity.sandboxes, v, "SWARMY_NODE_SANDBOXES"),
-        format: |s| Some(s.node.capacity.sandboxes.to_string()),
-    },
-    EnvEntry {
-        name: "SWARMY_NODE_ID",
-        apply: set_node_id,
-        format: |s| s.node.id.map(|v| v.to_string()),
-    },
+    e!("SWARMY_STATE_DIR", |s, v, _| assign(&mut s.state_dir, v), |s| Some(s.state_dir.to_string_lossy().into_owned())),
+    e!("SWARMY_REMOTE", |s, v, _| { s.remote.profile = Some(v.into()); Ok(()) }, |s| s.remote.profile.clone()),
+    e!("SWARMY_FDB_CLUSTER_FILE", |s, v, _| assign(&mut s.store.cluster_file, v), |s| Some(s.store.cluster_file.to_string_lossy().into_owned())),
+    e!("SWARMY_NATS_URL", |s, v, _| assign(&mut s.bus.nats_url, v), |s| Some(s.bus.nats_url.clone())),
+    e!("SWARMY_S3_ENDPOINT", |s, v, _| assign(&mut s.s3.endpoint, v), |s| Some(s.s3.endpoint.clone())),
+    e!("SWARMY_S3_ACCESS_KEY", |s, v, _| assign(&mut s.s3.access_key, v), |s| Some(s.s3.access_key.clone())),
+    e!("SWARMY_S3_SECRET_KEY", |s, v, _| assign(&mut s.s3.secret_key, v), |s| Some(s.s3.secret_key.clone())),
+    e!("SWARMY_S3_BUCKET", |s, v, _| assign(&mut s.s3.bucket, v), |s| Some(s.s3.bucket.clone())),
+    e!("SWARMY_S3_PREFIX", |s, v, _| assign(&mut s.s3.prefix, v), |s| Some(s.s3.prefix.as_str().into())),
+    e!("SWARMY_S3_REGION", |s, v, _| assign(&mut s.s3.region, v), |s| Some(s.s3.region.clone())),
+    e!("SWARMY_STORE_DIRECTORY", |s, v, _| assign(&mut s.store.directory, v), |s| Some(s.store.directory.clone())),
+    e!("SWARMY_BUS_PREFIX", |s, v, _| assign(&mut s.bus.prefix, v), |s| Some(s.bus.prefix.clone())),
+    e!("SWARMY_API_URL", |s, v, _| { s.api.url = Some(v.into()); Ok(()) }, |s| s.api.url.clone()),
+    e!("SWARMY_API_TOKEN", |s, v, _| assign(&mut s.api.token, v), |s| Some(s.api.token.clone())),
+    e!("SWARMY_API_LISTEN", |s, v, _| assign(&mut s.api.listen, v), |s| Some(s.api.listen.clone())),
+    e!("SWARMY_PROVIDER", set_provider, |s| Some(s.selection.provider.clone())),
+    e!("SWARMY_PROVIDERS", set_providers, format_providers),
+    e!("SWARMY_CUSTOM_PROVIDERS", set_custom_providers, format_custom_providers),
+    e!("SWARMY_MODELS", set_models, format_models),
+    e!("SWARMY_MODEL", |s, v, _| assign(&mut s.selection.model, v), |s| Some(s.selection.model.clone())),
+    e!("SWARMY_DEFAULT_IMAGE", |s, v, _| { assign_opt_string(&mut s.selection.default_image, v); Ok(()) }, |s| Some(s.selection.default_image.clone().unwrap_or_default())),
+    e!("SWARMY_REASONING_EFFORT", |s, v, _| assign(&mut s.selection.effort, v), |s| Some(s.selection.effort.to_string())),
+    e!("SWARMY_CHATGPT_AUTH", |s, v, _| assign(&mut s.selection.credential_file, v), |s| Some(s.selection.credential_file.to_string_lossy().into_owned())),
+    e!("SWARMY_SYSTEM_PROMPT", |s, v, _| assign(&mut s.context.system_prompt, v), |s| Some(s.context.system_prompt.clone())),
+    e!("SWARMY_SUMMARIZE_AT_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.summarize_at, v), format_summarize_at),
+    e!("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.context_window, v), format_context_window),
+    e!("SWARMY_MEMORY_MAX_BYTES", |s, v, _| assign(&mut s.memory.max_bytes, v), |s| Some(s.memory.max_bytes.to_string())),
+    e!("SWARMY_MEMORY_DIR", |s, v, _| assign(&mut s.memory.dir, v), |s| Some(s.memory.dir.to_string_lossy().into_owned())),
+    e!("SWARMY_WORKER_PARTITIONS", |s, v, _| assign(&mut s.worker.partitions, v), |s| Some(s.worker.partitions.to_string())),
+    e!("SWARMY_SCHEDULER_PARTITIONS", |s, v, _| assign(&mut s.scheduler.partitions, v), |s| Some(s.scheduler.partitions.to_string())),
+    e!("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", |s, v, _| assign_duration(&mut s.scheduler.scan_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.scheduler.scan_interval_ms, duration::Unit::Millis))),
+    e!("SWARMY_SCHEDULER_RESEND_INTERVAL_MS", |s, v, _| assign_duration(&mut s.scheduler.resend_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.scheduler.resend_interval_ms, duration::Unit::Millis))),
+    e!("SWARMY_WORKER_LEASE_MS", |s, v, _| assign_duration(&mut s.worker.lease_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.worker.lease_ms, duration::Unit::Millis))),
+    e!("SWARMY_WORKER_RECOVERY_INTERVAL_MS", |s, v, _| assign_duration(&mut s.worker.recovery_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.worker.recovery_interval_ms, duration::Unit::Millis))),
+    e!("SWARMY_BUS_ACK_WAIT_MS", |s, v, _| assign_duration(&mut s.bus.ack_wait_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.bus.ack_wait_ms, duration::Unit::Millis))),
+    e!("SWARMY_BUS_MAX_DELIVER", |s, v, _| assign(&mut s.bus.max_deliver, v), |s| Some(s.bus.max_deliver.to_string())),
+    e!("SWARMY_GATEWAY_CONCURRENCY", |s, v, _| assign(&mut s.gateway.concurrency, v), |s| Some(s.gateway.concurrency.to_string())),
+    e!("SWARMY_WORKER_KILL_POINT", |s, v, _| { s.worker.kill_point = Some(v.into()); Ok(()) }, |s| s.worker.kill_point.clone()),
+    e!("SWARMY_FAKE_SCRIPT", |s, v, _| assign(&mut s.fake.script, v), |s| Some(s.fake.script.to_string_lossy().into_owned())),
+    e!("SWARMY_FAKE_CALL_LOG", |s, v, _| assign(&mut s.fake.call_log, v), |s| Some(s.fake.call_log.to_string_lossy().into_owned())),
+    e!("SWARMY_IMAGE_UPLOAD_MAX_BYTES", |s, v, _| assign(&mut s.image.upload_max_bytes, v), |s| Some(s.image.upload_max_bytes.to_string())),
+    e!("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.ephemeral_retention_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.ephemeral_retention_secs, duration::Unit::Secs))),
+    e!("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| assign_duration(&mut s.sandbox.idle_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.sandbox.idle_secs, duration::Unit::Secs))),
+    e!("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.placement_lease_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.placement_lease_secs, duration::Unit::Secs))),
+    e!("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_wait_secs, duration::Unit::Secs))),
+    e!("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_backoff_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_backoff_secs, duration::Unit::Secs))),
+    e!("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.gateway_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.gateway_wait_secs, duration::Unit::Secs))),
+    e!("SWARMY_INFERENCE_DEFAULT_ROUTE", |s, v, _| { assign_opt_string(&mut s.inference.default_route, v); Ok(()) }, |s| Some(s.inference.default_route.clone().unwrap_or_default())),
+    e!("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS", |s, v, _| assign_duration(&mut s.volume_snapshots.period_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.volume_snapshots.period_secs, duration::Unit::Secs))),
+    e!("SWARMY_VOLUME_SNAPSHOT_RETENTION", |s, v, _| assign(&mut s.volume_snapshots.retention, v), |s| Some(s.volume_snapshots.retention.to_string())),
+    e!("SWARMY_GC_GRACE_SECONDS", |s, v, _| assign_duration(&mut s.gc.grace_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.gc.grace_secs, duration::Unit::Secs))),
+    e!("SWARMY_GC_INTERVAL_SECONDS", |s, v, _| assign_duration(&mut s.gc.interval_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.gc.interval_secs, duration::Unit::Secs))),
+    e!("SWARMY_GC_FILTER_BYTES", |s, v, _| assign(&mut s.gc.filter_bytes, v), |s| Some(s.gc.filter_bytes.to_string())),
+    e!("SWARMY_GC_BATCH_SIZE", |s, v, _| assign(&mut s.gc.batch_size, v), |s| Some(s.gc.batch_size.to_string())),
+    e!("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| assign(&mut s.gc.delete_concurrency, v), |s| Some(s.gc.delete_concurrency.to_string())),
+    e!("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| assign(&mut s.metering.raw_retention_days, v), |s| Some(s.metering.raw_retention_days.to_string())),
+    e!("SWARMY_NODE_ROLES", set_node_roles, format_node_roles),
+    e!("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |s, v, _| assign_duration(&mut s.node.heartbeat_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.node.heartbeat_interval_ms, duration::Unit::Millis))),
+    e!("SWARMY_NODE_CPU_MILLIS", |s, v, _| assign(&mut s.node.capacity.cpu_millis, v), |s| Some(s.node.capacity.cpu_millis.to_string())),
+    e!("SWARMY_NODE_MEMORY_RESERVE_MIB", set_node_memory_reserve, |s| s.node.memory_reserve_mib.map(|v| v.to_string())),
+    e!("SWARMY_NODE_MEMORY_BYTES", |s, v, _| assign(&mut s.node.capacity.memory_bytes, v), |s| Some(s.node.capacity.memory_bytes.to_string())),
+    e!("SWARMY_NODE_DISK_BYTES", |s, v, _| assign(&mut s.node.capacity.disk_bytes, v), |s| Some(s.node.capacity.disk_bytes.to_string())),
+    e!("SWARMY_NODE_SANDBOXES", |s, v, _| assign(&mut s.node.capacity.sandboxes, v), |s| Some(s.node.capacity.sandboxes.to_string())),
+    e!("SWARMY_NODE_ID", set_node_id, |s| s.node.id.map(|v| v.to_string())),
 ];
 
-fn assign<T: std::str::FromStr>(
-    field: &mut T,
-    value: &str,
-    name: &'static str,
-) -> Result<(), Error> {
-    *field = value
-        .parse::<T>()
-        .map_err(|_| Error::Environment(name.into()))?;
+fn assign<T: std::str::FromStr>(field: &mut T, value: &str) -> Result<(), ()> {
+    *field = value.parse().map_err(|_| ())?;
     Ok(())
 }
 
-fn assign_secs(field: &mut Duration, value: &str, name: &'static str) -> Result<(), Error> {
-    let secs: u64 = value.parse().map_err(|_| Error::Environment(name.into()))?;
-    if secs == 0 {
-        return Err(Error::Environment(name.into()));
-    }
-    *field = Duration::from_secs(secs);
+fn assign_duration(field: &mut Duration, value: &str, unit: duration::Unit) -> Result<(), ()> {
+    *field = duration::parse(value, unit)?;
     Ok(())
 }
 
-fn assign_ms(field: &mut Duration, value: &str, name: &'static str) -> Result<(), Error> {
-    let millis: u64 = value.parse().map_err(|_| Error::Environment(name.into()))?;
-    if millis == 0 {
-        return Err(Error::Environment(name.into()));
-    }
-    *field = Duration::from_millis(millis);
-    Ok(())
-}
-
-fn assign_opt_nonzero(
-    field: &mut Option<std::num::NonZeroU64>,
-    value: &str,
-    name: &'static str,
-) -> Result<(), Error> {
+fn assign_opt_nonzero(field: &mut Option<std::num::NonZeroU64>, value: &str) -> Result<(), ()> {
     *field = if value.is_empty() {
         None
     } else {
-        Some(value.parse().map_err(|_| Error::Environment(name.into()))?)
+        Some(value.parse().map_err(|_| ())?)
     };
     Ok(())
 }
@@ -1361,30 +962,100 @@ fn assign_opt_string(field: &mut Option<String>, value: &str) {
     *field = (!value.is_empty()).then(|| value.to_owned());
 }
 
-fn set_provider(settings: &mut Settings, value: &str, environment: &BTreeMap<String, String>) {
+fn format_providers(settings: &Settings) -> Option<String> {
+    Some(
+        settings
+            .selection
+            .providers
+            .as_ref()
+            .map_or_else(String::new, |ids| ids.join(",")),
+    )
+}
+
+fn format_custom_providers(settings: &Settings) -> Option<String> {
+    Some(
+        serde_json::to_string(&settings.selection.custom_providers)
+            .expect("custom providers serialize"),
+    )
+}
+
+fn format_models(settings: &Settings) -> Option<String> {
+    Some(serde_json::to_string(&settings.selection.models).expect("catalog models serialize"))
+}
+
+fn format_summarize_at(settings: &Settings) -> Option<String> {
+    Some(
+        settings
+            .context
+            .summarize_at
+            .map_or_else(String::new, |n| n.to_string()),
+    )
+}
+
+fn format_context_window(settings: &Settings) -> Option<String> {
+    Some(
+        settings
+            .context
+            .context_window
+            .map_or_else(String::new, |n| n.to_string()),
+    )
+}
+
+fn format_node_roles(settings: &Settings) -> Option<String> {
+    Some(
+        settings
+            .node
+            .roles
+            .iter()
+            .map(|role| match role {
+                swarmy_core::NodeRole::Sandbox => "sandbox",
+                swarmy_core::NodeRole::Volume => "volume",
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn set_provider(
+    settings: &mut Settings,
+    value: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<(), ()> {
     settings.selection.provider = value.into();
     if !environment.contains_key("SWARMY_PROVIDERS") {
         settings.selection.providers = Some(vec![value.to_owned()]);
     }
+    Ok(())
 }
 
-fn set_providers(settings: &mut Settings, value: &str) {
+fn set_providers(
+    settings: &mut Settings,
+    value: &str,
+    _environment: &BTreeMap<String, String>,
+) -> Result<(), ()> {
     settings.selection.providers = if value.is_empty() {
         None
     } else {
         Some(value.split(',').map(|id| id.trim().to_owned()).collect())
     };
-}
-
-fn set_custom_providers(settings: &mut Settings, value: &str) -> Result<(), Error> {
-    settings.selection.custom_providers = serde_json::from_str(value)
-        .map_err(|_| Error::Environment("SWARMY_CUSTOM_PROVIDERS".into()))?;
     Ok(())
 }
 
-fn set_models(settings: &mut Settings, value: &str) -> Result<(), Error> {
-    settings.selection.models =
-        serde_json::from_str(value).map_err(|_| Error::Environment("SWARMY_MODELS".into()))?;
+fn set_custom_providers(
+    settings: &mut Settings,
+    value: &str,
+    _environment: &BTreeMap<String, String>,
+) -> Result<(), ()> {
+    settings.selection.custom_providers = serde_json::from_str(value).map_err(|_| ())?;
+    Ok(())
+}
+
+fn set_models(
+    settings: &mut Settings,
+    value: &str,
+    _environment: &BTreeMap<String, String>,
+) -> Result<(), ()> {
+    settings.selection.models = serde_json::from_str(value).map_err(|_| ())?;
     Ok(())
 }
 
@@ -1392,13 +1063,13 @@ fn set_node_roles(
     settings: &mut Settings,
     value: &str,
     _environment: &BTreeMap<String, String>,
-) -> Result<(), Error> {
+) -> Result<(), ()> {
     settings.node.roles = value
         .split(',')
         .map(|role| match role.trim() {
             "sandbox" => Ok(swarmy_core::NodeRole::Sandbox),
             "volume" => Ok(swarmy_core::NodeRole::Volume),
-            _ => Err(Error::Environment("SWARMY_NODE_ROLES".into())),
+            _ => Err(()),
         })
         .collect::<Result<_, _>>()?;
     Ok(())
@@ -1408,12 +1079,8 @@ fn set_node_memory_reserve(
     settings: &mut Settings,
     value: &str,
     _environment: &BTreeMap<String, String>,
-) -> Result<(), Error> {
-    settings.node.memory_reserve_mib = Some(
-        value
-            .parse()
-            .map_err(|_| Error::Environment("SWARMY_NODE_MEMORY_RESERVE_MIB".into()))?,
-    );
+) -> Result<(), ()> {
+    settings.node.memory_reserve_mib = Some(value.parse().map_err(|_| ())?);
     Ok(())
 }
 
@@ -1421,11 +1088,9 @@ fn set_node_id(
     settings: &mut Settings,
     value: &str,
     _environment: &BTreeMap<String, String>,
-) -> Result<(), Error> {
+) -> Result<(), ()> {
     settings.node.id = Some(swarmy_core::NodeId::from_ulid(
-        value
-            .parse()
-            .map_err(|_| Error::Environment("SWARMY_NODE_ID".into()))?,
+        value.parse().map_err(|_| ())?,
     ));
     Ok(())
 }
@@ -1718,16 +1383,84 @@ mod tests {
     #[test]
     fn every_environment_entry_round_trips() {
         let node_id = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate()).to_string();
-        let mut exported = Settings::default().environment();
-        for (name, value) in [
-            ("SWARMY_REMOTE", "profile"),
-            ("SWARMY_API_URL", "http://127.0.0.1:8742"),
-            ("SWARMY_WORKER_KILL_POINT", "after_claim"),
-            ("SWARMY_NODE_MEMORY_RESERVE_MIB", "512"),
-            ("SWARMY_NODE_ID", node_id.as_str()),
-        ] {
-            exported.insert(name.into(), value.into());
+        // Every entry gets a distinct non-default value, so a setter writing the
+        // wrong field fails the round trip instead of passing on defaults.
+        let distinct: &[(&str, &str)] = &[
+            ("SWARMY_STATE_DIR", "/tmp/test-state"),
+            ("SWARMY_REMOTE", "profile-test"),
+            ("SWARMY_FDB_CLUSTER_FILE", "/tmp/test.cluster"),
+            ("SWARMY_NATS_URL", "nats://127.0.0.1:4333"),
+            ("SWARMY_S3_ENDPOINT", "http://127.0.0.1:8334"),
+            ("SWARMY_S3_ACCESS_KEY", "test-access"),
+            ("SWARMY_S3_SECRET_KEY", "test-secret"),
+            ("SWARMY_S3_BUCKET", "test-bucket"),
+            ("SWARMY_S3_PREFIX", "test/prefix"),
+            ("SWARMY_S3_REGION", "eu-west-1"),
+            ("SWARMY_STORE_DIRECTORY", "testdir"),
+            ("SWARMY_BUS_PREFIX", "testprefix"),
+            ("SWARMY_API_URL", "http://127.0.0.1:9999"),
+            ("SWARMY_API_TOKEN", "test-token-123"),
+            ("SWARMY_API_LISTEN", "127.0.0.1:9998"),
+            ("SWARMY_PROVIDER", "openai"),
+            ("SWARMY_PROVIDERS", "openai,anthropic"),
+            (
+                "SWARMY_CUSTOM_PROVIDERS",
+                r#"{"test":{"base_url":"https://example.com","api":null,"summarize_at":null}}"#,
+            ),
+            (
+                "SWARMY_MODELS",
+                r#"[{"provider":"test","id":"test-model","name":null,"api":null,"base_url":null,"context_window":null,"max_output_tokens":null,"reasoning":null,"cost":null,"compat":null,"summarize_at":null}]"#,
+            ),
+            ("SWARMY_MODEL", "gpt-4o-test"),
+            ("SWARMY_DEFAULT_IMAGE", "test:tag"),
+            ("SWARMY_REASONING_EFFORT", "high"),
+            ("SWARMY_CHATGPT_AUTH", "/tmp/test-auth.json"),
+            ("SWARMY_SYSTEM_PROMPT", "test system prompt"),
+            ("SWARMY_SUMMARIZE_AT_TOKENS", "4097"),
+            ("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", "8193"),
+            ("SWARMY_MEMORY_MAX_BYTES", "9999"),
+            ("SWARMY_MEMORY_DIR", "/tmp/test-memory"),
+            ("SWARMY_WORKER_PARTITIONS", "0-1"),
+            ("SWARMY_SCHEDULER_PARTITIONS", "2-3"),
+            ("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", "1234"),
+            ("SWARMY_SCHEDULER_RESEND_INTERVAL_MS", "1235"),
+            ("SWARMY_WORKER_LEASE_MS", "1236"),
+            ("SWARMY_WORKER_RECOVERY_INTERVAL_MS", "1237"),
+            ("SWARMY_BUS_ACK_WAIT_MS", "1238"),
+            ("SWARMY_BUS_MAX_DELIVER", "9"),
+            ("SWARMY_GATEWAY_CONCURRENCY", "9"),
+            ("SWARMY_WORKER_KILL_POINT", "test-kill"),
+            ("SWARMY_FAKE_SCRIPT", "/tmp/test-fake.json"),
+            ("SWARMY_FAKE_CALL_LOG", "/tmp/test-calls.log"),
+            ("SWARMY_IMAGE_UPLOAD_MAX_BYTES", "12345"),
+            ("SWARMY_EPHEMERAL_RETENTION_SECONDS", "123"),
+            ("SWARMY_SANDBOX_IDLE_SECONDS", "124"),
+            ("SWARMY_PLACEMENT_LEASE_SECONDS", "125"),
+            ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "126"),
+            ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", "127"),
+            ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", "128"),
+            ("SWARMY_INFERENCE_DEFAULT_ROUTE", "test-route"),
+            ("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS", "129"),
+            ("SWARMY_VOLUME_SNAPSHOT_RETENTION", "11"),
+            ("SWARMY_GC_GRACE_SECONDS", "130"),
+            ("SWARMY_GC_INTERVAL_SECONDS", "131"),
+            ("SWARMY_GC_FILTER_BYTES", "123456"),
+            ("SWARMY_GC_BATCH_SIZE", "123"),
+            ("SWARMY_GC_DELETE_CONCURRENCY", "33"),
+            ("SWARMY_METERING_RAW_RETENTION_DAYS", "7"),
+            ("SWARMY_NODE_ROLES", "volume"),
+            ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", "7777"),
+            ("SWARMY_NODE_CPU_MILLIS", "4001"),
+            ("SWARMY_NODE_MEMORY_RESERVE_MIB", "513"),
+            ("SWARMY_NODE_MEMORY_BYTES", "2147483648"),
+            ("SWARMY_NODE_DISK_BYTES", "21474836480"),
+            ("SWARMY_NODE_SANDBOXES", "7"),
+        ];
+        let mut exported = BTreeMap::new();
+        for (name, value) in distinct {
+            exported.insert((*name).to_owned(), (*value).to_owned());
         }
+        exported.insert("SWARMY_NODE_ID".to_owned(), node_id.clone());
         for entry in ENV_TABLE {
             assert!(exported.contains_key(entry.name), "missing {}", entry.name);
         }

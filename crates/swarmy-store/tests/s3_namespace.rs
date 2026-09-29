@@ -2,7 +2,7 @@
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
-use foundationdb::{Database, tuple::Subspace};
+use foundationdb::tuple::Subspace;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, path::Path};
 use swarmy_config::{GarbageCollection, Settings};
@@ -171,8 +171,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
     );
     let _network = swarmy_store::boot();
-    let cluster = settings.store.cluster_file.to_str().expect("cluster file is UTF-8");
-    let db = Arc::new(Database::new(Some(cluster)).unwrap());
+    let db = Arc::new(swarmy_store::database(&settings.store.cluster_file).unwrap());
     for prefix in ["", "runs/nested"] {
         settings.s3.prefix = prefix.parse().unwrap();
         let mut sibling_settings = settings.clone();

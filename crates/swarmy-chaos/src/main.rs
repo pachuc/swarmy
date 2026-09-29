@@ -18,10 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
+use foundationdb::directory::{Directory, DirectoryLayer};
 use futures::future::try_join_all;
 use jiff::Timestamp;
 use rand::{Rng, SeedableRng};
@@ -434,8 +431,7 @@ impl Fixture {
         }
         // Like the service integration fixtures, remove only this run's directory and streams.
         let settings = swarmy_config::Settings::load()?.settings;
-        let cluster = settings.store.cluster_file.to_str().unwrap_or(".dev/fdb.cluster");
-        let db = Database::new(Some(cluster))?;
+        let db = swarmy_store::database(&settings.store.cluster_file)?;
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;

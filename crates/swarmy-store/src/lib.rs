@@ -114,6 +114,8 @@ pub enum StorageError {
     Corrupt,
     #[error("commit outcome is unknown; read durable state before retrying")]
     CommitUnknown,
+    #[error("cluster file path is not UTF-8")]
+    NonUtf8ClusterFile,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -294,6 +296,17 @@ pub fn boot() -> foundationdb::api::NetworkAutoStop {
     unsafe { foundationdb::boot() }
 }
 
+/// Open a `FoundationDB` database from a cluster file path without converting
+/// at the call site. Rejects non-UTF-8 paths instead of silently mangling them.
+/// # Errors
+/// Returns client errors or rejects a non-UTF-8 cluster path.
+pub fn database(cluster_file: &std::path::Path) -> Result<Database> {
+    let path = cluster_file
+        .to_str()
+        .ok_or(StorageError::NonUtf8ClusterFile)?;
+    Ok(Database::new(Some(path))?)
+}
+
 #[derive(Serialize, Deserialize)]
 enum StoredValue {
     Inline(Vec<u8>),
@@ -418,8 +431,10 @@ impl Store {
         directory: Option<&[String]>,
         blobs: Arc<dyn BlobStore>,
     ) -> Result<Self> {
-        let cluster = cluster_file.map(|path| path.to_string_lossy().into_owned());
-        let db = Arc::new(Database::new(cluster.as_deref())?);
+        let db = match cluster_file {
+            Some(path) => Arc::new(crate::database(path)?),
+            None => Arc::new(Database::new(None)?),
+        };
         let path = directory.map_or_else(|| vec!["swarmy".into()], <[String]>::to_vec);
         let prefix = db
             .run(|trx, _| {
