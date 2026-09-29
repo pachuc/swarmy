@@ -35,12 +35,14 @@ fn main() -> Result<()> {
     if vol_command {
         let _network = swarmy_store::boot();
         let runtime = tokio::runtime::Runtime::new()?;
-        return runtime.block_on(vol::run_cli());
+        return runtime.block_on(vol::run_cli(print_vol_line));
     }
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
-        runtime.block_on(upgrade::run(&loaded))
+        let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
+        println!("{}", serde_json::to_string(&busy)?);
+        Ok(())
     } else {
         runtime.block_on(run(loaded))
     }
@@ -203,4 +205,10 @@ fn advertised_memory(reserve_mib: u64) -> Result<u64> {
     Ok(total_kib
         .saturating_sub(reserve_mib.saturating_mul(1024))
         .saturating_mul(1024))
+}
+
+fn print_vol_line(line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    println!("{line}");
+    std::io::stdout().flush()
 }

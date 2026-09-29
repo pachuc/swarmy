@@ -16,7 +16,7 @@ pub struct VolCli {
     command: Command,
 }
 
-pub async fn run_cli() -> Result<()> {
+pub async fn run_cli(emit: fn(&str) -> std::io::Result<()>) -> Result<()> {
     let cli = match <VolCli as clap::Parser>::try_parse_from(
         std::iter::once("vol".to_owned()).chain(std::env::args().skip(2)),
     ) {
@@ -24,17 +24,21 @@ pub async fn run_cli() -> Result<()> {
         // Help and version exit from here with their own status codes.
         Err(error) => error.exit(),
     };
-    run(cli.command, cli.json).await
+    run(cli.command, cli.json, emit).await
 }
 
-pub async fn run(command: Command, json: bool) -> Result<()> {
+pub async fn run(
+    command: Command,
+    json: bool,
+    emit: fn(&str) -> std::io::Result<()>,
+) -> Result<()> {
     match command {
         Command::Attach {
             volume,
             device,
             background,
         } => {
-            crate::vol_server::attach(VolumeId::from_ulid(volume), device, background, json)
+            crate::vol_server::attach(VolumeId::from_ulid(volume), device, background, json, emit)
                 .await?;
         }
         Command::Flush {
@@ -42,10 +46,12 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             mount,
             freeze,
         } => {
-            crate::vol_server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
+            crate::vol_server::flush(VolumeId::from_ulid(volume), mount, freeze, json, emit)
+                .await?;
         }
         Command::Checkpoint { volume, mount } => {
-            crate::vol_server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
+            crate::vol_server::control(VolumeId::from_ulid(volume), mount, false, json, emit)
+                .await?;
         }
         Command::Snapshot { volume } => {
             let id = VolumeId::from_ulid(volume);
@@ -56,24 +62,30 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at > jiff::Timestamp::now())
             {
-                crate::vol_server::control(id, None, false, json).await?;
+                crate::vol_server::control(id, None, false, json, emit).await?;
             } else {
                 output(
                     &serde_json::json!({"volume_id": id, "manifest_id": record.head_manifest}),
                     &record.head_manifest.to_string(),
                     json,
+                    emit,
                 )?;
             }
         }
         Command::Detach { volume } => {
-            crate::vol_server::control(VolumeId::from_ulid(volume), None, true, json).await?;
+            crate::vol_server::control(VolumeId::from_ulid(volume), None, true, json, emit).await?;
         }
-        other => inspect(other, &store().await?, json).await?,
+        other => inspect(other, &store().await?, json, emit).await?,
     }
     Ok(())
 }
 
-async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
+async fn inspect(
+    command: Command,
+    store: &Store,
+    json: bool,
+    emit: fn(&str) -> std::io::Result<()>,
+) -> Result<()> {
     match command {
         Command::Create { image } => {
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
@@ -89,6 +101,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                 &serde_json::json!({"volume_id": id, "manifest_id": manifest}),
                 &id.to_string(),
                 json,
+                emit,
             )?;
         }
         Command::Clone { volume } => {
@@ -98,6 +111,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                 &serde_json::json!({"volume_id": id, "parent": volume}),
                 &id.to_string(),
                 json,
+                emit,
             )?;
         }
         Command::Ls => {
@@ -112,6 +126,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                         &serde_json::json!({"volume_id": id, "record": record}),
                         &format!("{id} {}", record.head_manifest),
                         json,
+                        emit,
                     )?;
                     after = Some(id);
                 }
@@ -144,6 +159,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                 &serde_json::json!({"volume_id": id, "record": record, "manifests": chain}),
                 &text,
                 json,
+                emit,
             )?;
         }
         _ => unreachable!("attachment commands handled by run"),
@@ -151,15 +167,17 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
-    use std::io::Write;
+pub fn output(
+    value: &serde_json::Value,
+    text: &str,
+    json: bool,
+    emit: fn(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     if json {
-        println!("{value}");
+        emit(&value.to_string())
     } else {
-        println!("{text}");
+        emit(text)
     }
-    std::io::stdout().flush()?;
-    Ok(())
 }
 
 /// Open the cluster store for volume commands.
