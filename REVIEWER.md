@@ -119,6 +119,20 @@ outcome.
 - [ ] New behaviour has a test that goes through a public interface and would
       fail if the behaviour broke. Ask: what change to the code would this
       test miss?
+- [ ] Every new test codifies a requirement: something the application, API,
+      client, or services must do, stated so that a failure tells someone a
+      real behaviour broke. Reject tests of incidental properties:
+    - asserting what the test just set up (a constructor returns its fields,
+      a default equals the literal copied from the code);
+    - a serde or encode-decode round trip with no pinned bytes;
+    - testing the language, the standard library, or a dependency;
+    - pinning log wording, internal error text, `Debug` output, or a private
+      helper's intermediate value that nothing depends on;
+    - computing the expected value with the same code or formula under test;
+    - a near-copy of an existing test with trivially different inputs;
+    - a private-function test whose behaviour the public interface already
+      covers;
+    - asserting only `is_ok()` or "does not panic" where the value matters.
 - [ ] No test was weakened to pass: no loosened assertion, no new `#[ignore]`,
       no `is_ok()` where the value matters.
 - [ ] No fixed `sleep`; waits poll a condition with a budget. Time-dependent
