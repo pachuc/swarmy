@@ -1,0 +1,364 @@
+=== build cli no-default ===
+   Compiling tokio v1.53.1
+   Compiling http v1.5.0
+   Compiling rustls v0.23.44
+   Compiling tokio-rustls v0.26.5
+   Compiling http-body v1.1.0
+   Compiling tokio-util v0.7.19
+   Compiling hyper v1.11.1
+   Compiling tokio-websockets v0.10.1
+   Compiling tryhard v0.5.2
+   Compiling tokio-stream v0.1.19
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling async-nats v0.49.1
+   Compiling utoipa v5.5.0
+   Compiling swarmy-bus v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-bus)
+   Compiling tower-http v0.6.11
+   Compiling hyper-rustls v0.27.9
+   Compiling http-body-util v0.1.5
+   Compiling swarmy-config v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-config)
+   Compiling reqwest v0.12.28
+   Compiling swarmy-api-types v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-api-types)
+   Compiling swarmy-version v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-version)
+   Compiling swarmy-image v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-image)
+   Compiling swarmy-client v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-client)
+   Compiling swarmy-cloud v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cloud)
+   Compiling swarmy-chat v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-chat)
+   Compiling swarmy-cli v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 57.12s
+=== build workspace ===
+   Compiling swarmy-config v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-config)
+   Compiling swarmy-version v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-version)
+   Compiling swarmy-store v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-store)
+   Compiling swarmy-client v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-client)
+   Compiling swarmy-cloud v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cloud)
+   Compiling swarmy-volume v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-volume)
+   Compiling swarmy-gateway v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-gateway)
+   Compiling swarmy-chat v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-chat)
+   Compiling swarmy-sandbox v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-sandbox)
+   Compiling swarmy-api v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-api)
+   Compiling swarmyd v0.1.0 (/home/agent/work/bd3gdk/crates/swarmyd)
+   Compiling swarmy-chaos v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-chaos)
+   Compiling swarmy-scheduler v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-scheduler)
+   Compiling swarmy-cli v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cli)
+   Compiling swarmy-worker v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-worker)
+   Compiling swarmy-devtools v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-devtools)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.38s
+EXIT=0
+=== test workspace excl e2e ===
+   Compiling swarmy-config v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-config)
+   Compiling swarmy-version v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-version)
+   Compiling swarmy-store v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-store)
+   Compiling swarmy-client v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-client)
+   Compiling swarmy-cloud v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cloud)
+   Compiling swarmy-chat v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-chat)
+   Compiling swarmy-volume v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-volume)
+   Compiling swarmy-gateway v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-gateway)
+   Compiling swarmy-sandbox v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-sandbox)
+   Compiling swarmy-api v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-api)
+   Compiling swarmyd v0.1.0 (/home/agent/work/bd3gdk/crates/swarmyd)
+   Compiling swarmy-chaos v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-chaos)
+   Compiling swarmy-scheduler v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-scheduler)
+   Compiling swarmy-worker v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-worker)
+   Compiling swarmy-cli v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-cli)
+   Compiling swarmy-devtools v0.1.0 (/home/agent/work/bd3gdk/crates/swarmy-devtools)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 21s
+     Running unittests src/lib.rs (/home/agent/.cargo-target/debug/deps/swarmy_api-29999149983d8c5b)
+
+running 5 tests
+test store_error_tests::only_non_idle_sessions_get_that_code ... ok
+test store_error_tests::placed_agent_is_a_conflict ... ok
+test stream::tests::cursor_carries_the_whole_subscription ... ok
+test views::tests::metric_views_round_trip ... ok
+test stream::tests::bounded_writer_refuses_a_slow_client ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (/home/agent/.cargo-target/debug/deps/swarmy_api-ab1de1e2fc98a0c0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (/home/agent/.cargo-target/debug/deps/cli-8301793a81d3817e)
+
+running 4 tests
+test stopped_api_reports_endpoint_quickly ... ok
+test agent_update_rejects_invalid_merged_model ... ok
+test agent_management_uses_api_and_preserves_requirements ... ok
+test projections_match_store_records_and_catalog ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+
+     Running tests/cli_auth.rs (/home/agent/.cargo-target/debug/deps/cli_auth-4e34a2ddf51015c6)
+
+running 5 tests
+test azure_login_saves_to_cluster_and_missing_cli_reports_login_needed ... ok
+test key_sources_are_exclusive_and_support_files_and_environment ... ok
+test labelless_set_replaces_the_default_entry ... ok
+test set_list_check_remove_and_import ... ok
+test two_labels_under_one_provider_are_independent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.27s
+
+     Running tests/cli_models.rs (/home/agent/.cargo-target/debug/deps/cli_models-886cef43b6fdbcde)
+
+running 8 tests
+test probe_missing_credential_names_auth_set ... ok
+test lists_sorted_snapshot_models_as_json ... ok
+test probe_streams_fake_and_completes_tool_round_trip ... ok
+test commands_share_configured_catalog_and_filters ... ok
+test show_resolves_model_ids_with_slashes_and_includes_compat ... ok
+test search_and_lookup_errors_are_clear ... ok
+test stopped_api_error_names_endpoint ... ok
+test terminal_tables_fit_eighty_columns ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.58s
+
+     Running tests/client.rs (/home/agent/.cargo-target/debug/deps/client-80d46a5868e0edf0)
+
+running 3 tests
+test token_subscription_is_ready_before_open_returns ... ok
+test client_round_trips_real_routes ... ok
+test multiplexed_stream_resumes_and_rejects_rewind ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.84s
+
+     Running tests/conversation.rs (/home/agent/.cargo-target/debug/deps/conversation-34ca6bc63792f168)
+
+running 10 tests
+test conversation_routes_require_authentication ... ok
+test close_runnable_session_returns_completed_and_prevents_append ... ok
+test create_append_replay_wait_interrupt_close ... ok
+test durable_turn_metrics_match_the_session_and_agent_api ... ok
+test invalid_effort_uses_cli_selection_error ... ok
+test invalid_selection_empty_message_and_stale_head_are_distinct ... ok
+test named_main_and_side_preserve_image_and_selection ... ok
+test queue_on_idle_starts_a_turn ... ok
+test wait_idle_times_out_for_active_session ... ok
+test wait_idle_wakes_from_live_transition ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s
+
+     Running tests/latency.rs (/home/agent/.cargo-target/debug/deps/latency-ffee931f4217ea5d)
+
+running 2 tests
+test fake_turn_records_first_token_metrics ... ok
+test api_first_fake_token_stays_within_five_ms_of_direct_append ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ops.rs (/home/agent/.cargo-target/debug/deps/ops-1e88a18f7816cb9f)
+
+running 8 tests
+test probe_rejects_unknown_and_scripted_models_before_credentials ... ok
+test doctor_reports_registered_nodes ... ok
+test timeline_stream_delivers_turn_observations ... ok
+test gc_run_starts_sweeps_and_reports_counts ... ok
+test upload_registers_image_and_rejects_bad_requests ... ok
+test upload_rejects_bodies_over_the_configured_limit ... ok
+test upload_validates_requirements_before_chunking ... ok
+test upload_with_length_stops_before_streaming_the_body ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.18s
+
+     Running tests/routes.rs (/home/agent/.cargo-target/debug/deps/routes-3c9ba034fca2dcfc)
+
+running 2 tests
+test inference_routes_round_trip_through_cli_and_resource_api ... ok
+test authenticated_routes_and_create_replay ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running tests/sse.rs (/home/agent/.cargo-target/debug/deps/sse-929a9b74886add3b)
+
+running 4 tests
+test replay_pages_past_the_output_capacity_without_losing_a_fast_reader ... ok
+test replay_live_and_resume_from_full_cursor ... ok
+test subscription_changes_and_tokens_are_scoped ... ok
+test slow_http_client_is_closed_and_removed_from_registry ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.21s
+
+     Running tests/usage.rs (/home/agent/.cargo-target/debug/deps/usage-d73dafb890dc4335)
+
+running 3 tests
+test usage_rejects_bad_filters ... ok
+test usage_echoes_by_and_entry_quota_round_trips ... ok
+test usage_series_matches_store_views_for_every_dimension_and_group ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running unittests src/lib.rs (/home/agent/.cargo-target/debug/deps/swarmy_api_types-8f18c19740bc8d90)
+
+running 6 tests
+test tests::mutation_json_contract ... ok
+test tests::event_json_contract ... ok
+test tests::same_major_accepts_any_minor_within_major ... ok
+test tests::resource_json_contract ... ok
+test tests::openapi_info_version_tracks_api_version ... ok
+test tests::openapi_is_current ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/agent/.cargo-target/debug/deps/swarmy_bus-263255e5aada1cdb)
+
+running 1 test
+test turn::tests::clock_domain_and_monotonic_timestamp_survive_encoding ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/nats.rs (/home/agent/.cargo-target/debug/deps/nats-438ccffc90244f23)
+
+running 15 tests
+test live_decode_failures_do_not_end_the_subscription ... ok
+test absent_or_unresponsive_scheduler_is_named_in_request_errors ... ok
+test live_deltas_and_events_reach_observers_without_persistence ... ok
+test negative_acknowledgements_support_immediate_and_delayed_retry ... ok
+test acknowledged_work_stays_acknowledged ... ok
+test oversized_work_reports_advertised_limit ... ok
+test routes_and_prefixes_isolate_work ... ok
+test routing_tokens_reject_subject_injection ... ok
+test setup_is_idempotent_and_rejects_configuration_drift ... ok
+test malformed_work_surfaces_errors_and_stops_at_delivery_limit ... ok
+test nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases ... ok
+test wake_requests_round_trip_without_persisting_and_bad_requests_are_skipped ... ok
+test progress_extends_the_deadline ... ok
+test unacknowledged_work_is_redelivered ... ok
+test two_workers_share_one_durable_consumer ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.07s
+
+     Running unittests src/lib.rs (/home/agent/.cargo-target/debug/deps/swarmy_catalog-be52475734c84d70)
+
+running 6 tests
+test tests::compat_preserves_unknown_keys_and_rejects_wrong_accessor_types ... ok
+test tests::max_effort_parses_and_round_trips_through_postcard ... ok
+test tests::effort_clamping_prefers_higher_then_lower_and_requires_explicit_extremes ... ok
+test tests::summarize_threshold_derives_from_window_with_overrides ... ok
+test tests::catalog_efforts_and_quirks_match_known_models ... ok
+test tests::every_catalog_file_parses_and_is_embedded ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (/home/agent/.cargo-target/debug/deps/swarmy_chaos-234b937f9c011574)
+
+running 4 tests
+test check::tests::charge_bounds_include_only_gateway_kills ... ok
+test check::tests::final_check_rejects_wrong_answers_missing_steps_and_non_idle_sessions ... ok
+test check::tests::duplicate_requests_fail_even_with_new_ids_or_after_completion ... ok
+test coding::tests::reduced_fake_coding_push ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/bash.rs (/home/agent/.cargo-target/debug/deps/bash-86fab16328903357)
+
+running 1 test
+test root_bash_disk_and_failure_acceptance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coding.rs (/home/agent/.cargo-target/debug/deps/coding-b6cb8e196614a0f4)
+
+running 1 test
+test root_coding_recovery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/continuity.rs (/home/agent/.cargo-target/debug/deps/continuity-502ca5bd605606a0)
+
+running 1 test
+test root_persistent_agent_continuity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/agent/.cargo-target/debug/deps/swarmy_chat-51b923775451b9cf)
+
+running 14 tests
+test client_chat::tests::delivered_queued_input_has_a_transcript_marker_once ... ok
+test client_chat::tests::enter_while_idle_sends_immediately ... ok
+test client_chat::tests::enter_while_busy_queues_and_idle_sends_once ... ok
+test client_chat::tests::only_busy_race_requeues_and_permanent_errors_propagate ... ok
+test client_chat::tests::typing_edits_input_while_busy ... ok
+test client_conversation::tests::gateway_unserved_failure_gives_cli_advice ... ok
+test client_conversation::tests::health_reports_missing_services_and_provider ... ok
+test client_conversation::tests::idle_after_assistant_reply_completes_the_turn ... ok
+test client_conversation::tests::image_name_and_tag_are_required ... ok
+test client_conversation::tests::inference_error_fails_the_turn ... ok
+test client_conversation::tests::poll_replays_only_undelivered_events_and_skips_synthetic_idle ... ok
+test client_conversation::tests::tool_call_message_does_not_finish_the_turn ... ok
+test client_conversation::tests::tool_error_without_followup_reply_fails_the_turn ... ok
+test input::tests::edits_unicode_at_cursor_and_keeps_cursor_visible ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/agent/.cargo-target/debug/deps/swarmy-26da73a14bc9af2e)
+
+running 8 tests
+test client_bench::clock_tests::cross_host_intervals_use_wall_time_and_reject_clock_reversal ... ok
+test client_bench::tests::every_required_stage_must_be_present ... ok
+test client_bench::tests::nearest_rank_percentiles_include_small_sample_tail ... ok
+test auth_command::tests::quota_flags_parse_without_connecting_to_the_stack ... ok
+test dev::process::tests::identity_checks_start_time_and_ignores_zombies ... ok
+test cost_command::tests::cost_flags_parse_without_connecting_to_the_stack ... ok
+test agent_command::tests::agent_inference_flags_validate_without_connecting_to_the_stack ... ok
+test doctor::tests::core_services_are_required_and_missing_api_has_no_service_lines ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/dev.rs (/home/agent/.cargo-target/debug/deps/dev-81bd4f931e73d245)
+
+running 1 test
+test dev_up_run_recover_reconfigure_and_down ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.63s
+
+     Running tests/doctor.rs (/home/agent/.cargo-target/debug/deps/doctor-a16548dfd8a28f8d)
+
+running 8 tests
+test doctor_reports_no_client_library_check ... ok
+test remote_doctor_requires_api_even_with_healthy_tunnel ... ok
+test no_api_fails_without_service_lines_and_does_not_leak_secrets ... ok
+test api_check_accepts_same_major_api_despite_binary_drift ... ok
+test api_snapshot_reports_live_services_and_scheduler_failure ... ok
+test reports_missing_and_invalid_config_without_leaking_values ... ok
+test text_doctor_renders_ok_warn_fix_and_providers ... ok
+test reports_keyring_presence_and_permissions ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/image.rs (/home/agent/.cargo-target/debug/deps/image-64cf6095dbdc7430)
+
+running 3 tests
+test image_commands_are_advertised_and_validate_arguments ... ok
+test root_custom_recipe_registers_requested_name ... FAILED
+test root_base_ubuntu_acceptance ... FAILED
+
+failures:
+
+---- root_custom_recipe_registers_requested_name stdout ----
+
+thread 'root_custom_recipe_registers_requested_name' (81411) panicked at crates/swarmy-cli/tests/image.rs:174:5:
+[2m2026-09-29T11:44:18.092463Z[0m [33m WARN[0m [2mswarmy_image[0m[2m:[0m could not clean image build directory [3merror[0m[2m=[0mNo such file or directory (os error 2) [3mpath[0m[2m=[0m/tmp/swarmy-image-vMa2pE
+Error: No such file or directory (os error 2)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- root_base_ubuntu_acceptance stdout ----
+
+thread 'root_base_ubuntu_acceptance' (81410) panicked at crates/swarmy-cli/tests/image.rs:174:5:
+[2m2026-09-29T11:44:18.092669Z[0m [33m WARN[0m [2mswarmy_image[0m[2m:[0m could not clean image build directory [3merror[0m[2m=[0mNo such file or directory (os error 2) [3mpath[0m[2m=[0m/tmp/swarmy-image-a5t87l
+Error: No such file or directory (os error 2)
+
+
+
+failures:
+    root_base_ubuntu_acceptance
+    root_custom_recipe_registers_requested_name
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p swarmy-cli --test image`
+EXIT_WORKSPACE=101
+DONE
