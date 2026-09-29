@@ -4,30 +4,21 @@ use std::fmt::{self, Display};
 use std::str::FromStr;
 use swarmy_core::RUNNABLE_PARTITIONS;
 
-/// Invalid partition selection.
+/// Invalid partition selection, naming the offending component.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct PartitionsError(String);
-
-fn parse_partitions(value: &str) -> Result<BTreeSet<u16>, PartitionsError> {
-    let mut partitions = BTreeSet::new();
-    for component in value.split(',').map(str::trim) {
-        let (first, last) = component.split_once('-').unwrap_or((component, component));
-        let parse = |part: &str| {
-            part.trim()
-                .parse::<u16>()
-                .map_err(|_| PartitionsError(format!("invalid partition component: {component}")))
-        };
-        let (first, last) = (parse(first)?, parse(last)?);
-        if first > last || last >= RUNNABLE_PARTITIONS {
-            return Err(PartitionsError(format!(
-                "partitions must be in 0-{} with ascending ranges",
-                RUNNABLE_PARTITIONS - 1
-            )));
-        }
-        partitions.extend(first..=last);
-    }
-    Ok(partitions)
+pub enum PartitionsError {
+    /// A component is not a number or range.
+    #[error("invalid partition component: {component}")]
+    Invalid {
+        /// The comma-separated piece that failed to parse.
+        component: String,
+    },
+    /// A range is descending or outside the runnable space.
+    #[error("partition out of range in component: {component}")]
+    OutOfRange {
+        /// The comma-separated piece that is out of range.
+        component: String,
+    },
 }
 
 #[cfg(test)]
@@ -61,7 +52,23 @@ impl FromStr for Partitions {
     type Err = PartitionsError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_partitions(value).map(Self)
+        let mut partitions = BTreeSet::new();
+        for component in value.split(',').map(str::trim) {
+            let (first, last) = component.split_once('-').unwrap_or((component, component));
+            let parse = |part: &str| {
+                part.trim().parse::<u16>().map_err(|_| PartitionsError::Invalid {
+                    component: component.into(),
+                })
+            };
+            let (first, last) = (parse(first)?, parse(last)?);
+            if first > last || last >= RUNNABLE_PARTITIONS {
+                return Err(PartitionsError::OutOfRange {
+                    component: component.into(),
+                });
+            }
+            partitions.extend(first..=last);
+        }
+        Ok(Self(partitions))
     }
 }
 

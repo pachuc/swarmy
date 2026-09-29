@@ -26,12 +26,11 @@ fn main() -> Result<()> {
     }
     swarmy_config::init_tracing();
     let loaded = swarmy_config::Settings::load()?;
+    let _network = swarmy_store::boot();
     if vol_command {
-        let _network = swarmy_store::boot();
         let runtime = tokio::runtime::Runtime::new()?;
         return runtime.block_on(vol::run_cli());
     }
-    let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
         let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;

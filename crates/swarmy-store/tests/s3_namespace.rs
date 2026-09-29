@@ -171,8 +171,8 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
     );
     let _network = swarmy_store::boot();
-    let cluster = settings.store.cluster_file.to_string_lossy().into_owned();
-    let db = Arc::new(Database::new(Some(&cluster)).unwrap());
+    let cluster = settings.store.cluster_file.to_str().expect("cluster file is UTF-8");
+    let db = Arc::new(Database::new(Some(cluster)).unwrap());
     for prefix in ["", "runs/nested"] {
         settings.s3.prefix = prefix.parse().unwrap();
         let mut sibling_settings = settings.clone();

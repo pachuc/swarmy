@@ -286,9 +286,8 @@ async fn read(reader: &mut BufReader<UnixStream>) -> Response {
 
 async fn store(settings: &swarmy_config::Settings) -> Store {
     let directory = settings.store_directory_path().unwrap();
-    let cluster = settings.store.cluster_file.to_string_lossy().into_owned();
     Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(settings.store.cluster_file.as_path()),
         Some(&directory),
         // The node reads large tool payloads in a separate process.
         Arc::new(ObjectBlobStore::new(
