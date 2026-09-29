@@ -318,6 +318,28 @@ is wrong for the whole codebase, say so in the pull request description and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
 
+### Enforced by lint task kkr5bd
+
+Complexity, nesting, and swallowed errors fail the build through
+`[workspace.lints]` in the root `Cargo.toml`, with numeric thresholds in
+`clippy.toml`. Run them locally the same way CI does:
+
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` (plus
+  `--features remote` on `swarmy-cloud` and `swarmy-cli`).
+- `cognitive_complexity` (denied at 25): split over-limit functions by
+  concern, never by line count. `too_many_lines` (100) and
+  `too_many_arguments` (7) ride along with pedantic at the owners' defaults.
+- `excessive_nesting` (denied at 6): extract the inner block into a named
+  helper. Five was measured but flags over a hundred mostly-legitimate
+  sites; at six only real offenders fail, and every one was fixed by
+  extraction with no exceptions.
+- `let_underscore_must_use` and `unused_result_ok` (denied): route every
+  best-effort ignore through `swarmy_core::ignore_best_effort(result,
+  "what was attempted")`, which logs the failure at `debug`.
+  `map_err_ignore` stays allowed on purpose: its sites translate a
+  low-level error into a domain error, and naming the discarded source at
+  each site would be noise, not information.
+
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
 Source that file before running such tests. Tests must skip cleanly, not
