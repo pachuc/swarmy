@@ -99,9 +99,9 @@ swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-cloud = { path = "crates/swarmy-cloud" }
-# Dependents get no swarmy-llm default features: the gateway and the CLI opt
-# into the cloud providers through their own forwarding features, and nothing
-# else enables any, so node-side services never compile the cloud SDKs.
+# Dependents get no swarmy-llm default features. The API, gateway, and CLI
+# enable cloud providers for direct model probes and inference; node-side
+# services do not need their cloud SDKs.
 swarmy-llm = { path = "crates/swarmy-llm", default-features = false }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }

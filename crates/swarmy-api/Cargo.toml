@@ -13,7 +13,7 @@ workspace = true
 # the same cloud features as the gateway and the CLI. A standalone build
 # without a feature refuses those probes with a clear error.
 [features]
-default = []
+default = ["azure", "bedrock", "gemini"]
 azure = ["swarmy-llm/azure"]
 bedrock = ["swarmy-llm/bedrock"]
 gemini = ["swarmy-llm/gemini"]
