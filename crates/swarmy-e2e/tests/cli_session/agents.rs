@@ -779,10 +779,7 @@ async fn assert_unknown_call_status(fixture: &Fixture) {
     .unwrap();
     assert_eq!(shown["sandbox_state"], "unknown");
     assert!(shown["call_status"].is_null());
-    assert_eq!(
-        shown["sandbox_state_reason"],
-        "no current node call observation"
-    );
+    assert!(shown["sandbox_state_reason"].is_null());
 }
 
 #[tokio::test]

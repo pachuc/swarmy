@@ -623,18 +623,18 @@ async fn idle_event_enables_input_without_polling_and_history_still_paginates() 
         }
         let listed = fixture.output(&["--json", "session", "list"]).await;
         assert!(listed.status.success());
-        let sessions: Vec<swarmy_core::SessionRecord> = String::from_utf8(listed.stdout)
+        let sessions: Vec<swarmy_api_types::Session> = String::from_utf8(listed.stdout)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(sessions.len(), 66);
-        assert!(sessions.iter().any(|s| s.session_id == session.session_id));
         assert!(
             sessions
-                .windows(2)
-                .all(|pair| pair[0].session_id < pair[1].session_id)
+                .iter()
+                .any(|s| s.id == session.session_id.to_string())
         );
+        assert!(sessions.windows(2).all(|pair| pair[0].id < pair[1].id));
     })
     .await;
 }
