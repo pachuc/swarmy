@@ -201,6 +201,7 @@ The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
 CI runs the full per-pull-request list below. Workers run `cargo test --locked -p <each crate changed>` while iterating, then merge `origin/master` before the final check and run the complete list once with output saved to a file and attached to the pull request. Name the crates tested in the pull request. Before any command expected to take more than ten minutes, run `git add -A && git commit -m "WIP" && git push`. Build the workspace before running end-to-end tests so they can find sibling binaries:
 
 ```sh
+scripts/check-public-ids.sh
 cargo fmt --all --check
 cargo build --locked -p swarmy-cli --no-default-features
 cargo build --workspace --locked
@@ -213,14 +214,20 @@ cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover
 cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 cargo test --locked -p swarmy-llm --no-default-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+cargo deny check licenses bans sources
+cargo machete
 scripts/chaos-ci.sh
 scripts/check-openapi-compat.sh origin/master
+scripts/dev-stack.sh stop # Release fixed ports before the isolated script tests.
+scripts/test-scripts.sh
 ```
 
 The feature-enabled commands always run in CI: the provisioning client is an
 opt-in feature that the workspace commands leave off. The CLI remote step skips
 the self-managed dev-stack test already covered by the workspace step. The e2e
-binaries run serially within each of two parallel CI jobs.
+binaries run serially within each of two parallel CI jobs. Advisory checks run
+on a weekly schedule rather than blocking pull requests.
 
 Clippy runs with the `all` and `pedantic` groups denied, so write code that
 satisfies it rather than silencing it. `unsafe_code` is denied
@@ -253,7 +260,8 @@ leave the lint as it is; the operator decides. Reviewers apply this bar using
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
 Source that file before running such tests. Tests must skip cleanly, not
-fail, when the relevant environment variable is absent.
+fail, when the relevant environment variable is absent locally; CI must fail
+when a required stack setting is missing.
 
 Some suites need root and a real kernel, so they skip on CI's hosted runners
 and are never run automatically. They are run by hand, by whoever changes the
