@@ -393,6 +393,28 @@ pub enum CredentialStatus {
     NeedsLogin,
 }
 
+impl CredentialKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::ApiKey => "api_key",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
+impl CredentialStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Expired => "expired",
+            Self::NeedsLogin => "needs_login",
+        }
+    }
+}
+
 /// Credential metadata contains no secret material.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Credential {
@@ -435,7 +457,7 @@ pub struct Node {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ServiceHealth {
-    pub role: String,
+    pub role: ServiceRole,
     pub instance_id: String,
     pub version: String,
     pub alive: bool,
@@ -488,6 +510,19 @@ pub enum ServiceRole {
     Gateway,
     Api,
     Node,
+}
+
+impl ServiceRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduler => "scheduler",
+            Self::Worker => "worker",
+            Self::Gateway => "gateway",
+            Self::Api => "api",
+            Self::Node => "node",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -557,6 +592,17 @@ impl From<GpuMode> for swarmy_core::GpuRequirement {
             GpuMode::None => Self::None,
             GpuMode::Shared => Self::Shared,
             GpuMode::Dedicated => Self::Dedicated,
+        }
+    }
+}
+
+impl GpuMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Shared => "shared",
+            Self::Dedicated => "dedicated",
         }
     }
 }
@@ -1014,12 +1060,6 @@ pub struct ApiError {
 pub struct ScratchView {
     pub node_id: String,
     pub bytes: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct InferenceWaitView {
-    pub wake_at: String,
-    pub reasons: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

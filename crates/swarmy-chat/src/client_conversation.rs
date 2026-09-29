@@ -866,14 +866,15 @@ fn select_fresh(
 }
 
 fn service_problem(services: &[api::ServiceHealth], provider: Option<&str>) -> &'static str {
-    let alive = |role: &str| services.iter().any(|s| s.alive && s.role == role);
-    if !alive("worker") {
+    let alive =
+        |role: api::ServiceRole| services.iter().any(|s| s.alive && s.role == role);
+    if !alive(api::ServiceRole::Worker) {
         "No worker is alive"
-    } else if !alive("scheduler") {
+    } else if !alive(api::ServiceRole::Scheduler) {
         "No scheduler is alive"
     } else if !services.iter().any(|s| {
         s.alive
-            && s.role == "gateway"
+            && s.role == api::ServiceRole::Gateway
             && provider.is_none_or(|p| s.providers.iter().any(|v| v == p))
     }) {
         "No gateway serves this session's provider"

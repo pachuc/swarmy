@@ -1,5 +1,6 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
-use super::{ApiResult, AppState, error, id, replay, session_with_next, storage};
+use super::{ApiResult, AppState, error, id, replay, storage};
+use super::views::session_with_next;
 use axum::{
     Json,
     extract::{Path, Query, State},
