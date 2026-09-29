@@ -3974,7 +3974,7 @@
             "$ref": "#/components/schemas/ModelCost"
           },
           "effective_api": {
-            "type": "string",
+            "$ref": "#/components/schemas/ProviderApi",
             "description": "Wire protocol the model answers on: its own override or the provider default."
           },
           "effective_base_url": {
@@ -4200,25 +4200,20 @@
         "required": [
           "id",
           "name",
-          "status",
           "api",
-          "credential",
           "auth_kinds",
           "env_keys",
           "credential_env_keys"
         ],
         "properties": {
           "api": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderApi"
           },
           "auth_kinds": {
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "credential": {
-            "type": "string"
           },
           "credential_env_keys": {
             "type": "array",
@@ -4237,11 +4232,22 @@
           },
           "name": {
             "type": "string"
-          },
-          "status": {
-            "type": "string"
           }
         }
+      },
+      "ProviderApi": {
+        "type": "string",
+        "description": "Wire protocol a model answers on: its own override or the provider\ndefault. Variant names are the wire names, matching the catalog, so the\nJSON form is unchanged from the previous free-form string.",
+        "enum": [
+          "AnthropicMessages",
+          "OpenAiResponses",
+          "OpenAiCodexResponses",
+          "OpenAiCompletions",
+          "GoogleGenerativeAi",
+          "GoogleVertex",
+          "BedrockConverse",
+          "Fake"
+        ]
       },
       "PutCredentialRecord": {
         "type": "object",
