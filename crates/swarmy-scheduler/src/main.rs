@@ -1,12 +1,11 @@
 mod config;
 mod ephemeral;
 mod gc;
+mod health;
 mod scheduler;
 
-use jiff::Timestamp;
 use swarmy_bus::Bus;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
-use tokio::time::{Duration, interval};
+use swarmy_store::Store;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,32 +25,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(partitions = ?config.partitions, "scheduler started");
     let partitions: Vec<_> = config.partitions.iter().copied().collect();
     let scheduler = scheduler::Scheduler::new(store.clone(), bus, config);
-    let started = Timestamp::now();
+    let started = jiff::Timestamp::now();
     let id = ulid::Ulid::generate().to_string();
-    let health = async {
-        let mut ticks = interval(Duration::from_secs(30));
-        loop {
-            ticks.tick().await;
-            let record = ServiceHeartbeat {
-                role: ServiceRole::Scheduler,
-                instance_id: id.clone(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                host: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()),
-                started_at: started,
-                last_seen: Timestamp::now(),
-                detail: ServiceDetail::Partitions(partitions.clone()),
-            };
-            if let Err(error) = store.put_service_heartbeat(&record).await {
-                tracing::warn!(%error, "scheduler health heartbeat failed");
-            }
-            if let Err(error) = store.expire_services().await {
-                tracing::warn!(%error, "service health expiry failed");
-            }
-        }
-    };
     let outcome = tokio::select! {
         result = scheduler.run() => result,
-        () = health => Ok(()),
+        () = health::run(&store, id, started, partitions) => Ok(()),
         () = gc::run(&store, objects, settings.gc, settings.metering) => Ok(()),
         () = ephemeral::run(&store, settings.scheduler.ephemeral_retention_secs) => Ok(()),
         () = swarmy_config::shutdown_signal() => Ok(()),

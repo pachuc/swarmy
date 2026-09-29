@@ -19,6 +19,7 @@ use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
+    ops::ControlFlow,
     sync::Arc,
     time::Duration,
 };
@@ -34,6 +35,8 @@ use ulid::Ulid;
 
 const OUTBOUND_CAPACITY: usize = 64;
 const MAX_LOGS: usize = 32;
+/// How long a slow SSE client gets to drain one event before the stream ends.
+const SSE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
 type ApiError = (StatusCode, Json<api::ApiError>);
 type Registry = Arc<std::sync::Mutex<HashMap<String, Connection>>>;
 
@@ -374,7 +377,7 @@ async fn catch_up(
             if !deliver(
                 sender,
                 Event::default().event("event").id(id_field).data(data),
-                Duration::from_secs(2),
+                SSE_DELIVERY_TIMEOUT,
             )
             .await
             {
@@ -422,10 +425,8 @@ async fn produce(
     let mut first = Some(initial_feeds);
     let mut current = changes.borrow().clone();
     let mut pending_update = false;
-    let mut force_update = false;
     'reconfigure: loop {
-        if force_update || changes.has_changed().unwrap_or(false) {
-            force_update = false;
+        if changes.has_changed().unwrap_or(false) {
             let requested = changes.borrow_and_update().clone();
             current = requested;
             pending_update = true;
@@ -444,10 +445,10 @@ async fn produce(
                 return;
             }
         };
-        match catch_all(&state, &mut current, &sender, &changes, &guard.progress).await {
-            Replay::Done => {}
-            Replay::Updated => continue 'reconfigure,
-            Replay::Failed => return,
+        match settle(catch_all(&state, &mut current, &sender, &changes, &guard.progress).await) {
+            ControlFlow::Continue(()) => {}
+            ControlFlow::Break(Drive::Changed) => continue 'reconfigure,
+            ControlFlow::Break(Drive::Rebuild | Drive::End) => return,
         }
         if pending_update {
             let Ok(id) = encode_cursor(&current) else {
@@ -456,7 +457,7 @@ async fn produce(
             if !deliver(
                 &sender,
                 Event::default().event("subscription").id(id).data("{}"),
-                Duration::from_secs(2),
+                SSE_DELIVERY_TIMEOUT,
             )
             .await
             {
@@ -464,57 +465,153 @@ async fn produce(
             }
             pending_update = false;
         }
-        let mut poll = interval(state.stream_poll_interval);
-        poll.tick().await;
-        loop {
-            tokio::select! {
-                () = sender.closed() => return,
-                updated = changes.changed() => {
-                    if updated.is_err() { return; }
-                    force_update = true;
-                    continue 'reconfigure;
+        match drive(
+            &state,
+            &mut current,
+            &sender,
+            &mut changes,
+            &guard.progress,
+            &mut live,
+        )
+        .await
+        {
+            // The change notification was consumed inside `drive`; apply the
+            // pending subscription before rebuilding feeds.
+            Drive::Changed => {
+                current = changes.borrow_and_update().clone();
+                pending_update = true;
+                first = None;
+            }
+            Drive::Rebuild => {}
+            Drive::End => return,
+        }
+    }
+}
+
+/// What the inner drive loop tells `produce` to do next.
+enum Drive {
+    /// Subscription changed; apply it before rebuilding feeds.
+    Changed,
+    /// Feeds ended; rebuild them from the top of the loop.
+    Rebuild,
+    /// Client gone or undeliverable; end the stream.
+    End,
+}
+
+/// Fold one replay outcome into loop control: done carries on, updated
+/// reconfigures, failed ends the stream. Every replay point in `produce`
+/// shares this instead of repeating the match.
+fn settle(replay: Replay) -> ControlFlow<Drive> {
+    match replay {
+        Replay::Done => ControlFlow::Continue(()),
+        Replay::Updated => ControlFlow::Break(Drive::Changed),
+        Replay::Failed => ControlFlow::Break(Drive::End),
+    }
+}
+
+/// Handle one live-feed item. Done carries on polling; anything else leaves
+/// the drive loop with the outcome for `produce`.
+async fn on_feed_item(
+    state: &AppState,
+    current: &mut Subscription,
+    sender: &mpsc::Sender<Event>,
+    changes: &watch::Receiver<Subscription>,
+    progress: &Arc<std::sync::Mutex<Subscription>>,
+    item: Option<FeedItem>,
+) -> ControlFlow<Drive> {
+    match item {
+        Some(FeedItem::Durable(id)) => {
+            let Some(index) = current
+                .cursors
+                .iter()
+                .position(|c| session_id(&c.log_id).ok() == Some(id))
+            else {
+                return ControlFlow::Continue(());
+            };
+            settle(catch_up(state, current, index, sender, changes, progress).await)
+        }
+        Some(FeedItem::Token(log, delta)) => {
+            let payload = api::EventPayload::TokenDelta {
+                turn_id: delta.turn_id,
+                position: delta.position,
+                text: delta.text,
+            };
+            let Ok(data) =
+                serde_json::to_string(&serde_json::json!({"log_id": log, "payload": payload}))
+            else {
+                return ControlFlow::Break(Drive::End);
+            };
+            if !deliver(
+                sender,
+                Event::default().event("token_delta").data(data),
+                SSE_DELIVERY_TIMEOUT,
+            )
+            .await
+            {
+                return ControlFlow::Break(Drive::End);
+            }
+            ControlFlow::Continue(())
+        }
+        Some(FeedItem::Timeline(log, sequence, observation)) => {
+            let Ok(data) = serde_json::to_string(&api::Event {
+                log_id: log,
+                sequence,
+                // Timeline observations ride the `store_record`
+                // tag so older clients, which decode the
+                // record as a value, keep working.
+                payload: api::EventPayload::StoreRecord {
+                    record: api::RecordBody::Timeline(observation),
+                },
+            }) else {
+                return ControlFlow::Break(Drive::End);
+            };
+            if !deliver(
+                sender,
+                Event::default().event("event").data(data),
+                SSE_DELIVERY_TIMEOUT,
+            )
+            .await
+            {
+                return ControlFlow::Break(Drive::End);
+            }
+            ControlFlow::Continue(())
+        }
+        // Feeds ended; rebuild them from the top of the loop.
+        None => ControlFlow::Break(Drive::Rebuild),
+    }
+}
+
+/// Poll the store and live feeds until the subscription changes, the feeds
+/// end, or the client goes away.
+async fn drive(
+    state: &AppState,
+    current: &mut Subscription,
+    sender: &mpsc::Sender<Event>,
+    changes: &mut watch::Receiver<Subscription>,
+    progress: &Arc<std::sync::Mutex<Subscription>>,
+    live: &mut SelectAll<BoxStream<'static, FeedItem>>,
+) -> Drive {
+    let mut poll = interval(state.stream_poll_interval);
+    poll.tick().await;
+    loop {
+        tokio::select! {
+            () = sender.closed() => return Drive::End,
+            updated = changes.changed() => {
+                if updated.is_err() { return Drive::End; }
+                return Drive::Changed;
+            }
+            _ = poll.tick() => {
+                if let ControlFlow::Break(drive) =
+                    settle(catch_all(state, current, sender, changes, progress).await)
+                {
+                    return drive;
                 }
-                _ = poll.tick() => {
-                    match catch_all(&state, &mut current, &sender, &changes, &guard.progress).await {
-                        Replay::Done => {}
-                        Replay::Updated => continue 'reconfigure,
-                        Replay::Failed => return,
-                    }
-                }
-                item = live.next() => {
-                    match item {
-                        Some(FeedItem::Durable(id)) => {
-                            if let Some(index) = current.cursors.iter().position(|c| session_id(&c.log_id).ok() == Some(id))
-                                {
-                                match catch_up(&state, &mut current, index, &sender, &changes, &guard.progress).await {
-                                    Replay::Done => {}
-                                    Replay::Updated => continue 'reconfigure,
-                                    Replay::Failed => return,
-                                }
-                            }
-                        }
-                        Some(FeedItem::Token(log, delta)) => {
-                            let payload = api::EventPayload::TokenDelta {
-                                turn_id: delta.turn_id, position: delta.position, text: delta.text,
-                            };
-                            let Ok(data) = serde_json::to_string(&serde_json::json!({"log_id": log, "payload": payload})) else { return };
-                            if !deliver(&sender, Event::default().event("token_delta").data(data), Duration::from_secs(2)).await { return; }
-                        }
-                        Some(FeedItem::Timeline(log, sequence, observation)) => {
-                            let Ok(data) = serde_json::to_string(&api::Event {
-                                log_id: log,
-                                sequence,
-                                // Timeline observations ride the `store_record`
-                                // tag so older clients, which decode the
-                                // record as a value, keep working.
-                                payload: api::EventPayload::StoreRecord {
-                                    record: api::RecordBody::Timeline(observation),
-                                },
-                            }) else { return };
-                            if !deliver(&sender, Event::default().event("event").data(data), Duration::from_secs(2)).await { return; }
-                        }
-                        None => break,
-                    }
+            }
+            item = live.next() => {
+                if let ControlFlow::Break(drive) =
+                    on_feed_item(state, current, sender, changes, progress, item).await
+                {
+                    return drive;
                 }
             }
         }
