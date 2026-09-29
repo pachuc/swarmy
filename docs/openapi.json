@@ -599,135 +599,6 @@
         }
       }
     },
-    "/v1/cli/routes": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_routes",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliRoute"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_route",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliRouteInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSaved"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/routes/{name}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_route",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliRoute"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_remove_route",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliRouteDeleted"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/cli/sessions": {
       "get": {
         "tags": [
@@ -767,46 +638,6 @@
           "cli_paths"
         ],
         "operationId": "cli_session",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSessionDetail"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/sessions/{id}/route": {
-      "patch": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_session_route",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetSessionRoute"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "description": "",
@@ -873,6 +704,46 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateCredential"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/credentials/records": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "put_credential_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutCredentialRecord"
               }
             }
           },
@@ -3120,64 +2991,6 @@
           }
         }
       },
-      "CliRoute": {
-        "type": "object",
-        "description": "CLI projection of a named inference route.",
-        "required": [
-          "name",
-          "steps",
-          "updated_at"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RouteStep"
-            }
-          },
-          "updated_at": {
-            "type": "string"
-          }
-        }
-      },
-      "CliRouteDeleted": {
-        "type": "object",
-        "description": "CLI deletion marker for a named route.",
-        "required": [
-          "deleted"
-        ],
-        "properties": {
-          "deleted": {
-            "type": "boolean"
-          }
-        }
-      },
-      "CliRouteInput": {
-        "type": "object",
-        "description": "CLI input for replacing a route's steps in order.",
-        "required": [
-          "idempotency_key",
-          "name",
-          "steps"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RouteStep"
-            }
-          }
-        }
-      },
       "CliSaved": {
         "type": "object",
         "required": [
@@ -3428,6 +3241,15 @@
           "secret"
         ],
         "properties": {
+          "extra": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -3575,6 +3397,12 @@
         "properties": {
           "created_at": {
             "type": "string"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "kind": {
             "$ref": "#/components/schemas/CredentialKind"
@@ -4215,14 +4043,56 @@
           "tag"
         ],
         "properties": {
+          "header": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImageHeader"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
           "name": {
             "type": "string"
           },
+          "scratch": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "tag": {
             "type": "string"
+          }
+        }
+      },
+      "ImageHeader": {
+        "type": "object",
+        "required": [
+          "size",
+          "chunk_size",
+          "root_hash"
+        ],
+        "properties": {
+          "chunk_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "root_hash": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -4528,7 +4398,12 @@
         "required": [
           "id",
           "provider_id",
-          "context_window"
+          "context_window",
+          "key",
+          "name",
+          "limit",
+          "cost",
+          "supported_efforts"
         ],
         "properties": {
           "context_window": {
@@ -4536,14 +4411,70 @@
             "format": "int64",
             "minimum": 0
           },
+          "cost": {
+            "$ref": "#/components/schemas/ModelCost"
+          },
           "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/ModelLimit"
+          },
+          "name": {
             "type": "string"
           },
           "provider_id": {
             "type": "string"
+          },
+          "supported_efforts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffort"
+            }
           }
         },
         "additionalProperties": {}
+      },
+      "ModelCost": {
+        "type": "object",
+        "required": [
+          "input",
+          "output"
+        ],
+        "properties": {
+          "input": {
+            "type": "number",
+            "format": "double"
+          },
+          "output": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ModelLimit": {
+        "type": "object",
+        "required": [
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "Node": {
         "type": "object",
@@ -4686,9 +4617,31 @@
         "required": [
           "id",
           "name",
-          "status"
+          "status",
+          "api",
+          "credential",
+          "auth_kinds",
+          "env_keys"
         ],
         "properties": {
+          "api": {
+            "type": "string"
+          },
+          "auth_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "credential": {
+            "type": "string"
+          },
+          "env_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "id": {
             "type": "string"
           },
@@ -4700,6 +4653,28 @@
           }
         },
         "additionalProperties": {}
+      },
+      "PutCredentialRecord": {
+        "type": "object",
+        "description": "Import an OAuth or provider-specific credential without exposing its secret on reads.",
+        "required": [
+          "idempotency_key",
+          "provider",
+          "label",
+          "record"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "record": {}
+        }
       },
       "QuotaEntry": {
         "type": "object",
@@ -4736,6 +4711,25 @@
           "xhigh",
           "max"
         ]
+      },
+      "ResolvedInference": {
+        "type": "object",
+        "required": [
+          "provider",
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
       },
       "Route": {
         "type": "object",
@@ -4845,6 +4839,15 @@
               "null"
             ]
           },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": "boolean"
+          },
           "computer_deleted": {
             "type": "boolean"
           },
@@ -4875,6 +4878,9 @@
           "log_id": {
             "$ref": "#/components/schemas/LogId"
           },
+          "main": {
+            "type": "boolean"
+          },
           "model": {
             "type": [
               "string",
@@ -4887,10 +4893,26 @@
               "null"
             ]
           },
+          "previous_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "provider": {
             "type": [
               "string",
               "null"
+            ]
+          },
+          "resolved": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ResolvedInference"
+              }
             ]
           },
           "route": {

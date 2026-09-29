@@ -301,15 +301,6 @@ pub fn router(state: AppState) -> Router {
             get(cli::credentials).post(cli::credential_set),
         )
         .route("/v1/cli/credentials/{provider}", get(cli::credential))
-        .route("/v1/cli/routes", get(cli::routes).post(cli::route_set))
-        .route(
-            "/v1/cli/routes/{name}",
-            get(cli::route_show).delete(cli::route_remove),
-        )
-        .route(
-            "/v1/cli/sessions/{id}/route",
-            axum::routing::patch(cli::session_set_route),
-        )
         .route("/v1/cli/agents/{name}", get(cli::agent_show))
         .route("/v1/cli/images/{name}/{tag}", get(cli::image_show))
         .route("/v1/agents", get(agents).post(create_agent))

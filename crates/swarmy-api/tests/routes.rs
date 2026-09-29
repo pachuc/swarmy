@@ -435,13 +435,9 @@ fn fallback_steps() -> Vec<swarmy_api_types::RouteStep> {
     ]
 }
 
-fn route_input(
-    name: &str,
-    steps: Vec<swarmy_api_types::RouteStep>,
-) -> swarmy_api_types::CliRouteInput {
-    swarmy_api_types::CliRouteInput {
+fn route_input(steps: Vec<swarmy_api_types::RouteStep>) -> swarmy_api_types::SetRoute {
+    swarmy_api_types::SetRoute {
         idempotency_key: Ulid::generate().to_string(),
-        name: name.into(),
         steps,
     }
 }
@@ -486,26 +482,26 @@ async fn assert_route_crud(client: &swarmy_client::Client) {
     // Unknown providers fail at set time instead of wedging turns later.
     assert!(
         client
-            .cli_set_route(&route_input(
+            .set_route(
                 "bad",
-                vec![swarmy_api_types::RouteStep {
+                &route_input(vec![swarmy_api_types::RouteStep {
                     provider: "no-such-provider".into(),
                     entry: "default".into(),
                     model: None,
-                }],
-            ))
+                }],)
+            )
             .await
             .is_err()
     );
     client
-        .cli_set_route(&route_input("fallback", fallback_steps()))
+        .set_route("fallback", &route_input(fallback_steps()))
         .await
         .unwrap();
-    let listed = client.cli_routes().await.unwrap();
+    let listed = client.routes().await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].steps.len(), 2);
     assert_eq!(listed[0].steps[1].model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(client.cli_route("fallback").await.unwrap().name, "fallback");
+    assert_eq!(client.route("fallback").await.unwrap().name, "fallback");
     assert_eq!(
         client.route("fallback").await.unwrap().steps,
         fallback_steps()
@@ -613,16 +609,16 @@ async fn assert_route_deletion(client: &swarmy_client::Client) {
     // Deletion reports and assigned sessions fall back afterwards.
     assert!(
         client
-            .cli_remove_route("fallback", &Ulid::generate().to_string())
+            .remove_route("fallback", &Ulid::generate().to_string())
             .await
             .is_ok()
     );
-    assert!(client.cli_route("fallback").await.is_err());
+    assert!(client.route("fallback").await.is_err());
     assert_eq!(client.routes().await.unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn inference_routes_round_trip_through_cli_and_resource_api() {
+async fn inference_routes_round_trip_through_resource_api() {
     let Some((client, task)) = route_server().await else {
         return;
     };

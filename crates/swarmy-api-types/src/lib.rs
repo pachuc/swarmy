@@ -937,25 +937,6 @@ pub struct CliCredential {
 pub struct CliSaved {
     pub saved: bool,
 }
-/// CLI projection of a named inference route.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRoute {
-    pub name: String,
-    pub steps: Vec<RouteStep>,
-    pub updated_at: String,
-}
-/// CLI input for replacing a route's steps in order.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRouteInput {
-    pub idempotency_key: String,
-    pub name: String,
-    pub steps: Vec<RouteStep>,
-}
-/// CLI deletion marker for a named route.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRouteDeleted {
-    pub deleted: bool,
-}
 /// Input for CLI agent creation or settings updates.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliAgentChoice {
@@ -988,9 +969,8 @@ pub struct CliCredentialInput {
 /// CLI compatibility routes. These signatures are mirrored by the server router.
 pub mod cli_paths {
     use super::{
-        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliRoute,
-        CliRouteDeleted, CliRouteInput, CliSaved, CliSession, CliSessionDetail, DoctorSnapshot,
-        SetSessionRoute,
+        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
+        CliSession, CliSessionDetail, DoctorSnapshot,
     };
     #[utoipa::path(get, path = "/v1/cli/doctor",
         responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
@@ -1028,23 +1008,6 @@ pub mod cli_paths {
     #[utoipa::path(get, path = "/v1/cli/credentials/{provider}",
         responses((status = 200, body = CliCredential), (status = 400, body = ApiError)))]
     pub fn cli_credential() {}
-    #[utoipa::path(get, path = "/v1/cli/routes",
-        responses((status = 200, body = Vec<CliRoute>), (status = 400, body = ApiError)))]
-    pub fn cli_routes() {}
-    #[utoipa::path(get, path = "/v1/cli/routes/{name}",
-        responses((status = 200, body = CliRoute), (status = 400, body = ApiError)))]
-    pub fn cli_route() {}
-    #[utoipa::path(post, path = "/v1/cli/routes",
-    request_body = CliRouteInput,
-        responses((status = 200, body = CliSaved), (status = 400, body = ApiError)))]
-    pub fn cli_set_route() {}
-    #[utoipa::path(delete, path = "/v1/cli/routes/{name}",
-        responses((status = 200, body = CliRouteDeleted), (status = 400, body = ApiError)))]
-    pub fn cli_remove_route() {}
-    #[utoipa::path(patch, path = "/v1/cli/sessions/{id}/route",
-    request_body = SetSessionRoute,
-        responses((status = 200, body = CliSessionDetail), (status = 400, body = ApiError)))]
-    pub fn cli_set_session_route() {}
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
@@ -1343,9 +1306,7 @@ pub mod api_paths {
         cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
         cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
-        cli_paths::cli_credential,
-        cli_paths::cli_routes, cli_paths::cli_route, cli_paths::cli_set_route,
-        cli_paths::cli_remove_route, cli_paths::cli_set_session_route
+        cli_paths::cli_credential
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
@@ -1362,8 +1323,7 @@ pub mod api_paths {
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
     Event, EventPayload, ApiError, CliSession, CliSessionDetail,
     CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
-    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute,
-    CliRoute, CliRouteInput, CliRouteDeleted
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;
 
