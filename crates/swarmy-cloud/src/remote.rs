@@ -275,8 +275,7 @@ where
 }
 
 fn profile_not_propagated(error: &anyhow::Error) -> bool {
-    let message = format!("{error:#}");
-    message.contains("InvalidParameterValue") && message.contains("Invalid IAM Instance Profile")
+    error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::Aws { operation, code: Some(code), .. } if operation == "ec2:RunInstances" && code == "InvalidParameterValue")))
 }
 
 pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {

@@ -51,6 +51,19 @@ pub enum Error {
     NotFound(String),
     #[error("remote node {0} already exists; run swarmy remote down {0} first")]
     AlreadyExists(String),
+    #[error("{operation}")]
+    MissingPermission {
+        operation: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("{operation}")]
+    Aws {
+        operation: String,
+        code: Option<String>,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error(transparent)]
     Operation(anyhow::Error),
 }

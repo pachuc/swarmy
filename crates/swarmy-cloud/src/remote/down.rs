@@ -9,8 +9,7 @@ use swarmy_config::RemoteNode;
 use super::{Cloud, Ownership, key_name, state::State};
 
 pub(crate) fn actionable_error(error: anyhow::Error) -> anyhow::Error {
-    let message = format!("{error:#}");
-    if message.contains("AccessDenied") || message.contains("Access denied") {
+    if error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))) {
         error.context("AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained")
     } else {
         error
@@ -38,7 +37,7 @@ impl Report {
 }
 
 fn permission<'a>(error: &anyhow::Error, default: &'a str, alternate: &'a str) -> &'a str {
-    if format!("{error:#}").contains(alternate) {
+    if error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { operation, .. } if operation == alternate))) {
         alternate
     } else {
         default
