@@ -94,35 +94,40 @@ async fn sequential_readahead_reduces_foreground_fetches() {
         )
         .await
         .unwrap();
-        for index in 0..16_u8 {
-            assert_eq!(
-                device
-                    .read(
-                        u64::from(index) * u64::from(CHUNK_SIZE),
-                        CHUNK_SIZE as usize
-                    )
-                    .await
-                    .unwrap(),
-                vec![index + 1; CHUNK_SIZE as usize]
-            );
-            // Model work performed by the consumer between chunks. Wait for
-            // observable progress rather than depending on a fixed scheduler delay.
-            if ahead != 0 && index > 0 && index < 15 {
-                tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    while device.stats().readahead_fetches < u64::from(index) {
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                    }
-                })
-                .await
-                .unwrap();
-            }
-        }
+        read_all_chunks(&device, ahead).await;
         stats.push(device.stats());
     }
     assert_eq!(stats[0].cold_reads, 16);
     assert!(stats[1].cold_reads < stats[0].cold_reads, "{stats:?}");
     assert!(stats[1].readahead_hits > 0);
     assert_eq!(stats[1].cold_reads + stats[1].readahead_fetches, 16);
+}
+
+/// Read every chunk through one device. On the prefetching device, model
+/// work performed by the consumer between chunks: wait for observable
+/// progress rather than depending on a fixed scheduler delay.
+async fn read_all_chunks(device: &VolumeDevice, ahead: u64) {
+    for index in 0..16_u8 {
+        assert_eq!(
+            device
+                .read(
+                    u64::from(index) * u64::from(CHUNK_SIZE),
+                    CHUNK_SIZE as usize
+                )
+                .await
+                .unwrap(),
+            vec![index + 1; CHUNK_SIZE as usize]
+        );
+        if ahead != 0 && index > 0 && index < 15 {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while device.stats().readahead_fetches < u64::from(index) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
 }
 
 #[tokio::test]

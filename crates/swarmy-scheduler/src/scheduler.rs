@@ -62,79 +62,132 @@ impl Scheduler {
         if !self.config.partitions.contains(&partition) {
             return;
         }
-        let result = async {
-            // The agent arrives in the same transaction so route assignment
-            // costs no extra transaction per session.
-            let (session, agent) = self
-                .store
-                .fetch_session_with_agent(session_id)
-                .await?
-                .ok_or(StoreError::Domain(swarmy_store::DomainError::SessionMissing))?;
-            if session.state == SessionState::Runnable {
-                if session.interrupt_requested {
-                    if self.store.finish_runnable_interrupt(session_id).await? {
-                        let head = self.store.fetch_session(session_id).await?
-                            .ok_or(StoreError::Domain(swarmy_store::DomainError::SessionMissing))?.head_seq;
-                        if let Some(event) = self.store.read_events(session_id, head - 1, 1).await?.pop() {
-                            self.bus.publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event).await?;
-                        }
-                    }
-                    return Ok(());
-                }
-                if let Some((until, reason)) =
-                    self.breaker_park(&session, agent.as_ref(), breakers).await?
-                {
-                    let wait = self.store.inference_wait(session_id).await?;
-                    let failure_pending = if session.head_seq == 0 {
-                        false
-                    } else {
-                        self.store
-                            .read_events(session_id, session.head_seq - 1, 1)
-                            .await?
-                            .first()
-                            .is_some_and(|event| {
-                                matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
-                                    if wait.as_ref().is_none_or(|wait| wait.last_failure_seq != *seq))
-                            })
-                    };
-                    let wait_expired = wait.as_ref().is_some_and(|wait| {
-                        wait.since
-                            .checked_add(self.config.max_inference_wait)
-                            .is_ok_and(|limit| limit <= Timestamp::now())
-                    });
-                    if !failure_pending
-                        && !wait_expired
-                        && self
-                            .store
-                            .park_runnable_for_breaker(
-                                session_id,
-                                &reason,
-                                until,
-                                Timestamp::now(),
-                                self.config.max_inference_wait,
-                            )
-                            .await?
-                    {
-                        return Ok(());
-                    }
-                }
-            }
-            let turn = self.store.turn_id(session_id).await?;
-            self.bus
-                .nudge(
-                    session_id,
-                    session.head_seq,
-                    turn,
-                    self.config.resend_interval,
-                    force,
-                )
-                .await?;
-            Ok::<_, anyhow::Error>(())
-        }
-        .await;
-        if let Err(error) = result {
+        if let Err(error) = self.nudge_inner(session_id, force, breakers).await {
             tracing::warn!(%session_id, partition, %error, "nudge failed");
         }
+    }
+
+    async fn nudge_inner(
+        &self,
+        session_id: SessionId,
+        force: bool,
+        breakers: &mut RouteCache,
+    ) -> Result<(), anyhow::Error> {
+        // The agent arrives in the same transaction so route assignment
+        // costs no extra transaction per session.
+        let (session, agent) = self
+            .store
+            .fetch_session_with_agent(session_id)
+            .await?
+            .ok_or(StoreError::Domain(
+                swarmy_store::DomainError::SessionMissing,
+            ))?;
+        if session.state == SessionState::Runnable {
+            if session.interrupt_requested {
+                self.finish_interrupt(session_id).await?;
+                return Ok(());
+            }
+            if self
+                .park_for_breaker(session_id, &session, agent.as_ref(), breakers)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        let turn = self.store.turn_id(session_id).await?;
+        self.bus
+            .nudge(
+                session_id,
+                session.head_seq,
+                turn,
+                self.config.resend_interval,
+                force,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Finish an interrupt requested on a runnable session and publish its
+    /// terminal event to live clients.
+    async fn finish_interrupt(&self, session_id: SessionId) -> Result<(), anyhow::Error> {
+        if !self.store.finish_runnable_interrupt(session_id).await? {
+            return Ok(());
+        }
+        let head = self
+            .store
+            .fetch_session(session_id)
+            .await?
+            .ok_or(StoreError::Domain(
+                swarmy_store::DomainError::SessionMissing,
+            ))?
+            .head_seq;
+        if let Some(event) = self.store.read_events(session_id, head - 1, 1).await?.pop() {
+            self.bus
+                .publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Park a runnable session while its route's breaker stays open, unless
+    /// a retryable failure still needs delivery or the wait already expired.
+    /// Returns whether the session was parked.
+    async fn park_for_breaker(
+        &self,
+        session_id: SessionId,
+        session: &swarmy_core::SessionRecord,
+        agent: Option<&AgentRecord>,
+        breakers: &mut RouteCache,
+    ) -> Result<bool, anyhow::Error> {
+        let Some((until, reason)) = self.breaker_park(session, agent, breakers).await? else {
+            return Ok(false);
+        };
+        let wait = self.store.inference_wait(session_id).await?;
+        if self.failure_pending(session, &wait).await? || self.wait_expired(&wait) {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .park_runnable_for_breaker(
+                session_id,
+                &reason,
+                until,
+                Timestamp::now(),
+                self.config.max_inference_wait,
+            )
+            .await?)
+    }
+
+    /// Whether the session's last event is a retryable failure the gateway
+    /// has not seen yet. Such a failure must still be delivered, so the
+    /// session keeps running instead of parking for the breaker.
+    async fn failure_pending(
+        &self,
+        session: &swarmy_core::SessionRecord,
+        wait: &Option<swarmy_store::InferenceWait>,
+    ) -> Result<bool, anyhow::Error> {
+        if session.head_seq == 0 {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .read_events(session.session_id, session.head_seq - 1, 1)
+            .await?
+            .first()
+            .is_some_and(|event| {
+                matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
+                    if wait.as_ref().is_none_or(|wait| wait.last_failure_seq != *seq))
+            }))
+    }
+
+    /// Whether the inference wait outlasted the maximum gateway wait and the
+    /// session must run to observe the timeout.
+    fn wait_expired(&self, wait: &Option<swarmy_store::InferenceWait>) -> bool {
+        wait.as_ref().is_some_and(|wait| {
+            wait.since
+                .checked_add(self.config.max_inference_wait)
+                .is_ok_and(|limit| limit <= Timestamp::now())
+        })
     }
 
     async fn scan_loop(&self) {
