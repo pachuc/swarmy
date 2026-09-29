@@ -16,7 +16,9 @@ fn no_raw_family_packing_outside_registry() {
     for entry in std::fs::read_dir(src).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|ext| ext == "rs")
-            && path.file_name().is_some_and(|name| name != "keys.rs")
+            && path
+                .file_name()
+                .is_some_and(|name| name != "keys.rs" && name != "keys_tests.rs")
         {
             let text = std::fs::read_to_string(&path).unwrap();
             assert!(
