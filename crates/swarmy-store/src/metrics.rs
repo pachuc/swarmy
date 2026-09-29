@@ -1287,10 +1287,7 @@ impl Store {
                 key
             });
             for (_, bytes) in page {
-                match decode_inference(&bytes) {
-                    Ok(row) => inference.push(row),
-                    Err(error) => tracing::warn!(%error, "skipping undecodable turn inference"),
-                }
+                inference.push(decode_inference(&bytes)?);
             }
             after = next.take();
             if page_len < MAX_SCAN_LIMIT {
@@ -1319,10 +1316,7 @@ impl Store {
                 key
             });
             for (_, bytes) in page {
-                match decode_tool(&bytes) {
-                    Ok(row) => tools.push(row),
-                    Err(error) => tracing::warn!(%error, "skipping undecodable turn tool"),
-                }
+                tools.push(decode_tool(&bytes)?);
             }
             after = next.take();
             if page_len < MAX_SCAN_LIMIT {

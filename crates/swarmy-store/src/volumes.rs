@@ -585,6 +585,15 @@ impl Store {
         if read::<VolumeRecord>(trx, &key).await?.is_some() {
             return Err(StoreError::Domain(crate::DomainError::VolumeExists));
         }
+        self.write_new_volume(trx, id, record)
+    }
+
+    pub(crate) fn write_new_volume(
+        &self,
+        trx: &Transaction,
+        id: VolumeId,
+        record: &VolumeRecord,
+    ) -> Result<()> {
         write(
             trx,
             &self.volume_snapshots_key(id),
