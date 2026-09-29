@@ -6,11 +6,11 @@
 #[derive(clap::Args)]
 pub struct Args {
     /// Rollup dimension to read: session, agent, provider, entry, kind, or model
-    #[arg(long, value_parser = ["session", "agent", "provider", "entry", "kind", "model"])]
-    pub by: Option<String>,
+    #[arg(long, value_enum)]
+    pub by: Option<CostDimension>,
     /// Calendar grouping for the rows
-    #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
-    pub group: String,
+    #[arg(long, default_value = "day", value_enum)]
+    pub group: UsageGroup,
     /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
     /// or a calendar word like month or 2months for the start of this or last month
     #[arg(long)]
@@ -36,6 +36,37 @@ pub struct Args {
     /// Restrict the series to one model
     #[arg(long)]
     pub model: Option<String>,
+}
+
+/// Rollup dimension for `swarmy cost --by`, parsed once by clap.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CostDimension {
+    Session,
+    Agent,
+    Provider,
+    Entry,
+    Kind,
+    Model,
+}
+
+/// Calendar grouping for usage rows, parsed once by clap.
+#[derive(Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum UsageGroup {
+    #[default]
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+/// The clap name for a value-enum flag. One helper replaces the hand-written
+/// `as_str` methods each flag enum used to carry.
+#[must_use]
+pub fn value_name(value: &impl clap::ValueEnum) -> String {
+    value
+        .to_possible_value()
+        .map(|possible| possible.get_name().to_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

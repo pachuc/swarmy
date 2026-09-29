@@ -28,6 +28,8 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+    #[error("request timed out")]
+    Timeout,
     #[error("API configuration error: {0}")]
     Config(#[from] swarmy_config::Error),
     #[error("no [api] token configured; run swarmy dev up")]
@@ -44,28 +46,12 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
-    #[error("API at {endpoint}: request timed out")]
-    Timeout { endpoint: String },
     #[error("reading upload size for {path}: {source}")]
     UploadSize {
         path: std::path::PathBuf,
         #[source]
         source: std::io::Error,
     },
-}
-
-impl Error {
-    /// The server rejection code when this failure (or its wrapped cause)
-    /// is an API error response. The chat UI requeues transient append
-    /// races instead of dropping keystrokes.
-    #[must_use]
-    pub fn api_code(&self) -> Option<(StatusCode, &str)> {
-        match self {
-            Error::Api { status, body } => Some((*status, body.code.as_str())),
-            Error::Endpoint { source, .. } => source.api_code(),
-            _ => None,
-        }
-    }
 }
 
 /// A locally built image streamed to the control plane for publication.
@@ -105,8 +91,23 @@ pub fn upload_timeout(size_bytes: u64) -> Duration {
 
 /// Timeout for one API request. Image uploads use [`upload_timeout`],
 /// sized from the body on disk, because the server chunks and stores the
-/// whole image before answering.
+/// whole image before answering. The CLI and the chat library share it:
+/// [`api_client::call`] wraps [`timed_call`] with the endpoint context the
+/// binary prints, and the chat library maps [`Error::Timeout`] to its own
+/// endpoint-carrying timeout error.
 pub const API_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run one API future with the standard timeout, keeping the typed error.
+///
+/// # Errors
+/// Fails if the request times out or the API rejects it.
+pub async fn timed_call<T>(
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(API_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout)?
+}
 
 impl Client {
     /// The base URL is the server origin, not a `/v1` URL.

@@ -5,21 +5,9 @@ use swarmy_client::Client;
 
 use ulid::Ulid;
 
-use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
+use crate::{agent_command, auth_command, cost_command, session_command};
 
 use swarmy_client::api_client::call as request;
-// Keep the volume image label rule here so the client does not link libfdb_c.
-fn validate_label(value: &str) -> Result<()> {
-    ensure!(
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
-        "names and tags must contain 1-128 ASCII letters, digits, dots, dashes, or underscores"
-    );
-    Ok(())
-}
 
 fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
     if json {
@@ -31,23 +19,20 @@ fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
         println!("{text}");
     }
 }
-pub async fn run(command: Command, json: bool) -> Result<()> {
-    if let Command::Image {
-        command: image_command::Command::Show { image },
-    } = &command
-    {
-        let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-        validate_label(name)?;
-        validate_label(tag)?;
-    }
-    if let Command::Agent {
-        command:
-            agent_command::Command::Set {
-                inference,
-                github_token,
-                clear_github_token,
-                ..
-            },
+/// Run one control-plane API command. Each entry connects on its own so the
+/// top-level dispatch owns every CLI variant without a shared dispatcher.
+pub async fn session_command(command: session_command::Command, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    session(&client, &endpoint, command, json).await
+}
+
+/// Run one agent API command, validating `set` flags before connecting.
+pub async fn agent_command(command: agent_command::Command, json: bool) -> Result<()> {
+    if let agent_command::Command::Set {
+        inference,
+        github_token,
+        clear_github_token,
+        ..
     } = &command
     {
         ensure!(
@@ -66,16 +51,15 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         );
     }
     let (client, endpoint) = swarmy_client::api_client::connect()?;
-    match command {
-        Command::Session { command } => session(&client, &endpoint, command, json).await?,
-        Command::Agent { command } => agent(&client, &endpoint, command, json).await?,
-        Command::Cost { args } => cost(&client, &endpoint, args, json).await?,
-        Command::Image { command } => image(&client, &endpoint, command, json).await?,
-        Command::Auth { command, .. } => auth(&client, &endpoint, command, json).await?,
-        _ => unreachable!("only API commands reach this dispatcher"),
-    }
-    Ok(())
+    agent(&client, &endpoint, command, json).await
 }
+
+/// Run one cost API command.
+pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    cost(&client, &endpoint, args, json).await
+}
+
 /// Parse a `--since` or `--until` bound, defaulting to `default` when the
 /// flag is absent. The client resolves relative spans and calendar words
 /// locally so the API only ever sees absolute bounds.
@@ -128,10 +112,10 @@ async fn cost_series(
         .iter()
         .filter_map(|(dimension, value)| value.map(|value| (*dimension, value)))
         .collect();
-    match (args.by.as_deref(), present.as_slice()) {
-        (Some(by), []) => Ok((by.into(), None)),
-        (Some(by), [(dimension, value)]) if *dimension == by => Ok((
-            by.into(),
+    match (args.by, present.as_slice()) {
+        (Some(by), []) => Ok((cost_command::value_name(&by), None)),
+        (Some(by), [(dimension, value)]) if *dimension == cost_command::value_name(&by) => Ok((
+            cost_command::value_name(&by),
             Some(cost_key(client, endpoint, dimension, value).await?),
         )),
         (Some(_), _) => anyhow::bail!(
@@ -237,7 +221,7 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
             key.as_deref(),
             &since.to_string(),
             &until.to_string(),
-            &args.group,
+            &cost_command::value_name(&args.group),
         ),
     )
     .await?;
@@ -514,64 +498,6 @@ async fn show_session(
     Ok(())
 }
 
-async fn image(
-    client: &Client,
-    endpoint: &str,
-    command: image_command::Command,
-    json: bool,
-) -> Result<()> {
-    match command {
-        image_command::Command::Ls => {
-            let mut after = None;
-            loop {
-                let page = request(endpoint, client.images(after.as_deref(), 256)).await?;
-                if page.is_empty() {
-                    break;
-                }
-                for image in page {
-                    print(
-                        &image,
-                        &format!("{}:{} {}", image.name, image.tag, image.manifest_id),
-                        json,
-                    );
-                    after = Some(format!("{}:{}", image.name, image.tag));
-                }
-            }
-        }
-        image_command::Command::Show { image } => {
-            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            validate_label(name)?;
-            validate_label(tag)?;
-            let value = client.image(name, tag).await.map_err(|error| {
-                if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
-                    anyhow::anyhow!("image not found")
-                } else {
-                    swarmy_client::api_client::api_error(error, endpoint).into()
-                }
-            })?;
-            let header = value.header.as_ref().context("image header missing")?;
-            print(
-                &value,
-                &format!(
-                    "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
-                    value.manifest_id,
-                    header.size,
-                    header.chunk_size,
-                    header.root_hash,
-                    value
-                        .scratch
-                        .as_ref()
-                        .context("image scratch missing")?
-                        .join(",")
-                ),
-                json,
-            );
-        }
-        image_command::Command::Build { .. } => unreachable!(),
-    }
-    Ok(())
-}
-
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
         "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
@@ -624,12 +550,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
     } else {
         args.system_prompt
     };
-    let gpu = args.gpu.as_deref().map(|value| match value {
-        "none" => swarmy_api_types::GpuMode::None,
-        "shared" => swarmy_api_types::GpuMode::Shared,
-        "dedicated" => swarmy_api_types::GpuMode::Dedicated,
-        _ => unreachable!("GPU mode validated by clap"),
-    });
+    let gpu = args.gpu.map(crate::agent_command::GpuArg::into_api);
     Ok(AgentFlags {
         provider,
         model,
@@ -1007,7 +928,7 @@ struct AuthEvent<'a> {
     provider: &'a str,
 }
 
-fn auth_report(event: &str, provider: &str, json: bool) {
+pub(crate) fn auth_report(event: &str, provider: &str, json: bool) {
     print(
         &AuthEvent { event, provider },
         &format!("{provider}: {event}"),
@@ -1087,7 +1008,7 @@ struct CredentialWithExpiry<'a> {
     expires_in_seconds: Option<i64>,
 }
 
-fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
+pub(crate) fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
     let seconds = summary
         .expires_at
         .as_deref()
@@ -1125,7 +1046,7 @@ fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool
         );
     }
 }
-async fn auth_set(
+pub(crate) async fn auth_set(
     client: &Client,
     endpoint: &str,
     args: auth_command::Set,
@@ -1199,85 +1120,6 @@ fn validate_auth_set_sources(args: &auth_command::Set) -> Result<()> {
     Ok(())
 }
 
-async fn auth(
-    client: &Client,
-    endpoint: &str,
-    command: auth_command::Command,
-    json: bool,
-) -> Result<()> {
-    match command {
-        auth_command::Command::Set(args) => {
-            auth_set(client, endpoint, args, json).await?;
-        }
-        auth_command::Command::Ls => {
-            for summary in request(endpoint, client.credentials()).await? {
-                auth_display(&summary, json, false);
-            }
-        }
-        auth_command::Command::Check { provider, label } => {
-            let rows: Vec<_> = request(endpoint, client.credentials())
-                .await?
-                .into_iter()
-                .filter(|row| {
-                    provider
-                        .as_ref()
-                        .is_none_or(|provider| row.provider == *provider)
-                        && label.as_ref().is_none_or(|label| row.label == *label)
-                })
-                .collect();
-            ensure!(!rows.is_empty(), "credential does not exist");
-            let ready = rows
-                .iter()
-                .all(|row| row.status == swarmy_api_types::CredentialStatus::Ready);
-            let expired_bedrock = rows.iter().any(|row| {
-                row.provider == "amazon-bedrock"
-                    && row.status == swarmy_api_types::CredentialStatus::Expired
-            });
-            for summary in rows {
-                auth_display(&summary, json, true);
-            }
-            ensure!(
-                ready,
-                if expired_bedrock {
-                    "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use"
-                } else {
-                    "one or more credentials are expired or need login"
-                }
-            );
-        }
-        auth_command::Command::Rm { provider, label } => {
-            request(
-                endpoint,
-                client.remove_credential_entry(&provider, &label, &Ulid::generate().to_string()),
-            )
-            .await?;
-            auth_report("removed", &provider, json);
-        }
-        auth_command::Command::Routes { command } => {
-            routes(client, endpoint, command, json).await?;
-        }
-        auth_command::Command::Quota {
-            entry,
-            group,
-            since,
-            until,
-        } => {
-            quota(
-                client,
-                endpoint,
-                entry.as_deref(),
-                &group,
-                since.as_deref(),
-                until.as_deref(),
-                json,
-            )
-            .await?;
-        }
-        _ => unreachable!("login and import remain local"),
-    }
-    Ok(())
-}
-
 fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
     let quota = &entry.quota;
     let mut line = format!(
@@ -1311,11 +1153,11 @@ fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
 /// series. Observed entries report the provider's latest published
 /// remaining values; configured entries count completions from the
 /// entry rollups over their window.
-async fn quota(
+pub(crate) async fn quota(
     client: &Client,
     endpoint: &str,
     entry: Option<&str>,
-    group: &str,
+    group: crate::cost_command::UsageGroup,
     since: Option<&str>,
     until: Option<&str>,
     json: bool,
@@ -1340,7 +1182,7 @@ async fn quota(
                 Some(entry),
                 &start.to_string(),
                 &end.to_string(),
-                group,
+                &cost_command::value_name(&group),
             ),
         )
         .await?;
@@ -1383,7 +1225,7 @@ fn route_text(route: &swarmy_api_types::Route) -> String {
     format!("{} {steps}", route.name)
 }
 
-async fn routes(
+pub(crate) async fn routes(
     client: &Client,
     endpoint: &str,
     command: auth_command::RoutesCommand,

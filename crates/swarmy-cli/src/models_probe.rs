@@ -62,11 +62,14 @@ async fn server_probe(
         format!("{}.{:04}", units / 10_000, units % 10_000)
     };
     if json {
-        println!(
-            "{}",
-            serde_json::json!({"event":"probe_summary", "provider":answer.provider, "model":answer.model,
-            "usage":answer.usage, "cost_micros":answer.cost_micros, "effort":answer.effort, "elapsed_seconds":started.elapsed().as_secs_f64()})
-        );
+        crate::client_commands::print_event(&crate::client_commands::Event::ProbeSummary {
+            provider: &answer.provider,
+            model: &answer.model,
+            usage: &answer.usage,
+            cost_micros: answer.cost_micros,
+            effort: answer.effort,
+            elapsed_seconds: started.elapsed().as_secs_f64(),
+        });
     } else {
         println!("\nUsage: {}", serde_json::to_string(&answer.usage)?);
         println!(

@@ -51,7 +51,9 @@ pub async fn call<T>(
     endpoint: &str,
     future: impl std::future::Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
-    call_with_timeout(endpoint, crate::API_TIMEOUT, future).await
+    crate::timed_call(future)
+        .await
+        .map_err(|error| api_error(error, endpoint))
 }
 
 /// Call the API with an explicit timeout. Image uploads use
@@ -66,9 +68,7 @@ pub async fn call_with_timeout<T>(
 ) -> Result<T, Error> {
     tokio::time::timeout(timeout, future)
         .await
-        .map_err(|_| Error::Timeout {
-            endpoint: endpoint.into(),
-        })?
+        .map_err(|_| Error::Timeout)?
         .map_err(|error| api_error(error, endpoint))
 }
 

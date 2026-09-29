@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use swarmy_image::{Recipe, validate_label};
 
-use crate::image_command::Command;
-
-pub async fn run(command: Command, json: bool) -> Result<()> {
+/// Run one image command. One match owns every variant: builds run locally
+/// without a prior connection, while reads connect on their own path.
+pub async fn run(command: crate::image_command::Command, json: bool) -> Result<()> {
+    use crate::image_command::Command;
     match command {
         Command::Build {
             recipe,
@@ -11,17 +12,65 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             name,
             output,
         } => build(recipe, tag, name, output, json).await,
+        Command::Ls => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let mut after = None;
+            loop {
+                let page = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.images(after.as_deref(), 256),
+                )
+                .await?;
+                if page.is_empty() {
+                    break;
+                }
+                for image in page {
+                    if json {
+                        println!("{}", serde_json::to_string(&image)?);
+                    } else {
+                        println!("{}:{} {}", image.name, image.tag, image.manifest_id);
+                    }
+                    after = Some(format!("{}:{}", image.name, image.tag));
+                }
+            }
+            Ok(())
+        }
         Command::Show { image } => {
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
             validate_label(name)?;
             validate_label(tag)?;
-            anyhow::bail!("image show is handled by the API client")
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let value = client.image(name, tag).await.map_err(|error| {
+                if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
+                    anyhow::anyhow!("image not found")
+                } else {
+                    swarmy_client::api_client::api_error(error, &endpoint).into()
+                }
+            })?;
+            let header = value.header.as_ref().context("image header missing")?;
+            if json {
+                println!("{}", serde_json::to_string(&value)?);
+            } else {
+                println!(
+                    "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
+                    value.manifest_id,
+                    header.size,
+                    header.chunk_size,
+                    header.root_hash,
+                    value
+                        .scratch
+                        .as_ref()
+                        .context("image scratch missing")?
+                        .join(",")
+                );
+            }
+            Ok(())
         }
-        Command::Ls => unreachable!("image reads use the API"),
     }
 }
 
-async fn build(
+/// Build a recipe locally and register it through the control plane.
+pub async fn build(
     path: std::path::PathBuf,
     tag: String,
     name: Option<String>,
@@ -77,10 +126,7 @@ async fn build(
         }
     }
     if json {
-        println!(
-            "{}",
-            serde_json::json!({"event": "image_built", "name": uploaded.name, "tag": uploaded.tag, "manifest_id": uploaded.manifest_id, "header": uploaded.header, "size": uploaded.size, "chunks_total": uploaded.chunks_total, "chunks_stored": uploaded.chunks_stored, "chunks_uploaded": uploaded.chunks_uploaded})
-        );
+        crate::client_commands::print_event(&crate::client_commands::Event::image_built(&uploaded));
     } else {
         println!(
             "{}:{} {}\nsize={} bytes chunks_stored={} chunks_uploaded={} chunks_total={}",

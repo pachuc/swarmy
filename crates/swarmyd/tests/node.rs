@@ -857,6 +857,12 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     let Some(image_spec) = swarmy_core::test_support::optional_env("SWARMY_TEST_DEV_IMAGE") else {
         return;
     };
+    // The suite script passes the branch it checked out, so the sandbox
+    // builds and tests that branch instead of public master.
+    let Some(branch) = swarmy_core::test_support::optional_env("SWARMY_TEST_BRANCH") else {
+        eprintln!("skipping dev stack acceptance: SWARMY_TEST_BRANCH is not set");
+        return;
+    };
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
         eprintln!("skipping dev stack acceptance: root is required");
         return;
@@ -876,8 +882,10 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
     let sandbox = node.create(volume).await;
-    let command = "set -e; export PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:$PATH CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib; cd /home/agent/work; git clone --depth 1 https://github.com/pachuc/swarmy.git stack-test; cd stack-test; trap 'scripts/dev-stack.sh stop' EXIT; scripts/dev-stack.sh start; source .dev/env; cargo test -p swarmy-store --locked";
-    let (result, stdout, stderr) = node.exec(&sandbox, command, 1_800_000).await;
+    let command = format!(
+        "set -e; export PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:$PATH CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib; cd /home/agent/work; git clone --depth 1 --branch {branch} https://github.com/pachuc/swarmy.git stack-test; cd stack-test; trap 'scripts/dev-stack.sh stop' EXIT; scripts/dev-stack.sh start; source .dev/env; cargo test -p swarmy-store --locked"
+    );
+    let (result, stdout, stderr) = node.exec(&sandbox, &command, 1_800_000).await;
     assert_eq!(
         result.exit_code,
         0,

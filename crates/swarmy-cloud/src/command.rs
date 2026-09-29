@@ -75,7 +75,7 @@ pub enum Command {
     /// Stop the recorded SSH tunnel
     Disconnect { name: String },
     /// List saved instances, tunnels, store heartbeats, and registered images
-    Status,
+    Ls,
     /// Follow the remote swarmyd journal
     Logs { name: String },
 }

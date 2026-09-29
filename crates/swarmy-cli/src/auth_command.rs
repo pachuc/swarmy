@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
@@ -48,8 +49,8 @@ pub enum Command {
         #[arg(long)]
         entry: Option<String>,
         /// Calendar grouping for the entry's usage rows
-        #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
-        group: String,
+        #[arg(long, default_value = "day", value_enum)]
+        group: crate::cost_command::UsageGroup,
         /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
         /// or a calendar word like month or 2months for the start of this or last month
         #[arg(long)]
@@ -119,6 +120,158 @@ fn extra(value: &str) -> Result<(String, String), String> {
         return Err("needs_login is reserved".into());
     }
     Ok((name.into(), value.into()))
+}
+
+/// Run one credential command. One match owns every variant: logins and
+/// imports shell out to the `swarmy-auth` helper without connecting, while
+/// every other arm connects on its own path.
+pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
+    match command {
+        Command::Login {
+            provider,
+            label,
+            resource,
+            scope,
+        } => {
+            let mut argv: Vec<std::ffi::OsString> = vec!["login".into(), provider.into()];
+            if let Some(label) = label {
+                argv.push("--label".into());
+                argv.push(label.into());
+            }
+            if let Some(resource) = resource {
+                argv.push("--resource".into());
+                argv.push(resource.into());
+            }
+            if let Some(scope) = scope {
+                argv.push("--scope".into());
+                argv.push(scope.into());
+            }
+            helper(auth_file, json, &argv)
+        }
+        Command::Import { file, label } => {
+            let mut argv: Vec<std::ffi::OsString> = vec!["import".into()];
+            if let Some(file) = file {
+                argv.push("--file".into());
+                argv.push(file.into());
+            }
+            if let Some(label) = label {
+                argv.push("--label".into());
+                argv.push(label.into());
+            }
+            helper(auth_file, json, &argv)
+        }
+        Command::Set(args) => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            crate::api_commands::auth_set(&client, &endpoint, args, json).await
+        }
+        Command::Ls => list(json).await,
+        Command::Check { provider, label } => check(provider, label, json).await,
+        Command::Rm { provider, label } => remove(provider, label, json).await,
+        Command::Routes { command } => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            crate::api_commands::routes(&client, &endpoint, command, json).await
+        }
+        Command::Quota {
+            entry,
+            group,
+            since,
+            until,
+        } => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            crate::api_commands::quota(
+                &client,
+                &endpoint,
+                entry.as_deref(),
+                group,
+                since.as_deref(),
+                until.as_deref(),
+                json,
+            )
+            .await
+        }
+    }
+}
+
+/// List credential metadata without printing secrets.
+async fn list(json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    for summary in swarmy_client::api_client::call(&endpoint, client.credentials()).await? {
+        crate::api_commands::auth_display(&summary, json, false);
+    }
+    Ok(())
+}
+
+/// Decrypt and inspect one or all credentials, failing when none is ready.
+async fn check(provider: Option<String>, label: Option<String>, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let rows: Vec<_> = swarmy_client::api_client::call(&endpoint, client.credentials())
+        .await?
+        .into_iter()
+        .filter(|row| {
+            provider
+                .as_ref()
+                .is_none_or(|provider| row.provider == *provider)
+                && label.as_ref().is_none_or(|label| row.label == *label)
+        })
+        .collect();
+    ensure!(!rows.is_empty(), "credential does not exist");
+    let ready = rows
+        .iter()
+        .all(|row| row.status == swarmy_api_types::CredentialStatus::Ready);
+    let expired_bedrock = rows.iter().any(|row| {
+        row.provider == "amazon-bedrock"
+            && row.status == swarmy_api_types::CredentialStatus::Expired
+    });
+    for summary in rows {
+        crate::api_commands::auth_display(&summary, json, true);
+    }
+    ensure!(
+        ready,
+        if expired_bedrock {
+            "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use"
+        } else {
+            "one or more credentials are expired or need login"
+        }
+    );
+    Ok(())
+}
+
+/// Remove one labelled credential.
+async fn remove(provider: String, label: String, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    swarmy_client::api_client::call(
+        &endpoint,
+        client.remove_credential_entry(&provider, &label, &ulid::Ulid::generate().to_string()),
+    )
+    .await
+    .with_context(|| format!("removing credential {provider}/{label}"))?;
+    crate::api_commands::auth_report("removed", &provider, json);
+    Ok(())
+}
+
+/// Shell out to the `swarmy-auth` helper so terminal OAuth flows stay out of
+/// this binary. One function builds the helper command, appends the caller's
+/// subcommand arguments, and checks its exit status.
+fn helper(auth_file: Option<PathBuf>, json: bool, argv: &[std::ffi::OsString]) -> Result<()> {
+    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+    let helper = if sibling.is_file() {
+        sibling.into_os_string()
+    } else {
+        "swarmy-auth".into()
+    };
+    let mut process = std::process::Command::new(helper);
+    if json {
+        process.arg("--json");
+    }
+    if let Some(file) = auth_file {
+        process.arg("--auth-file").arg(file);
+    }
+    process.args(argv);
+    let status = process.status().map_err(|error| {
+        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
+    })?;
+    ensure!(status.success(), "swarmy-auth failed: {status}");
+    Ok(())
 }
 
 #[cfg(test)]
