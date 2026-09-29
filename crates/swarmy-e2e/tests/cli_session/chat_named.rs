@@ -109,7 +109,14 @@ async fn root_named_chats_share_a_background_process_and_delete() {
         }"#).await;
         let created = fixture.output(&["agent", "create", "tommy", "--json"]).await;
         assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
-        let agent: swarmy_core::AgentRecord = serde_json::from_slice(&created.stdout).unwrap();
+        let shown: swarmy_api_types::Agent = serde_json::from_slice(&created.stdout).unwrap();
+        assert_eq!(shown.name, "tommy");
+        let agent = fixture
+            .store
+            .get_agent_by_name("tommy")
+            .await
+            .unwrap()
+            .unwrap();
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         first
             .ready(Diagnostics {

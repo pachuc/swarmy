@@ -115,7 +115,7 @@ async fn create_agents(fixture: &Fixture) -> AgentRecord {
             .status
             .success()
     );
-    let created: AgentRecord = serde_json::from_str(&success(
+    let created: swarmy_api_types::Agent = serde_json::from_str(&success(
         fixture
             .output(&[
                 "agent",
@@ -1055,10 +1055,10 @@ fn assert_output(
     effort: ReasoningEffort,
 ) {
     if json {
-        let agent: AgentRecord = serde_json::from_str(text).unwrap();
+        let agent: swarmy_api_types::Agent = serde_json::from_str(text).unwrap();
         assert_eq!(agent.system_prompt.as_deref(), Some(prompt));
         assert_eq!(agent.model.as_deref(), Some(model));
-        assert_eq!(agent.reasoning_effort, Some(effort));
+        assert_eq!(agent.effort, Some(effort.into()));
     } else {
         assert!(text.contains(&format!("{verb} agent")));
         for expected in [
@@ -1093,12 +1093,19 @@ async fn assert_show(
 #[tokio::test]
 async fn invalid_agent_settings_do_not_change_records() {
     run(|fixture| async move {
-        let agent: AgentRecord = serde_json::from_str(&success(
+        assert!(
             fixture
                 .output(&["agent", "create", "original", "--json"])
-                .await,
-        ))
-        .unwrap();
+                .await
+                .status
+                .success()
+        );
+        let agent = fixture
+            .store
+            .get_agent_by_name("original")
+            .await
+            .unwrap()
+            .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing.txt");
         let invalid_utf8 = directory.path().join("invalid.txt");
@@ -1158,16 +1165,14 @@ async fn invalid_agent_settings_do_not_change_records() {
 }
 
 async fn assert_default_output(fixture: &Fixture) {
-    let created: AgentRecord = serde_json::from_str(&success(
+    let created: swarmy_api_types::Agent = serde_json::from_str(&success(
         fixture
             .output(&["agent", "create", "defaults", "--json"])
             .await,
     ))
     .unwrap();
     assert!(
-        created.system_prompt.is_none()
-            && created.model.is_none()
-            && created.reasoning_effort.is_none()
+        created.system_prompt.is_none() && created.model.is_none() && created.effort.is_none()
     );
     let text = success(fixture.output(&["agent", "show", "defaults"]).await);
     for field in ["system_prompt", "model", "reasoning_effort"] {
@@ -1203,7 +1208,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
                 .await,
         );
         let read = || async {
-            serde_json::from_str::<AgentRecord>(&success(
+            serde_json::from_str::<swarmy_api_types::Agent>(&success(
                 fixture.output(&["agent", "show", "tommy", "--json"]).await,
             ))
             .unwrap()
@@ -1211,7 +1216,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
         let agent = read().await;
         assert_eq!(agent.provider.as_deref(), Some("openrouter"));
         assert_eq!(agent.model.as_deref(), Some("anthropic/claude-sonnet-4.6"));
-        assert_eq!(agent.reasoning_effort, Some(ReasoningEffort::Max));
+        assert_eq!(agent.effort, Some(ReasoningEffort::Max.into()));
         success(
             fixture
                 .output(&["agent", "set", "tommy", "--model", "default"])

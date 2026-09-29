@@ -95,7 +95,7 @@ async fn assert_resource_projections(
 ) {
     let rows = client.agents(None, 10).await.unwrap();
     assert_eq!(rows[0].id, agent.agent_id.to_string());
-    assert_eq!(rows[0].session_count, 0);
+    assert_eq!(rows[0].session_count, 1);
     let detailed = client.agent("fixture-agent").await.unwrap();
     assert_eq!(detailed.name, agent.name);
     assert_eq!(detailed.sessions.len(), 1);
