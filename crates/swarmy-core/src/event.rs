@@ -226,16 +226,13 @@ pub(crate) mod tests {
             let json = serde_json::to_value(&event).unwrap();
             assert_eq!(json.as_object().unwrap().len(), 1);
             assert_eq!(json[tag]["seq"], event.seq());
-            // Freeze existing discriminants so adding a variant cannot silently
-            // change the interpretation of old stored events.
+            // Freeze current discriminants so adding a variant changes the fixture.
             assert_eq!(
                 usize::from(encode(&event).unwrap()[1]),
-                if index == 2 {
-                    7
-                } else if index > 2 {
-                    index - 1
-                } else {
-                    index
+                match index.cmp(&2) {
+                    std::cmp::Ordering::Less => index,
+                    std::cmp::Ordering::Equal => 7,
+                    std::cmp::Ordering::Greater => index - 1,
                 }
             );
         }

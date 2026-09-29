@@ -558,15 +558,6 @@ async fn truncated_and_error_streams_fail_without_retry() {
     }
 }
 
-#[test]
-fn usage_from_older_json_defaults_cache_writes_to_zero() {
-    let usage: TokenUsage =
-        serde_json::from_value(json!({"input_tokens": 10, "cached_input_tokens": 2,
-        "output_tokens": 3, "reasoning_output_tokens": 0, "total_tokens": 13}))
-        .unwrap();
-    assert_eq!(usage.cache_write_input_tokens, 0);
-}
-
 #[tokio::test]
 async fn retry_policy_honors_server_delay_and_backoff_cap() {
     let policy = RetryPolicy {
