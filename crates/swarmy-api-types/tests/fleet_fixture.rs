@@ -30,7 +30,7 @@ fn fleet_fixture_matches_typed_structs() {
     assert!(listed.state_since.is_some());
     // The fleet driver follows this link to the successor session.
     assert_eq!(listed.next_session.as_deref(), Some("01BBBB"));
-    let listed_value = serde_json::to_value(&listed).expect("session serializes");
+    let listed_value = serde_json::to_value(listed).expect("session serializes");
     for key in ["id", "state", "state_since", "agent_name", "next_session"] {
         assert!(
             listed_value.get(key).is_some(),

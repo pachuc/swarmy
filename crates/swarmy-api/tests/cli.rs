@@ -229,7 +229,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     // from the snapshot age, which is computed from the current time.
     let shown = client.agent("worker").await.unwrap();
     let mut created_value = serde_json::to_value(&created).unwrap();
-    let mut shown_value = serde_json::to_value(&shown).unwrap();
+    let mut shown_value = serde_json::to_value(shown).unwrap();
     for value in [&mut created_value, &mut shown_value] {
         value
             .as_object_mut()

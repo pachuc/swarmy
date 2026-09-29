@@ -155,8 +155,8 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    let mut created_value = serde_json::to_value(&first).unwrap();
-    let mut shown_value = serde_json::to_value(&shown).unwrap();
+    let mut created_value = serde_json::to_value(first).unwrap();
+    let mut shown_value = serde_json::to_value(shown).unwrap();
     for value in [&mut created_value, &mut shown_value] {
         value
             .as_object_mut()
