@@ -580,22 +580,19 @@ async fn image(
     Ok(())
 }
 
-fn settings_text(agent: &Value) -> String {
-    let fallback = |key| agent[key].as_str().unwrap_or("(stack default)");
+fn settings_text(agent: &swarmy_api_types::AgentView) -> String {
+    let record = &agent.record;
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
-        fallback("provider"),
-        fallback("system_prompt"),
-        fallback("model"),
-        fallback("reasoning_effort"),
-        fallback("route"),
-        agent["requirements"]["memory_mib"],
-        match str_field(&agent["requirements"], "gpu") {
-            "none" => "None",
-            "shared" => "Shared",
-            "dedicated" => "Dedicated",
-            other => other,
-        }
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={:?}",
+        record.provider.as_deref().unwrap_or("(stack default)"),
+        record.system_prompt.as_deref().unwrap_or("(stack default)"),
+        record.model.as_deref().unwrap_or("(stack default)"),
+        record
+            .reasoning_effort
+            .map_or("(stack default)", |v| v.as_str()),
+        record.route.as_deref().unwrap_or("(stack default)"),
+        record.requirements.memory_mib,
+        record.requirements.gpu,
     )
 }
 fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<Value> {
@@ -655,109 +652,104 @@ fn text_value_or_dash(value: &Value) -> String {
 /// Render one owner's per-entry cost shares with the providers involved.
 /// The server reads these from the entry rollups, so they survive the raw
 /// completion record retention window.
-fn entries_text(value: &Value) -> Option<String> {
-    let entries = value["entries"].as_array()?;
-    let mut text = String::new();
-    for entry in entries {
-        let _ = write!(
-            text,
-            "\nentry {} cost=${} input={} output={} total={} completions={}",
-            str_field(entry, "entry"),
-            optional_text(&entry["cost_dollars"]),
-            entry["input_tokens"],
-            entry["output_tokens"],
-            entry["total_tokens"],
-            entry["completions"],
-        );
-    }
-    if let Some(providers) = value["providers"].as_array() {
-        let names: Vec<&str> = providers.iter().filter_map(Value::as_str).collect();
-        let _ = write!(text, "\nproviders={}", names.join(","));
-    }
-    Some(text)
-}
-
-fn agent_text(agent: &Value, detail: bool) -> String {
-    let name = str_field(agent, "name");
-    let id = str_field(agent, "agent_id");
-    let image = &agent["image"];
+fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
+    let record = &agent.record;
     let mut text = format!(
-        "{name} {id} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
-        str_field(image, "name"),
-        str_field(image, "tag"),
-        str_field(agent, "node_id"),
-        str_field(&agent["scratch"], "node_id"),
-        agent["scratch"]["bytes"].as_u64().unwrap_or(0),
-        agent["session_count"],
-        str_field(agent, "created_at"),
-        str_field(agent, "main_session")
+        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
+        record.name,
+        record.agent_id,
+        record.image.name,
+        record.image.tag.0,
+        agent.node_id.as_deref().unwrap_or("-"),
+        agent
+            .scratch
+            .as_ref()
+            .map_or("-", |scratch| scratch.node_id.as_str()),
+        agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
+        agent.session_count,
+        record.created_at,
+        record
+            .main_session
+            .map_or_else(|| "-".into(), |id| id.to_string()),
     );
     if detail {
         text.push_str(&settings_text(agent));
-        let usage = &agent["usage"]["usage"];
-        let _ = write!(
-            text,
-            "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-            usage["input_tokens"],
-            usage["cached_input_tokens"],
-            usage["cache_write_input_tokens"],
-            usage["output_tokens"],
-            usage["reasoning_output_tokens"],
-            usage["total_tokens"],
-            text_value(&agent["cost_dollars"])
-        );
-        if let Some(entries) = entries_text(agent) {
-            text.push_str(&entries);
+        if let Some(usage) = &agent.usage {
+            let tokens = &usage.usage;
+            let _ = write!(
+                text,
+                "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+                tokens.input_tokens,
+                tokens.cached_input_tokens,
+                tokens.cache_write_input_tokens,
+                tokens.output_tokens,
+                tokens.reasoning_output_tokens,
+                tokens.total_tokens,
+                agent.cost_dollars.as_deref().unwrap_or("-")
+            );
         }
-        let last = if agent["last_snapshot_at"].is_null() {
-            "-".into()
-        } else {
-            text_value(&agent["last_snapshot_at"])
-        };
-        let age = if agent["last_snapshot_age_seconds"].is_null() {
-            "-".into()
-        } else {
-            agent["last_snapshot_age_seconds"].to_string()
-        };
+        for entry in &agent.entries {
+            let _ = write!(
+                text,
+                "\nentry {} cost=${} input={} output={} total={} completions={}",
+                entry.entry,
+                entry.totals.cost_dollars,
+                entry.totals.input_tokens,
+                entry.totals.output_tokens,
+                entry.totals.total_tokens,
+                entry.totals.completions
+            );
+        }
+        let _ = write!(text, "\nproviders={}", agent.providers.join(","));
         let _ = write!(
             text,
             "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
-            str_field(agent, "description"),
-            text_value_or_dash(&agent["placement"]["epoch"]),
-            text_value_or_dash(&agent["sandbox_address"]),
-            str_field(agent, "sandbox_state"),
-            last,
-            age
+            record.description,
+            agent
+                .placement
+                .as_ref()
+                .map_or_else(|| "-".into(), |placement| placement.epoch.to_string()),
+            agent.sandbox_address.as_deref().unwrap_or("-"),
+            agent.sandbox_state.as_deref().unwrap_or("-"),
+            agent.last_snapshot_at.as_deref().unwrap_or("-"),
+            agent
+                .last_snapshot_age_seconds
+                .map_or_else(|| "-".into(), |v| v.to_string())
         );
-        if let Some(status) = agent["call_status"].as_object() {
+        if let Some(status) = &agent.call_status {
             let _ = write!(
                 text,
                 "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
-                text_value_or_dash(&status["holder_session_id"]),
-                status["queued_calls"],
-                text_value(&status["observed_at"]),
-                text_value(&status["expires_at"]),
-                text_value(&status["node_id"]),
-                status["epoch"]
+                status
+                    .holder_session_id
+                    .map_or_else(|| "-".into(), |v| v.to_string()),
+                status.queued_calls,
+                status.observed_at,
+                status.expires_at,
+                status.node_id,
+                status.epoch
             );
         }
-        if let Some(sessions) = agent["sessions"].as_array() {
-            for session in sessions {
-                let _ = write!(
-                    text,
-                    "\nsession={} state={} computer_deleted={} main={} archived={}",
-                    str_field(session, "session_id"),
-                    display_state(session),
-                    session["computer_deleted"],
-                    agent["main_session"] == session["session_id"],
-                    session["archived"]
-                );
-            }
+        for session in &agent.sessions {
+            let _ = write!(
+                text,
+                "\nsession={} state={:?} computer_deleted={} main={} archived={}",
+                session.record.session_id,
+                session.record.state,
+                session.record.computer_deleted,
+                record.main_session == Some(session.record.session_id),
+                session.archived
+            );
         }
     }
     text
 }
-async fn update_agent(client: &Client, endpoint: &str, name: &str, body: Value) -> Result<Value> {
+async fn update_agent(
+    client: &Client,
+    endpoint: &str,
+    name: &str,
+    body: Value,
+) -> Result<swarmy_api_types::AgentView> {
     let updated = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         client.cli_update_agent(name, &serde_json::from_value(body)?),
@@ -770,7 +762,7 @@ async fn update_agent(client: &Client, endpoint: &str, name: &str, body: Value) 
         }
         _ => swarmy_client::api_client::api_error(error, endpoint),
     })?;
-    Ok(serde_json::to_value(updated)?)
+    Ok(updated)
 }
 
 async fn agent(
@@ -783,22 +775,18 @@ async fn agent(
         agent_command::Command::Ls => {
             let mut after = None;
             loop {
-                let page = request(endpoint, client.cli_agents(after.as_deref(), 256))
-                    .await?
-                    .into_iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let page = request(endpoint, client.agent_views(after.as_deref(), 256)).await?;
                 if page.is_empty() {
                     break;
                 }
                 for row in page {
                     print(&row, &agent_text(&row, false), json);
-                    after = Some(str_field(&row, "agent_id").to_owned());
+                    after = Some(row.record.agent_id.to_string());
                 }
             }
         }
         agent_command::Command::Show { name } => {
-            let row = projection(endpoint, client.cli_agent(&name)).await?;
+            let row = request(endpoint, client.agent_view(&name)).await?;
             print(&row, &agent_text(&row, true), json);
         }
         agent_command::Command::Create {
@@ -825,7 +813,7 @@ async fn agent(
             );
             body["github_token"] = json!(token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let created = projection(
+            let created = request(
                 endpoint,
                 client.cli_create_agent(&serde_json::from_value(body)?),
             )
@@ -834,10 +822,10 @@ async fn agent(
                 &created,
                 &format!(
                     "Created agent {} {} image={}:{}{}",
-                    str_field(&created, "name"),
-                    str_field(&created, "agent_id"),
-                    str_field(&created["image"], "name"),
-                    str_field(&created["image"], "tag"),
+                    created.record.name,
+                    created.record.agent_id,
+                    created.record.image.name,
+                    created.record.image.tag.0,
                     settings_text(&created)
                 ),
                 json,
@@ -858,8 +846,8 @@ async fn agent(
                 &updated,
                 &format!(
                     "Updated agent {} {}{}",
-                    str_field(&updated, "name"),
-                    str_field(&updated, "agent_id"),
+                    updated.record.name,
+                    updated.record.agent_id,
                     settings_text(&updated)
                 ),
                 json,
@@ -914,7 +902,7 @@ async fn delete_agent(
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let current = projection(endpoint, client.cli_agent(name)).await?;
+    let current = request(endpoint, client.agent_view(name)).await?;
     if !yes {
         use std::io::{IsTerminal as _, Write as _};
         ensure!(
@@ -923,7 +911,7 @@ async fn delete_agent(
         );
         eprint!(
             "Delete agent {} and its computer? [y/N] ",
-            str_field(&current, "name")
+            current.record.name
         );
         std::io::stderr().flush()?;
         let mut answer = String::new();
@@ -938,14 +926,12 @@ async fn delete_agent(
         client.delete_agent(name, &Ulid::generate().to_string()),
     )
     .await?;
-    let value =
-        json!({"event":"agent_deleted","agent_id":current["agent_id"],"name":current["name"]});
+    let value = json!({"event":"agent_deleted","agent_id":current.record.agent_id,"name":current.record.name});
     print(
         &value,
         &format!(
             "Deleted agent {} {}",
-            str_field(&current, "name"),
-            str_field(&current, "agent_id")
+            current.record.name, current.record.agent_id
         ),
         json,
     );

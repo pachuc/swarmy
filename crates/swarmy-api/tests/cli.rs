@@ -94,7 +94,7 @@ async fn assert_resource_projections(
     session: swarmy_core::SessionId,
 ) {
     let rows: Vec<serde_json::Value> = client
-        .cli_agents(None, 10)
+        .agent_views(None, 10)
         .await
         .unwrap()
         .into_iter()
@@ -102,7 +102,7 @@ async fn assert_resource_projections(
         .collect();
     assert_eq!(rows[0]["agent_id"], agent.agent_id.to_string());
     assert_eq!(rows[0]["session_count"], 1);
-    let detailed = serde_json::to_value(client.cli_agent("fixture-agent").await.unwrap()).unwrap();
+    let detailed = serde_json::to_value(client.agent_view("fixture-agent").await.unwrap()).unwrap();
     assert_eq!(detailed["name"], agent.name);
     assert_eq!(detailed["sessions"][0]["session_id"], session.to_string());
     let rows = client.sessions(None, 10).await.unwrap();
@@ -191,7 +191,7 @@ async fn stopped_api_reports_endpoint_quickly() {
         return;
     };
     server.abort();
-    let result = tokio::time::timeout(Duration::from_secs(2), client.cli_agents(None, 10)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), client.agent_views(None, 10)).await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_err());
 }
@@ -232,7 +232,13 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     assert!(updated["provider"].is_null());
     assert!(updated["model"].is_null());
     assert_eq!(
-        client.cli_agent("worker").await.unwrap().agent_id,
+        client
+            .agent_view("worker")
+            .await
+            .unwrap()
+            .record
+            .agent_id
+            .to_string(),
         created["agent_id"]
     );
     client.delete_agent("worker", "delete").await.unwrap();

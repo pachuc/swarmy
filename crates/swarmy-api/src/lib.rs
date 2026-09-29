@@ -289,12 +289,13 @@ async fn authorize(
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/doctor", get(cli::doctor))
-        .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
+        .route("/v1/agents/details", get(cli::agents))
+        .route("/v1/cli/agents", axum::routing::post(cli::agent_create))
         .route(
             "/v1/cli/agents/{name}/settings",
             axum::routing::patch(cli::agent_update),
         )
-        .route("/v1/cli/agents/{name}", get(cli::agent_show))
+        .route("/v1/agents/{id}/detail", get(cli::agent_show))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",

@@ -909,12 +909,49 @@ pub struct InferenceWaitView {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliAgent {
-    pub agent_id: String,
-    pub name: String,
+pub struct AgentView {
     #[serde(flatten)]
-    pub record: std::collections::BTreeMap<String, serde_json::Value>,
+    #[schema(value_type = serde_json::Value)]
+    pub record: swarmy_core::AgentRecord,
+    pub node_id: Option<String>,
+    pub scratch: Option<ScratchView>,
+    pub session_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
+    pub usage: Option<swarmy_core::UsageTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_dollars: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<EntryUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
+    pub placement: Option<swarmy_core::PlacementRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_age_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
+    pub call_status: Option<swarmy_core::AgentCallStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<AgentSessionView>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct AgentSessionView {
+    #[serde(flatten)]
+    #[schema(value_type = serde_json::Value)]
+    pub record: swarmy_core::SessionRecord,
+    pub archived: bool,
+    pub next_session: Option<String>,
+}
+
 /// Input for CLI agent creation or settings updates.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliAgentChoice {
@@ -936,30 +973,24 @@ pub struct CliAgentChoice {
 }
 /// CLI compatibility routes. These signatures are mirrored by the server router.
 pub mod cli_paths {
-    use super::{ApiError, CliAgent, CliAgentChoice};
-    #[utoipa::path(get, path = "/v1/cli/agents",
-        responses((status = 200, body = Vec<CliAgent>), (status = 400, body = ApiError)))]
-    pub fn cli_agents() {}
+    use super::{AgentView, ApiError, CliAgentChoice};
     #[utoipa::path(post, path = "/v1/cli/agents",
     request_body = CliAgentChoice,
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
+        responses((status = 200, body = AgentView), (status = 400, body = ApiError)))]
     pub fn cli_create_agent() {}
-    #[utoipa::path(get, path = "/v1/cli/agents/{name}",
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
-    pub fn cli_agent() {}
     #[utoipa::path(patch, path = "/v1/cli/agents/{name}/settings",
     request_body = CliAgentChoice,
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
+        responses((status = 200, body = AgentView), (status = 400, body = ApiError)))]
     pub fn cli_update_agent() {}
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
-        Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
-        CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
-        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
+        Agent, AgentDeleted, AgentMetrics, AgentView, ApiError, AppendMessage, AppendedMessage,
+        CloseSession, CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted,
+        DeleteRequest, DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image,
+        ImageUpload, InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
         PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
         SessionDetail, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
         TurnMetrics, UpdateAgent, UsageResponse,
@@ -991,6 +1022,12 @@ pub mod api_paths {
         params(("id" = String, Path, description = "Agent id or name")),
         responses((status = 200, body = Agent), (status = 404, body = ApiError)))]
     pub fn show_agent() {}
+    #[utoipa::path(get, path = "/v1/agents/details",
+        responses((status = 200, body = Vec<AgentView>), (status = 400, body = ApiError)))]
+    pub fn agent_views() {}
+    #[utoipa::path(get, path = "/v1/agents/{id}/detail",
+        responses((status = 200, body = AgentView), (status = 404, body = ApiError)))]
+    pub fn agent_view() {}
     #[utoipa::path(patch, path = "/v1/agents/{id}",
         params(("id" = String, Path, description = "Agent id or name")),
         request_body = UpdateAgent,
@@ -1237,6 +1274,7 @@ pub mod api_paths {
     paths(
         api_paths::health, api_paths::doctor, api_paths::openapi, api_paths::docs,
         api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
+        api_paths::agent_views, api_paths::agent_view,
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
         api_paths::session_detail,
@@ -1255,8 +1293,7 @@ pub mod api_paths {
         api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
-        cli_paths::cli_agents,
-        cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
+        cli_paths::cli_create_agent, cli_paths::cli_update_agent,
 
     ),
     components(schemas(
@@ -1273,7 +1310,7 @@ pub mod api_paths {
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
     Event, EventPayload, ApiError, SessionDetail,
-    CliAgent, CliAgentChoice,
+    AgentView, CliAgentChoice,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;

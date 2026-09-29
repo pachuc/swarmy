@@ -71,3 +71,5 @@ POST /v1/cli/credentials removed duplicate credential import; use POST /v1/crede
 GET /v1/cli/credentials/{provider} removed duplicate credential detail; use GET /v1/credentials/{provider}
 GET /v1/cli/images/{name}/{tag} removed duplicate image detail; use GET /v1/images/{name}/{tag}
 GET /v1/cli/doctor moved to GET /v1/doctor
+GET /v1/cli/agents removed duplicate agent list; use GET /v1/agents/details
+GET /v1/cli/agents/{name} removed duplicate agent detail; use GET /v1/agents/{id}/detail

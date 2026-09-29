@@ -602,18 +602,18 @@ impl Client {
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_agents(
+    pub async fn agent_views(
         &self,
         after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<api::CliAgent>, Error> {
-        self.get("cli/agents", &page(after, limit)).await
+    ) -> Result<Vec<api::AgentView>, Error> {
+        self.get("agents/details", &page(after, limit)).await
     }
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_agent(&self, name: &str) -> Result<api::CliAgent, Error> {
-        self.get(&format!("cli/agents/{}", segment(name)), &[])
+    pub async fn agent_view(&self, name: &str) -> Result<api::AgentView, Error> {
+        self.get(&format!("agents/{}/detail", segment(name)), &[])
             .await
     }
     /// Read full catalog model rows for CLI rendering.
@@ -640,7 +640,7 @@ impl Client {
     pub async fn cli_create_agent(
         &self,
         body: &api::CliAgentChoice,
-    ) -> Result<api::CliAgent, Error> {
+    ) -> Result<api::AgentView, Error> {
         self.send(Method::POST, "cli/agents", body).await
     }
     /// Submit a CLI management mutation.
@@ -650,7 +650,7 @@ impl Client {
         &self,
         name: &str,
         body: &api::CliAgentChoice,
-    ) -> Result<api::CliAgent, Error> {
+    ) -> Result<api::AgentView, Error> {
         self.send(
             Method::PATCH,
             &format!("cli/agents/{}/settings", segment(name)),

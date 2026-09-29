@@ -6,7 +6,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use serde_json::{Value, json};
 use swarmy_api_types as api;
 use swarmy_core::{AgentId, SessionId, VolumeId};
 use swarmy_store::MAX_SCAN_LIMIT;
@@ -137,13 +136,6 @@ async fn registered_nodes(
     Ok(nodes)
 }
 
-fn typed<T: serde::de::DeserializeOwned>(
-    value: Value,
-) -> Result<T, (StatusCode, Json<api::ApiError>)> {
-    serde_json::from_value(value)
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))
-}
-
 pub(crate) async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
@@ -260,7 +252,7 @@ pub(crate) async fn session_show(
 pub(crate) async fn agents(
     State(state): State<AppState>,
     Query(page): Query<Page>,
-) -> ApiResult<Vec<api::CliAgent>> {
+) -> ApiResult<Vec<api::AgentView>> {
     let after = page
         .after
         .as_deref()
@@ -273,14 +265,14 @@ pub(crate) async fn agents(
         .await
         .map_err(storage)?
     {
-        result.push(typed(agent_value(&state, record, false).await?)?);
+        result.push(agent_value(&state, record, false).await?);
     }
     Ok(Json(result))
 }
 pub(crate) async fn agent_show(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> ApiResult<api::CliAgent> {
+) -> ApiResult<api::AgentView> {
     let record = state
         .store
         .get_agent_by_name(&name)
@@ -298,13 +290,13 @@ pub(crate) async fn agent_show(
     } else {
         return Err(error(StatusCode::NOT_FOUND, "agent_not_found"));
     };
-    Ok(Json(typed(agent_value(&state, record, true).await?)?))
+    Ok(Json(agent_value(&state, record, true).await?))
 }
 async fn agent_value(
     state: &AppState,
     record: swarmy_core::AgentRecord,
     detail: bool,
-) -> Result<Value, (StatusCode, Json<swarmy_api_types::ApiError>)> {
+) -> Result<api::AgentView, (StatusCode, Json<api::ApiError>)> {
     let mut sessions = Vec::new();
     let mut after = None;
     loop {
@@ -329,107 +321,107 @@ async fn agent_value(
         .scratch(record.agent_id)
         .await
         .map_err(storage)?;
-    let node_id = placement.as_ref().map(|placement| placement.node_id);
-    let mut value = serde_json::to_value(&record)
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
-    value["node_id"] = json!(node_id);
-    value["scratch"] = json!(scratch);
-    value["session_count"] = json!(sessions.len());
-    if detail {
-        agent_detail(state, &record, placement.as_ref(), sessions, &mut value).await?;
-    }
-    Ok(value)
-}
-async fn agent_detail(
-    state: &AppState,
-    record: &swarmy_core::AgentRecord,
-    placement: Option<&swarmy_core::PlacementRecord>,
-    sessions: Vec<swarmy_core::SessionRecord>,
-    value: &mut Value,
-) -> Result<(), (StatusCode, Json<swarmy_api_types::ApiError>)> {
-    let totals = state
-        .store
-        .agent_usage(record.agent_id)
-        .await
-        .map_err(storage)?;
-    let volume = state
-        .store
-        .get_volume(VolumeId::from_ulid(record.agent_id.as_ulid()))
-        .await
-        .map_err(storage)?;
-    let status = state
-        .store
-        .agent_call_status(record.agent_id)
-        .await
-        .map_err(storage)?;
-    let address = if let Some(placement) = placement {
-        state
-            .store
-            .placement_address(placement)
-            .await
-            .map_err(storage)?
-    } else {
-        None
+    let mut view = api::AgentView {
+        node_id: placement.as_ref().map(|value| value.node_id.to_string()),
+        scratch: scratch.map(|value| api::ScratchView {
+            node_id: value.node_id.to_string(),
+            bytes: value.bytes,
+        }),
+        session_count: sessions.len(),
+        record,
+        usage: None,
+        cost_dollars: None,
+        entries: Vec::new(),
+        providers: Vec::new(),
+        placement: None,
+        sandbox_address: None,
+        last_snapshot_at: None,
+        last_snapshot_age_seconds: None,
+        sandbox_state: None,
+        call_status: None,
+        sessions: Vec::new(),
     };
-    value["usage"] = json!(totals);
-    value["cost_dollars"] = json!(totals.dollars());
-    let (entries, providers) = super::entry_breakdown(
-        state
+    if detail {
+        let totals = state
             .store
-            .dimension_totals(
-                swarmy_store::MeteringDimension::AgentEntry,
-                &record.agent_id.to_string(),
-                None,
-            )
-            .await
-            .map_err(storage)?,
-    );
-    value["entries"] = json!(entries);
-    value["providers"] = json!(providers);
-    value["placement"] = json!(placement);
-    value["sandbox_address"] = json!(address);
-    let snapshot = volume
-        .as_ref()
-        .map(|volume| {
-            jiff::Timestamp::from_millisecond(
-                i64::try_from(volume.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
-            )
-        })
-        .transpose()
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
-    value["last_snapshot_at"] = json!(snapshot);
-    value["last_snapshot_age_seconds"] =
-        json!(snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0)));
-    let busy = status
-        .as_ref()
-        .is_some_and(|status| status.holder_session_id.is_some() || status.queued_calls > 0);
-    value["sandbox_state"] = json!(if busy {
-        "busy"
-    } else if status.is_some() {
-        "idle"
-    } else {
-        "unknown"
-    });
-    value["sandbox_state_reason"] = json!(if status.is_some() {
-        "sampled node call occupancy"
-    } else {
-        "no current node call observation"
-    });
-    value["call_status"] = json!(status);
-    let mut listed = Vec::new();
-    for session in sessions {
-        let successor = state
-            .store
-            .next_session(session.session_id)
+            .agent_usage(view.record.agent_id)
             .await
             .map_err(storage)?;
-        let mut entry = json!(session);
-        entry["archived"] = json!(successor.is_some());
-        entry["next_session"] = json!(successor);
-        listed.push(entry);
+        view.cost_dollars = Some(totals.dollars());
+        view.usage = Some(totals);
+        let (entries, providers) = super::entry_breakdown(
+            state
+                .store
+                .dimension_totals(
+                    swarmy_store::MeteringDimension::AgentEntry,
+                    &view.record.agent_id.to_string(),
+                    None,
+                )
+                .await
+                .map_err(storage)?,
+        );
+        view.entries = entries;
+        view.providers = providers;
+        view.sandbox_address = match &placement {
+            Some(value) => state
+                .store
+                .placement_address(value)
+                .await
+                .map_err(storage)?
+                .map(|address| address.to_string()),
+            None => None,
+        };
+        view.placement = placement;
+        let volume = state
+            .store
+            .get_volume(VolumeId::from_ulid(view.record.agent_id.as_ulid()))
+            .await
+            .map_err(storage)?;
+        let snapshot = volume
+            .as_ref()
+            .map(|value| {
+                jiff::Timestamp::from_millisecond(
+                    i64::try_from(value.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
+                )
+            })
+            .transpose()
+            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
+        view.last_snapshot_at = snapshot.map(|at| at.to_string());
+        view.last_snapshot_age_seconds =
+            snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0));
+        let status = state
+            .store
+            .agent_call_status(view.record.agent_id)
+            .await
+            .map_err(storage)?;
+        let busy = status
+            .as_ref()
+            .is_some_and(|status| status.holder_session_id.is_some() || status.queued_calls > 0);
+        view.sandbox_state = Some(
+            if busy {
+                "busy"
+            } else if status.is_some() {
+                "idle"
+            } else {
+                "unknown"
+            }
+            .into(),
+        );
+        view.call_status = status;
+        for session in sessions {
+            let next = state
+                .store
+                .next_session(session.session_id)
+                .await
+                .map_err(storage)?;
+            view.sessions.push(api::AgentSessionView {
+                record: session,
+                archived: next.is_some(),
+                next_session: next.map(|id| id.to_string()),
+            });
+        }
     }
-    value["sessions"] = json!(listed);
-    Ok(())
+    Ok(view)
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct ModelsQuery {
@@ -479,7 +471,7 @@ fn settings(
 pub(crate) async fn agent_create(
     State(state): State<AppState>,
     Json(body): Json<AgentChoice>,
-) -> ApiResult<api::CliAgent> {
+) -> ApiResult<api::AgentView> {
     let choice = settings(&body, &state.catalog)?;
     let inference = swarmy_core::InferenceSelection {
         provider: choice.provider.clone(),
@@ -498,6 +490,7 @@ pub(crate) async fn agent_create(
     let key = body.idempotency_key.clone();
     let store = state.store.clone();
     let store_key = format!("cli:agents:create:{key}");
+    let response_state = state.clone();
     super::replay(&state, &key, "cli:agents:create", async move {
         let record = store
             .create_agent(
@@ -513,7 +506,7 @@ pub(crate) async fn agent_create(
             )
             .await
             .map_err(storage)?;
-        Ok(Json(typed(json!(record))?))
+        Ok(Json(agent_value(&response_state, record, false).await?))
     })
     .await
 }
@@ -521,7 +514,7 @@ pub(crate) async fn agent_update(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<AgentChoice>,
-) -> ApiResult<api::CliAgent> {
+) -> ApiResult<api::AgentView> {
     let record = state
         .store
         .get_agent_by_name(&name)
@@ -555,6 +548,7 @@ pub(crate) async fn agent_update(
     .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let key = body.idempotency_key.clone();
     let store = state.store.clone();
+    let response_state = state.clone();
     super::replay(
         &state,
         &key,
@@ -570,7 +564,7 @@ pub(crate) async fn agent_update(
                     .await
                     .map_err(storage)?;
             }
-            Ok(Json(typed(json!(updated))?))
+            Ok(Json(agent_value(&response_state, updated, false).await?))
         },
     )
     .await
