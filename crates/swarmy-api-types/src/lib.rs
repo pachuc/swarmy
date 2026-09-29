@@ -195,6 +195,23 @@ pub struct Session {
     pub next_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<ResolvedInference>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub main: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_session: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResolvedInference {
+    pub provider: String,
+    pub model: String,
+    pub effort: ReasoningEffort,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -553,6 +570,8 @@ pub struct CreateCredential {
     pub kind: CredentialKind,
     pub label: String,
     pub secret: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra: std::collections::BTreeMap<String, String>,
 }
 
 /// Body for agent and credential deletions. The key scopes the replayed result.

@@ -127,7 +127,7 @@ async fn assert_resource_projections(
     );
     assert!(
         !client
-            .cli_models(None, None, false)
+            .models_filtered(None, None, false)
             .await
             .unwrap()
             .is_empty()
@@ -160,6 +160,7 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
             kind: swarmy_api_types::CredentialKind::Cloud,
             label: "backup".into(),
             secret: "synthetic-cloud-secret".into(),
+            extra: Default::default(),
         })
         .await
         .unwrap();

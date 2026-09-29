@@ -192,20 +192,81 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
         effort: record.inference.effort.map(Into::into),
         next_session: None,
         route: record.route.clone(),
+        resolved: None,
+        archived: false,
+        main: false,
+        agent_name: None,
+        previous_session: None,
     }
 }
+pub(crate) async fn resolve_selection(
+    state: &AppState,
+    record: &swarmy_core::SessionRecord,
+) -> Result<swarmy_core::ResolvedSelection, (StatusCode, Json<swarmy_api_types::ApiError>)> {
+    let agent = state
+        .store
+        .get_agent(record.agent_id)
+        .await
+        .map_err(storage)?;
+    let mut selected = state.default_selection.clone();
+    if let Some(agent) = agent {
+        if let Some(provider) = agent.provider {
+            selected.provider = provider;
+        }
+        if let Some(model) = agent.model {
+            selected.model = model;
+        }
+        if let Some(effort) = agent.reasoning_effort {
+            selected.effort = effort;
+        }
+    }
+    if let Some(provider) = &record.inference.provider {
+        selected.provider.clone_from(provider);
+    }
+    if let Some(model) = &record.inference.model {
+        selected.model.clone_from(model);
+    }
+    if let Some(effort) = record.inference.effort {
+        selected.effort = effort;
+    }
+    Ok(selected)
+}
+
 async fn session_with_next(
-    store: &Store,
+    state: &AppState,
     record: &swarmy_core::SessionRecord,
 ) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
     let mut result = session(record);
     if record.state == swarmy_core::SessionState::Completed {
-        result.next_session = store
+        result.next_session = state
+            .store
             .next_session(record.session_id)
             .await
             .map_err(storage)?
             .map(|id| id.to_string());
     }
+    result.archived = result.next_session.is_some();
+    result.previous_session = state
+        .store
+        .previous_session(record.session_id)
+        .await
+        .map_err(storage)?
+        .map(|id| id.to_string());
+    let agent = state
+        .store
+        .get_agent(record.agent_id)
+        .await
+        .map_err(storage)?;
+    if let Some(agent) = &agent {
+        result.main = agent.main_session == Some(record.session_id);
+        result.agent_name = Some(agent.name.clone());
+    }
+    let resolved = resolve_selection(state, record).await?;
+    result.resolved = Some(api::ResolvedInference {
+        provider: resolved.provider,
+        model: resolved.model,
+        effort: resolved.effort.into(),
+    });
     Ok(result)
 }
 async fn authorize(
@@ -529,7 +590,7 @@ async fn sessions(
         .map_err(storage)?;
     let mut result = Vec::with_capacity(records.len());
     for record in &records {
-        result.push(session_with_next(&state.store, record).await?);
+        result.push(session_with_next(&state, record).await?);
     }
     Ok(Json(result))
 }
@@ -544,7 +605,7 @@ async fn show_session(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-    Ok(Json(session_with_next(&state.store, &record).await?))
+    Ok(Json(session_with_next(&state, &record).await?))
 }
 async fn session_metrics(
     State(state): State<AppState>,
@@ -920,7 +981,7 @@ async fn set_credential(
         },
         kind: CredentialKind::ApiKey {
             key: body.secret,
-            extra: std::collections::BTreeMap::new(),
+            extra: body.extra,
         },
         updated_at: Timestamp::now(),
     };

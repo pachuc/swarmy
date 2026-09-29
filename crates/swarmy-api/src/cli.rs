@@ -307,7 +307,7 @@ pub(crate) async fn sessions(
         let main = agent
             .as_ref()
             .is_some_and(|agent| agent.main_session == Some(session.session_id));
-        let selection = selection(&state, &session).await?;
+        let selection = super::resolve_selection(&state, &session).await?;
         let successor = state
             .store
             .next_session(session.session_id)
@@ -338,38 +338,6 @@ pub(crate) async fn sessions(
     }
     Ok(Json(result))
 }
-async fn selection(
-    state: &AppState,
-    record: &swarmy_core::SessionRecord,
-) -> Result<swarmy_core::ResolvedSelection, (StatusCode, Json<swarmy_api_types::ApiError>)> {
-    let agent = state
-        .store
-        .get_agent(record.agent_id)
-        .await
-        .map_err(storage)?;
-    let mut selected = state.default_selection.clone();
-    if let Some(agent) = agent {
-        if let Some(provider) = agent.provider {
-            selected.provider = provider;
-        }
-        if let Some(model) = agent.model {
-            selected.model = model;
-        }
-        if let Some(effort) = agent.reasoning_effort {
-            selected.effort = effort;
-        }
-    }
-    if let Some(provider) = &record.inference.provider {
-        selected.provider.clone_from(provider);
-    }
-    if let Some(model) = &record.inference.model {
-        selected.model.clone_from(model);
-    }
-    if let Some(effort) = record.inference.effort {
-        selected.effort = effort;
-    }
-    Ok(selected)
-}
 pub(crate) async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
@@ -381,7 +349,7 @@ pub(crate) async fn session_show(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-    let selection = selection(&state, &record).await?;
+    let selection = super::resolve_selection(&state, &record).await?;
     let usage = state
         .store
         .session_usage(session_id)

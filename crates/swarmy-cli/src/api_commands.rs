@@ -298,40 +298,39 @@ async fn session(
         session_command::Command::List => {
             let mut after = None;
             loop {
-                let page = request(endpoint, client.cli_sessions(after.as_deref(), 256))
-                    .await?
-                    .into_iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let page = request(endpoint, client.sessions(after.as_deref(), 256)).await?;
                 if page.is_empty() {
                     break;
                 }
                 for row in page {
-                    let id = str_field(&row, "session_id");
-                    let selection = &row["resolved_inference"];
-                    let kind = if row["kind"].is_string() {
+                    let selection = row
+                        .resolved
+                        .as_ref()
+                        .context("session resolution missing")?;
+                    let kind = if row.kind == swarmy_api_types::SessionKind::Ephemeral {
                         "ephemeral"
                     } else {
                         "named"
                     };
-                    let name = str_field(&row, "agent_name");
+                    let state = format!("{:?}", row.state);
                     print(
                         &row,
                         &format!(
-                            "{id} {} {}/{} route={} kind={kind} agent={name} head={} computer_deleted={} archived={} main={} previous_session={}",
-                            display_state(&row),
-                            str_field(selection, "provider"),
-                            str_field(selection, "model"),
-                            row["route"].as_str().unwrap_or("(swarm default)"),
-                            row["head_seq"],
-                            row["computer_deleted"],
-                            row["archived"],
-                            row["main"],
-                            text_value_or_dash(&row["previous_session"])
+                            "{} {state} {}/{} route={} kind={kind} agent={} head={} computer_deleted={} archived={} main={} previous_session={}",
+                            row.id,
+                            selection.provider,
+                            selection.model,
+                            row.route.as_deref().unwrap_or("(swarm default)"),
+                            row.agent_name.as_deref().unwrap_or("-"),
+                            row.head_sequence,
+                            row.computer_deleted,
+                            row.archived,
+                            row.main,
+                            row.previous_session.as_deref().unwrap_or("-")
                         ),
                         json,
                     );
-                    after = Some(id.to_owned());
+                    after = Some(row.id);
                 }
             }
         }
@@ -1040,15 +1039,16 @@ async fn set_credential_key(
             }
         }
     }
-    let record = swarmy_core::CredentialRecord {
-        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
-        kind: swarmy_core::CredentialKind::ApiKey { key, extra },
-        updated_at: jiff::Timestamp::now(),
-    };
-    let body = json!({"idempotency_key":Ulid::generate().to_string(),"provider":provider,"label":args.label,"record":record});
-    projection(
+    request(
         endpoint,
-        client.cli_set_credential(&serde_json::from_value(body)?),
+        client.set_credential(&swarmy_api_types::CreateCredential {
+            idempotency_key: Ulid::generate().to_string(),
+            provider: provider.to_owned(),
+            kind: swarmy_api_types::CredentialKind::ApiKey,
+            label: args.label.clone().unwrap_or_else(|| "default".into()),
+            secret: key,
+            extra,
+        }),
     )
     .await?;
     auth_report("saved", provider, json);

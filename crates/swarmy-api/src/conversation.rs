@@ -140,6 +140,7 @@ pub(crate) async fn create(
     let default_image = state.default_image.clone();
     let store = state.store.clone();
     let replay_key = body.idempotency_key.clone();
+    let response_state = state.clone();
     replay(&state, &replay_key, "sessions:create", async move {
         let agent = if let Some(text) = &body.agent_id {
             let record = if let Ok(id) = text.parse::<Ulid>() {
@@ -202,7 +203,7 @@ pub(crate) async fn create(
             .await
             .map_err(storage)?
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-        Ok(Json(session_with_next(&store, &record).await?))
+        Ok(Json(session_with_next(&response_state, &record).await?))
     })
     .await
 }
@@ -216,6 +217,7 @@ pub(crate) async fn set_route(
 ) -> ApiResult<api::Session> {
     let session_id = id(&text, SessionId::from_ulid)?;
     let store = state.store.clone();
+    let response_state = state.clone();
     replay(
         &state,
         &body.idempotency_key,
@@ -230,7 +232,7 @@ pub(crate) async fn set_route(
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-            Ok(Json(session_with_next(&store, &record).await?))
+            Ok(Json(session_with_next(&response_state, &record).await?))
         },
     )
     .await
@@ -409,7 +411,7 @@ pub(crate) async fn wait_idle(
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))
         {
-            return Ok(Json(session_with_next(&state.store, &record).await?));
+            return Ok(Json(session_with_next(&state, &record).await?));
         }
         loop {
             tokio::select! {
