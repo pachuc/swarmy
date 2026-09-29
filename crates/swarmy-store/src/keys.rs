@@ -2,8 +2,11 @@ use foundationdb::{Transaction, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
     AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    RunnableEntry, SessionId, SessionState, TimerId, VolumeId,
+    RunnableEntry, SessionId, TimerId, VolumeId,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+use swarmy_core::SessionState;
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
