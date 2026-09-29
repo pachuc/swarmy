@@ -833,8 +833,8 @@ impl StreamMapper {
                 .ok_or_else(|| protocol("stream ended before usage metadata"))?,
             // Bedrock surfaces throttling through SDK retry metadata rather
             // than remaining-quota headers, so nothing is recorded here.
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         }))
     }
 }
@@ -1195,8 +1195,8 @@ mod tests {
         Delta::Completed(Response {
             parts,
             stop_reason,
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
             usage: TokenUsage {
                 input_tokens: 30,
                 output_tokens: 5,

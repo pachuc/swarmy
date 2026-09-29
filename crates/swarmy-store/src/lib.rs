@@ -138,7 +138,7 @@ enum StoredValue {
 }
 
 /// Receiver for the metrics queue, held until the drain task starts.
-type MetricsReceiver = tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>;
+type MetricsReceiver = tokio::sync::mpsc::Receiver<metrics::MetricMsg>;
 
 #[derive(Clone)]
 pub struct Store {
@@ -152,7 +152,7 @@ pub struct Store {
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
-    metrics_tx: tokio::sync::mpsc::Sender<crate::metrics::MetricMsg>,
+    metrics_tx: tokio::sync::mpsc::Sender<metrics::MetricMsg>,
     /// Receiver held until the drain task starts. `open` starts the drain
     /// immediately; `with_subspace` may run without a runtime, in which case
     /// the first observation or flush starts it lazily.
@@ -164,16 +164,16 @@ pub struct Store {
 }
 
 fn metrics_channel() -> (
-    tokio::sync::mpsc::Sender<crate::metrics::MetricMsg>,
-    tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>,
+    tokio::sync::mpsc::Sender<metrics::MetricMsg>,
+    tokio::sync::mpsc::Receiver<metrics::MetricMsg>,
 ) {
-    tokio::sync::mpsc::channel(crate::metrics::METRICS_CHANNEL_BOUND)
+    tokio::sync::mpsc::channel(metrics::METRICS_CHANNEL_BOUND)
 }
 
 /// Store and blob handles opened together from one settings object.
 pub struct OpenedStore {
     pub store: Store,
-    pub blobs: Arc<crate::blob::ObjectBlobStore>,
+    pub blobs: Arc<blob::ObjectBlobStore>,
 }
 
 impl Store {
@@ -186,7 +186,7 @@ impl Store {
         blobs: Arc<dyn BlobStore>,
     ) -> Result<Self> {
         let db = match cluster_file {
-            Some(path) => Arc::new(crate::database(path)?),
+            Some(path) => Arc::new(database(path)?),
             None => Arc::new(Database::new(None)?),
         };
         let path = directory.map_or_else(|| vec!["swarmy".into()], <[String]>::to_vec);
@@ -227,8 +227,8 @@ impl Store {
     pub async fn open_store(settings: &swarmy_config::Settings) -> Result<OpenedStore> {
         let directory = settings
             .store_directory_path()
-            .map_err(crate::blob::BlobError::from)?;
-        let blobs = Arc::new(crate::blob::ObjectBlobStore::from_settings(settings)?);
+            .map_err(blob::BlobError::from)?;
+        let blobs = Arc::new(blob::ObjectBlobStore::from_settings(settings)?);
         let store = Self::open(
             Some(settings.store.cluster_file.as_path()),
             Some(&directory),
@@ -260,8 +260,8 @@ impl Store {
         store
     }
 
-    pub(crate) fn metrics_writer(&self) -> crate::metrics::MetricsWriter {
-        crate::metrics::MetricsWriter::new(
+    pub(crate) fn metrics_writer(&self) -> metrics::MetricsWriter {
+        metrics::MetricsWriter::new(
             self.db.clone(),
             self.root.clone(),
             self.transactions.clone(),
@@ -291,7 +291,7 @@ impl Store {
             }
             return;
         }
-        let handle = crate::metrics::spawn_metrics_drain(self.metrics_writer(), rx);
+        let handle = metrics::spawn_metrics_drain(self.metrics_writer(), rx);
         if self.metrics_drain.set(handle).is_err() {
             tracing::debug!("metrics drain already started");
         }
@@ -308,8 +308,8 @@ impl Store {
         self
     }
 
-    pub(crate) fn keys(&self) -> crate::keys::Keys<'_> {
-        crate::keys::Keys::new(&self.root)
+    pub(crate) fn keys(&self) -> keys::Keys<'_> {
+        keys::Keys::new(&self.root)
     }
 
     pub(crate) fn now(&self) -> jiff::Timestamp {
@@ -401,7 +401,7 @@ impl Store {
             StoredValue::Blob(key) => {
                 let bytes = self.blobs.get(&key).await?;
                 if key != format!("blobs/{}", blake3::hash(&bytes).to_hex()) {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
+                    return Err(StoreError::Storage(StorageError::Corrupt));
                 }
                 Ok(decode(&bytes)?)
             }
@@ -410,23 +410,23 @@ impl Store {
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
         if bytes.first() != Some(&SESSION_RECORD_VERSION) {
-            return Err(StoreError::Storage(crate::StorageError::Corrupt));
+            return Err(StoreError::Storage(StorageError::Corrupt));
         }
         let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
             if bytes.len() != 20 {
-                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+                return Err(StoreError::Storage(StorageError::Corrupt));
             }
             let id = keys::session_id(bytes[2..18].to_vec())?;
             let count = u16::from_be_bytes([bytes[18], bytes[19]]);
             if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
-                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+                return Err(StoreError::Storage(StorageError::Corrupt));
             }
             let mut payload = Vec::new();
             for index in 0..count {
                 let chunk = trx
                     .get(&self.keys().session_chunk(id, index), false)
                     .await?
-                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .ok_or(StoreError::Storage(StorageError::Corrupt))?;
                 payload.extend_from_slice(&chunk);
             }
             payload
@@ -466,7 +466,7 @@ impl Store {
             Some(seq) => Ok(Some(
                 trx.get(&self.keys().snapshot(session.session_id, seq), false)
                     .await?
-                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
+                    .ok_or(StoreError::Storage(StorageError::Corrupt))?
                     .to_vec(),
             )),
             None => Ok(None),
@@ -478,7 +478,7 @@ impl Store {
         let bytes = trx
             .get(&self.keys().session(id), false)
             .await?
-            .ok_or(StoreError::Domain(crate::DomainError::SessionMissing))?;
+            .ok_or(StoreError::Domain(DomainError::SessionMissing))?;
         self.decode_session_in(trx, &bytes).await
     }
 
@@ -489,20 +489,20 @@ impl Store {
                 .map_err(EncodingError::Payload)?,
         );
         if bytes.len() > SESSION_MAX_BYTES {
-            return Err(StoreError::Storage(crate::StorageError::TooLarge));
+            return Err(StoreError::Storage(StorageError::TooLarge));
         }
         let (begin, end) = self.keys().session_chunk_space(session.session_id).range();
         trx.clear_range(&begin, &end);
         if bytes.len() > INLINE_LIMIT {
             let payload = &bytes[1..];
             let count = u16::try_from(payload.len().div_ceil(INLINE_LIMIT))
-                .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?;
+                .map_err(|_| StoreError::Storage(StorageError::TooLarge))?;
             for (index, chunk) in payload.chunks(INLINE_LIMIT).enumerate() {
                 trx.set(
                     &self.keys().session_chunk(
                         session.session_id,
                         u16::try_from(index)
-                            .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?,
+                            .map_err(|_| StoreError::Storage(StorageError::TooLarge))?,
                     ),
                     chunk,
                 );
@@ -617,7 +617,7 @@ impl Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().session_space().range();
                 if let Some(id) = after {
-                    begin = crate::next_cursor(&self.keys().session(id));
+                    begin = next_cursor(&self.keys().session(id));
                 }
                 let mut sessions = Vec::new();
                 for (_, value) in scan(&trx, (begin, end), limit).await? {
@@ -674,7 +674,7 @@ impl Store {
         message: &swarmy_core::Message,
     ) -> Result<u64> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
+            return Err(StoreError::Domain(DomainError::InvalidMessageRole));
         }
         self.append_events_inner(
             id,
@@ -700,18 +700,18 @@ impl Store {
         key: &str,
     ) -> Result<(u64, bool)> {
         if message.role != swarmy_core::MessageRole::User {
-            return Err(StoreError::Domain(crate::DomainError::InvalidMessageRole));
+            return Err(StoreError::Domain(DomainError::InvalidMessageRole));
         }
         let head = expected_head
             .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            .ok_or(StoreError::Storage(StorageError::SequenceOverflow))?;
         let event = Event::MessageAppended {
             seq: head,
             message: message.clone(),
         };
         let value = self.prepare(&event).await?;
         if value.len() > MAX_BATCH_BYTES {
-            return Err(StoreError::Storage(crate::StorageError::TooLarge));
+            return Err(StoreError::Storage(StorageError::TooLarge));
         }
         let replay_key = self.keys().api_append(key);
         self.transaction(|trx| {
@@ -722,9 +722,9 @@ impl Store {
                     return Ok((previous, false));
                 }
                 let mut session = self.session(&trx, id).await?;
-                crate::check_head(session.head_seq, expected_head)?;
+                check_head(session.head_seq, expected_head)?;
                 if session.state != SessionState::Idle {
-                    return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
+                    return Err(StoreError::Domain(DomainError::SessionNotIdle));
                 }
                 trx.set(&self.keys().event(id, head), value);
                 write(&trx, &self.keys().turn(id), &message.id)?;
@@ -749,9 +749,9 @@ impl Store {
         let head = expected_head
             .checked_add(
                 u64::try_from(events.len())
-                    .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?,
+                    .map_err(|_| StoreError::Storage(StorageError::TooLarge))?,
             )
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            .ok_or(StoreError::Storage(StorageError::SequenceOverflow))?;
         let mut prepared = Vec::with_capacity(events.len());
         let mut size = 0;
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
@@ -761,7 +761,7 @@ impl Store {
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
             if size > MAX_BATCH_BYTES {
-                return Err(StoreError::Storage(crate::StorageError::TooLarge));
+                return Err(StoreError::Storage(StorageError::TooLarge));
             }
             prepared.push((key, value));
         }
@@ -772,9 +772,9 @@ impl Store {
                     self.check_worker_lease(&trx, id, lease, now).await?;
                 }
                 let mut session = self.session(&trx, id).await?;
-                crate::check_head(session.head_seq, expected_head)?;
+                check_head(session.head_seq, expected_head)?;
                 if wake && session.state != SessionState::Idle {
-                    return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
+                    return Err(StoreError::Domain(DomainError::SessionNotIdle));
                 }
                 for (key, value) in prepared {
                     trx.set(key, value);
@@ -814,7 +814,7 @@ impl Store {
         let values = self
             .transaction(|trx| async move {
                 let space = self.keys().event_space(id);
-                let begin = crate::next_cursor(&self.keys().event(id, after));
+                let begin = next_cursor(&self.keys().event(id, after));
                 scan(&trx, (begin, space.range().1), limit).await
             })
             .await?;
@@ -838,7 +838,7 @@ impl Store {
                 if snapshot.seq > session.head_seq
                     || session.snapshot_seq.is_some_and(|old| old > snapshot.seq)
                 {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
+                    return Err(StoreError::Fence(FenceError::StaleSequence {
                         expected: snapshot.seq,
                         actual: session.head_seq,
                     }));
@@ -916,13 +916,13 @@ where
             async move {
                 if bool::from(maybe_committed) {
                     return Err(FdbBindingError::new_custom_error(Box::new(
-                        StoreError::Storage(crate::StorageError::CommitUnknown),
+                        StoreError::Storage(StorageError::CommitUnknown),
                     )));
                 }
                 trx.set_option(TransactionOption::Timeout(4_500))?;
                 trx.set_option(TransactionOption::RetryLimit(20))?;
                 operation(trx).await.map_err(|error| match error {
-                    StoreError::Storage(crate::StorageError::FoundationDb(error)) => error.into(),
+                    StoreError::Storage(StorageError::FoundationDb(error)) => error.into(),
                     other => FdbBindingError::new_custom_error(Box::new(other)),
                 })
             }
@@ -931,11 +931,11 @@ where
     result.map_err(|error| match error {
         FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
             Ok(error) => *error,
-            Err(error) => StoreError::Storage(crate::StorageError::Binding(
+            Err(error) => StoreError::Storage(StorageError::Binding(
                 FdbBindingError::CustomError(error),
             )),
         },
-        other => StoreError::Storage(crate::StorageError::Binding(other)),
+        other => StoreError::Storage(StorageError::Binding(other)),
     })
 }
 
@@ -949,7 +949,7 @@ async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Opti
 fn write<T: Serialize>(trx: &Transaction, key: &[u8], value: &T) -> Result<()> {
     let bytes = encode(value)?;
     if bytes.len() > INLINE_LIMIT {
-        return Err(StoreError::Storage(crate::StorageError::TooLarge));
+        return Err(StoreError::Storage(StorageError::TooLarge));
     }
     trx.set(key, &bytes);
     Ok(())
@@ -959,13 +959,13 @@ fn check_limit(limit: usize) -> Result<()> {
     if (1..=MAX_SCAN_LIMIT).contains(&limit) {
         Ok(())
     } else {
-        Err(StoreError::Domain(crate::DomainError::InvalidLimit))
+        Err(StoreError::Domain(DomainError::InvalidLimit))
     }
 }
 
 pub(crate) fn check_head(actual: u64, expected: u64) -> Result<()> {
     if actual != expected {
-        return Err(StoreError::Fence(crate::FenceError::StaleSequence {
+        return Err(StoreError::Fence(FenceError::StaleSequence {
             expected,
             actual,
         }));

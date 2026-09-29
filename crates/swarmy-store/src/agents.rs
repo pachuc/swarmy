@@ -114,7 +114,7 @@ impl Store {
                             result,
                             expires_at: now
                                 .checked_add(jiff::Span::new().hours(1))
-                                .unwrap_or(jiff::Timestamp::MAX),
+                                .unwrap_or(Timestamp::MAX),
                         },
                     )?;
                 }
@@ -726,7 +726,7 @@ impl Store {
 
     async fn write_side_events(
         &self,
-        trx: &foundationdb::Transaction,
+        trx: &Transaction,
         id: SessionId,
         old: SessionId,
         prepared: &[Vec<u8>],
