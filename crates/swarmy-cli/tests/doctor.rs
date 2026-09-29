@@ -210,6 +210,7 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
             format!(
                 "{{\"services\":[{{\"role\":\"scheduler\",\"instance_id\":\"s1\",\"version\":\"0.1.0\",\"alive\":{scheduler_alive},\"providers\":[],\"capacity\":null}},{{\"role\":\"worker\",\"instance_id\":\"w1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}},{{\"role\":\"gateway\",\"instance_id\":\"g1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[\"fake\"],\"capacity\":null}}],\"images\":[\"fixture:test\"],\"default_image\":\"fixture:test\",\"credentials\":[]}}"
             ),
+            "[]".to_owned(),
         ] {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -268,7 +269,7 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
             let snapshot = "{\"services\":[{\"role\":\"scheduler\",\"instance_id\":\"s1\",\
                 \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
                 \"images\":[],\"default_image\":null,\"credentials\":[]}";
-            for body in [health, snapshot.to_owned()] {
+            for body in [health, snapshot.to_owned(), "[]".to_owned()] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
