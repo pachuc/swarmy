@@ -225,8 +225,8 @@ impl Fixture {
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Ok(cluster), Ok(url)) = (
-        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-        std::env::var("SWARMY_NATS_URL"),
+        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
         eprintln!(
             "skipping CLI integration test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset"

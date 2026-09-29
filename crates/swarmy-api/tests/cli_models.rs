@@ -29,8 +29,8 @@ static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
 impl Fixture {
     fn new(config: &str) -> Option<Self> {
         let (Ok(cluster), Ok(nats)) = (
-            std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-            std::env::var("SWARMY_NATS_URL"),
+            swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
+            swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
         ) else {
             eprintln!("skipping models integration: dev stack unavailable");
             return None;

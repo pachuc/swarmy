@@ -147,8 +147,8 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
     let (Ok(cluster), Ok(url)) = (
-        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-        std::env::var("SWARMY_NATS_URL"),
+        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
         eprintln!("skipping slow-tool test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset");
         return;
@@ -337,8 +337,8 @@ mod routing;
 #[tokio::test]
 async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     let (Ok(cluster), Ok(url)) = (
-        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-        std::env::var("SWARMY_NATS_URL"),
+        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
         eprintln!("skipping slow-tool test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset");
         return;

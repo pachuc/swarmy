@@ -342,8 +342,8 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || std::env::var_os("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || std::env::var_os("SWARMY_S3_ENDPOINT").is_none()
+        || swarmy_core::test_support::stack_env_os("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none()
     {
         eprintln!("skipping scratch acceptance: root and dev stack are required");
         return;

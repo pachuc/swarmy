@@ -98,3 +98,6 @@ pub struct LiveTokenDelta {
     pub position: u64,
     pub text: String,
 }
+
+#[doc(hidden)]
+pub mod test_support;

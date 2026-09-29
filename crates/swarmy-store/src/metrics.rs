@@ -2446,7 +2446,7 @@ mod integration_tests {
     // One turn with staged writes, inference, and idle checks needs its setup inline.
     #[allow(clippy::too_many_lines)]
     async fn incremental_records_merge_under_one_turn_key() {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
         };
         NETWORK.get_or_init(crate::boot);
@@ -2562,7 +2562,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn batched_tool_patches_merge_in_one_transaction() {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
         };
         NETWORK.get_or_init(crate::boot);
@@ -2631,7 +2631,7 @@ mod integration_tests {
     // The required 200-tool, 100-request turn builds its rows inline.
     #[allow(clippy::too_many_lines)]
     async fn long_turn_with_two_hundred_tools_and_one_hundred_requests_reads_back_complete() {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
         };
         NETWORK.get_or_init(crate::boot);
@@ -2801,7 +2801,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn legacy_v1_rows_keep_dropped_counters_through_rewrite() {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
         };
         NETWORK.get_or_init(crate::boot);

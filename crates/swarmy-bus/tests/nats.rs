@@ -27,7 +27,7 @@ impl Fixture {
 }
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
-    let url = match std::env::var("SWARMY_NATS_URL") {
+    let url = match swarmy_core::test_support::stack_env("SWARMY_NATS_URL") {
         Ok(url) => url,
         Err(std::env::VarError::NotPresent) => {
             // Test skips must be visible even without a tracing subscriber.
@@ -177,7 +177,7 @@ async fn two_workers_share_one_durable_consumer() {
 async fn live_deltas_and_events_reach_observers_without_persistence() {
     run(|f| async move {
         let session = SessionId::from_ulid(Ulid::generate());
-        let url = std::env::var("SWARMY_NATS_URL").unwrap();
+        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap();
         let publisher = Bus::connect(&url, f.config.clone()).await.unwrap();
         for feed in [
             LiveFeed::ModelDeltas(session),
@@ -256,7 +256,7 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
         assert_eq!(next(&mut work).await.value, 7);
         let mut changed = f.config.clone();
         changed.ack_wait *= 2;
-        let url = std::env::var("SWARMY_NATS_URL").unwrap();
+        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap();
         let conflicting = Bus::connect(&url, changed).await.unwrap();
         assert!(matches!(
             conflicting.setup(&queues).await,

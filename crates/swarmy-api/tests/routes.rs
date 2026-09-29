@@ -13,10 +13,10 @@ static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 #[tokio::test]
 async fn authenticated_routes_and_create_replay() {
-    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+    let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
-    let Ok(nats) = std::env::var("SWARMY_NATS_URL") else {
+    let Ok(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
         return;
     };
     NETWORK.get_or_init(swarmy_store::boot);
@@ -449,8 +449,8 @@ async fn route_server() -> Option<(
     swarmy_client::Client,
     tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>,
 )> {
-    let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE").ok()?;
-    let nats = std::env::var("SWARMY_NATS_URL").ok()?;
+    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").ok()?;
+    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").ok()?;
     NETWORK.get_or_init(swarmy_store::boot);
     let path = vec![
         "swarmy-api-route-test".to_owned(),

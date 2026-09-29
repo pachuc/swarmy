@@ -55,7 +55,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let Ok(url) = std::env::var("SWARMY_NATS_URL") else {
+        let Ok(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
             eprintln!("skipping worker integration test: SWARMY_NATS_URL is unset");
             return None;
         };
@@ -73,7 +73,7 @@ impl Fixture {
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("worker_{}", Ulid::generate());
         let store = Store::open(
-            Some(&std::env::var("SWARMY_FDB_CLUSTER_FILE").unwrap()),
+            Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap()),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env().unwrap()),
         )
@@ -540,7 +540,7 @@ impl Fixture {
         for key in self.snapshots.get_mut().unwrap().drain() {
             blobs.delete(&key).await.unwrap();
         }
-        let db = Database::new(Some(&std::env::var("SWARMY_FDB_CLUSTER_FILE").unwrap())).unwrap();
+        let db = Database::new(Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap())).unwrap();
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;
@@ -1303,8 +1303,8 @@ async fn recover_at_each_kill_point() {
 
 #[tokio::test]
 async fn large_request_dispatches_on_default_nats_limit() {
-    if std::env::var("SWARMY_FDB_CLUSTER_FILE").is_err()
-        || std::env::var("SWARMY_S3_ENDPOINT").is_err()
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
+        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
     {
         eprintln!("skipping worker integration test: dev stack is unset");
         return;
@@ -1385,8 +1385,8 @@ async fn large_request_dispatches_on_default_nats_limit() {
 
 #[tokio::test]
 async fn permanent_publish_error_ends_turn() {
-    if std::env::var("SWARMY_FDB_CLUSTER_FILE").is_err()
-        || std::env::var("SWARMY_S3_ENDPOINT").is_err()
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
+        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
     {
         eprintln!("skipping worker integration test: dev stack is unset");
         return;

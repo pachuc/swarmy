@@ -29,8 +29,8 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE").ok()?;
-        let nats = std::env::var("SWARMY_NATS_URL").ok()?;
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").ok()?;
+        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL").ok()?;
         NETWORK.get_or_init(swarmy_store::boot);
         let store = Store::open(
             Some(&cluster),

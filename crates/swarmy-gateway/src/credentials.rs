@@ -237,7 +237,7 @@ mod tests {
 
     fn test_store() -> Option<Store> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             eprintln!("skipping gateway auth integration: SWARMY_FDB_CLUSTER_FILE unset");
             return None;
         };

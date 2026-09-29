@@ -90,7 +90,7 @@ impl ObjectStore for FailOneDelete {
 impl Fixture {
     fn new() -> Option<Self> {
         static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
+        let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             eprintln!("skipping GC integration test: SWARMY_FDB_CLUSTER_FILE is unset");
             return None;
         };

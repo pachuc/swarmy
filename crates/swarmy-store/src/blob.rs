@@ -107,7 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
-        if std::env::var_os("SWARMY_S3_ENDPOINT").is_none() {
+        if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
             eprintln!("skipping S3 namespace test: SWARMY_S3_ENDPOINT is unset");
             return;
         }
