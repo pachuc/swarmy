@@ -550,31 +550,27 @@ async fn image(
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
             validate_label(name)?;
             validate_label(tag)?;
-            let value = projection(endpoint, client.cli_image(name, tag))
-                .await
-                .map_err(|error| {
-                    if error.to_string().contains("image_not_found") {
-                        anyhow::anyhow!("image not found")
-                    } else {
-                        error
-                    }
-                })?;
+            let value = client.image(name, tag).await.map_err(|error| {
+                if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
+                    anyhow::anyhow!("image not found")
+                } else {
+                    swarmy_client::api_client::api_error(error, endpoint)
+                }
+            })?;
+            let header = value.header.as_ref().context("image header missing")?;
             print(
                 &value,
                 &format!(
                     "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
-                    value["manifest_id"],
-                    value["header"]["size"],
-                    value["header"]["chunk_size"],
-                    value["header"]["root_hash"],
-                    value["scratch"]
-                        .as_array()
-                        .map(|items| items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(","))
-                        .unwrap_or_default()
+                    value.id,
+                    header.size,
+                    header.chunk_size,
+                    header.root_hash,
+                    value
+                        .scratch
+                        .as_ref()
+                        .context("image scratch missing")?
+                        .join(",")
                 ),
                 json,
             );
@@ -1085,30 +1081,38 @@ async fn set_entry_quota(
     .await?;
     Ok(())
 }
-fn auth_display(summary: &Value, json: bool, expiry: bool) {
-    let mut value = summary.clone();
-    let seconds = summary["expires_at"]
-        .as_str()
+fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
+    let seconds = summary
+        .expires_at
+        .as_deref()
         .and_then(|at| at.parse::<jiff::Timestamp>().ok())
         .map(|at| at.as_second() - jiff::Timestamp::now().as_second());
-    if expiry {
-        value["expires_in_seconds"] = json!(seconds);
-    }
     if json {
-        println!("{value}");
-    } else {
-        print!(
-            "{}\t{}\t{}\t{}\t{}",
-            str_field(summary, "provider"),
-            str_field(summary, "kind"),
-            str_field(summary, "label"),
-            str_field(summary, "status"),
-            str_field(summary, "updated_at")
-        );
-        if expiry && let Some(seconds) = seconds {
-            print!("\texpires in {seconds}s");
+        if expiry {
+            println!(
+                "{}",
+                json!({"credential": summary, "expires_in_seconds": seconds})
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(summary).expect("credential serializes")
+            );
         }
-        println!();
+    } else {
+        println!(
+            "{}\t{:?}\t{}\t{:?}\t{}{}",
+            summary.provider,
+            summary.kind,
+            summary.label,
+            summary.status,
+            summary.updated_at,
+            if expiry {
+                seconds.map_or_else(String::new, |n| format!("\texpires in {n}s"))
+            } else {
+                String::new()
+            }
+        );
     }
 }
 async fn auth_set(
@@ -1196,34 +1200,29 @@ async fn auth(
             auth_set(client, endpoint, args, json).await?;
         }
         auth_command::Command::Ls => {
-            for summary in request(endpoint, client.cli_credentials())
-                .await?
-                .into_iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()?
-            {
+            for summary in request(endpoint, client.credentials()).await? {
                 auth_display(&summary, json, false);
             }
         }
         auth_command::Command::Check { provider, label } => {
-            let rows: Vec<_> = request(endpoint, client.cli_credentials())
+            let rows: Vec<_> = request(endpoint, client.credentials())
                 .await?
-                .into_iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|row| {
                     provider
                         .as_ref()
-                        .is_none_or(|provider| row["provider"] == *provider)
-                        && label.as_ref().is_none_or(|label| row["label"] == *label)
+                        .is_none_or(|provider| row.provider == *provider)
+                        && label.as_ref().is_none_or(|label| row.label == *label)
                 })
                 .collect();
             ensure!(!rows.is_empty(), "credential does not exist");
-            let ready = rows.iter().all(|row| row["status"] == "ready");
-            let expired_bedrock = rows
+            let ready = rows
                 .iter()
-                .any(|row| row["provider"] == "amazon-bedrock" && row["status"] == "expired");
+                .all(|row| row.status == swarmy_api_types::CredentialStatus::Ready);
+            let expired_bedrock = rows.iter().any(|row| {
+                row.provider == "amazon-bedrock"
+                    && row.status == swarmy_api_types::CredentialStatus::Expired
+            });
             for summary in rows {
                 auth_display(&summary, json, true);
             }

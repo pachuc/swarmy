@@ -228,16 +228,44 @@ pub struct Image {
     pub id: String,
     pub name: String,
     pub tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<ImageHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ImageHeader {
+    pub size: u64,
+    pub chunk_size: u32,
+    pub root_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Model {
     pub id: String,
     pub provider_id: String,
     pub context_window: u64,
+    pub key: String,
+    pub name: String,
+    pub limit: ModelLimit,
+    pub cost: ModelCost,
+    pub supported_efforts: Vec<ReasoningEffort>,
     #[serde(flatten)]
     #[serde(default)]
     pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ModelLimit {
+    pub context: u64,
+    pub output: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ModelCost {
+    pub input: f64,
+    pub output: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -245,6 +273,10 @@ pub struct Provider {
     pub id: String,
     pub name: String,
     pub status: String,
+    pub api: String,
+    pub credential: String,
+    pub auth_kinds: Vec<String>,
+    pub env_keys: Vec<String>,
     #[serde(flatten)]
     #[serde(default)]
     pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
@@ -278,6 +310,7 @@ pub struct Credential {
     pub created_at: String,
     #[serde(default)]
     pub last_used_at: Option<String>,
+    pub expires_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

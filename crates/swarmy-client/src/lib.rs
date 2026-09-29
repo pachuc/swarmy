@@ -630,7 +630,7 @@ impl Client {
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_models(
+    pub async fn models_filtered(
         &self,
         q: Option<&str>,
         provider: Option<&str>,

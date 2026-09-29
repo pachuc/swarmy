@@ -1,32 +1,5 @@
 use anyhow::{Context, ensure};
 use clap::Subcommand;
-use serde_json::Value;
-
-fn model_row(row: swarmy_api_types::Model) -> Result<Value, serde_json::Error> {
-    let mut value = serde_json::to_value(row)?;
-    value
-        .as_object_mut()
-        .expect("model object")
-        .remove("provider_id");
-    value
-        .as_object_mut()
-        .expect("model object")
-        .remove("context_window");
-    Ok(value)
-}
-fn provider_row(row: swarmy_api_types::Provider) -> Result<Value, serde_json::Error> {
-    let mut value = serde_json::to_value(row)?;
-    value
-        .as_object_mut()
-        .expect("provider object")
-        .remove("name");
-    value
-        .as_object_mut()
-        .expect("provider object")
-        .remove("status");
-    Ok(value)
-}
-
 #[derive(Subcommand)]
 pub enum Command {
     /// List available models.
@@ -63,32 +36,22 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             }
             let rows = swarmy_client::api_client::call(
                 &endpoint,
-                client.cli_models(None, provider.as_deref(), reasoning),
+                client.models_filtered(None, provider.as_deref(), reasoning),
             )
             .await?;
-            print_models(
-                &rows
-                    .into_iter()
-                    .map(model_row)
-                    .collect::<Result<Vec<_>, _>>()?,
-                json,
-            )?;
+            print_models(&rows, json)?;
         }
         Command::Show { model } => {
             let (provider, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
             known_provider(&client, &endpoint, provider).await?;
             let rows = swarmy_client::api_client::call(
                 &endpoint,
-                client.cli_models(Some(id), Some(provider), false),
+                client.models_filtered(Some(id), Some(provider), false),
             )
             .await?;
-            let rows = rows
-                .into_iter()
-                .map(model_row)
-                .collect::<Result<Vec<_>, _>>()?;
             let row = rows
                 .iter()
-                .find(|row| row["key"] == model)
+                .find(|row| row.key == model)
                 .with_context(|| format!("unknown model: {model}"))?;
             if json {
                 println!("{}", serde_json::to_string(row)?);
@@ -99,42 +62,24 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
         Command::Search { pattern } => {
             let rows = swarmy_client::api_client::call(
                 &endpoint,
-                client.cli_models(Some(&pattern), None, false),
+                client.models_filtered(Some(&pattern), None, false),
             )
             .await?;
             ensure!(!rows.is_empty(), "no models found matching {pattern:?}");
-            print_models(
-                &rows
-                    .into_iter()
-                    .map(model_row)
-                    .collect::<Result<Vec<_>, _>>()?,
-                json,
-            )?;
+            print_models(&rows, json)?;
         }
         Command::Providers => {
-            let rows = swarmy_client::api_client::call(&endpoint, client.cli_providers()).await?;
+            let rows = swarmy_client::api_client::call(&endpoint, client.providers()).await?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(
-                        &rows
-                            .into_iter()
-                            .map(provider_row)
-                            .collect::<Result<Vec<_>, _>>()?
-                    )?
-                );
+                println!("{}", serde_json::to_string(&rows)?);
             } else {
                 for row in rows {
-                    let row = provider_row(row)?;
-                    let api = text(&row["api"]);
                     line(&format!(
                         "{}  {}  credential: {}",
-                        text(&row["id"]),
-                        api,
-                        text(&row["credential"])
+                        row.id, row.api, row.credential
                     ));
-                    line(&format!("  Auth: {}", joined(&row["auth_kinds"])));
-                    let env = joined(&row["env_keys"]);
+                    line(&format!("  Auth: {}", row.auth_kinds.join(", ")));
+                    let env = row.env_keys.join(", ");
                     line(&format!(
                         "  Env: {}",
                         if env.is_empty() { "-" } else { &env }
@@ -150,45 +95,39 @@ async fn known_provider(
     endpoint: &str,
     id: &str,
 ) -> anyhow::Result<()> {
-    let providers = swarmy_client::api_client::call(endpoint, client.cli_providers()).await?;
+    let providers = swarmy_client::api_client::call(endpoint, client.providers()).await?;
     ensure!(
         providers.iter().any(|provider| provider.id == id),
         "unknown provider: {id}"
     );
     Ok(())
 }
-fn text(value: &Value) -> String {
-    value
-        .as_str()
-        .map_or_else(|| value.to_string(), str::to_owned)
-}
-fn joined(value: &Value) -> String {
-    value
-        .as_array()
-        .map(|items| items.iter().map(text).collect::<Vec<_>>().join(", "))
-        .unwrap_or_default()
-}
-fn print_models(rows: &[Value], json: bool) -> anyhow::Result<()> {
+fn print_models(rows: &[swarmy_api_types::Model], json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string(rows)?);
         return Ok(());
     }
     for row in rows {
-        line(&text(&row["key"]));
-        line(&format!("  {}", text(&row["name"])));
+        line(&row.key);
+        line(&format!("  {}", row.name));
         line("  CONTEXT     OUTPUT      INPUT $/M    OUTPUT $/M");
         line(&format!(
             "  {:<11} {:<11} {:<12} {}",
-            row["limit"]["context"],
-            if row["limit"]["output"].is_null() {
-                "unknown".into()
-            } else {
-                row["limit"]["output"].to_string()
-            },
-            row["cost"]["input"],
-            row["cost"]["output"]
+            row.limit.context,
+            row.limit
+                .output
+                .map_or_else(|| "unknown".into(), |n| n.to_string()),
+            row.cost.input,
+            row.cost.output
         ));
-        line(&format!("  Efforts: {}", joined(&row["supported_efforts"])));
+        line(&format!(
+            "  Efforts: {}",
+            row.supported_efforts
+                .iter()
+                .map(|effort| format!("{effort:?}").to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     Ok(())
 }

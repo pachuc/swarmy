@@ -679,6 +679,8 @@ async fn images(
                 id: v.manifest_id.to_string(),
                 name: v.name,
                 tag: v.tag.0,
+                header: None,
+                scratch: None,
             })
             .collect(),
     ))
@@ -693,10 +695,28 @@ async fn show_image(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "image_not_found"))?;
+    let record = swarmy_core::ImageRecord {
+        name: name.clone(),
+        tag: ImageTag(tag.clone()),
+        manifest_id: manifest,
+    };
+    let header = state
+        .store
+        .get_manifest(manifest)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing"))?;
+    let scratch = state.store.image_scratch(&record).await.map_err(storage)?;
     Ok(Json(api::Image {
         id: manifest.to_string(),
         name,
         tag,
+        header: Some(api::ImageHeader {
+            size: header.size,
+            chunk_size: header.chunk_size,
+            root_hash: header.root_hash.to_string(),
+        }),
+        scratch: Some(scratch),
     }))
 }
 fn model(
@@ -708,11 +728,9 @@ fn model(
         .as_object()
         .expect("catalog model is an object")
         .clone();
-    catalog.remove("id");
-    catalog.insert(
-        "key".into(),
-        serde_json::json!(format!("{}/{}", provider.id, entry.id)),
-    );
+    for field in ["id", "name", "key", "limit", "cost", "supported_efforts"] {
+        catalog.remove(field);
+    }
     catalog.insert("provider".into(), serde_json::json!(provider.id));
     catalog.insert(
         "effective_api".into(),
@@ -730,6 +748,21 @@ fn model(
         id: entry.id.clone(),
         provider_id: provider.id.clone(),
         context_window: entry.limit.context,
+        key: format!("{}/{}", provider.id, entry.id),
+        name: entry.name.clone(),
+        limit: api::ModelLimit {
+            context: entry.limit.context,
+            output: entry.limit.output,
+        },
+        cost: api::ModelCost {
+            input: entry.cost.input,
+            output: entry.cost.output,
+        },
+        supported_efforts: entry
+            .supported_efforts()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         catalog: catalog.into_iter().collect(),
     }
 }
@@ -800,16 +833,14 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 status: "available".into(),
-                catalog: [
-                    ("api".into(), serde_json::json!(p.api)),
-                    ("auth_kinds".into(), serde_json::json!(p.auth_kinds)),
-                    ("env_keys".into(), serde_json::json!(p.env_keys)),
-                    (
-                        "credential_env_keys".into(),
-                        serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
-                    ),
-                    ("credential".into(), serde_json::json!("unknown")),
-                ]
+                api: format!("{:?}", p.api),
+                credential: "unknown".into(),
+                auth_kinds: p.auth_kinds.clone(),
+                env_keys: p.env_keys.clone(),
+                catalog: [(
+                    "credential_env_keys".into(),
+                    serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
+                )]
                 .into(),
             })
             .collect(),
@@ -842,6 +873,7 @@ fn credential(value: swarmy_store::credentials::CredentialSummary) -> api::Crede
         updated_at: value.updated_at.to_string(),
         created_at: value.created_at.to_string(),
         last_used_at: value.last_used_at.map(|at| at.to_string()),
+        expires_at: value.expires_at.map(|at| at.to_string()),
     }
 }
 async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Credential>> {
