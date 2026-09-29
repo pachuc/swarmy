@@ -197,6 +197,7 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
         main: false,
         agent_name: None,
         previous_session: None,
+        state_since: None,
     }
 }
 pub(crate) async fn resolve_selection(
@@ -246,6 +247,7 @@ async fn session_with_next(
             .map(|id| id.to_string());
     }
     result.archived = result.next_session.is_some();
+    result.state_since = state.store.session_state_since(record.session_id).await.map_err(storage)?.map(|at| at.to_string());
     result.previous_session = state
         .store
         .previous_session(record.session_id)

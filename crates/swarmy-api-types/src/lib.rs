@@ -205,6 +205,8 @@ pub struct Session {
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_since: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

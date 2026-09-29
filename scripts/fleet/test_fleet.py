@@ -54,10 +54,10 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         successor = os.environ.get('SUCCESSOR', '')
         if successor and ':' in successor:
             old, new = successor.split(':', 1)
-            print(json.dumps({'session_id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new}))
-            print(json.dumps({'session_id':new,'state':state,'state_since':since,'agent_name':'worker-1'}))
+            print(json.dumps({'id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new}))
+            print(json.dumps({'id':new,'state':state,'state_since':since,'agent_name':'worker-1'}))
         else:
-            print(json.dumps({'session_id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
+            print(json.dumps({'id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
     elif rest[:2] == ['session', 'show']:
         sid = rest[2] if len(rest) > 2 else ''
         if sid not in ('01AAAA', '01BBBB'):
@@ -665,8 +665,8 @@ class FleetTests(unittest.TestCase):
         mod.__dict__["__file__"] = str(Path("scripts/fleet/fleet").resolve())
         exec(compile(source, "fleet", "exec"), mod.__dict__)
         sessions = {
-            "01AAAA": {"session_id": "01AAAA", "state": "completed", "next_session": "01BBBB"},
-            "01BBBB": {"session_id": "01BBBB", "state": "idle"},
+            "01AAAA": {"id": "01AAAA", "state": "completed", "next_session": "01BBBB"},
+            "01BBBB": {"id": "01BBBB", "state": "idle"},
         }
         self.assertEqual(mod.current_session({}, "01AAAA", sessions), "01BBBB")
         self.assertEqual(mod.current_session({}, "01BBBB", sessions), "01BBBB")
