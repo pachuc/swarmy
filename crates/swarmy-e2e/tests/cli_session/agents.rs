@@ -213,13 +213,13 @@ async fn inspect_agents(
     let expected_session = serde_json::json!({
         "id": first, "state": stored_session.state,
         "head_sequence": stored_session.head_seq, "agent_name": "tommy",
-        "main": true, "archived": false,
+        "main": true,
         "resolved": {"provider": "fake", "model": "scripted", "effort": "medium"},
     });
     let actual_session = serde_json::json!({
         "id": rows[0]["id"], "state": rows[0]["state"],
         "head_sequence": rows[0]["head_sequence"], "agent_name": rows[0]["agent_name"],
-        "main": rows[0]["main"], "archived": rows[0]["archived"],
+        "main": rows[0]["main"],
         "resolved": rows[0]["resolved"],
     });
     assert_eq!(actual_session, expected_session);
