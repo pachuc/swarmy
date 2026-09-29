@@ -748,7 +748,7 @@ async fn images(
             .map_err(storage)?
             .into_iter()
             .map(|v| api::Image {
-                id: v.manifest_id.to_string(),
+                manifest_id: v.manifest_id.to_string(),
                 name: v.name,
                 tag: v.tag.0,
                 header: None,
@@ -780,7 +780,7 @@ async fn show_image(
         .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing"))?;
     let scratch = state.store.image_scratch(&record).await.map_err(storage)?;
     Ok(Json(api::Image {
-        id: manifest.to_string(),
+        manifest_id: manifest.to_string(),
         name,
         tag,
         header: Some(views::image_header(&header)),

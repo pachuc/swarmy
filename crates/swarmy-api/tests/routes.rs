@@ -123,7 +123,7 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(images[0].id, shown.id);
+    assert_eq!(images[0].manifest_id, shown.manifest_id);
     assert_eq!(images[0].name, shown.name);
     assert_eq!(images[0].tag, shown.tag);
     assert!(

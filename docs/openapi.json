@@ -3589,7 +3589,7 @@
       "Image": {
         "type": "object",
         "required": [
-          "id",
+          "manifest_id",
           "name",
           "tag"
         ],
@@ -3604,7 +3604,7 @@
               }
             ]
           },
-          "id": {
+          "manifest_id": {
             "type": "string"
           },
           "name": {

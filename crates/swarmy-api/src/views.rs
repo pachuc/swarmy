@@ -896,7 +896,7 @@ mod tests {
             chunks_uploaded: 0,
         };
         let shown = api::Image {
-            id: "m".into(),
+            manifest_id: "m".into(),
             name: "base".into(),
             tag: "dev".into(),
             header: Some(image_header(&manifest)),

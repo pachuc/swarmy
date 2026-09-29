@@ -100,6 +100,10 @@ GET /v1/providers removed the required property `items/status` from the response
 # `image show` printed hex. Both now share the typed `ImageHeader` with a
 # hex root hash; the CLI is the only reader and was updated in lockstep.
 POST /v1/images/uploads changes header/root_hash from an array to a hex string
+# 2026-09-29: The image manifest id is `manifest_id` everywhere, matching the
+# build event. Readers of `id` on image show and ls switch to `manifest_id`.
+GET /v1/images removed the required property `items/id` from the response with the `200` status
+GET /v1/images/{name}/{tag} removed the required property `id` from the response with the `200` status
 
 # 2026-09-29: Session archived flag removed. Readers derive it from next_session being present; the field duplicated the successor link.
 GET /v1/sessions removes archived from response properties

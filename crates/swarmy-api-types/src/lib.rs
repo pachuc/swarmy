@@ -338,7 +338,7 @@ pub struct Message {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Image {
-    pub id: String,
+    pub manifest_id: String,
     pub name: String,
     pub tag: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1524,7 +1524,7 @@ mod tests {
             check!(MessageRole, role);
         }
         check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
-        check!(Image, {"id":"i","name":"base","tag":"dev"});
+        check!(Image, {"manifest_id":"i","name":"base","tag":"dev"});
         for api in [
             "AnthropicMessages",
             "OpenAiResponses",

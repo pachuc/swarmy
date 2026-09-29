@@ -531,7 +531,7 @@ async fn image(
                 for image in page {
                     print(
                         &image,
-                        &format!("{}:{} {}", image.name, image.tag, image.id),
+                        &format!("{}:{} {}", image.name, image.tag, image.manifest_id),
                         json,
                     );
                     after = Some(format!("{}:{}", image.name, image.tag));
@@ -554,7 +554,7 @@ async fn image(
                 &value,
                 &format!(
                     "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
-                    value.id,
+                    value.manifest_id,
                     header.size,
                     header.chunk_size,
                     header.root_hash,
