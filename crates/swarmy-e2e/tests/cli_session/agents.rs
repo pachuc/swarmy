@@ -157,15 +157,15 @@ async fn inspect_agents(
     for expected in [
         "Build things",
         &format!("main_session={first}"),
-        &format!("session={first} state=Idle computer_deleted=false main=true"),
-        &format!("session={second} state=Idle computer_deleted=false main=false"),
+        &format!("session={first} state=idle computer_deleted=false main=true"),
+        &format!("session={second} state=idle computer_deleted=false main=false"),
         "placement_epoch=-",
         "sandbox_state=unknown",
         "last_snapshot=-",
         "age_seconds=-",
         &first.to_string(),
         &second.to_string(),
-        "state=Idle",
+        "state=idle",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
@@ -285,7 +285,7 @@ async fn close_and_delete(
             .await,
     ))
     .unwrap();
-    assert_eq!(deleted["event"], "agent_deleted");
+    assert_eq!(deleted["name"], "second");
     let retained = fixture.store.fetch_session(first).await.unwrap().unwrap();
     assert!(retained.computer_deleted);
     assert_eq!(
@@ -405,7 +405,7 @@ async fn json_chat_reads_prompts_and_retains_named_sessions_on_eof() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(rows[0]["agent_name"], "tommy");
-        assert!(rows.iter().any(|row| row["event"] == "session_event"));
+        assert!(rows.iter().any(|row| row.get("state_changed").is_some()));
         let records = fixture
             .store
             .list_sessions_by_agent(agent.agent_id, None, 64)
@@ -740,7 +740,17 @@ async fn check_call_status(fixture: &Fixture, placement: &swarmy_core::Placement
         ))
         .unwrap();
         assert_eq!(shown["sandbox_state"], expected);
-        assert_eq!(shown["call_status"], serde_json::to_value(&status).unwrap());
+        assert_eq!(
+            shown["call_status"],
+            serde_json::json!({
+                "node_id": status.node_id.to_string(),
+                "epoch": status.epoch,
+                "holder_session_id": status.holder_session_id.map(|id| id.to_string()),
+                "queued_calls": status.queued_calls,
+                "observed_at": status.observed_at.to_string(),
+                "expires_at": status.expires_at.to_string(),
+            })
+        );
         let text = success(fixture.output(&["agent", "show", "placed"]).await);
         for field in [
             format!("sandbox_state={expected}"),

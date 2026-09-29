@@ -257,7 +257,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
             );
             let screen = terminal.parser.screen().contents();
             if deleted {
-                assert!(screen.contains("agent_deleted"));
+                assert!(screen.contains("\"name\":\"tommy\""));
             } else {
                 assert!(screen.contains("deletion cancelled"));
             }
@@ -324,7 +324,7 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         assert!(listing.status.success());
         let listing = String::from_utf8(listing.stdout).unwrap();
         let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["id"] == old.to_string()).unwrap();
-        assert_eq!(archived["archived"], true);
+        assert!(archived.get("archived").is_none());
         assert_eq!(archived["next_session"], new.to_string());
         assert!(fixture.output(&["session", "show", &old.to_string(), "--json"]).await.status.success());
         chat.type_text("\x1b");

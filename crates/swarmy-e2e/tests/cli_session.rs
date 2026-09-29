@@ -608,12 +608,12 @@ async fn idle_event_enables_input_without_polling_and_history_still_paginates() 
         assert!(shown.status.success());
         let shown = String::from_utf8(shown.stdout).unwrap();
         let mut lines = shown.lines();
-        let selection: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-        assert_eq!(selection["event"], "session_selection");
-        assert!(selection["resolved"]["provider"].is_string());
-        let usage: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-        assert_eq!(usage["cost_dollars"], "0.0000");
-        assert!(usage["session_usage"]["usage"]["input_tokens"].is_u64());
+        let record: swarmy_api_types::Session =
+            serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert!(record.resolved.as_ref().unwrap().provider.len() > 0);
+        let usage = record.usage.expect("session detail carries usage");
+        assert_eq!(usage.cost_dollars, "0.0000");
+        assert_eq!(usage.input_tokens, 0);
         let events: Vec<Event> = lines
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
@@ -808,7 +808,7 @@ async fn run_json_emits_only_machine_readable_records() {
         );
         assert!(
             rows.iter()
-                .any(|row| row["value"]["state_changed"]["to"] == "idle")
+                .any(|row| row["state_changed"]["to"] == "idle")
         );
         assert_eq!(rows.last().unwrap()["outcome"], "completed");
     })
