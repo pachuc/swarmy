@@ -106,7 +106,7 @@ async fn sequential_readahead_reduces_foreground_fetches() {
 /// Read every chunk through one device. On the prefetching device, model
 /// work performed by the consumer between chunks: wait for observable
 /// progress rather than depending on a fixed scheduler delay.
-async fn read_all_chunks(device: &VolumeDevice, ahead: u64) {
+async fn read_all_chunks(device: &Arc<VolumeDevice>, ahead: u32) {
     for index in 0..16_u8 {
         assert_eq!(
             device

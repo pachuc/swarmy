@@ -143,7 +143,7 @@ impl Scheduler {
             return Ok(false);
         };
         let wait = self.store.inference_wait(session_id).await?;
-        if self.failure_pending(session, &wait).await? || self.wait_expired(&wait) {
+        if self.failure_pending(session, wait.as_ref()).await? || self.wait_expired(wait.as_ref()) {
             return Ok(false);
         }
         Ok(self
@@ -164,7 +164,7 @@ impl Scheduler {
     async fn failure_pending(
         &self,
         session: &swarmy_core::SessionRecord,
-        wait: &Option<swarmy_store::InferenceWait>,
+        wait: Option<&swarmy_store::InferenceWait>,
     ) -> Result<bool, anyhow::Error> {
         if session.head_seq == 0 {
             return Ok(false);
@@ -176,14 +176,14 @@ impl Scheduler {
             .first()
             .is_some_and(|event| {
                 matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
-                    if wait.as_ref().is_none_or(|wait| wait.last_failure_seq != *seq))
+                    if wait.is_none_or(|wait| wait.last_failure_seq != *seq))
             }))
     }
 
     /// Whether the inference wait outlasted the maximum gateway wait and the
     /// session must run to observe the timeout.
-    fn wait_expired(&self, wait: &Option<swarmy_store::InferenceWait>) -> bool {
-        wait.as_ref().is_some_and(|wait| {
+    fn wait_expired(&self, wait: Option<&swarmy_store::InferenceWait>) -> bool {
+        wait.is_some_and(|wait| {
             wait.since
                 .checked_add(self.config.max_inference_wait)
                 .is_ok_and(|limit| limit <= Timestamp::now())
