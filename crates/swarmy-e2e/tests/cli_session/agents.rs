@@ -255,7 +255,7 @@ async fn close_and_delete(
         fixture.output(&["session", "close", &id, "--json"]).await,
     ))
     .unwrap();
-    assert_eq!(closed["event"], "session_closed");
+    assert_eq!(closed["closed"], true);
     let record = fixture
         .store
         .fetch_session(ephemeral)
