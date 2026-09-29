@@ -145,9 +145,7 @@ const ADVERTISEMENT_TTL: Duration = Duration::from_secs(90);
 
 async fn advertise(store: &Store, served: &[String]) -> Result<()> {
     let record = GatewayProvider {
-        expires_at: Timestamp::now()
-            .checked_add(ADVERTISEMENT_TTL)
-            .ok_or(Error::TimeOutOfRange)?,
+        expires_at: Timestamp::now().checked_add(ADVERTISEMENT_TTL)?,
         reason: "credentials resolved".into(),
     };
     let entries = match swarmy_config::Keyring::load() {
@@ -180,7 +178,7 @@ async fn refresh(
     messages: &mut futures::stream::SelectAll<
         futures::stream::BoxStream<
             'static,
-            Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+            std::result::Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
         >,
     >,
     subscriptions: &mut BTreeSet<String>,
@@ -277,9 +275,7 @@ impl Gateway {
         };
         loop {
             let now = Timestamp::now();
-            claim.expires_at = now
-                .checked_add(self.ack_wait)
-                .ok_or(Error::TimeOutOfRange)?;
+            claim.expires_at = now.checked_add(self.ack_wait)?;
             if self.store.start_inference(&claim, now).await? {
                 break;
             }
@@ -328,12 +324,7 @@ impl Gateway {
                 _ = heartbeat.tick() => {
                     message.extend_deadline().await?;
                     let now = Timestamp::now();
-                    let renewal = InferenceClaim {
-                        expires_at: now
-                            .checked_add(self.ack_wait)
-                            .ok_or(Error::TimeOutOfRange)?,
-                        ..claim.clone()
-                    };
+                    let renewal = InferenceClaim { expires_at: now.checked_add(self.ack_wait)?, ..claim.clone() };
                     if !self.store.start_inference(&renewal, now).await? {
                         if self.completed(job.request_id).await? { return Ok(message.acknowledge().await?); }
                         return Err(Error::Internal("inference claim was replaced"));

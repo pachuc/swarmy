@@ -98,7 +98,7 @@ impl Gateway {
         job: &InferenceJob,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
+    ) -> std::result::Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         request.no_cache = job.summary;
@@ -300,9 +300,7 @@ impl Gateway {
             base.saturating_add(Duration::from_millis(jitter))
                 .min(self.max_backoff)
         });
-        let until = Timestamp::now()
-            .checked_add(delay)
-            .ok_or(crate::Error::TimeOutOfRange)?;
+        let until = Timestamp::now().checked_add(delay)?;
         if !blocked {
             // Name the entry in the stored reason so waiting sessions show
             // which key is limited; the unlabeled record keeps the raw error.

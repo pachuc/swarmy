@@ -87,14 +87,12 @@ async fn create_session(
                 .map(|image| format!("{}:{}", image.name, image.tag))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(Error::Message(
-                format!(
-                    "image {} not found; registered images: {known}",
-                    image
-                        .as_ref()
-                        .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
-                ),
-            ));
+            Err(Error::Message(format!(
+                "image {} not found; registered images: {known}",
+                image
+                    .as_ref()
+                    .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
+            )))
         }
         other => Ok(other?),
     }
@@ -152,7 +150,7 @@ async fn apply_session_route(
     route: Option<&str>,
 ) -> Result<api::Session> {
     if route.is_some() && session.route.as_deref() != route {
-        return crate::api_client::call(
+        return Ok(crate::api_client::call(
             endpoint,
             client.set_session_route(
                 &session.id,
@@ -162,7 +160,7 @@ async fn apply_session_route(
                 },
             ),
         )
-        .await;
+        .await?);
     }
     Ok(session)
 }

@@ -28,8 +28,8 @@ pub enum Error {
     Join(#[from] tokio::task::JoinError),
     #[error(transparent)]
     Semaphore(#[from] tokio::sync::AcquireError),
-    #[error("timestamp out of range")]
-    TimeOutOfRange,
+    #[error(transparent)]
+    Jiff(#[from] jiff::Error),
     #[error("{0}")]
     Configuration(&'static str),
     /// An internal invariant broke: the work stream ended, a stored
