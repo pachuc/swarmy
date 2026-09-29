@@ -276,7 +276,10 @@ impl RemoteProfile {
 
     /// Apply stack endpoints and its default image, preserving credentials and namespaces.
     pub fn apply(&self, settings: &mut Settings) {
-        settings.store.cluster_file.clone_from(&self.fdb_cluster_file);
+        settings
+            .store
+            .cluster_file
+            .clone_from(&self.fdb_cluster_file);
         settings.bus.nats_url.clone_from(&self.nats_url);
         settings.s3.endpoint.clone_from(&self.s3_endpoint);
         settings.api.url.clone_from(&self.api_url);

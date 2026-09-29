@@ -109,7 +109,10 @@ async fn dev_up_run_recover_reconfigure_and_down() {
             default_image: Some("fixture:test".into()),
             ..Default::default()
         },
-        store: swarmy_config::StoreSettings { directory: prefix.clone(), ..Default::default() },
+        store: swarmy_config::StoreSettings {
+            directory: prefix.clone(),
+            ..Default::default()
+        },
         bus: swarmy_config::BusSettings {
             prefix: prefix.clone(),
             ..Default::default()

@@ -91,7 +91,10 @@ impl<'a> Options<'a> {
                 system_prompt: settings.context.system_prompt.clone(),
                 ..swarmy_config::ContextSettings::default()
             },
-            store: swarmy_config::StoreSettings { directory: settings.store.directory.clone(), ..Default::default() },
+            store: swarmy_config::StoreSettings {
+                directory: settings.store.directory.clone(),
+                ..Default::default()
+            },
             bus: swarmy_config::BusSettings {
                 prefix: settings.bus.prefix.clone(),
                 ..swarmy_config::BusSettings::default()

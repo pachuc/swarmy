@@ -35,7 +35,10 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         fs::create_dir(dir.path().join(".swarmy")).unwrap();
         let settings = swarmy_config::Settings {
-            store: swarmy_config::StoreSettings { cluster_file: cluster.clone().into(), directory: format!("auth-test-{}", ulid::Ulid::generate()), ..Default::default() },
+            store: swarmy_config::StoreSettings {
+                cluster_file: cluster.clone().into(),
+                directory: format!("auth-test-{}", ulid::Ulid::generate()),
+            },
             api: swarmy_config::ApiSettings {
                 url: Some(endpoint),
                 token: "auth-test-token".into(),
@@ -67,7 +70,7 @@ impl Fixture {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
                 let store = swarmy_store::Store::open(
-                    Some(&cluster),
+                    Some(std::path::Path::new(&cluster)),
                     Some(&[directory]),
                     std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
                 )

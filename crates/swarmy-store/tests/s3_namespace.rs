@@ -72,7 +72,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     // S3 last-modified has second precision and the collector truncates its cutoff.
     tokio::time::sleep(Duration::from_secs(3)).await;
     let policy = GarbageCollection {
-        grace: Duration::from_secs(1),
+        grace_secs: Duration::from_secs(1),
         ..GarbageCollection::default()
     };
     let dry = collect(store, objects.clone(), policy, true).await.unwrap();

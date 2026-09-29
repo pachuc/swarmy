@@ -48,7 +48,7 @@ impl Fixture {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
                 let store = swarmy_store::Store::open(
-                    Some(&cluster),
+                    Some(std::path::Path::new(&cluster)),
                     Some(&[format!("models-test-{}", ulid::Ulid::generate())]),
                     std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
                 )

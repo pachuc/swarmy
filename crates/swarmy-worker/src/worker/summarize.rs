@@ -1268,9 +1268,10 @@ mod pi_compaction_tests {
         let start = split_turn_start(&history, cut).expect("cut must split the active turn");
         assert_eq!(start, 2);
         assert!(cut > start);
-        let settings = swarmy_llm::GenerationSettings::default();
-        let config = crate::config::Config::from_env().unwrap();
-        let prefix = prefix_summary_request(&config, "fake", &history[start..cut], settings);
+        let generation = swarmy_llm::GenerationSettings::default();
+        let loaded = swarmy_config::Settings::load().unwrap().settings;
+        let config = crate::config::Config::from_settings(&loaded).unwrap();
+        let prefix = prefix_summary_request(&config, "fake", &history[start..cut], generation);
         assert_eq!(prefix.settings.max_output_tokens, Some(8_192));
         let Part::Text { text } = &prefix.messages[0].parts[0] else {
             panic!("prefix text")

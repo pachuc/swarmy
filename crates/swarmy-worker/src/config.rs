@@ -26,11 +26,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self> {
-        let settings = swarmy_config::Settings::load()?.settings;
-        Self::from_settings(&settings)
-    }
-
     pub fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
         let catalog = settings.catalog()?;
         let provider = settings.selection.provider.clone();

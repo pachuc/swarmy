@@ -338,7 +338,7 @@ fn start_snapshots(
     operations: Arc<tokio::sync::Mutex<()>>,
     policy: swarmy_config::VolumeSnapshots,
 ) -> crate::SnapshotLoop {
-    crate::SnapshotLoop::spawn(policy.period, move || {
+    crate::SnapshotLoop::spawn(policy.period_secs, move || {
         let operations = operations.clone();
         let writer = writer.clone();
         let device = device.clone();

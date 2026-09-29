@@ -90,7 +90,7 @@ pub async fn start(
         if grace == 0 {
             return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
         }
-        policy.grace = std::time::Duration::from_secs(grace);
+        policy.grace_secs = std::time::Duration::from_secs(grace);
     }
     let (run, lease, cutoff, started) = match swarmy_volume::gc::begin_with_owner(
         &state.store,

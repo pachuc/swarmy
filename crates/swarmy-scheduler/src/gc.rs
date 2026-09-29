@@ -13,7 +13,7 @@ pub async fn run(
     metering: Metering,
 ) {
     loop {
-        tokio::time::sleep(policy.interval).await;
+        tokio::time::sleep(policy.interval_secs).await;
         match swarmy_volume::gc::collect(store, objects.clone(), policy, false).await {
             Ok(run) => tracing::info!(?run, "chunk collection finished"),
             Err(VolumeError::Store(StoreError::Fence(

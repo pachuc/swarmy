@@ -6,7 +6,7 @@ use std::{
 };
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{AppendMessage, AppendedMessage, CreateSession, ImageRef, Session};
-use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
+use swarmy_bus::{Bus, LiveFeed};
 use swarmy_core::{
     InferenceSelection, Message, MessageId, MessageRole, Part, SessionId, SessionState,
 };
@@ -72,8 +72,8 @@ async fn setup(image: &str) -> BenchFixture {
     let opened = Store::open_store(&settings).await.unwrap();
     let store = opened.store;
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let state = AppState::new(
         store.clone(),
         bus.clone(),
