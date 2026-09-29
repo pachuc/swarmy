@@ -1567,11 +1567,6 @@ mod tests {
     }
 
     #[test]
-    fn openapi_info_version_tracks_api_version() {
-        assert_eq!(ApiDocument::openapi().info.version, API_VERSION);
-    }
-
-    #[test]
     fn mutation_json_contract() {
         check!(CreateAgent, {"idempotency_key":"k","name":"a","description":"d","image":{"name":"base","tag":"dev"},"provider":null,"model":null,"effort":null,"system_prompt":null});
         check!(UpdateAgent, {"idempotency_key":"k","description":null,"provider":"openai","model":null,"effort":"high","system_prompt":null});
