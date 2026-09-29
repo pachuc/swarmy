@@ -17,12 +17,14 @@ rustix = { workspace = true, features = ["process"] }
 swarmy-bus.workspace = true
 ulid.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
 swarmy-store.workspace = true
 swarmy-api-types.workspace = true
 swarmy-volume.workspace = true
 swarmy-sandbox.workspace = true
+swarmy-image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

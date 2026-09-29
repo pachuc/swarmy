@@ -1,8 +1,8 @@
 use crate::vol_command::Command;
-use anyhow::{Context, Result};
 use std::{fmt::Write, sync::Arc};
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
+use swarmyd::{ErrorContext as _, Result};
 
 /// Developer volume tools, served from the node daemon: attach and snapshot
 /// need local devices and the store, neither of which the client links.

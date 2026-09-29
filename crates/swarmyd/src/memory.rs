@@ -1,8 +1,8 @@
-use anyhow::{Context, Result, ensure};
 use std::{collections::HashMap, sync::Arc};
 use swarmy_core::{ManifestId, MemoryRequest, NodeId, Sandbox, VolumeId};
 use swarmy_sandbox::{ExecRequest, RuncRuntime};
 use swarmy_store::Store;
+use swarmyd::{ErrorContext as _, Result, node_ensure as ensure};
 use tokio::sync::Mutex;
 
 type CacheKey = (swarmy_core::AgentId, u64, ManifestId, u64, String, usize);
@@ -12,7 +12,7 @@ pub fn spawn(
     store: Store,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
-) -> tokio::task::JoinHandle<Result<(), swarmy_bus::Error>> {
+) -> tokio::task::JoinHandle<std::result::Result<(), swarmy_bus::Error>> {
     let memory = Memory::new(store, runtime, node);
     tokio::spawn(async move {
         tokio::try_join!(

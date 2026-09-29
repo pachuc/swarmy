@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::{
     sync::Arc,
@@ -11,6 +10,7 @@ use swarmy_core::{
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
 use swarmy_store::{Store, StoreError};
+use swarmyd::{Error, ErrorContext as _, Result, node_ensure as ensure};
 use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
@@ -60,7 +60,7 @@ async fn serve(
                         result = async {
                             loop {
                                 tokio::time::sleep(ack_wait / 3).await;
-                                if let Err(error) = message.extend_deadline().await { break Err(anyhow::Error::from(error)); }
+                                if let Err(error) = message.extend_deadline().await { break Err(Error::from(error)); }
                             }
                         } => result,
                     };
@@ -86,7 +86,7 @@ async fn serve(
                             message.negative_acknowledge(Some(Duration::from_secs(2))).await?;
                         }
                     }
-                    Ok::<_, anyhow::Error>(())
+                    Ok::<_, Error>(())
                 });
             }
             Some(result) = calls.join_next(), if !calls.is_empty() => { result??; }
@@ -98,16 +98,15 @@ pub(crate) fn placement_refusal(
     current: Option<&PlacementRecord>,
     dispatched: &PlacementRecord,
     node: NodeId,
-) -> Option<anyhow::Error> {
+) -> Option<Error> {
     current
         .filter(|placement| placement.node_id != node)
         .or_else(|| (dispatched.node_id != node).then_some(dispatched))
         .map(|placement| {
-            anyhow::anyhow!(
+            Error::Message(format!(
                 "agent is placed on another node {} at epoch {}",
-                placement.node_id,
-                placement.epoch
-            )
+                placement.node_id, placement.epoch
+            ))
         })
 }
 
@@ -144,7 +143,7 @@ pub async fn execute(
             return Err(error.into());
         }
     };
-    anyhow::ensure!(claimed, "tool call already claimed");
+    ensure!(claimed, "tool call already claimed");
     let _activity = swarmy_volume::priority::ToolActivity::begin();
     tokio::select! {
         result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
@@ -168,7 +167,7 @@ async fn run(
             .get_agent(claim.placement.agent_id)
             .await?
             .context("agent missing")?;
-        anyhow::ensure!(
+        ensure!(
             store.image_display(&agent.image).await?,
             "display tool requires a display image"
         );
@@ -421,7 +420,7 @@ async fn stop_result_process(
         serde_json::json!({"process_id": process_id}),
     )?);
     let (exit, _, stderr) = exec(runtime, sandbox, request(&arguments, epoch, "")).await?;
-    anyhow::ensure!(
+    ensure!(
         exit.exit_code == 0 && !exit.timed_out,
         "process stop failed: {stderr}"
     );
@@ -600,7 +599,7 @@ pub async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -
         request(&arguments, placement.epoch, ""),
     )
     .await?;
-    anyhow::ensure!(
+    ensure!(
         exit.exit_code == 0 && !exit.timed_out,
         "process listing failed: {stderr}"
     );

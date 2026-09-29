@@ -2,9 +2,9 @@
 //! This runs in the newly built binary while the old daemon still owns the runtime.
 use std::{path::Path, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, bail, ensure};
 use swarmy_core::{AgentId, ExecOutput, ExecRequest, NodeId, Sandbox};
 use swarmy_store::{Store, blob::MemoryBlobStore};
+use swarmyd::{ErrorContext as _, Result, node_bail as bail, node_ensure as ensure};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,

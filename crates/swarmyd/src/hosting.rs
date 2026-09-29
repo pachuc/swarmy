@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -10,6 +9,7 @@ use swarmy_core::{
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
+use swarmyd::{Error, ErrorContext as _, Result, node_bail as bail, node_ensure as ensure};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 struct Call {
@@ -225,11 +225,11 @@ impl Hosting {
         let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
         let placement = match self.store.get_by_agent(agent).await? {
             None => {
-                anyhow::ensure!(dispatched.is_none(), "dispatch placement was released");
+                ensure!(dispatched.is_none(), "dispatch placement was released");
                 self.store.place(agent, self.node, expiry).await?
             }
             Some(old) if old.expires_at <= jiff::Timestamp::now() => {
-                anyhow::ensure!(
+                ensure!(
                     dispatched.is_none(),
                     "dispatch placement expired; worker must recover the call"
                 );
@@ -241,7 +241,7 @@ impl Hosting {
                 old.epoch
             ),
             Some(old) => {
-                anyhow::ensure!(
+                ensure!(
                     dispatched
                         .as_ref()
                         .is_none_or(|expected| expected.epoch == old.epoch),
@@ -347,7 +347,7 @@ impl Hosting {
             .placement = Some(placement.clone());
         let mut shutdown = self.shutdown.subscribe();
         let serving = async {
-            anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
+            ensure!(!*shutdown.borrow(), "node is shutting down");
             self.boot_computer(agent, &placement, &first, placement_started)
                 .await?;
             self.execute(&placement, first).await?;
@@ -367,7 +367,7 @@ impl Hosting {
                     _ = shutdown.changed() => break,
                 }
             }
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, Error>(())
         };
         let renew = self.renew(placement.clone());
         tokio::pin!(renew);
@@ -398,7 +398,7 @@ impl Hosting {
             } else {
                 self.runtime.discard_if_present(agent).await?;
             }
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, Error>(())
         };
         tokio::select! {
             result = cleanup => {
@@ -417,7 +417,7 @@ impl Hosting {
 
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
         let mut shutdown = self.shutdown.subscribe();
-        anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
+        ensure!(!*shutdown.borrow(), "node is shutting down");
         // Only the first completion per turn carries the computer re-sample;
         // later tools skip the volume stat read entirely. One entry per
         // agent keeps the map bounded for the life of the node process.
@@ -438,7 +438,7 @@ impl Hosting {
                 turn,
                 needs_sample,
             ) => result,
-            _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
+            _ = shutdown.changed() => Err(Error::Message("node is shutting down".into())),
         };
         if needs_sample
             && let Some(turn) = turn
@@ -457,7 +457,7 @@ impl Hosting {
         Ok(())
     }
 
-    async fn renew(&self, mut placement: PlacementRecord) -> anyhow::Error {
+    async fn renew(&self, mut placement: PlacementRecord) -> Error {
         loop {
             let remaining: Duration = placement
                 .expires_at
@@ -480,14 +480,17 @@ impl Hosting {
                     .checked_add(self.lease)?
                     .max(current.expires_at.checked_add(Duration::from_millis(1))?);
                 // Keep the original epoch token even if the read saw a takeover.
-                Ok::<_, anyhow::Error>(self.store.renew(&placement, expiry).await?)
+                Ok::<_, Error>(self.store.renew(&placement, expiry).await?)
             };
             match tokio::time::timeout(budget, renewal).await {
                 Ok(Ok(current)) => placement = current,
                 Ok(Err(error)) => {
-                    return anyhow::anyhow!("placement lease renewal failed: {error}");
+                    return Error::Context {
+                        message: "placement lease renewal failed".into(),
+                        source: Box::new(error),
+                    };
                 }
-                Err(_) => return anyhow::anyhow!("placement lease expired during renewal"),
+                Err(_) => return Error::Message("placement lease expired during renewal".into()),
             }
         }
     }
