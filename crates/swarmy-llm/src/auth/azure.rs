@@ -56,7 +56,6 @@ impl AzureLogin {
         let mut extra = BTreeMap::from([
             ("resource_name".into(), resource.into()),
             ("scope".into(), scope.into()),
-            ("token_source".into(), "azure_cli".into()),
         ]);
         if resource.starts_with("https://") {
             extra.insert("base_url".into(), resource.into());
