@@ -6,9 +6,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use futures::stream::BoxStream;
 use object_store::aws::AmazonS3ConfigKey;
-use object_store::{ObjectStore, aws::AmazonS3Builder, prefix::PrefixStore};
-use swarmy_config::Settings;
+use object_store::{
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, aws::AmazonS3Builder,
+    path::Path, prefix::PrefixStore,
+};
+use swarmy_config::{BucketSpec, Settings};
 
 use crate::blob::BlobError;
 
@@ -77,8 +83,10 @@ fn builder_with_env(
 pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobError> {
     let (bucket, prefix) = settings.s3_namespace()?;
     let store = builder(settings, bucket).build()?;
+    let store: Arc<dyn ObjectStore> = Arc::new(store);
+    let store = maybe_unconditional(store, settings.s3.conditional_create);
     if prefix.as_str().is_empty() {
-        Ok(Arc::new(store))
+        Ok(store)
     } else {
         // Parse instead of converting so namespace characters stay exact.
         let path = object_store::path::Path::parse(prefix.as_str()).map_err(|error| {
@@ -88,6 +96,120 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
             }
         })?;
         Ok(Arc::new(PrefixStore::new(store, path)))
+    }
+}
+
+/// Build the shared S3 client from one bucket description instead of service
+/// settings. Static keys and the custom endpoint become the client
+/// credentials; the instance-role source falls back to the instance-metadata
+/// provider. Used by `remote up` and by tests exercising the same object
+/// operations through the new description.
+/// # Errors
+/// Rejects invalid S3 client settings.
+pub fn from_bucket_spec(
+    spec: &BucketSpec,
+    fallback_region: &str,
+    conditional_create: bool,
+) -> Result<Arc<dyn ObjectStore>, BlobError> {
+    let mut owned = spec.clone();
+    owned.resolve_region(fallback_region);
+    let mut settings = Settings::default();
+    owned.apply_to_settings(&mut settings);
+    settings.s3.conditional_create = conditional_create;
+    from_settings(&settings)
+}
+
+/// Downgrade create-only PUTs to plain PUTs for providers that reject the
+/// `If-None-Match: *` header. The objects are content-addressed, so a plain
+/// PUT overwriting identical bytes is safe.
+fn maybe_unconditional(
+    store: Arc<dyn ObjectStore>,
+    conditional_create: bool,
+) -> Arc<dyn ObjectStore> {
+    if conditional_create {
+        store
+    } else {
+        Arc::new(UnconditionalStore { inner: store })
+    }
+}
+
+/// An [`ObjectStore`] that turns create-only PUTs into plain PUTs.
+#[derive(Debug)]
+pub struct UnconditionalStore {
+    inner: Arc<dyn ObjectStore>,
+}
+
+impl UnconditionalStore {
+    /// Wrap `inner`, downgrading every create-only PUT to a plain PUT.
+    #[must_use]
+    pub fn new(inner: Arc<dyn ObjectStore>) -> Self {
+        Self { inner }
+    }
+}
+
+impl std::fmt::Display for UnconditionalStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unconditional({})", self.inner)
+    }
+}
+
+#[async_trait]
+impl ObjectStore for UnconditionalStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        let opts = if opts.mode == PutMode::Create {
+            PutOptions::default()
+        } else {
+            opts
+        };
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
+        self.inner.head(location).await
+    }
+
+    async fn delete(&self, location: &Path) -> object_store::Result<()> {
+        self.inner.delete(location).await
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&Path>,
+    ) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy(from, to).await
+    }
+
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.inner.copy_if_not_exists(from, to).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
     }
 }
 
@@ -157,5 +279,121 @@ mod tests {
             debug.contains("InstanceCredentialProvider"),
             "expected the instance-metadata provider, got: {debug}"
         );
+    }
+
+    #[test]
+    fn bucket_path_is_rejected() {
+        let mut settings = Settings::default();
+        settings.s3.bucket = "bucket/run/nested".into();
+        assert!(from_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn unconditional_store_downgrades_only_create_puts() {
+        use object_store::memory::InMemory;
+        use object_store::{PutMode, PutOptions, path::Path};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            let store = UnconditionalStore { inner };
+            let path = Path::from("downgrade/object");
+            // A create-only PUT becomes a plain PUT, so repeats overwrite.
+            for expected in ["first", "second"] {
+                store
+                    .put_opts(
+                        &path,
+                        expected.as_bytes().to_vec().into(),
+                        PutMode::Create.into(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store.get(&path).await.unwrap().bytes().await.unwrap(),
+                    expected.as_bytes()
+                );
+            }
+            // Other modes pass through unchanged.
+            let options = PutOptions::default();
+            assert_eq!(options.mode, PutMode::Overwrite);
+            store
+                .put_opts(&path, "third".as_bytes().to_vec().into(), options)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.get(&path).await.unwrap().bytes().await.unwrap(),
+                "third"
+            );
+            assert!(format!("{store}").starts_with("unconditional("));
+        });
+    }
+
+    #[test]
+    fn conditional_create_false_selects_the_unconditional_store() {
+        let mut settings = Settings::default();
+        settings.s3.conditional_create = false;
+        let debug = format!("{:?}", from_settings(&settings).unwrap());
+        assert!(debug.contains("UnconditionalStore"), "{debug}");
+        settings.s3.conditional_create = true;
+        let debug = format!("{:?}", from_settings(&settings).unwrap());
+        assert!(!debug.contains("UnconditionalStore"), "{debug}");
+    }
+
+    #[tokio::test]
+    async fn bucket_spec_with_static_keys_round_trips_objects() {
+        // Runs the same object operations through the new bucket description
+        // with static keys and a custom endpoint. Skips without the dev stack.
+        if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
+            return;
+        }
+        let loaded = swarmy_config::Settings::load().unwrap().settings;
+        let spec = BucketSpec {
+            endpoint: loaded.s3.endpoint.clone(),
+            region: loaded.s3.region.clone(),
+            bucket: loaded.s3.bucket.clone(),
+            prefix: swarmy_config::ObjectPrefix::default(),
+            credentials: swarmy_config::BucketCredentials::StaticKeys {
+                access_key: loaded.s3.access_key.clone(),
+                secret_key: loaded.s3.secret_key.clone(),
+            },
+        };
+        for conditional_create in [true, false] {
+            let store =
+                from_bucket_spec(&spec, &loaded.s3.region, conditional_create).unwrap();
+            let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
+            let path = object_store::path::Path::from(format!("{scope}/object"));
+            store.put(&path, "payload".into()).await.unwrap();
+            assert_eq!(
+                store.get(&path).await.unwrap().bytes().await.unwrap(),
+                "payload"
+            );
+            assert_eq!(store.head(&path).await.unwrap().location, path);
+            // A create-only PUT of identical bytes stays safe in both modes.
+            let result = store
+                .put_opts(
+                    &path,
+                    "payload".into(),
+                    PutMode::Create.into(),
+                )
+                .await;
+            if conditional_create {
+                assert!(
+                    matches!(
+                        result,
+                        Err(object_store::Error::AlreadyExists { .. })
+                    ),
+                    "unexpected {result:?}"
+                );
+            } else {
+                result.unwrap();
+            }
+            store.delete(&path).await.unwrap();
+            assert!(matches!(
+                store.head(&path).await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+        }
     }
 }
