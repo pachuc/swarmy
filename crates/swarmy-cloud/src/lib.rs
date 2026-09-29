@@ -386,6 +386,7 @@ pub trait Host {
         address: &str,
         recipe: &std::path::Path,
     ) -> impl Future<Output = Result<()>>;
+    fn block_devices(&self, node: &RemoteNode) -> impl Future<Output = Result<String>>;
     fn provision(
         &self,
         node: &RemoteNode,
@@ -414,6 +415,10 @@ impl Host for ssh::Ssh {
 
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
         ssh::generate_key(node).await
+    }
+
+    async fn block_devices(&self, node: &RemoteNode) -> Result<String> {
+        ssh::Ssh::block_devices(self, node).await
     }
 
     async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String> {

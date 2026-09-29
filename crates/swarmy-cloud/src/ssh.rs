@@ -278,6 +278,23 @@ impl Ssh {
         Ok(relative.to_owned())
     }
 
+    /// List block devices with their models (`lsblk -dno PATH,MODEL`).
+    /// The caller matches the model it needs; this stays provider-independent.
+    ///
+    /// # Errors
+    ///
+    /// Reports unreachable hosts and SSH failures.
+    pub(crate) async fn block_devices(&self, node: &RemoteNode) -> Result<String> {
+        let _ = self;
+        let address = wait_ssh(node).await?;
+        let output = run_output(
+            base(node)?.arg(&address).arg("lsblk -dno PATH,MODEL"),
+            "list block devices",
+        )
+        .await?;
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// Copy the same filtered checkout used by initial provisioning.
     ///
     /// # Errors

@@ -69,11 +69,11 @@ arriving with only a root login can be adopted. Records saved before the
 setting existed have no `service_user` in `launch_settings` and keep the SSH
 login they were provisioned with (`ubuntu` for the existing fleet).
 Sandbox nodes need local storage for their volume caches and dirty data: set
-`local_storage` to a block device to format and mount at `/mnt/swarmy-local`
-(on a single instance-store type this is the NVMe disk beside the root disk;
-confirm with `lsblk`), or to `dir:/path` for an existing directory when the
-server's disks are already partitioned. EC2 launches fill the instance-store
-device explicitly; other servers fail with a message until the device or
+`local_storage` to a block device to format and mount at `/mnt/swarmy-local`,
+or to `dir:/path` for an existing directory when the server's disks are
+already partitioned. EC2 launches resolve the instance-store device over SSH
+by disk model before provisioning, since Nitro instances name NVMe disks by
+attachment order; other servers fail with a message until the device or
 directory is set. A control-only first node
 (`--sandboxes 0`) needs no local storage; its volume server and scratch
 directories remain on its root disk. The repository, backing databases, and

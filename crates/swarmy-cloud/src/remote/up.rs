@@ -95,9 +95,9 @@ pub async fn run(
 
 /// Build the first node record. The cloud image logs in and runs units as
 /// `ubuntu`, written explicitly so a later configuration default (`swarmy`
-/// for plain servers) never moves existing fleet checkouts. The
-/// instance-store disk beside the root disk is passed through the same
-/// setting when the node needs it.
+/// for plain servers) never moves existing fleet checkouts. An explicit
+/// `local_storage` setting is kept; sandbox nodes without one resolve the
+/// instance-store device over SSH before provisioning.
 fn initial_node(
     state: &State,
     settings: &RemoteSettings,
@@ -105,15 +105,6 @@ fn initial_node(
     sandboxes: u32,
     image: &str,
 ) -> RemoteNode {
-    let local_storage = if settings.local_storage.is_empty() {
-        if sandboxes > 0 {
-            "/dev/nvme1n1".to_owned()
-        } else {
-            String::new()
-        }
-    } else {
-        settings.local_storage.clone()
-    };
     RemoteNode {
         name: name.into(),
         region: settings.region.clone(),
@@ -131,7 +122,7 @@ fn initial_node(
         default_image: None,
         launch_settings: Some(RemoteSettings {
             service_user: "ubuntu".into(),
-            local_storage,
+            local_storage: settings.local_storage.clone(),
             aws: swarmy_config::AwsSettings {
                 image: Some(image.to_owned()),
                 ..settings.aws.clone()
@@ -176,7 +167,35 @@ async fn provision(
     node.public_ip = machine.public_ip;
     node.private_ip = machine.private_ip;
     state.save(node)?;
+    resolve_instance_store(host, state, node).await?;
     host.provision(node, None).await
+}
+
+/// Resolve the instance-store device over SSH for sandbox nodes without an
+/// explicit `local_storage` setting. Nitro instances name `NVMe` disks by
+/// attachment order, so the device is matched by model, never by name.
+async fn resolve_instance_store(
+    host: &impl Host,
+    state: &State,
+    node: &mut RemoteNode,
+) -> Result<()> {
+    let needs_device = node.sandboxes > 0
+        && node
+            .launch_settings
+            .as_ref()
+            .is_some_and(|saved| saved.local_storage.is_empty());
+    if !needs_device {
+        return Ok(());
+    }
+    cloud_out!("Resolving instance-store device");
+    let listing = host.block_devices(node).await?;
+    let device = super::aws::parse_instance_store_device(&listing)?;
+    node.launch_settings
+        .as_mut()
+        .expect("launch settings were saved")
+        .local_storage = device;
+    state.save(node)?;
+    Ok(())
 }
 
 fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {

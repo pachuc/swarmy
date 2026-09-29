@@ -31,11 +31,6 @@ pub async fn run(
         ));
     };
     shape.apply(&mut settings)?;
-    // Joining sandbox nodes need the same explicit disk as first nodes when the
-    // saved launch left it empty (control-only primaries).
-    if settings.local_storage.is_empty() && sandboxes > 0 {
-        settings.local_storage = "/dev/nvme1n1".to_owned();
-    }
     crate::Error::ensure(
         !primary.instance_id.is_empty(),
         "first node has not launched",
@@ -96,6 +91,7 @@ pub async fn run(
         node.private_ip = machine.private_ip;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
+        resolve_instance_store(host, &mut node, &mut primary, state).await?;
         let address = host.provision(&node, Some(&primary)).await?;
         if let Some(options) = options {
             host.services(&node, &address, options).await?;
@@ -112,4 +108,33 @@ pub async fn run(
             Err(error)
         }
     }
+}
+
+/// Resolve the instance-store device over SSH for sandbox nodes without an
+/// explicit `local_storage` setting. Nitro instances name `NVMe` disks by
+/// attachment order, so the device is matched by model, never by name.
+async fn resolve_instance_store(
+    host: &impl Host,
+    node: &mut RemoteNode,
+    primary: &mut RemoteNode,
+    state: &State,
+) -> Result<()> {
+    let needs_device = node.sandboxes > 0
+        && node
+            .launch_settings
+            .as_ref()
+            .is_some_and(|saved| saved.local_storage.is_empty());
+    if !needs_device {
+        return Ok(());
+    }
+    cloud_out!("Resolving instance-store device");
+    let listing = host.block_devices(node).await?;
+    let device = super::aws::parse_instance_store_device(&listing)?;
+    node.launch_settings
+        .as_mut()
+        .expect("launch settings were saved")
+        .local_storage = device;
+    *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
+    state.save(primary)?;
+    Ok(())
 }

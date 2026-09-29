@@ -229,11 +229,19 @@ struct FakeHost {
     fail: bool,
     fail_image: bool,
     nvme_failure: bool,
+    block_devices: RefCell<String>,
     images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
     services: Cell<usize>,
     credentials: RefCell<Vec<std::path::PathBuf>>,
     keyrings: RefCell<Vec<std::path::PathBuf>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
+}
+
+/// Default `lsblk -dno PATH,MODEL` fixture: EBS root plus one instance-store
+/// disk. Tests override `block_devices` for reorderings.
+fn default_block_devices() -> String {
+    "/dev/nvme0n1 Amazon Elastic Block Store\n/dev/nvme1n1 Amazon EC2 NVMe Instance Storage\n"
+        .to_owned()
 }
 
 impl Host for FakeHost {
@@ -274,6 +282,14 @@ impl Host for FakeHost {
         tokio::fs::write(&node.key_path, "private-test").await?;
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
         Ok(b"ssh-ed25519 test".to_vec())
+    }
+    fn block_devices(&self, _: &RemoteNode) -> impl Future<Output = Result<String>> {
+        let listing = self.block_devices.borrow().clone();
+        std::future::ready(Ok(if listing.is_empty() {
+            default_block_devices()
+        } else {
+            listing
+        }))
     }
     fn provision(
         &self,
@@ -323,7 +339,7 @@ fn settings() -> RemoteSettings {
 }
 
 #[tokio::test]
-async fn up_waits_and_persists_connection_and_cleanup_contract() {
+async fn up_provisions_node_and_persists_launch_record() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
     let cloud = FakeCloud::default();
@@ -367,8 +383,9 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         (node.ports.fdb, node.ports.nats, node.ports.s3),
         (4500, 4222, 8333)
     );
-    // AWS launches write the service login and disk explicitly so later
-    // configuration defaults never move existing fleet checkouts.
+    // AWS launches write the service login explicitly and resolve the
+    // instance-store device over SSH, so later configuration defaults never
+    // move existing fleet checkouts.
     assert_eq!(node.service_user(), "ubuntu");
     assert_eq!(node.service_repo(), "/home/ubuntu/swarmy");
     assert_eq!(node.local_storage(), "/dev/nvme1n1");
@@ -404,13 +421,69 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
     assert_eq!(
         cloud.keys.borrow()[0],
         (
-            request.key_name.clone(),
+            request.key_name,
             b"ssh-ed25519 test".to_vec(),
             "codex-launcher".into()
         )
     );
     assert_eq!(host.provisioned.borrow()[0].public_ip, node.public_ip);
     assert!(cloud.observations.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn up_resolves_instance_store_by_model_not_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost {
+        block_devices: RefCell::new(
+            "/dev/nvme0n1 Amazon Elastic Block Store\n\
+             /dev/nvme1n1 Amazon Elastic Block Store\n\
+             /dev/nvme2n1 Amazon EC2 NVMe Instance Storage\n"
+                .to_owned(),
+        ),
+        ..Default::default()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 4,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.read("demo").unwrap().unwrap();
+    assert_eq!(node.local_storage(), "/dev/nvme2n1");
+}
+
+#[tokio::test]
+async fn up_rejects_duplicate_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     assert!(
         up::run(
             &cloud,
