@@ -72,7 +72,9 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
 #[test]
 fn no_api_fails_without_service_lines_and_does_not_leak_secrets() {
     let fixture = Fixture::new();
-    fixture.config("[selection]\nprovider = 'fake'\n[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
+    fixture.config(
+        "[selection]\nprovider = 'fake'\n[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'",
+    );
     let output = fixture
         .command(true)
         .env("OPENAI_API_KEY", "DO_NOT_PRINT")

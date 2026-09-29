@@ -118,9 +118,13 @@ impl Fixture {
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
         let blobs = Arc::new(MemoryBlobStore::default());
-        let store = Store::open(Some(&cluster), Some(std::slice::from_ref(&prefix)), blobs.clone())
-            .await
-            .unwrap();
+        let store = Store::open(
+            Some(&cluster),
+            Some(std::slice::from_ref(&prefix)),
+            blobs.clone(),
+        )
+        .await
+        .unwrap();
         let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
         bus.setup(&[]).await.unwrap();
         let nodes = [
