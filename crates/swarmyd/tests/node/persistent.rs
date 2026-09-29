@@ -216,15 +216,38 @@ pub(super) async fn start(
 }
 
 pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
-    Box::pin(differing_leases(settings.clone(), store, base, 30, 3)).await;
-    Box::pin(differing_leases(settings.clone(), store, base, 3, 30)).await;
+    check_lease_mismatch(&settings, store, base).await;
     let (mut node, bus) = start(settings, store, base, 3).await;
     managed_tools(&node, store, &bus).await;
     let agent = AgentId::from_ulid(ulid::Ulid::generate());
-    let volume = VolumeId::from_ulid(agent.as_ulid());
-    let job = dispatch(
+    let renewed_epoch = check_durable_background(store, &bus, &node, agent).await;
+    let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
+    check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
+    crash(&mut node, store, &bus, agent).await;
+    takeover(&mut node, store, &bus, agent, true).await;
+    takeover(
+        &mut node,
         store,
         &bus,
+        AgentId::from_ulid(ulid::Ulid::generate()),
+        false,
+    )
+    .await;
+    graceful(&mut node, store, &bus, base).await;
+}
+
+/// Both lease-mismatch orders must fail closed before any sandbox starts.
+async fn check_lease_mismatch(settings: &swarmy_config::Settings, store: &Store, base: ManifestId) {
+    Box::pin(differing_leases(settings.clone(), store, base, 30, 3)).await;
+    Box::pin(differing_leases(settings.clone(), store, base, 3, 30)).await;
+}
+
+/// A background process must survive another session on the same lease, and
+/// the lease expiry must renew. Returns the renewed epoch.
+async fn check_durable_background(store: &Store, bus: &Bus, node: &Node, agent: AgentId) -> u64 {
+    let job = dispatch(
+        store,
+        bus,
         node.id,
         agent,
         "sleep 300 >/dev/null 2>&1 & echo $! >/background.pid; echo durable >/persistent; sleep 5",
@@ -236,8 +259,20 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let renewed = store.get_by_agent(agent).await.unwrap().unwrap();
     assert_eq!(first.epoch, renewed.epoch);
     assert!(renewed.expires_at > first.expires_at);
-    let path = device(&node, agent);
-    let job = dispatch(store, &bus, node.id, agent, "kill -0 $(cat /background.pid) && dd if=/dev/urandom of=/dirty bs=1M count=64 status=none && sync").await;
+    renewed.epoch
+}
+
+/// 64 MiB of dirty data must not publish: a trivial call returns fast and
+/// the head manifest does not move. Returns the still-clean manifest.
+async fn check_dirty_without_publish(
+    store: &Store,
+    bus: &Bus,
+    node: &Node,
+    agent: AgentId,
+    base: ManifestId,
+) -> ManifestId {
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    let job = dispatch(store, bus, node.id, agent, "kill -0 $(cat /background.pid) && dd if=/dev/urandom of=/dirty bs=1M count=64 status=none && sync").await;
     completed(store, &job).await;
     let before = store
         .get_volume(volume)
@@ -247,7 +282,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
         .head_manifest;
     assert_eq!(before, base);
     let started = std::time::Instant::now();
-    let job = dispatch(store, &bus, node.id, agent, "true").await;
+    let job = dispatch(store, bus, node.id, agent, "true").await;
     completed(store, &job).await;
     let elapsed = started.elapsed();
     assert!(
@@ -266,14 +301,29 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     eprintln!(
         "persistent acceptance: background process survived another session, lease renewed, trivial call with 64 MiB dirty returned in {elapsed:?} without publication"
     );
+    before
+}
+
+/// Idle eviction must publish a checkpoint, remove the container and device,
+/// release the placement, and rehydrate the files with the eviction reason.
+async fn check_eviction_rehydrate(
+    store: &Store,
+    bus: &Bus,
+    node: &Node,
+    agent: AgentId,
+    renewed_epoch: u64,
+    clean: ManifestId,
+) {
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    let path = device(node, agent);
     evicted(store, agent).await;
-    absent(&node, agent, &path);
+    absent(node, agent, &path);
     let checkpoint = store.get_volume(volume).await.unwrap().unwrap();
-    assert_ne!(checkpoint.head_manifest, before);
+    assert_ne!(checkpoint.head_manifest, clean);
     assert!(checkpoint.writer_lease.is_none());
     let job = dispatch(
         store,
-        &bus,
+        bus,
         node.id,
         agent,
         "test $(cat /persistent) = durable && test -s /dirty",
@@ -281,7 +331,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     .await;
     completed(store, &job).await;
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
-    assert!(placement.epoch > renewed.epoch);
+    assert!(placement.epoch > renewed_epoch);
     assert_eq!(
         placement.last_change_reason,
         swarmy_core::PlacementChangeReason::Eviction
@@ -289,17 +339,6 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     eprintln!(
         "persistent acceptance: idle eviction published checkpoint, removed container/device, released placement, and rehydrated files with eviction reason"
     );
-    crash(&mut node, store, &bus, agent).await;
-    takeover(&mut node, store, &bus, agent, true).await;
-    takeover(
-        &mut node,
-        store,
-        &bus,
-        AgentId::from_ulid(ulid::Ulid::generate()),
-        false,
-    )
-    .await;
-    graceful(&mut node, store, &bus, base).await;
 }
 
 async fn differing_leases(
@@ -925,6 +964,22 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
         .await
         .unwrap()
         .agent_id;
+    let (first, second, rootfs) = start_gated_pair(node, store, bus, agent).await;
+    check_fifo_handoff(store, node, agent, &first, &second, &rootfs).await;
+    check_stale_sample_and_release(store, agent, &first).await;
+    eprintln!(
+        "shared calls passed: FIFO serialization, separate stdout/stderr, holder handoff, queue depth, idle and released status"
+    );
+}
+
+/// Dispatch two calls gated on release files so the second must wait for
+/// the first. Returns both jobs and the sandbox rootfs holding the gates.
+async fn start_gated_pair(
+    node: &Node,
+    store: &Store,
+    bus: &Bus,
+    agent: AgentId,
+) -> (ToolJob, ToolJob, std::path::PathBuf) {
     let first = dispatch(store, bus, node.id, agent,
         "echo first-start; echo first-error >&2; touch /first-started; while test ! -e /release-first; do sleep 0.05; done; echo first-end").await;
     written(node, agent, "first-started").await;
@@ -935,6 +990,19 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
         .root
         .path()
         .join(format!(".swarmy/node/bundles/{agent}/rootfs"));
+    (first, second, rootfs)
+}
+
+/// The second call must not run while the first holds the sandbox; releasing
+/// each gate hands the holder over with separate stdout and stderr.
+async fn check_fifo_handoff(
+    store: &Store,
+    node: &Node,
+    agent: AgentId,
+    first: &ToolJob,
+    second: &ToolJob,
+    rootfs: &std::path::Path,
+) {
     assert!(
         !rootfs.join("second-started").exists(),
         "second call ran while first held sandbox"
@@ -944,14 +1012,19 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
     std::fs::write(rootfs.join("release-first"), "").unwrap();
     written(node, agent, "second-started").await;
     wait_status(store, agent, Some(second.session_id), 0).await;
-    let result = completed(store, &first).await;
+    let result = completed(store, first).await;
     assert_eq!(result["stdout"], "first-start\nfirst-end\n");
     assert_eq!(result["stderr"], "first-error\n");
     std::fs::write(rootfs.join("release-second"), "").unwrap();
-    let result = completed(store, &second).await;
+    let result = completed(store, second).await;
     assert_eq!(result["stdout"], "second-start\nsecond-end\n");
     assert_eq!(result["stderr"], "second-error\n");
     wait_status(store, agent, None, 0).await;
+}
+
+/// A delayed older sample must not overwrite the node's current observation,
+/// and eviction must clear the status so a stale write fences.
+async fn check_stale_sample_and_release(store: &Store, agent: AgentId, first: &ToolJob) {
     let observation = store.agent_call_status(agent).await.unwrap().unwrap();
     // Delayed older samples cannot overwrite the node's current observation.
     let mut stale = observation.clone();
@@ -978,9 +1051,6 @@ pub(super) async fn shared_calls(node: &Node, store: &Store, bus: &Bus) {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    eprintln!(
-        "shared calls passed: FIFO serialization, separate stdout/stderr, holder handoff, queue depth, idle and released status"
-    );
 }
 
 async fn wait_status(store: &Store, agent: AgentId, holder: Option<SessionId>, queued: u64) {
