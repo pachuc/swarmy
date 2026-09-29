@@ -825,10 +825,6 @@ fn model(
         "effective_base_url".into(),
         serde_json::json!(entry.base_url.as_deref().unwrap_or(&provider.base_url)),
     );
-    catalog.insert(
-        "supported_efforts".into(),
-        serde_json::json!(entry.supported_efforts()),
-    );
     api::Model {
         id: entry.id.clone(),
         provider_id: provider.id.clone(),
