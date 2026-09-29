@@ -79,5 +79,9 @@ async fn main() -> anyhow::Result<()> {
         () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => {},
         result = tokio::signal::ctrl_c() => result?,
     }
+    // Drain queued turn metrics before exit so shutdown keeps every write.
+    if let Err(error) = store.flush_turn_metrics().await {
+        tracing::warn!(%error, "scheduler metric flush failed");
+    }
     Ok(())
 }

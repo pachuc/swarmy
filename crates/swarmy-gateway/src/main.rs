@@ -146,6 +146,7 @@ async fn run(config: config::Config) -> Result<()> {
     refresh(&gateway, &mut messages, &mut subscriptions).await?;
     ticks.tick().await;
     info!(concurrency = config.concurrency, "gateway ready");
+    let flush_store = gateway.store.clone();
     loop {
         while let Some(result) = tasks.try_join_next() {
             result?;
@@ -158,6 +159,9 @@ async fn run(config: config::Config) -> Result<()> {
                 continue;
             }
             delivery = messages.next(), if !subscriptions.is_empty() => delivery,
+            // Break out to flush queued turn metrics below; the outer
+            // `ctrl_c` select in `main` stays as a backup while flushing.
+            _ = tokio::signal::ctrl_c() => break,
         };
         let Some(delivery) = delivery else {
             bail!("work stream ended");
@@ -178,6 +182,11 @@ async fn run(config: config::Config) -> Result<()> {
             }
         });
     }
+    // Drain queued turn metrics before exit so shutdown keeps every write.
+    if let Err(error) = flush_store.flush_turn_metrics().await {
+        warn!(%error, "gateway metric flush failed");
+    }
+    Ok(())
 }
 
 /// Workers route to a provider only while a gateway advertisement is unexpired.

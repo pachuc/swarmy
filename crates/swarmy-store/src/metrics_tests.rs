@@ -601,4 +601,57 @@ mod integration_tests {
         assert_eq!(paged[0].dropped_inference, 90);
         assert_eq!(paged[0].dropped_tools, 180);
     }
+
+    #[tokio::test]
+    async fn queued_metrics_are_visible_after_flush() {
+        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+            return;
+        };
+        NETWORK.get_or_init(crate::boot);
+        let path = vec![
+            "turn-metrics-flush-test".into(),
+            ulid::Ulid::generate().to_string(),
+        ];
+        let store = Store::open(
+            Some(&cluster),
+            Some(&path),
+            Arc::new(MemoryBlobStore::default()),
+        )
+        .await
+        .unwrap();
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        let turn = MessageId::from_ulid(ulid::Ulid::generate());
+        // Queue without awaiting the write, then flush: the drain must have
+        // committed before the read below.
+        store.observe_turn_metric(
+            session,
+            turn,
+            MetricPatch::Stage(TurnEvent {
+                session_id: session,
+                turn_id: turn,
+                stage: TurnStage::Appended,
+                request_id: None,
+                clock_id: "boot".into(),
+                monotonic_ns: 1_000_000,
+                unix_ns: 1_000_000,
+            }),
+        );
+        store.observe_turn_metric(
+            session,
+            turn,
+            MetricPatch::Stage(TurnEvent {
+                session_id: session,
+                turn_id: turn,
+                stage: TurnStage::Idle,
+                request_id: None,
+                clock_id: "boot".into(),
+                monotonic_ns: 2_000_000,
+                unix_ns: 2_000_000,
+            }),
+        );
+        store.flush_turn_metrics().await.unwrap();
+        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].turn_id, turn.to_string());
+    }
 }

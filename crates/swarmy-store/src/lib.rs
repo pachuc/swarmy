@@ -139,6 +139,14 @@ pub struct Store {
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
     metrics_tx: tokio::sync::mpsc::Sender<crate::metrics::MetricMsg>,
+    /// Receiver held until the drain task starts. `open` starts the drain
+    /// immediately; `with_subspace` may run without a runtime, in which case
+    /// the first observation or flush starts it lazily.
+    metrics_rx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>>>>,
+    /// Drain task handle, retained so every `Store` does not leak a task:
+    /// the drain owns only a [`crate::metrics::MetricsWriter`], never a
+    /// `Store`, so dropping all stores closes the channel and ends the task.
+    metrics_drain: Arc<std::sync::OnceLock<tokio::task::JoinHandle<()>>>,
 }
 
 fn metrics_channel() -> (
@@ -181,12 +189,16 @@ impl Store {
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
             metrics_tx,
+            metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
+            metrics_drain: Arc::new(std::sync::OnceLock::new()),
         };
-        crate::metrics::spawn_metrics_drain(store.clone(), metrics_rx);
+        store.ensure_metrics_drain();
         Ok(store)
     }
 
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
+    /// The metrics drain starts lazily on the first observation or flush
+    /// when no async runtime exists yet at construction time.
     #[must_use]
     pub fn with_subspace(db: Arc<Database>, root: Subspace, blobs: Arc<dyn BlobStore>) -> Self {
         let (metrics_tx, metrics_rx) = metrics_channel();
@@ -199,17 +211,44 @@ impl Store {
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
             metrics_tx,
+            metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
+            metrics_drain: Arc::new(std::sync::OnceLock::new()),
         };
-        // Tests construct stores inside a runtime; production always has one.
-        // If no runtime exists, observability drops with a warning until a
-        // runtime is available. This only triggers in non-async contexts that
-        // never observe metrics.
-        if tokio::runtime::Handle::try_current().is_ok() {
-            crate::metrics::spawn_metrics_drain(store.clone(), metrics_rx);
-        } else {
-            std::mem::forget(metrics_rx);
-        }
+        store.ensure_metrics_drain();
         store
+    }
+
+    pub(crate) fn metrics_writer(&self) -> crate::metrics::MetricsWriter {
+        crate::metrics::MetricsWriter::new(
+            self.db.clone(),
+            self.root.clone(),
+            self.transactions.clone(),
+        )
+    }
+
+    /// Start the metrics drain task once a runtime exists. Synchronous so
+    /// both constructors and the non-blocking observation path can call it;
+    /// a second call is a no-op once the receiver has been taken.
+    pub(crate) fn ensure_metrics_drain(&self) {
+        if self.metrics_drain.get().is_some() {
+            return;
+        }
+        let rx = self
+            .metrics_rx
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let Some(rx) = rx else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            if let Ok(mut guard) = self.metrics_rx.lock() {
+                *guard = Some(rx);
+            }
+            return;
+        }
+        let handle = crate::metrics::spawn_metrics_drain(self.metrics_writer(), rx);
+        let _ = self.metrics_drain.set(handle);
     }
 
     /// Use a deterministic clock for lease and expiry tests.
@@ -253,37 +292,7 @@ impl Store {
         F: Fn(RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        self.transactions.fetch_add(1, Ordering::Relaxed);
-        let result = self
-            .db
-            .run(|trx, maybe_committed| {
-                let operation = &operation;
-                async move {
-                    if bool::from(maybe_committed) {
-                        return Err(FdbBindingError::new_custom_error(Box::new(
-                            StoreError::Storage(crate::StorageError::CommitUnknown),
-                        )));
-                    }
-                    trx.set_option(TransactionOption::Timeout(4_500))?;
-                    trx.set_option(TransactionOption::RetryLimit(20))?;
-                    operation(trx).await.map_err(|error| match error {
-                        StoreError::Storage(crate::StorageError::FoundationDb(error)) => {
-                            error.into()
-                        }
-                        other => FdbBindingError::new_custom_error(Box::new(other)),
-                    })
-                }
-            })
-            .await;
-        result.map_err(|error| match error {
-            FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
-                Ok(error) => *error,
-                Err(error) => StoreError::Storage(crate::StorageError::Binding(
-                    FdbBindingError::CustomError(error),
-                )),
-            },
-            other => StoreError::Storage(crate::StorageError::Binding(other)),
-        })
+        run_transaction(&self.db, &self.transactions, operation).await
     }
 
     /// Read every row in `range` across one transaction per page, paging by
@@ -843,6 +852,47 @@ impl Store {
             None => Ok(None),
         }
     }
+}
+
+/// One shared transaction runner for `Store` and the metrics drain writer.
+/// Binding-level retries inside one call count once against `counter`.
+pub(crate) async fn run_transaction<T, F, Fut>(
+    db: &Database,
+    counter: &AtomicU64,
+    operation: F,
+) -> Result<T>
+where
+    F: Fn(RetryableTransaction) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    counter.fetch_add(1, Ordering::Relaxed);
+    let result = db
+        .run(|trx, maybe_committed| {
+            let operation = &operation;
+            async move {
+                if bool::from(maybe_committed) {
+                    return Err(FdbBindingError::new_custom_error(Box::new(
+                        StoreError::Storage(crate::StorageError::CommitUnknown),
+                    )));
+                }
+                trx.set_option(TransactionOption::Timeout(4_500))?;
+                trx.set_option(TransactionOption::RetryLimit(20))?;
+                operation(trx).await.map_err(|error| match error {
+                    StoreError::Storage(crate::StorageError::FoundationDb(error)) => error.into(),
+                    other => FdbBindingError::new_custom_error(Box::new(other)),
+                })
+            }
+        })
+        .await;
+    result.map_err(|error| match error {
+        FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
+            Ok(error) => *error,
+            Err(error) => StoreError::Storage(crate::StorageError::Binding(
+                FdbBindingError::CustomError(error),
+            )),
+        },
+        other => StoreError::Storage(crate::StorageError::Binding(other)),
+    })
 }
 
 async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Option<T>> {
