@@ -1,6 +1,9 @@
 //! Provider discovery shared by the gateway and local diagnostics.
+pub mod attempt;
+pub mod commit;
 pub mod config;
 pub mod credentials;
+pub mod dispatch;
 pub mod providers;
 
 #[derive(Debug, thiserror::Error)]
