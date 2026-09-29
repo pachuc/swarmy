@@ -59,7 +59,7 @@ impl Fixture {
             return None;
         }
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            if std::env::var_os(variable).is_none() {
+            if swarmy_core::test_support::stack_env_os(variable).is_none() {
                 eprintln!("skipping volume acceptance: {variable} is unset");
                 return None;
             }

@@ -13,7 +13,7 @@ fn root_coding_recovery() {
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",
     ] {
-        if std::env::var_os(variable).is_none() {
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             eprintln!("skipping coding acceptance: {variable} is unset");
             return;
         }
