@@ -228,8 +228,18 @@ provider teardown queries with the run. Remove the rule even after a failure.
 ## Persistent object storage
 
 Pass `--bucket NAME` to `swarmy remote up` (or set `[remote] bucket = "NAME"`).
-The bucket is retained after `remote down`; remove it separately only when its
-objects are no longer needed. The instance profile grants access only to that
+`remote down` empties and deletes the bucket, including previous object versions,
+only if both `managed-by=swarmy` and `swarmy-remote=NAME` tags match. It also
+checks that no other local remote state file records the bucket. Untagged or
+mismatched resources are left in place with a message; local state is still
+removed. A remote created before ownership tags were introduced needs manual
+migration: inspect the exact bucket, role, and instance profile in its local
+state and run `swarmy remote tag NAME` interactively. Type each resource name
+to authorize tagging; never adopt a resource belonging to another swarm. The
+command will not run without a terminal. Newly created resources are tagged
+by `remote up`; already-existing resources are not silently adopted.
+Use `remote down --keep-bucket` to retain the bucket, role, and instance profile
+as a fallback. The instance profile grants access only to that
 bucket. Only the services on the nodes talk to S3, using the instance role;
 the dev stack uses static keys from settings. No laptop command opens the
 object store: every volume, image, GC, and doctor command runs through the
@@ -239,12 +249,64 @@ through the provisioning SDK. `swarmy doctor --remote NAME` reads node and servi
 metadata, and credentials through the API; it does not check the bucket. Image
 builds and chunk operations use S3 through the node services.
 
-Provisioning also needs `s3:CreateBucket`, `s3:GetBucketLocation`,
-`s3:PutEncryptionConfiguration`, `s3:GetEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`, `s3:ListBucket`,
-`iam:CreateRole`, `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`,
-`iam:DeleteRole`, `iam:CreateInstanceProfile`, `iam:GetInstanceProfile`,
-`iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`,
-`iam:DeleteInstanceProfile`, and `iam:PassRole` on the role. Existing remotes without a bucket continue using SeaweedFS.
+The laptop identity needs the following permissions for bucket-backed remotes,
+scoped to the `swarmy-*` resources it manages. The example covers S3 and IAM;
+EC2, SSM, and host provisioning permissions are separate. Grant tagging before
+`remote up` when possible. If tagging is denied during creation, `up` warns and
+continues, but `down` will retain the untagged resource. After granting the
+missing permission, run `swarmy remote tag NAME` interactively to adopt it.
+An AccessDenied on an ownership read or version listing stops `down` or `tag`
+with local state intact; grant the named permission and retry.
+
+- `remote up`: create/configure the bucket and IAM role/profile, tag new resources,
+  and pass the role to EC2.
+- `remote tag`: read and write bucket tags, read role/profile tags, and tag both.
+- `remote down`: read ownership and bucket versions, empty/delete the bucket,
+  detach/delete the role's policies, and remove the profile and role.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:GetBucketLocation", "s3:GetEncryptionConfiguration",
+        "s3:PutEncryptionConfiguration", "s3:PutBucketPublicAccessBlock",
+        "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:GetBucketVersioning",
+        "s3:ListBucket", "s3:ListBucketVersions", "s3:DeleteBucket"
+      ],
+      "Resource": "arn:aws:s3:::swarmy-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion"],
+      "Resource": "arn:aws:s3:::swarmy-*/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:GetRole", "iam:PutRolePolicy", "iam:TagRole",
+        "iam:ListRoleTags", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+        "iam:DetachRolePolicy", "iam:DeleteRolePolicy", "iam:DeleteRole", "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::<account-id>:role/swarmy-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateInstanceProfile", "iam:GetInstanceProfile",
+        "iam:TagInstanceProfile", "iam:ListInstanceProfileTags",
+        "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::<account-id>:instance-profile/swarmy-*"
+    }
+  ]
+}
+```
+
+Existing remotes without a bucket continue using SeaweedFS.
 
 ## Costs and recovery
 
@@ -263,7 +325,7 @@ saved deployment, and `remote up` creates a new one. Pushed branches survive.
 If the client disconnects, `swarmy remote connect NAME` restores its profile
 without stopping workers. Run `swarmy remote down NAME` only after collecting
 open work; it terminates instances and removes the managed key pair, while
-bucket resources remain for separate cleanup.
+bucket resources are deleted unless `--keep-bucket` is specified.
 
 ## Client prerequisites
 
@@ -484,7 +546,7 @@ EC2 time, the 100 GiB gp3 root disk on each node, public IPv4 addresses, and
 applicable network transfer cost money. Instance storage is part of the instance
 allocation. Every `add-node` adds another instance and disk. Real inference also
 uses the operator's provider account. Without `--bucket`, the development stack uses SeaweedFS on the first node.
-With `--bucket`, the instance role accesses retained S3 objects. Disconnecting, closing
+With `--bucket`, the instance role accesses S3 objects until teardown. Disconnecting, closing
 chat, or stopping local services leaves cloud resources running and billable.
 
 `swarmy dev status` shows local processes. `swarmy remote status` shows saved
@@ -499,7 +561,7 @@ aws ec2 describe-instances --region us-east-1 \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Key:KeyName}'
 swarmy dev down
 swarmy remote disconnect demo
-swarmy remote down demo
+swarmy remote down demo --yes
 # Replace the following values with every id/key saved above.
 aws ec2 describe-instances --region us-east-1 --instance-ids i-<first-id> i-<second-id> \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
@@ -511,7 +573,12 @@ aws ec2 describe-key-pairs --region us-east-1 \
 
 Expect `terminated` for all recorded instances (or eventual absence), and empty
 volume and key-pair lists. `down` waits for termination, deletes imported keys,
-and removes local state. It permanently deletes this stack's backing data;
+empties and deletes its bucket, removes the instance profile and role,
+and removes local state. Use `--keep-bucket` to leave the bucket and its
+guarding role and instance profile intact. Without that flag, `down` asks for
+confirmation naming every owned resource it will delete on a terminal; `--json`
+requires `--yes` when there are owned resources to remove. `--keep-bucket`
+terminates the instances without a prompt. It permanently deletes this stack's backing data;
 checkpoints here do not survive teardown of the first node. Failed provisioning
 retains its state for `remote down`; failed cleanup retains state for retry.
 Never delete that state to work around an error while resources still exist.
@@ -846,7 +913,7 @@ the provider once its legacy record is migrated.
   deletes it; the next launch recreates it from the image.
 - The laptop closed: nothing stops. Reconnect with `swarmy remote connect
   dev` and `fleet status`.
-- Tear down: `swarmy remote down dev` terminates the instance and deletes
+- Tear down: `swarmy remote down dev --yes` terminates the instance and deletes
   its key pair. Collect and merge open pull requests first.
 
 

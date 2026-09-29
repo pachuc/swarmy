@@ -58,8 +58,18 @@ pub enum Command {
         #[arg(long, default_value_t = 600)]
         drain_timeout: u64,
     },
-    /// Terminate all nodes and remove their key pairs and local state
-    Down { name: String },
+    /// Terminate nodes and remove their cloud resources and local state
+    Down {
+        name: String,
+        /// Retain the bucket and its guarding role and profile
+        #[arg(long)]
+        keep_bucket: bool,
+        /// Confirm permanent deletion without an interactive prompt
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Explicitly adopt an older remote's bucket, role, and profile for teardown
+    Tag { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
     Connect { name: String },
     /// Stop the recorded SSH tunnel

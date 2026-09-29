@@ -143,7 +143,7 @@ pub struct Machine {
 
 /// Provider-neutral description of the object bucket backing a remote.
 ///
-/// The bucket survives `remote down`; the node credentials guard it.
+/// The node credentials guard this bucket until teardown.
 #[derive(Clone, Debug)]
 pub struct ObjectBucket {
     /// Bucket name.
@@ -157,6 +157,14 @@ pub struct ObjectBucket {
     pub endpoint: Option<String>,
     /// Credentials attached to nodes; the IAM instance profile on AWS.
     pub node_credentials: Option<String>,
+}
+
+/// Whether a cloud resource belongs to this remote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ownership {
+    Owned,
+    Absent,
+    Unmanaged,
 }
 
 /// The cloud boundary. Only the provider implementation knows about provider
@@ -184,6 +192,25 @@ pub trait Cloud {
     /// Terminate a machine; already-terminated or missing machines are
     /// success.
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
+    /// Check both ownership tags before destructive operations.
+    fn bucket_ownership(&self, name: &str, owner: &str) -> impl Future<Output = Result<Ownership>>;
+    /// Check profile and role separately; an unowned profile must never be altered.
+    fn role_ownership(
+        &self,
+        name: &str,
+        owner: &str,
+    ) -> impl Future<Output = Result<(Ownership, Ownership)>>;
+    /// Explicitly adopt resources after the operator confirms their names.
+    fn tag_bucket(&self, name: &str, owner: &str) -> impl Future<Output = Result<()>>;
+    fn tag_node_role(&self, name: &str, owner: &str) -> impl Future<Output = Result<()>>;
+    /// Empty and delete an owned bucket; return false if it was already absent.
+    fn delete_bucket(&self, name: &str, owner: &str) -> impl Future<Output = Result<bool>>;
+    /// Delete the instance profile and its role; return whether the profile and role were present.
+    fn delete_node_role(
+        &self,
+        name: &str,
+        owner: &str,
+    ) -> impl Future<Output = Result<(bool, bool)>>;
     /// Delete an SSH key; missing keys are success.
     fn delete_ssh_key(&self, name: &str) -> impl Future<Output = Result<()>>;
 }
@@ -281,7 +308,11 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             )
             .await
         }
-        Command::Down { name } => {
+        Command::Down {
+            name,
+            keep_bucket,
+            yes,
+        } => {
             let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
                 println!("No remote node named {name}");
@@ -290,7 +321,21 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;
-            down::run(&cloud, &state, &node, Duration::from_secs(5)).await
+            down::confirm(&cloud, &state, &node, keep_bucket, yes, json)
+                .await
+                .map_err(down::actionable_error)?;
+            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket)
+                .await
+                .map_err(down::actionable_error)
+        }
+        Command::Tag { name } => {
+            let _lock = state.lock()?;
+            let node = state.require(&name)?;
+            let mut settings = node.cloud_settings();
+            settings.region.clone_from(&node.region);
+            down::tag(&for_settings(&settings).await?, &state, &node)
+                .await
+                .map_err(down::actionable_error)
         }
         Command::Connect { name } => connect::run(&state_dir, &state, &name, json).await,
         Command::Disconnect { name } => disconnect::run(&state_dir, &state, &name).await,
