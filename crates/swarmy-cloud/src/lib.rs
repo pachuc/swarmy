@@ -3,7 +3,7 @@
 //! Everything that knows about a cloud provider lives here behind one public
 //! interface, so a second provider is an implementation, not a rewrite. The
 //! [`Cloud`] trait speaks in provider-neutral types ([`MachineSpec`],
-//! [`Machine`], [`ObjectBucket`]); [`Aws`] implements it with EC2, SSM, S3,
+//! [`Machine`], [`ObjectBucket`]); `Aws` implements it with EC2, SSM, S3,
 //! and IAM. [`Host`] covers the SSH half of provisioning and stays
 //! provider-independent. See `docs/cloud-substrate.md` for the contract a
 //! second provider must implement.

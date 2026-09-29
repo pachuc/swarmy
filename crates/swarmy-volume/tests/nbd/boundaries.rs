@@ -9,8 +9,7 @@ async fn continuous_writes_and_retained_crash_images() {
         eprintln!("skipping snapshot NBD test: execute the built binary with sudo");
         return;
     }
-    let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-        eprintln!("skipping snapshot NBD test: SWARMY_FDB_CLUSTER_FILE is unset");
+    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
     let _network = swarmy_store::boot();
