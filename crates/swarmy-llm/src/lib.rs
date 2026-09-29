@@ -1,4 +1,5 @@
 //! Shared inference contracts and provider wire clients.
+#![deny(unreachable_pub)]
 
 pub mod api;
 pub mod auth;
@@ -6,14 +7,14 @@ pub mod catalog;
 pub mod chatgpt;
 pub mod cost;
 pub(crate) mod error;
+#[cfg(feature = "fake")]
 pub mod fake;
 pub(crate) mod protocol;
-pub mod quota;
+pub(crate) mod quota;
 pub mod reasoning;
-pub mod responses;
 pub mod retry;
 pub mod selection;
-pub mod sse;
+pub(crate) mod sse;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -355,11 +356,12 @@ pub enum Error {
         retry_after: Option<std::time::Duration>,
         reason: ProviderFailureReason,
     },
-    #[error("HTTP request failed with retryable status {status}")]
-    Retryable {
-        status: reqwest::StatusCode,
-        retry_after: Option<std::time::Duration>,
-    },
+    #[error("authentication failed: {0}")]
+    Authentication(String),
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("malformed provider stream: {0}")]
+    MalformedStream(String),
     #[error("context overflow: {0}")]
     ContextOverflow(String),
     #[error("invalid provider credentials: {0}")]
@@ -378,9 +380,117 @@ pub enum Error {
     UnscriptedTurn(usize),
 }
 
+/// Retry, pacing, and permanent-failure policy for a provider error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorClass {
+    pub retryable: bool,
+    pub retry_after: Option<std::time::Duration>,
+    pub rate_limited: bool,
+    pub permanent: bool,
+}
+
+impl Error {
+    #[must_use]
+    pub fn classify(&self) -> ErrorClass {
+        let (status, retry_after, quota) = match self {
+            Self::ProviderResponse {
+                status,
+                retry_after,
+                reason,
+                ..
+            } => (
+                Some(*status),
+                *retry_after,
+                *reason == ProviderFailureReason::Quota,
+            ),
+            Self::Status(status) => (Some(*status), None, false),
+            _ => (None, None, false),
+        };
+        let retryable = status.is_some_and(retry::retryable)
+            || quota
+            || matches!(self, Self::Http(error) if error.is_connect() || error.is_timeout());
+        let rate_limited = status
+            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            || retry_after.is_some();
+        let permanent = !retryable
+            && (matches!(
+                self,
+                Self::UnknownModel { .. }
+                    | Self::Unsupported(_)
+                    | Self::Credentials(_)
+                    | Self::NeedsLogin(_)
+                    | Self::Authentication(_)
+                    | Self::BadRequest(_)
+                    | Self::MalformedStream(_)
+            ));
+        ErrorClass {
+            retryable,
+            retry_after,
+            rate_limited,
+            permanent,
+        }
+    }
+}
+
 #[cfg(test)]
 mod job_tests {
     use super::*;
+
+    #[test]
+    fn provider_error_classes_cover_gateway_decisions() {
+        use reqwest::StatusCode;
+        use std::time::Duration;
+        let limited = Error::ProviderResponse {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "slow down".into(),
+            retry_after: Some(Duration::from_secs(2)),
+            reason: ProviderFailureReason::Other,
+        };
+        assert_eq!(
+            limited.classify(),
+            ErrorClass {
+                retryable: true,
+                retry_after: Some(Duration::from_secs(2)),
+                rate_limited: true,
+                permanent: false,
+            }
+        );
+        let quota = Error::ProviderResponse {
+            status: StatusCode::FORBIDDEN,
+            message: "usage_limit_reached".into(),
+            retry_after: None,
+            reason: ProviderFailureReason::Quota,
+        };
+        assert!(quota.classify().retryable);
+        assert!(!quota.classify().permanent);
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::CONFLICT,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let class = Error::Status(status).classify();
+            assert!(class.retryable);
+            assert!(!class.rate_limited);
+        }
+        for error in [
+            Error::Authentication("auth".into()),
+            Error::BadRequest("bad".into()),
+            Error::MalformedStream("stream".into()),
+            Error::UnknownModel {
+                provider: "p".into(),
+                model: "m".into(),
+            },
+        ] {
+            let class = error.classify();
+            assert!(class.permanent);
+            assert!(!class.retryable);
+        }
+        assert!(
+            !Error::ContextOverflow("too long".into())
+                .classify()
+                .permanent
+        );
+    }
 
     #[tokio::test]
     async fn catalog_dispatch_requires_credentials_and_rejects_unimplemented_protocols() {

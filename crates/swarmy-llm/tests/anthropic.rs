@@ -489,6 +489,7 @@ async fn context_overflow_and_other_client_errors_do_not_retry() {
         (400, "prompt is too long: 300000 tokens", true),
         (413, "request_too_large", true),
         (401, "invalid key", false),
+        (400, "invalid request", false),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -503,7 +504,16 @@ async fn context_overflow_and_other_client_errors_do_not_retry() {
             assert!(matches!(error, Error::ContextOverflow(_)));
         } else {
             // The provider's own text is kept for non-retryable failures.
-            assert!(matches!(&error, Error::Protocol(message) if message.contains("invalid key")));
+            assert!(
+                matches!((&error, status),
+                    (Error::Authentication(message), 401) if message.contains("invalid key")
+                ) || matches!((&error, status),
+                    (Error::BadRequest(message), 400) if message.contains("invalid request")
+                )
+            );
+            let class = error.classify();
+            assert!(class.permanent);
+            assert!(!class.retryable);
         }
     }
 }
@@ -569,8 +579,10 @@ async fn retry_policy_honors_server_delay_and_backoff_cap() {
     let start = tokio::time::Instant::now();
     let result = with_retry(&policy, || async {
         if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-            Err(Error::Retryable {
+            Err(Error::ProviderResponse {
                 status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                message: "limited".into(),
+                reason: swarmy_llm::ProviderFailureReason::Quota,
                 retry_after: Some(Duration::from_secs(10)),
             })
         } else {
