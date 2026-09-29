@@ -473,8 +473,7 @@ async fn assert_user_order(fixture: &Fixture, id: SessionId) {
     let shown = String::from_utf8(shown.stdout).unwrap();
     // The first line is the typed session; usage rides on it.
     let mut lines = shown.lines();
-    let record: swarmy_api_types::Session =
-        serde_json::from_str(lines.next().unwrap()).unwrap();
+    let record: swarmy_api_types::Session = serde_json::from_str(lines.next().unwrap()).unwrap();
     let usage = record.usage.expect("session detail carries usage");
     assert_eq!(usage.cost_dollars, "0.0000");
     let events: Vec<Event> = lines

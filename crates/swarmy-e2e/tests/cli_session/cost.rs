@@ -363,8 +363,7 @@ async fn agent_and_session_show_name_entries_and_cost_per_entry() {
         let shown = fixture.output(&["agent", "show", "coster", "--json"]).await;
         assert!(shown.status.success());
         let agent: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
-        let agent_id: swarmy_core::AgentId =
-            serde_json::from_value(agent["id"].clone()).unwrap();
+        let agent_id: swarmy_core::AgentId = serde_json::from_value(agent["id"].clone()).unwrap();
         let first = session_for(&fixture, Some(agent_id)).await;
         let second = session_for(&fixture, Some(agent_id)).await;
         complete(

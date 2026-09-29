@@ -806,10 +806,7 @@ async fn run_json_emits_only_machine_readable_records() {
             rows.iter()
                 .any(|row| row["delta"]["Text"]["text"] == "scripted ")
         );
-        assert!(
-            rows.iter()
-                .any(|row| row["state_changed"]["to"] == "idle")
-        );
+        assert!(rows.iter().any(|row| row["state_changed"]["to"] == "idle"));
         assert_eq!(rows.last().unwrap()["outcome"], "completed");
     })
     .await;
