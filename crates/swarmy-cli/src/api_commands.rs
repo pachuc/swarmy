@@ -779,7 +779,13 @@ async fn agent_create(
         github_token
     };
     let flags = inference(flags, false)?;
-    let image = image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image);
+    let image = image.or_else(|| {
+        swarmy_config::Settings::load()
+            .ok()?
+            .settings
+            .selection
+            .default_image
+    });
     let image = match image {
         Some(image) => image,
         None => request(endpoint, client.doctor())

@@ -49,7 +49,7 @@ for _ in $(seq 1 100); do
     sleep 0.2
 done
 mkdir -p "$work/.swarmy" "$work/gc-seed/rootfs"
-printf 'store_directory = "%s"\n' "$SWARMY_STORE_DIRECTORY" > "$work/.swarmy/config.toml"
+printf '[store]\ndirectory = "%s"\n' "$SWARMY_STORE_DIRECTORY" > "$work/.swarmy/config.toml"
 cat > "$work/gc-seed/recipe.toml" <<'RECIPE'
 disk_size = 536870912
 source_date_epoch = 1714003200

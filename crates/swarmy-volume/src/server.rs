@@ -338,21 +338,18 @@ fn start_snapshots(
     operations: Arc<tokio::sync::Mutex<()>>,
     policy: swarmy_config::VolumeSnapshots,
 ) -> crate::SnapshotLoop {
-    crate::SnapshotLoop::spawn(
-        Duration::from_secs(policy.period_seconds.get()),
-        move || {
-            let operations = operations.clone();
-            let writer = writer.clone();
-            let device = device.clone();
-            async move {
-                let _operation = operations.lock().await;
-                if device.has_unpublished_changes().await {
-                    writer.flush_if_dirty(None).await?;
-                }
-                Ok::<_, Error>(())
+    crate::SnapshotLoop::spawn(policy.period_secs, move || {
+        let operations = operations.clone();
+        let writer = writer.clone();
+        let device = device.clone();
+        async move {
+            let _operation = operations.lock().await;
+            if device.has_unpublished_changes().await {
+                writer.flush_if_dirty(None).await?;
             }
-        },
-    )
+            Ok::<_, Error>(())
+        }
+    })
 }
 
 fn start_renewal(

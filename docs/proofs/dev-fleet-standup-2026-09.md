@@ -77,7 +77,7 @@ forced path is covered by tests merged in pull request 152 on 2026-09-25:
 `waiting for inference: 429 rate limited`. The runbook documents the
 operator view ("Subscription limits": the breaker opens, workers park
 without a lease, status shows the reason, they continue when it clears,
-`max_wait_seconds` defaults to one hour).
+`max_wait_secs` defaults to one hour).
 
 **4. Peak memory under the node's RAM with headroom.** The runbook records
 three workers building at once at 3 GiB used, load 4, on the node

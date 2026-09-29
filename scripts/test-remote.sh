@@ -42,7 +42,7 @@ state = pathlib.Path(sys.argv[1])
     instance_id='localhost', public_ip=sys.argv[3], private_ip='127.0.0.1',
     key_path=sys.argv[2], ssh_user='ubuntu', ports=dict(fdb=4500, nats=4222, s3=8333),
     nodes=[], created_at='2026-09-16T00:00:00Z')))
-(state / 'config.toml').write_text('provider = "fake"\nstore_directory = "remote-acceptance"\nbus_prefix = "remote-acceptance"\ns3_prefix = "remote-acceptance"\n')
+(state / 'config.toml').write_text('[selection]\nprovider = "fake"\n[store]\ndirectory = "remote-acceptance"\n[bus]\nprefix = "remote-acceptance"\n[s3]\nprefix = "remote-acceptance"\n')
 PY
 cd "$work"
 cp "$repo/.dev/fdb.pid" "$work/fdb.pid"

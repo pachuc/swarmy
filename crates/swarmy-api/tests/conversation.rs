@@ -35,7 +35,7 @@ impl Fixture {
         NETWORK.get_or_init(swarmy_store::boot);
         let path = vec!["conversation-api-test".into(), Ulid::generate().to_string()];
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(&path),
             Arc::new(MemoryBlobStore::default()),
         )

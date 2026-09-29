@@ -13,8 +13,7 @@ use swarmy_core::{
 use swarmy_llm::{Delta, InferenceJob, InferenceJobRef, Response};
 use swarmy_store::{
     CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, ServiceDetail,
-    ServiceHeartbeat, ServiceRole, Store,
-    blob::{BlobStore, ObjectBlobStore},
+    ServiceHeartbeat, ServiceRole, Store, blob::BlobStore,
 };
 use tokio::{
     sync::Semaphore,
@@ -92,24 +91,17 @@ fn is_streamed_response(content_chunks: u32) -> bool {
 // Boot before the runtime so the network guard outlives all database tasks.
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-gateway")?;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    swarmy_config::init_tracing();
     let config = config::Config::from_env()?;
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run(config))
 }
 
 async fn run(config: config::Config) -> Result<()> {
-    let blobs = Arc::new(ObjectBlobStore::from_env()?);
-    let store = Store::open(
-        Some(&config.cluster),
-        Some(&config.directory),
-        blobs.clone(),
-    )
-    .await?;
+    let opened = Store::open_store(&config.settings).await?;
+    let store = opened.store;
+    let blobs = opened.blobs;
+    let blobs: Arc<dyn swarmy_store::blob::BlobStore> = blobs;
     let providers = Providers::discover(store.clone(), &config.settings).await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     let mut messages = futures::stream::SelectAll::new();
@@ -119,19 +111,21 @@ async fn run(config: config::Config) -> Result<()> {
         blobs,
         bus,
         providers,
-        default_provider: config.settings.provider,
+        default_provider: config.settings.selection.provider.clone(),
         summarize_at_tokens: config
             .settings
-            .summarize_at_tokens
+            .context
+            .summarize_at
             .map(std::num::NonZeroU64::get),
         model_context_window_tokens: config
             .settings
-            .model_context_window_tokens
+            .context
+            .context_window
             .map(std::num::NonZeroU64::get),
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
-        max_backoff: Duration::from_secs(config.settings.inference.max_backoff_seconds.get()),
+        max_backoff: config.settings.inference.max_backoff_secs,
         health_id: Ulid::generate().to_string(),
         started_at: Timestamp::now(),
     });

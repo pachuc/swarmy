@@ -60,7 +60,7 @@ impl<'a> Options<'a> {
             swarmy_config::Keyring::read(path)?;
         }
         let credential = if copy {
-            let path = PathBuf::from(&settings.credential_file);
+            let path = settings.selection.credential_file.clone();
             crate::Error::ensure(
                 path.is_file(),
                 "configure credential_file before using --copy-credential",
@@ -71,7 +71,7 @@ impl<'a> Options<'a> {
         };
         crate::Error::ensure(
             settings.remote.services != RemoteServices::Node
-                || settings.provider == "fake"
+                || settings.selection.provider == "fake"
                 || credential.is_some(),
             "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
         )?;
@@ -79,14 +79,29 @@ impl<'a> Options<'a> {
         // the selected tunnel profile must never become node configuration.
         let mut remote = Settings {
             api: settings.api.clone(),
-            provider: settings.provider.clone(),
-            model: settings.model.clone(),
-            reasoning_effort: settings.reasoning_effort.clone(),
-            system_prompt: settings.system_prompt.clone(),
-            store_directory: settings.store_directory.clone(),
-            bus_prefix: settings.bus_prefix.clone(),
-            s3_prefix: settings.s3_prefix.clone(),
-            credential_file: "/etc/swarmy/auth.json".into(),
+            selection: swarmy_config::SelectionSettings {
+                provider: settings.selection.provider.clone(),
+                model: settings.selection.model.clone(),
+                effort: settings.selection.effort,
+                credential_file: "/etc/swarmy/auth.json".into(),
+                ..swarmy_config::SelectionSettings::default()
+            },
+            context: swarmy_config::ContextSettings {
+                system_prompt: settings.context.system_prompt.clone(),
+                ..swarmy_config::ContextSettings::default()
+            },
+            store: swarmy_config::StoreSettings {
+                directory: settings.store.directory.clone(),
+                ..Default::default()
+            },
+            bus: swarmy_config::BusSettings {
+                prefix: settings.bus.prefix.clone(),
+                ..swarmy_config::BusSettings::default()
+            },
+            s3: swarmy_config::S3Settings {
+                prefix: settings.s3.prefix.clone(),
+                ..swarmy_config::S3Settings::default()
+            },
             fake: swarmy_config::Fake {
                 script: "/etc/swarmy/fake.json".into(),
                 call_log: "/home/ubuntu/swarmy/.swarmy/calls.log".into(),
@@ -101,7 +116,7 @@ impl<'a> Options<'a> {
             remote.api.token = ulid::Ulid::generate().to_string();
         }
         let fake_script = if settings.remote.services == RemoteServices::Node
-            && settings.provider == "fake"
+            && settings.selection.provider == "fake"
         {
             Some(match std::fs::read(&settings.fake.script) {
                     Ok(script) => script,

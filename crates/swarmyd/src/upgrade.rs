@@ -1,10 +1,9 @@
 //! Query the running node through its existing control protocol before replacing it.
 //! This runs in the newly built binary while the old daemon still owns the runtime.
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use swarmy_core::{AgentId, ExecOutput, ExecRequest, NodeId, Sandbox};
-use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -89,18 +88,8 @@ async fn process_list_with_timeout(
 
 pub async fn run(loaded: &swarmy_config::Loaded, warn: impl Fn(&str)) -> Result<Vec<String>> {
     let node: NodeId = loaded.node_id()?;
-    let settings = &loaded.settings;
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    let store = Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(&directory),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await?;
+    let opened = swarmy_store::Store::open_store(&loaded.settings).await?;
+    let store = opened.store;
     let socket = loaded.root.join(".swarmy/node/control.sock");
     let mut after = None;
     let mut busy = Vec::new();

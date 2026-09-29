@@ -22,7 +22,6 @@ swarmy-volume.workspace = true
 object_store.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
 swarmy-store = { workspace = true, features = ["test-support"] }

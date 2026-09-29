@@ -65,7 +65,7 @@ impl Fixture {
         let settings = swarmy_config::Settings::load().unwrap().settings;
         let namespace = format!("swarmy-vol-test-{}", ulid::Ulid::generate());
         let store = Store::open(
-            Some(&settings.fdb_cluster_file),
+            Some(settings.store.cluster_file.as_path()),
             Some(std::slice::from_ref(&namespace)),
             Arc::new(MemoryBlobStore::default()),
         )

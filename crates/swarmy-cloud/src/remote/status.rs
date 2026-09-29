@@ -428,7 +428,7 @@ mod tests {
                 swarmy_core::NodeRecord {
                     node_id: swarmy_core::NodeId::from_ulid(ulid::Ulid::generate()),
                     roles: vec![],
-                    capacity: Settings::default().node_capacity,
+                    capacity: Settings::default().node.capacity,
                     last_heartbeat: jiff::Timestamp::from_second(
                         jiff::Timestamp::now().as_second() - seconds,
                     )

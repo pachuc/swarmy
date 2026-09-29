@@ -14,28 +14,28 @@ use crate::blob::BlobError;
 
 fn regional_mode(settings: &Settings) -> (bool, bool) {
     (
-        settings.s3_endpoint.is_empty(),
-        settings.s3_access_key.is_empty() && settings.s3_secret_key.is_empty(),
+        settings.s3.endpoint.is_empty(),
+        settings.s3.access_key.is_empty() && settings.s3.secret_key.is_empty(),
     )
 }
 
 fn finish(base: AmazonS3Builder, settings: &Settings, bucket: &str) -> AmazonS3Builder {
     let mut builder = base
         .with_bucket_name(bucket)
-        .with_region(&settings.s3_region);
+        .with_region(&settings.s3.region);
     let (regional, default_credentials) = regional_mode(settings);
     if regional {
         builder = builder.with_virtual_hosted_style_request(true);
     } else {
         builder = builder
-            .with_endpoint(&settings.s3_endpoint)
+            .with_endpoint(&settings.s3.endpoint)
             .with_allow_http(true)
             .with_virtual_hosted_style_request(false);
     }
     if !default_credentials {
         builder = builder
-            .with_access_key_id(&settings.s3_access_key)
-            .with_secret_access_key(&settings.s3_secret_key);
+            .with_access_key_id(&settings.s3.access_key)
+            .with_secret_access_key(&settings.s3.secret_key);
     }
     builder
 }
@@ -143,9 +143,9 @@ mod tests {
         // The nodes carry no static keys: the client must fall back to the
         // instance-metadata provider for the instance role.
         let mut settings = Settings::default();
-        settings.s3_endpoint.clear();
-        settings.s3_access_key.clear();
-        settings.s3_secret_key.clear();
+        settings.s3.endpoint.clear();
+        settings.s3.access_key.clear();
+        settings.s3.secret_key.clear();
         assert_eq!(regional_mode(&settings), (true, true));
         let regional = builder_with_env(&settings, "bucket", &HashMap::new())
             .build()
@@ -165,9 +165,9 @@ mod tests {
         // honoured, proving the no-keys tests above exercise the real
         // environment path rather than a stub.
         let mut settings = Settings::default();
-        settings.s3_endpoint.clear();
-        settings.s3_access_key.clear();
-        settings.s3_secret_key.clear();
+        settings.s3.endpoint.clear();
+        settings.s3.access_key.clear();
+        settings.s3.secret_key.clear();
         let env = HashMap::from([
             ("AWS_ACCESS_KEY_ID".into(), "env-key".into()),
             ("AWS_SECRET_ACCESS_KEY".into(), "env-secret".into()),
@@ -186,14 +186,12 @@ mod tests {
         {
             return;
         }
-        let settings = Settings {
-            s3_endpoint: String::new(),
-            s3_bucket: "bucket".into(),
-            s3_region: "eu-west-1".into(),
-            s3_access_key: String::new(),
-            s3_secret_key: String::new(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.s3.endpoint.clear();
+        settings.s3.access_key.clear();
+        settings.s3.secret_key.clear();
+        settings.s3.bucket = "bucket".into();
+        settings.s3.region = "eu-west-1".into();
         let regional = builder_with_env(&settings, "bucket", &HashMap::new())
             .build()
             .unwrap();
@@ -207,10 +205,8 @@ mod tests {
 
     #[test]
     fn bucket_path_is_rejected() {
-        let settings = Settings {
-            s3_bucket: "bucket/run/nested".into(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.s3.bucket = "bucket/run/nested".into();
         assert!(from_settings(&settings).is_err());
     }
 }

@@ -14,7 +14,7 @@ async fn continuous_writes_and_retained_crash_images() {
     };
     let _network = swarmy_store::boot();
     let store = swarmy_store::Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(&[format!("boundary-nbd-{}", ulid::Ulid::generate())]),
         Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
     )

@@ -494,7 +494,7 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     };
     let _network = swarmy_store::boot();
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(&[format!("swarmy-upload-fencing-{}", ulid::Ulid::generate())]),
         Arc::new(MemoryBlobStore::default()),
     )

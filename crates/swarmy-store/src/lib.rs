@@ -120,6 +120,17 @@ pub fn boot() -> foundationdb::api::NetworkAutoStop {
     unsafe { foundationdb::boot() }
 }
 
+/// Open a `FoundationDB` database from a cluster file path without converting
+/// at the call site. Rejects non-UTF-8 paths instead of silently mangling them.
+/// # Errors
+/// Returns client errors or rejects a non-UTF-8 cluster path.
+pub fn database(cluster_file: &std::path::Path) -> Result<Database> {
+    let path = cluster_file
+        .to_str()
+        .ok_or(StorageError::NonUtf8ClusterFile)?;
+    Ok(Database::new(Some(path))?)
+}
+
 /// Wait for a process shutdown signal: SIGINT (Ctrl-C) or SIGTERM.
 /// Systemd and the node launchers stop services with SIGTERM, so waiting
 /// only for Ctrl-C would skip the metric flush on every real shutdown.
@@ -182,16 +193,25 @@ fn metrics_channel() -> (
     tokio::sync::mpsc::channel(crate::metrics::METRICS_CHANNEL_BOUND)
 }
 
+/// Store and blob handles opened together from one settings object.
+pub struct OpenedStore {
+    pub store: Store,
+    pub blobs: Arc<crate::blob::ObjectBlobStore>,
+}
+
 impl Store {
     /// Open the `swarmy` directory, or a separate directory path for isolation.
     /// # Errors
     /// Returns client, directory, or transaction errors.
     pub async fn open(
-        cluster_file: Option<&str>,
+        cluster_file: Option<&std::path::Path>,
         directory: Option<&[String]>,
         blobs: Arc<dyn BlobStore>,
     ) -> Result<Self> {
-        let db = Arc::new(Database::new(cluster_file)?);
+        let db = match cluster_file {
+            Some(path) => Arc::new(crate::database(path)?),
+            None => Arc::new(Database::new(None)?),
+        };
         let path = directory.map_or_else(|| vec!["swarmy".into()], <[String]>::to_vec);
         let prefix = db
             .run(|trx, _| {
@@ -220,6 +240,25 @@ impl Store {
         };
         store.ensure_metrics_drain();
         Ok(store)
+    }
+
+    /// Open the store described by `settings`: its cluster file, directory
+    /// namespace, and object namespace. Every service starts here instead of
+    /// splitting the directory and building a blob client by hand.
+    /// # Errors
+    /// Returns configuration, client, directory, or transaction errors.
+    pub async fn open_store(settings: &swarmy_config::Settings) -> Result<OpenedStore> {
+        let directory = settings
+            .store_directory_path()
+            .map_err(crate::blob::BlobError::from)?;
+        let blobs = Arc::new(crate::blob::ObjectBlobStore::from_settings(settings)?);
+        let store = Self::open(
+            Some(settings.store.cluster_file.as_path()),
+            Some(&directory),
+            blobs.clone(),
+        )
+        .await?;
+        Ok(OpenedStore { store, blobs })
     }
 
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
