@@ -266,8 +266,7 @@ impl Hosting {
         Ok(placement)
     }
 
-    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient")]
     fn observe_computer_boot(
         &self,
         session: SessionId,

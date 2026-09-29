@@ -364,8 +364,7 @@ fn inference(
                     "Bedrock temperature must be between 0 and 1".into(),
                 ));
             }
-            // Bedrock uses f32 for sampling parameters; the value is bounded above.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "Bedrock takes f32 sampling parameters; the value is checked finite within 0.0..=1.0 just above")]
             Ok(value as f32)
         })
         .transpose()?;

@@ -528,8 +528,7 @@ impl crate::Store {
     /// rows are scanned; per-request and per-tool rows are never read here.
     /// # Errors
     /// Returns agent lookup or database failures.
-    // Aggregate rates and durations have only approximate floating-point precision.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss, reason = "aggregate rates and durations have only approximate floating-point precision")]
     pub async fn agent_turn_metrics(
         &self,
         agent: AgentId,

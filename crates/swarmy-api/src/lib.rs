@@ -113,8 +113,7 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
         }),
     )
 }
-// `map_err` passes the owned error; taking a reference would require closures at every call site.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value, reason = "`map_err` passes the owned error; taking a reference would require closures at every call site")]
 fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
     use swarmy_store::StoreError;
     match value {

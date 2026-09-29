@@ -117,14 +117,14 @@ fn calendar_start(value: &str, now: Timestamp) -> Option<Timestamp> {
                 jiff::civil::Weekday::Saturday => 5,
                 jiff::civil::Weekday::Sunday => 6,
             };
-            date.saturating_sub(jiff::ToSpan::days(days))
+            date.saturating_sub(ToSpan::days(days))
         }
         "month" => date.first_of_month(),
         _ => date.first_of_year(),
     };
     let span = match unit {
-        "day" => jiff::ToSpan::days(back - 1),
-        "week" => jiff::ToSpan::days((back - 1).checked_mul(7)?),
+        "day" => ToSpan::days(back - 1),
+        "week" => ToSpan::days((back - 1).checked_mul(7)?),
         "month" => (back - 1).months(),
         _ => (back - 1).years(),
     };

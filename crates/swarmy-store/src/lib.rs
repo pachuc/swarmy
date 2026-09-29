@@ -112,7 +112,7 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 /// Tests should share one guard through `std::sync::OnceLock`.
 /// # Panics
 /// Panics if the `FoundationDB` client cannot initialize or was already booted.
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "the FoundationDB client requires unsafe boot")]
 #[must_use]
 pub fn boot() -> foundationdb::api::NetworkAutoStop {
     // The FoundationDB client requires unsafe boot; callers retain the network

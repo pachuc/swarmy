@@ -249,10 +249,7 @@ impl From<Event> for BinaryEvent {
     }
 }
 impl From<BinaryEvent> for Event {
-    // The binary layout contract lives in this one exhaustive table: one arm
-    // per frozen discriminant. Splitting arms further would scatter the
-    // mapping the discriminant test freezes, so the length lint is allowed here.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "the binary layout contract lives in this one exhaustive table: one arm per frozen discriminant, and splitting arms further would scatter the mapping the discriminant test freezes")]
     fn from(event: BinaryEvent) -> Self {
         match event {
             BinaryEvent::MessageAppended { seq, message } => Self::MessageAppended { seq, message },

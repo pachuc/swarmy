@@ -3,13 +3,7 @@ use crate::{TokenUsage, catalog::Cost};
 
 /// Compute the `OpenCode` formula, rounding only the final sum to whole micros.
 #[must_use]
-// Catalog prices are floating point. Saturating conversion intentionally caps
-// extreme totals; token counts above 2^53 already exceed practical request sizes.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
+#[expect(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "catalog prices are floating point; saturating conversion intentionally caps extreme totals, and token counts above 2^53 already exceed practical request sizes")]
 pub fn cost_micros(cost: &Cost, usage: &TokenUsage) -> u64 {
     let (input, output, read, write) = cost
         .tiers
