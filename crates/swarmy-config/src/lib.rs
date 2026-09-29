@@ -56,8 +56,6 @@ pub enum Error {
 mod duration {
     use std::time::Duration;
 
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
     #[derive(Clone, Copy)]
     pub(crate) enum Unit {
         Secs,
@@ -72,7 +70,10 @@ mod duration {
     }
 
     pub(crate) mod secs {
-        use super::*;
+        use super::ensure_positive;
+        use std::time::Duration;
+
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
         pub(crate) fn serialize<S: Serializer>(
             value: &Duration,
@@ -85,13 +86,16 @@ mod duration {
             deserializer: D,
         ) -> Result<Duration, D::Error> {
             let secs = u64::deserialize(deserializer)?;
-            super::ensure_positive(secs).map_err(serde::de::Error::custom)?;
+            ensure_positive(secs).map_err(serde::de::Error::custom)?;
             Ok(Duration::from_secs(secs))
         }
     }
 
     pub(crate) mod ms {
-        use super::*;
+        use super::ensure_positive;
+        use std::time::Duration;
+
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
         pub(crate) fn serialize<S: Serializer>(
             value: &Duration,
@@ -105,7 +109,7 @@ mod duration {
             deserializer: D,
         ) -> Result<Duration, D::Error> {
             let millis = u64::deserialize(deserializer)?;
-            super::ensure_positive(millis).map_err(serde::de::Error::custom)?;
+            ensure_positive(millis).map_err(serde::de::Error::custom)?;
             Ok(Duration::from_millis(millis))
         }
     }
@@ -888,17 +892,17 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_API_URL", |s, v, _| { s.api.url = Some(v.into()); Ok(()) }, |s| s.api.url.clone()),
     e!("SWARMY_API_TOKEN", |s, v, _| assign(&mut s.api.token, v), |s| Some(s.api.token.clone())),
     e!("SWARMY_API_LISTEN", |s, v, _| assign(&mut s.api.listen, v), |s| Some(s.api.listen.clone())),
-    e!("SWARMY_PROVIDER", set_provider, |s| Some(s.selection.provider.clone())),
-    e!("SWARMY_PROVIDERS", set_providers, format_providers),
-    e!("SWARMY_CUSTOM_PROVIDERS", set_custom_providers, format_custom_providers),
-    e!("SWARMY_MODELS", set_models, format_models),
+    e!("SWARMY_PROVIDER", |s, v, env| { set_provider(s, v, env); Ok(()) }, |s| Some(s.selection.provider.clone())),
+    e!("SWARMY_PROVIDERS", |s, v, _| { set_providers(s, v); Ok(()) }, |s| Some(format_providers(s))),
+    e!("SWARMY_CUSTOM_PROVIDERS", set_custom_providers, |s| Some(format_custom_providers(s))),
+    e!("SWARMY_MODELS", set_models, |s| Some(format_models(s))),
     e!("SWARMY_MODEL", |s, v, _| assign(&mut s.selection.model, v), |s| Some(s.selection.model.clone())),
     e!("SWARMY_DEFAULT_IMAGE", |s, v, _| { assign_opt_string(&mut s.selection.default_image, v); Ok(()) }, |s| Some(s.selection.default_image.clone().unwrap_or_default())),
     e!("SWARMY_REASONING_EFFORT", |s, v, _| assign(&mut s.selection.effort, v), |s| Some(s.selection.effort.to_string())),
     e!("SWARMY_CHATGPT_AUTH", |s, v, _| assign(&mut s.selection.credential_file, v), |s| Some(s.selection.credential_file.to_string_lossy().into_owned())),
     e!("SWARMY_SYSTEM_PROMPT", |s, v, _| assign(&mut s.context.system_prompt, v), |s| Some(s.context.system_prompt.clone())),
-    e!("SWARMY_SUMMARIZE_AT_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.summarize_at, v), format_summarize_at),
-    e!("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.context_window, v), format_context_window),
+    e!("SWARMY_SUMMARIZE_AT_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.summarize_at, v), |s| Some(format_summarize_at(s))),
+    e!("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", |s, v, _| assign_opt_nonzero(&mut s.context.context_window, v), |s| Some(format_context_window(s))),
     e!("SWARMY_MEMORY_MAX_BYTES", |s, v, _| assign(&mut s.memory.max_bytes, v), |s| Some(s.memory.max_bytes.to_string())),
     e!("SWARMY_MEMORY_DIR", |s, v, _| assign(&mut s.memory.dir, v), |s| Some(s.memory.dir.to_string_lossy().into_owned())),
     e!("SWARMY_WORKER_PARTITIONS", |s, v, _| assign(&mut s.worker.partitions, v), |s| Some(s.worker.partitions.to_string())),
@@ -929,7 +933,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_GC_BATCH_SIZE", |s, v, _| assign(&mut s.gc.batch_size, v), |s| Some(s.gc.batch_size.to_string())),
     e!("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| assign(&mut s.gc.delete_concurrency, v), |s| Some(s.gc.delete_concurrency.to_string())),
     e!("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| assign(&mut s.metering.raw_retention_days, v), |s| Some(s.metering.raw_retention_days.to_string())),
-    e!("SWARMY_NODE_ROLES", set_node_roles, format_node_roles),
+    e!("SWARMY_NODE_ROLES", set_node_roles, |s| Some(format_node_roles(s))),
     e!("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |s, v, _| assign_duration(&mut s.node.heartbeat_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.node.heartbeat_interval_ms, duration::Unit::Millis))),
     e!("SWARMY_NODE_CPU_MILLIS", |s, v, _| assign(&mut s.node.capacity.cpu_millis, v), |s| Some(s.node.capacity.cpu_millis.to_string())),
     e!("SWARMY_NODE_MEMORY_RESERVE_MIB", set_node_memory_reserve, |s| s.node.memory_reserve_mib.map(|v| v.to_string())),
@@ -962,83 +966,62 @@ fn assign_opt_string(field: &mut Option<String>, value: &str) {
     *field = (!value.is_empty()).then(|| value.to_owned());
 }
 
-fn format_providers(settings: &Settings) -> Option<String> {
-    Some(
-        settings
-            .selection
-            .providers
-            .as_ref()
-            .map_or_else(String::new, |ids| ids.join(",")),
-    )
+fn format_providers(settings: &Settings) -> String {
+    settings
+        .selection
+        .providers
+        .as_ref()
+        .map_or_else(String::new, |ids| ids.join(","))
 }
 
-fn format_custom_providers(settings: &Settings) -> Option<String> {
-    Some(
-        serde_json::to_string(&settings.selection.custom_providers)
-            .expect("custom providers serialize"),
-    )
+fn format_custom_providers(settings: &Settings) -> String {
+    serde_json::to_string(&settings.selection.custom_providers).expect("custom providers serialize")
 }
 
-fn format_models(settings: &Settings) -> Option<String> {
-    Some(serde_json::to_string(&settings.selection.models).expect("catalog models serialize"))
+fn format_models(settings: &Settings) -> String {
+    serde_json::to_string(&settings.selection.models).expect("catalog models serialize")
 }
 
-fn format_summarize_at(settings: &Settings) -> Option<String> {
-    Some(
-        settings
-            .context
-            .summarize_at
-            .map_or_else(String::new, |n| n.to_string()),
-    )
+fn format_summarize_at(settings: &Settings) -> String {
+    settings
+        .context
+        .summarize_at
+        .map_or_else(String::new, |n| n.to_string())
 }
 
-fn format_context_window(settings: &Settings) -> Option<String> {
-    Some(
-        settings
-            .context
-            .context_window
-            .map_or_else(String::new, |n| n.to_string()),
-    )
+fn format_context_window(settings: &Settings) -> String {
+    settings
+        .context
+        .context_window
+        .map_or_else(String::new, |n| n.to_string())
 }
 
-fn format_node_roles(settings: &Settings) -> Option<String> {
-    Some(
-        settings
-            .node
-            .roles
-            .iter()
-            .map(|role| match role {
-                swarmy_core::NodeRole::Sandbox => "sandbox",
-                swarmy_core::NodeRole::Volume => "volume",
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    )
+fn format_node_roles(settings: &Settings) -> String {
+    settings
+        .node
+        .roles
+        .iter()
+        .map(|role| match role {
+            swarmy_core::NodeRole::Sandbox => "sandbox",
+            swarmy_core::NodeRole::Volume => "volume",
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
-fn set_provider(
-    settings: &mut Settings,
-    value: &str,
-    environment: &BTreeMap<String, String>,
-) -> Result<(), ()> {
+fn set_provider(settings: &mut Settings, value: &str, environment: &BTreeMap<String, String>) {
     settings.selection.provider = value.into();
     if !environment.contains_key("SWARMY_PROVIDERS") {
         settings.selection.providers = Some(vec![value.to_owned()]);
     }
-    Ok(())
 }
 
-fn set_providers(
-    settings: &mut Settings,
-    value: &str,
-    _environment: &BTreeMap<String, String>,
-) -> Result<(), ()> {
+fn set_providers(settings: &mut Settings, value: &str) {
     settings.selection.providers = if value.is_empty() {
         None
     } else {
         Some(value.split(',').map(|id| id.trim().to_owned()).collect())
     };
-    Ok(())
 }
 
 fn set_custom_providers(
@@ -1460,7 +1443,7 @@ mod tests {
         for (name, value) in distinct {
             exported.insert((*name).to_owned(), (*value).to_owned());
         }
-        exported.insert("SWARMY_NODE_ID".to_owned(), node_id.clone());
+        exported.insert("SWARMY_NODE_ID".to_owned(), node_id);
         for entry in ENV_TABLE {
             assert!(exported.contains_key(entry.name), "missing {}", entry.name);
         }
