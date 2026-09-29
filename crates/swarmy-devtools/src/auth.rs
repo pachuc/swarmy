@@ -12,7 +12,7 @@ pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Re
         Command::Import { file, label } => {
             let path = file
                 .or(auth_file)
-                .unwrap_or_else(|| PathBuf::from(settings.credential_file));
+                .unwrap_or_else(|| settings.selection.credential_file.clone());
             let credentials = FileCredentialStore::new(path).load().await?;
             let record = credentials.to_record()?;
             submit(&client, &endpoint, "chatgpt", label.as_deref(), &record).await?;

@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use jiff::Timestamp;
-use std::sync::Arc;
 use swarmy_api::{AppState, router};
 use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_config::Settings;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::ObjectBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;

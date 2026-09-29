@@ -1,7 +1,7 @@
 //! Run on a real node with a registered image and the fake development stack.
 //! The sandbox fleet lacks NBD, so the benchmark is opt-in there.
 use std::{
-    sync::{Arc, OnceLock},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use swarmy_api::{AppState, router};
