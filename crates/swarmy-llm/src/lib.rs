@@ -11,7 +11,6 @@ pub mod fake;
 pub(crate) mod protocol;
 pub(crate) mod quota;
 pub mod reasoning;
-pub mod responses;
 pub mod retry;
 pub mod selection;
 pub(crate) mod sse;

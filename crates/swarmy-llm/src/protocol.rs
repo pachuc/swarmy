@@ -62,88 +62,7 @@ fn repair_anthropic(messages: &mut Vec<Value>) {
 /// nowhere in the history gets a neutral placeholder call so switching
 /// providers never fails.
 fn repair_completions(messages: Vec<Value>) -> Vec<Value> {
-    let mut call_sites: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for (index, message) in messages.iter().enumerate() {
-        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-            for call in calls {
-                if let Some(id) = call.get("id").and_then(Value::as_str) {
-                    call_sites.entry(id.to_owned()).or_insert(index);
-                }
-            }
-        }
-    }
-    let mut taken = vec![false; messages.len()];
-    let mut messages = messages;
-    let mut repaired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut output = Vec::with_capacity(messages.len() * 2);
-    for index in 0..messages.len() {
-        if taken[index] {
-            continue;
-        }
-        let message = std::mem::take(&mut messages[index]);
-        if message.is_null() {
-            continue;
-        }
-        if message.get("role").and_then(Value::as_str) == Some("tool") {
-            let id = message
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if call_sites.contains_key(&id) {
-                // The result is pulled forward to its assistant message below,
-                // or was already emitted there; never emit it twice.
-                continue;
-            }
-            taken[index] = true;
-            output.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [{"id": id.clone(), "type": "function", "function": {"name": "unknown_tool", "arguments": "{}"}}]}));
-            repaired.insert(id);
-            output.push(message);
-            continue;
-        }
-        let calls: Vec<String> = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(|calls| {
-                calls
-                    .iter()
-                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        output.push(message);
-        for id in calls {
-            let mut found = None;
-            for (candidate, message) in messages.iter().enumerate() {
-                if taken[candidate] {
-                    continue;
-                }
-                if message.get("role").and_then(Value::as_str) == Some("tool")
-                    && message.get("tool_call_id").and_then(Value::as_str) == Some(&id)
-                {
-                    found = Some(candidate);
-                    break;
-                }
-            }
-            if let Some(candidate) = found {
-                taken[candidate] = true;
-                output.push(std::mem::take(&mut messages[candidate]));
-            } else {
-                output.push(json!({
-                    "role": "tool", "tool_call_id": id,
-                    "content": json!({"error": "No result provided"}).to_string()
-                }));
-            }
-        }
-    }
-    if !repaired.is_empty() {
-        tracing::warn!(
-            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
-            "repaired tool result without a stored tool call; synthesized unknown_tool call"
-        );
-    }
-    output
+    repair_paired(messages, ToolWire::Completions)
 }
 
 /// Keep valid wire IDs and hash unsupported ones without collisions.
@@ -160,48 +79,96 @@ pub(crate) fn sanitize_tool_id(id: &str, prefix: &str, max_len: usize) -> String
     format!("{prefix}{}", &hash[..(max_len - prefix.len()).min(64)])
 }
 
-fn repair_responses(mut items: Vec<Value>) -> Vec<Value> {
-    let known: std::collections::BTreeSet<String> = items
+fn repair_responses(messages: Vec<Value>) -> Vec<Value> {
+    repair_paired(messages, ToolWire::Responses)
+}
+
+fn call_ids(message: &Value, wire: ToolWire) -> Vec<String> {
+    match wire {
+        ToolWire::Completions => message["tool_calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call["id"].as_str().map(str::to_owned))
+            .collect(),
+        ToolWire::Responses => (message["type"] == "function_call")
+            .then(|| message["call_id"].as_str().map(str::to_owned))
+            .flatten()
+            .into_iter()
+            .collect(),
+        ToolWire::Anthropic => Vec::new(),
+    }
+}
+
+fn result_id(message: &Value, wire: ToolWire) -> Option<&str> {
+    match wire {
+        ToolWire::Completions if message["role"] == "tool" => message["tool_call_id"].as_str(),
+        ToolWire::Responses if message["type"] == "function_call_output" => {
+            message["call_id"].as_str()
+        }
+        _ => None,
+    }
+}
+
+fn missing_result(id: &str, wire: ToolWire) -> Value {
+    match wire {
+        ToolWire::Completions => json!({"role": "tool", "tool_call_id": id,
+            "content": json!({"error": "No result provided"}).to_string()}),
+        ToolWire::Responses => json!({"type": "function_call_output", "call_id": id,
+            "output": "Error: No result provided"}),
+        ToolWire::Anthropic => unreachable!("Anthropic has its own block adjacency"),
+    }
+}
+
+fn placeholder_call(id: &str, wire: ToolWire) -> Value {
+    match wire {
+        ToolWire::Completions => json!({"role": "assistant", "content": Value::Null,
+            "tool_calls": [{"id": id, "type": "function",
+                "function": {"name": "unknown_tool", "arguments": "{}"}}]}),
+        ToolWire::Responses => json!({"type": "function_call", "call_id": id,
+            "name": "unknown_tool", "arguments": "{}"}),
+        ToolWire::Anthropic => unreachable!("Anthropic has its own block adjacency"),
+    }
+}
+
+/// The same adjacency pass handles both item-based and message-based wire shapes.
+fn repair_paired(mut messages: Vec<Value>, wire: ToolWire) -> Vec<Value> {
+    let known: std::collections::BTreeSet<_> = messages
         .iter()
-        .filter(|item| item["type"] == "function_call")
-        .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
+        .flat_map(|message| call_ids(message, wire))
         .collect();
-    let mut taken = vec![false; items.len()];
+    let mut taken = vec![false; messages.len()];
     let mut repaired = std::collections::BTreeSet::new();
-    let mut output = Vec::with_capacity(items.len() * 2);
-    for index in 0..items.len() {
+    let mut output = Vec::with_capacity(messages.len() * 2);
+    for index in 0..messages.len() {
         if taken[index] {
             continue;
         }
-        let item = std::mem::take(&mut items[index]);
-        if item.is_null() {
+        let message = std::mem::take(&mut messages[index]);
+        if message.is_null() {
             continue;
         }
-        if item["type"] == "function_call_output" {
-            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
+        if let Some(id) = result_id(&message, wire).map(str::to_owned) {
             if known.contains(&id) {
                 continue;
             }
             taken[index] = true;
-            output.push(json!({"type": "function_call", "call_id": id.clone(), "name": "unknown_tool", "arguments": "{}"}));
+            output.push(placeholder_call(&id, wire));
             repaired.insert(id);
-            output.push(item);
-        } else if item["type"] == "function_call" {
-            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
-            output.push(item);
-            if let Some(candidate) = items.iter().enumerate().find_map(|(candidate, other)| {
-                (!taken[candidate]
-                    && other["type"] == "function_call_output"
-                    && other["call_id"].as_str() == Some(&id))
-                .then_some(candidate)
+            output.push(message);
+            continue;
+        }
+        let calls = call_ids(&message, wire);
+        output.push(message);
+        for id in calls {
+            if let Some(candidate) = messages.iter().enumerate().find_map(|(candidate, other)| {
+                (!taken[candidate] && result_id(other, wire) == Some(&id)).then_some(candidate)
             }) {
                 taken[candidate] = true;
-                output.push(std::mem::take(&mut items[candidate]));
+                output.push(std::mem::take(&mut messages[candidate]));
             } else {
-                output.push(json!({"type": "function_call_output", "call_id": id, "output": "Error: No result provided"}));
+                output.push(missing_result(&id, wire));
             }
-        } else {
-            output.push(item);
         }
     }
     if !repaired.is_empty() {

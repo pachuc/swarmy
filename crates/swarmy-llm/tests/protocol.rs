@@ -4,9 +4,27 @@ use std::{collections::BTreeMap, time::Duration};
 use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult};
 use swarmy_llm::{
     Delta, GenerationSettings, Provider, ReasoningEffort, Request, Response, StopReason,
-    TokenUsage, ToolDefinition,
-    responses::{ResponsesStream as SseParser, request_json},
+    TokenUsage, ToolDefinition, api::responses::ResponsesStream as SseParser,
 };
+
+fn request_json(request: &Request) -> Result<Value, swarmy_llm::Error> {
+    use swarmy_llm::{
+        ClientAuth,
+        api::responses::{ResponsesEndpoint, request_json_for},
+        catalog::Compat,
+    };
+    let endpoint = ResponsesEndpoint {
+        url: "https://example.invalid".into(),
+        auth: ClientAuth::ApiKey("fixture".into()),
+        extra_headers: BTreeMap::new(),
+        codex: false,
+        compat: Compat(BTreeMap::from([(
+            "supports_developer_role".into(),
+            json!(true),
+        )])),
+    };
+    request_json_for(request, &endpoint, "fixture", None, None)
+}
 
 fn request() -> Request {
     Request {
@@ -409,8 +427,8 @@ fn responses_input(req: &Request) -> Vec<Value> {
         swarmy_llm::ClientAuth::ApiKey("test-key".into()),
     )
     .unwrap();
-    swarmy_llm::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None).unwrap()
-        ["input"]
+    swarmy_llm::api::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None)
+        .unwrap()["input"]
         .as_array()
         .unwrap()
         .clone()

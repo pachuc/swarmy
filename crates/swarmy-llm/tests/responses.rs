@@ -648,7 +648,7 @@ impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
 
 #[test]
 fn summary_request_disables_responses_cache_affinity() {
-    use swarmy_llm::responses::request_json_for;
+    use swarmy_llm::api::responses::request_json_for;
     let model = catalog_model("openai", "gpt-5.5");
     let provider = Catalog::get().provider("openai").unwrap();
     let endpoint =
