@@ -6,9 +6,7 @@ use std::{
     time::Duration,
 };
 use swarmy_core::{AgentId, Event, ManifestId, NodeId, SessionId, ToolResult, VolumeId};
-use swarmy_sandbox::{
-    BlockDevice, ExecOutput, ExecRequest, RuncRuntime, SandboxSpec,
-};
+use swarmy_sandbox::{BlockDevice, ExecOutput, ExecRequest, RuncRuntime, SandboxSpec};
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
 

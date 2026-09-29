@@ -8,7 +8,7 @@ use swarmy_core::{
     AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
     SessionId, ToolJob,
 };
-use swarmy_sandbox::{RuncRuntime};
+use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
