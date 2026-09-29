@@ -4426,7 +4426,7 @@
             }
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/ServiceRole"
           },
           "version": {
             "type": "string"

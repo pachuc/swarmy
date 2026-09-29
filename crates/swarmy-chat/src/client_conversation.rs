@@ -866,8 +866,7 @@ fn select_fresh(
 }
 
 fn service_problem(services: &[api::ServiceHealth], provider: Option<&str>) -> &'static str {
-    let alive =
-        |role: api::ServiceRole| services.iter().any(|s| s.alive && s.role == role);
+    let alive = |role: api::ServiceRole| services.iter().any(|s| s.alive && s.role == role);
     if !alive(api::ServiceRole::Worker) {
         "No worker is alive"
     } else if !alive(api::ServiceRole::Scheduler) {
@@ -886,9 +885,9 @@ fn service_problem(services: &[api::ServiceHealth], provider: Option<&str>) -> &
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn service(role: &str, providers: &[&str], alive: bool) -> api::ServiceHealth {
+    fn service(role: api::ServiceRole, providers: &[&str], alive: bool) -> api::ServiceHealth {
         api::ServiceHealth {
-            role: role.into(),
+            role,
             instance_id: String::new(),
             version: String::new(),
             alive,
@@ -906,9 +905,9 @@ mod tests {
     #[test]
     fn health_reports_missing_services_and_provider() {
         let mut services = vec![
-            service("worker", &[], false),
-            service("scheduler", &[], true),
-            service("gateway", &["fake"], true),
+            service(api::ServiceRole::Worker, &[], false),
+            service(api::ServiceRole::Scheduler, &[], true),
+            service(api::ServiceRole::Gateway, &["fake"], true),
         ];
         assert_eq!(
             service_problem(&services, Some("fake")),

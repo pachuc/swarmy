@@ -256,7 +256,7 @@ async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse>
     let services: Vec<_> = services
         .into_iter()
         .map(|s| api::ServiceHealth {
-            role: views::service_role(s.heartbeat.role),
+            role: views::service_role(&s.heartbeat.role),
             instance_id: s.heartbeat.instance_id,
             version: s.heartbeat.version,
             alive: s.alive,
@@ -287,7 +287,7 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
     let services: Vec<_> = services
         .into_iter()
         .map(|service| api::DoctorService {
-            role: views::service_role(service.heartbeat.role),
+            role: views::service_role(&service.heartbeat.role),
             instance_id: service.heartbeat.instance_id,
             version: service.heartbeat.version,
             alive: service.alive,

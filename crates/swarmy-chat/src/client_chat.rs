@@ -446,7 +446,7 @@ impl View {
                 };
                 match record {
                     swarmy_core::Event::StateChanged { to, .. } => {
-                        self.state = api::SessionState::from(to).as_str().to_owned();
+                        api::SessionState::from(to).as_str().clone_into(&mut self.state);
                         self.ready = to == swarmy_core::SessionState::Idle;
                         if self.ready {
                             self.partial.clear();

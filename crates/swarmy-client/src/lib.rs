@@ -180,7 +180,9 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("agents/{}", segment(id)),
-            &api::DeleteRequest { idempotency_key: key.to_owned() },
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -496,7 +498,9 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("credentials/{}", segment(provider)),
-            &api::DeleteRequest { idempotency_key: key.to_owned() },
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -526,7 +530,9 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("credentials/{}/{}", segment(provider), segment(label)),
-            &api::DeleteRequest { idempotency_key: key.to_owned() },
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -652,7 +658,9 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("routes/{}", segment(name)),
-            &api::DeleteRequest { idempotency_key: key.to_owned() },
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }

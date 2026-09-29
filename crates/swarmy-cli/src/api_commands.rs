@@ -420,10 +420,10 @@ async fn show_session(
             .as_ref()
             .map_or("-".to_owned(), |scratch| scratch.node_id.clone());
         let scratch_bytes = record.scratch.as_ref().map_or(0, |scratch| scratch.bytes);
-        let sandbox_memory = record
-            .requirements
-            .as_ref()
-            .map_or_else(|| "-".into(), |requirements| requirements.memory_mib.to_string());
+        let sandbox_memory = record.requirements.as_ref().map_or_else(
+            || "-".into(),
+            |requirements| requirements.memory_mib.to_string(),
+        );
         let sandbox_gpu = record
             .requirements
             .as_ref()

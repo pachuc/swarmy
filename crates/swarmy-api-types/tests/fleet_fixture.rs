@@ -9,13 +9,16 @@ const SAMPLE: &str = include_str!("../../../scripts/fleet/fixtures/typed_sample.
 fn fleet_fixture_matches_typed_structs() {
     let value: serde_json::Value =
         serde_json::from_str(SAMPLE).expect("fleet fixture is valid JSON");
-    let agent: Agent = serde_json::from_value(value["agent_show"].clone())
-        .expect("agent_show matches api::Agent");
+    let agent: Agent =
+        serde_json::from_value(value["agent_show"].clone()).expect("agent_show matches api::Agent");
     assert_eq!(agent.id, "01AGENT");
     assert_eq!(agent.name, "worker-1");
     assert_eq!(agent.main_session_id.as_deref(), Some("01AAAA"));
     assert_eq!(
-        agent.usage.as_ref().map(|usage| usage.cost_dollars.as_str()),
+        agent
+            .usage
+            .as_ref()
+            .map(|usage| usage.cost_dollars.as_str()),
         Some("1.25")
     );
 

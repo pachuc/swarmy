@@ -237,7 +237,7 @@ pub(crate) fn node_capacity(value: &swarmy_core::NodeCapacity) -> api::NodeCapac
 }
 
 #[must_use]
-pub(crate) fn service_role(value: store::ServiceRole) -> api::ServiceRole {
+pub(crate) fn service_role(value: &store::ServiceRole) -> api::ServiceRole {
     match value {
         store::ServiceRole::Scheduler => api::ServiceRole::Scheduler,
         store::ServiceRole::Worker => api::ServiceRole::Worker,
@@ -267,9 +267,7 @@ pub(crate) fn service_providers(detail: &store::ServiceDetail) -> Vec<String> {
 
 /// Node capacity behind one heartbeat, if the service reports any.
 #[must_use]
-pub(crate) fn service_capacity(
-    detail: &store::ServiceDetail,
-) -> Option<api::NodeCapacity> {
+pub(crate) fn service_capacity(detail: &store::ServiceDetail) -> Option<api::NodeCapacity> {
     match detail {
         store::ServiceDetail::Capacity(value) => Some(node_capacity(value)),
         _ => None,
@@ -277,9 +275,7 @@ pub(crate) fn service_capacity(
 }
 
 #[must_use]
-pub(crate) fn credential(
-    value: store::credentials::CredentialSummary,
-) -> api::Credential {
+pub(crate) fn credential(value: store::credentials::CredentialSummary) -> api::Credential {
     api::Credential {
         provider: value.provider,
         kind: match value.kind.as_str() {
@@ -512,16 +508,12 @@ pub(crate) async fn populate_session_detail(
             .await
             .map_err(storage)?
             .unwrap_or(swarmy_core::SandboxRequirements::default().memory_mib);
-        result.requirements = Some(requirements(
-            swarmy_core::SandboxRequirements {
-                memory_mib,
-                gpu: swarmy_core::GpuRequirement::default(),
-            },
-        ));
+        result.requirements = Some(requirements(swarmy_core::SandboxRequirements {
+            memory_mib,
+            gpu: swarmy_core::GpuRequirement::default(),
+        }));
     } else {
-        result.requirements = Some(requirements(
-            swarmy_core::SandboxRequirements::default(),
-        ));
+        result.requirements = Some(requirements(swarmy_core::SandboxRequirements::default()));
     }
     let placement = state
         .store
@@ -768,33 +760,33 @@ mod tests {
         let converted = into_api_tool(store::ToolMetric {
             request_id: "c-3".into(),
             name: "bash".into(),
-            dispatched_ns: 5,
-            started_ns: 6,
-            completed_ns: 9,
+            dispatched_ns: Some(5),
+            started_ns: Some(6),
+            completed_ns: Some(9),
             exit_status: Some(0),
-            output_bytes: 128,
+            output_bytes: Some(128),
             ..store::ToolMetric::default()
         });
         assert_eq!(converted.request_id, "c-3");
         assert_eq!(converted.name, "bash");
-        assert_eq!(converted.dispatched_ns, 5);
-        assert_eq!(converted.started_ns, 6);
-        assert_eq!(converted.completed_ns, 9);
+        assert_eq!(converted.dispatched_ns, Some(5));
+        assert_eq!(converted.started_ns, Some(6));
+        assert_eq!(converted.completed_ns, Some(9));
         assert_eq!(converted.exit_status, Some(0));
-        assert_eq!(converted.output_bytes, 128);
+        assert_eq!(converted.output_bytes, Some(128));
     }
 
     #[test]
     fn computer_view_pins_literal_values() {
         let converted = into_api_computer(&store::ComputerMetric {
             placement_ms: Some(31.5),
-            cold: true,
+            cold: Some(true),
             chunks_fetched: 7,
             bytes_fetched: 9,
             ..store::ComputerMetric::default()
         });
         assert_eq!(converted.placement_ms, Some(31.5));
-        assert!(converted.cold);
+        assert_eq!(converted.cold, Some(true));
         assert_eq!(converted.chunks_fetched, 7);
         assert_eq!(converted.bytes_fetched, 9);
         assert_eq!(converted.fetch_p50_ms, None);
