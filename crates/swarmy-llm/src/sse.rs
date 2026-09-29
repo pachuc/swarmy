@@ -71,6 +71,7 @@ impl SseParser {
     /// Flush a final unterminated event at EOF (used by Gemini).
     /// # Errors
     /// Rejects an oversized trailing line.
+    #[cfg(any(test, feature = "gemini"))]
     pub(crate) fn finish(&mut self) -> Result<Option<Frame>, Error> {
         if !self.line.is_empty() {
             self.previous_cr = false;
