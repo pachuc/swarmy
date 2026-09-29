@@ -48,7 +48,10 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
         !settings.node.heartbeat_interval.is_zero(),
         "node heartbeat interval must be positive"
     );
-    ensure!(!settings.node.roles.is_empty(), "node roles must not be empty");
+    ensure!(
+        !settings.node.roles.is_empty(),
+        "node roles must not be empty"
+    );
     let (store, objects) = storage(settings).await?;
     let bus_config = swarmy_bus::Config {
         prefix: if settings.bus.prefix.is_empty() {

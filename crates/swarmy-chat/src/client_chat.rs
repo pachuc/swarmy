@@ -361,10 +361,9 @@ impl View {
             .unwrap_or("default");
         let effort = conversation.session.effort.as_ref().map_or_else(
             || {
-                settings.as_ref().map_or_else(
-                    || "default".into(),
-                    |v| v.selection.effort.to_string(),
-                )
+                settings
+                    .as_ref()
+                    .map_or_else(|| "default".into(), |v| v.selection.effort.to_string())
             },
             |v| format!("{v:?}").to_lowercase(),
         );

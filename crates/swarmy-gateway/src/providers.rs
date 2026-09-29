@@ -95,12 +95,9 @@ impl Providers {
             }
         };
         let scripted = if settings.fake.script.is_file() {
-            swarmy_llm::fake::FileFake::from_files(
-                &settings.fake.script,
-                &settings.fake.call_log,
-            )
-            .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
-            .map_err(|_| "fake script is unreadable or invalid")
+            swarmy_llm::fake::FileFake::from_files(&settings.fake.script, &settings.fake.call_log)
+                .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
+                .map_err(|_| "fake script is unreadable or invalid")
         } else {
             Err("fake script is absent")
         };

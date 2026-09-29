@@ -98,8 +98,7 @@ mod tests {
 
     #[test]
     fn prefix_round_trips_and_environment_overrides_file() {
-        let mut settings: Settings =
-            toml::from_str("[s3]\nprefix = 'file/nested'").unwrap();
+        let mut settings: Settings = toml::from_str("[s3]\nprefix = 'file/nested'").unwrap();
         settings
             .apply_environment(&BTreeMap::from([(
                 "SWARMY_S3_PREFIX".into(),

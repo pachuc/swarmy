@@ -848,13 +848,13 @@ async fn agent(
             let mut body = inference(flags, false)?;
             body["name"] = json!(name);
             body["description"] = json!(description);
-            body["image"] = json!(
-                image.or_else(|| swarmy_config::Settings::load()
+            body["image"] = json!(image.or_else(|| {
+                swarmy_config::Settings::load()
                     .ok()?
                     .settings
                     .selection
-                    .default_image)
-            );
+                    .default_image
+            }));
             body["github_token"] = json!(token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());
             let created = projection(

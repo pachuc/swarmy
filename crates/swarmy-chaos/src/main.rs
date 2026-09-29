@@ -447,9 +447,7 @@ impl Fixture {
             }
         })
         .await?;
-        let context = async_nats::jetstream::new(
-            async_nats::connect(settings.bus.nats_url).await?,
-        );
+        let context = async_nats::jetstream::new(async_nats::connect(settings.bus.nats_url).await?);
         for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context
                 .delete_stream(format!("{}_{stream}", self.prefix))

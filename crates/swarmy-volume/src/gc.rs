@@ -96,8 +96,7 @@ pub async fn begin_with_owner(
         bytes_freed: 0,
         duration_ms: 0,
     };
-    let grace =
-        i64::try_from(policy.grace.as_secs()).map_err(|_| VolumeError::InvalidGcPolicy)?;
+    let grace = i64::try_from(policy.grace.as_secs()).map_err(|_| VolumeError::InvalidGcPolicy)?;
     let cutoff = run
         .started_at
         .as_second()

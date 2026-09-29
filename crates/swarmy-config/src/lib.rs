@@ -59,8 +59,7 @@ mod duration_ms {
         value: &Duration,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let millis =
-            u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
+        let millis = u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
         millis.serialize(serializer)
     }
 
@@ -106,8 +105,7 @@ const DEFAULT_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
 const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_GC_FILTER_BYTES: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
-const DEFAULT_GC_BATCH_SIZE: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(256).unwrap();
+const DEFAULT_GC_BATCH_SIZE: std::num::NonZeroUsize = std::num::NonZeroUsize::new(256).unwrap();
 const DEFAULT_GC_DELETE_CONCURRENCY: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(32).unwrap();
 const DEFAULT_EPHEMERAL_RETENTION: Duration = Duration::from_secs(86400);
@@ -623,11 +621,7 @@ impl Settings {
     /// # Errors
     /// Rejects empty components such as a leading, trailing, or doubled slash.
     pub fn store_directory_path(&self) -> Result<Vec<String>, Error> {
-        let path: Vec<String> = self
-            .store_directory
-            .split('/')
-            .map(str::to_owned)
-            .collect();
+        let path: Vec<String> = self.store_directory.split('/').map(str::to_owned).collect();
         if path.iter().any(String::is_empty) {
             return Err(Error::StoreDirectory("empty store directory component"));
         }
@@ -868,13 +862,16 @@ impl Settings {
             ("SWARMY_WORKER_LEASE_MS", |settings, value, _| {
                 assign_ms(&mut settings.worker.lease, value, "SWARMY_WORKER_LEASE_MS")
             }),
-            ("SWARMY_WORKER_RECOVERY_INTERVAL_MS", |settings, value, _| {
-                assign_ms(
-                    &mut settings.worker.recovery_interval,
-                    value,
-                    "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
-                )
-            }),
+            (
+                "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
+                |settings, value, _| {
+                    assign_ms(
+                        &mut settings.worker.recovery_interval,
+                        value,
+                        "SWARMY_WORKER_RECOVERY_INTERVAL_MS",
+                    )
+                },
+            ),
             ("SWARMY_BUS_ACK_WAIT_MS", |settings, value, _| {
                 assign_ms(&mut settings.bus.ack_wait, value, "SWARMY_BUS_ACK_WAIT_MS")
             }),
@@ -923,13 +920,16 @@ impl Settings {
                     "SWARMY_SUMMARIZE_AT_TOKENS",
                 )
             }),
-            ("SWARMY_MODEL_CONTEXT_WINDOW_TOKENS", |settings, value, _| {
-                assign_opt_nonzero(
-                    &mut settings.context.context_window,
-                    value,
-                    "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
-                )
-            }),
+            (
+                "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
+                |settings, value, _| {
+                    assign_opt_nonzero(
+                        &mut settings.context.context_window,
+                        value,
+                        "SWARMY_MODEL_CONTEXT_WINDOW_TOKENS",
+                    )
+                },
+            ),
             ("SWARMY_MEMORY_MAX_BYTES", |settings, value, _| {
                 assign(
                     &mut settings.memory.max_bytes,
@@ -940,13 +940,16 @@ impl Settings {
             ("SWARMY_MEMORY_DIR", |settings, value, _| {
                 assign(&mut settings.memory.dir, value, "SWARMY_MEMORY_DIR")
             }),
-            ("SWARMY_EPHEMERAL_RETENTION_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.ephemeral_retention,
-                    value,
-                    "SWARMY_EPHEMERAL_RETENTION_SECONDS",
-                )
-            }),
+            (
+                "SWARMY_EPHEMERAL_RETENTION_SECONDS",
+                |settings, value, _| {
+                    assign_secs(
+                        &mut settings.ephemeral_retention,
+                        value,
+                        "SWARMY_EPHEMERAL_RETENTION_SECONDS",
+                    )
+                },
+            ),
             ("SWARMY_SANDBOX_IDLE_SECONDS", |settings, value, _| {
                 assign_secs(
                     &mut settings.sandbox.idle,
@@ -968,31 +971,40 @@ impl Settings {
                     "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
                 )
             }),
-            ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.inference.max_backoff,
-                    value,
-                    "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
-                )
-            }),
-            ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.inference.gateway_wait,
-                    value,
-                    "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
-                )
-            }),
+            (
+                "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
+                |settings, value, _| {
+                    assign_secs(
+                        &mut settings.inference.max_backoff,
+                        value,
+                        "SWARMY_INFERENCE_MAX_BACKOFF_SECONDS",
+                    )
+                },
+            ),
+            (
+                "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
+                |settings, value, _| {
+                    assign_secs(
+                        &mut settings.inference.gateway_wait,
+                        value,
+                        "SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS",
+                    )
+                },
+            ),
             ("SWARMY_INFERENCE_DEFAULT_ROUTE", |settings, value, _| {
                 assign_opt_string(&mut settings.inference.default_route, value);
                 Ok(())
             }),
-            ("SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS", |settings, value, _| {
-                assign_secs(
-                    &mut settings.volume_snapshots.period,
-                    value,
-                    "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
-                )
-            }),
+            (
+                "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
+                |settings, value, _| {
+                    assign_secs(
+                        &mut settings.volume_snapshots.period,
+                        value,
+                        "SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS",
+                    )
+                },
+            ),
             ("SWARMY_VOLUME_SNAPSHOT_RETENTION", |settings, value, _| {
                 assign(
                     &mut settings.volume_snapshots.retention,
@@ -1027,13 +1039,16 @@ impl Settings {
                     "SWARMY_GC_DELETE_CONCURRENCY",
                 )
             }),
-            ("SWARMY_METERING_RAW_RETENTION_DAYS", |settings, value, _| {
-                assign(
-                    &mut settings.metering.raw_retention_days,
-                    value,
-                    "SWARMY_METERING_RAW_RETENTION_DAYS",
-                )
-            }),
+            (
+                "SWARMY_METERING_RAW_RETENTION_DAYS",
+                |settings, value, _| {
+                    assign(
+                        &mut settings.metering.raw_retention_days,
+                        value,
+                        "SWARMY_METERING_RAW_RETENTION_DAYS",
+                    )
+                },
+            ),
             ("SWARMY_API_URL", |settings, value, _| {
                 settings.api.url = Some(value.into());
                 Ok(())
@@ -1117,7 +1132,10 @@ impl Settings {
             ("SWARMY_BUS_PREFIX".into(), self.bus.prefix.clone()),
             (
                 "SWARMY_CHATGPT_AUTH".into(),
-                self.selection.credential_file.to_string_lossy().into_owned(),
+                self.selection
+                    .credential_file
+                    .to_string_lossy()
+                    .into_owned(),
             ),
             (
                 "SWARMY_WORKER_PARTITIONS".into(),
@@ -1171,14 +1189,8 @@ impl Settings {
                 "SWARMY_IMAGE_UPLOAD_MAX_BYTES".into(),
                 self.image.upload_max_bytes.to_string(),
             ),
-            (
-                "SWARMY_API_TOKEN".into(),
-                self.api.token.clone(),
-            ),
-            (
-                "SWARMY_API_LISTEN".into(),
-                self.api.listen.clone(),
-            ),
+            ("SWARMY_API_TOKEN".into(), self.api.token.clone()),
+            ("SWARMY_API_LISTEN".into(), self.api.listen.clone()),
             (
                 "SWARMY_INFERENCE_MAX_WAIT_SECONDS".into(),
                 self.inference.max_wait.as_secs().to_string(),
@@ -1208,10 +1220,7 @@ impl Settings {
             environment.insert("SWARMY_WORKER_KILL_POINT".into(), value.clone());
         }
         if let Some(value) = &self.node.memory_reserve_mib {
-            environment.insert(
-                "SWARMY_NODE_MEMORY_RESERVE_MIB".into(),
-                value.to_string(),
-            );
+            environment.insert("SWARMY_NODE_MEMORY_RESERVE_MIB".into(), value.to_string());
         }
         environment
     }
@@ -1377,9 +1386,7 @@ fn assign<T: std::str::FromStr>(
 }
 
 fn assign_secs(field: &mut Duration, value: &str, name: &'static str) -> Result<(), Error> {
-    let secs: u64 = value
-        .parse()
-        .map_err(|_| Error::Environment(name.into()))?;
+    let secs: u64 = value.parse().map_err(|_| Error::Environment(name.into()))?;
     if secs == 0 {
         return Err(Error::Environment(name.into()));
     }
@@ -1388,9 +1395,7 @@ fn assign_secs(field: &mut Duration, value: &str, name: &'static str) -> Result<
 }
 
 fn assign_ms(field: &mut Duration, value: &str, name: &'static str) -> Result<(), Error> {
-    let millis: u64 = value
-        .parse()
-        .map_err(|_| Error::Environment(name.into()))?;
+    let millis: u64 = value.parse().map_err(|_| Error::Environment(name.into()))?;
     *field = Duration::from_millis(millis);
     Ok(())
 }
@@ -1403,11 +1408,7 @@ fn assign_opt_nonzero(
     *field = if value.is_empty() {
         None
     } else {
-        Some(
-            value
-                .parse()
-                .map_err(|_| Error::Environment(name.into()))?,
-        )
+        Some(value.parse().map_err(|_| Error::Environment(name.into()))?)
     };
     Ok(())
 }
@@ -1444,8 +1445,8 @@ fn set_custom_providers(settings: &mut Settings, value: &str) -> Result<(), Erro
 }
 
 fn set_models(settings: &mut Settings, value: &str) -> Result<(), Error> {
-    settings.selection.models = serde_json::from_str(value)
-        .map_err(|_| Error::Environment("SWARMY_MODELS".into()))?;
+    settings.selection.models =
+        serde_json::from_str(value).map_err(|_| Error::Environment("SWARMY_MODELS".into()))?;
     Ok(())
 }
 
@@ -1705,10 +1706,7 @@ mod tests {
             loaded.settings.selection.credential_file,
             home.join(".swarmy/auth.json")
         );
-        assert_eq!(
-            loaded.settings.fdb_cluster_file,
-            cwd.join("custom.cluster")
-        );
+        assert_eq!(loaded.settings.fdb_cluster_file, cwd.join("custom.cluster"));
         std::fs::write(
             user.join("config.toml"),
             "[selection]\ncredential_file = '.swarmy/auth.json'",
@@ -1845,10 +1843,7 @@ mod provider_settings_tests {
                 "chatgpt".into(),
             )]))
             .unwrap();
-        assert_eq!(
-            settings.selection.providers,
-            Some(vec!["chatgpt".into()])
-        );
+        assert_eq!(settings.selection.providers, Some(vec!["chatgpt".into()]));
         settings
             .apply_environment(&BTreeMap::from([
                 ("SWARMY_PROVIDER".into(), "chatgpt".into()),
@@ -1864,7 +1859,10 @@ mod provider_settings_tests {
         let mut reloaded = Settings::default();
         reloaded.apply_environment(&settings.environment()).unwrap();
         assert_eq!(reloaded.selection.providers, settings.selection.providers);
-        assert_eq!(reloaded.context.context_window, settings.context.context_window);
+        assert_eq!(
+            reloaded.context.context_window,
+            settings.context.context_window
+        );
         assert!(
             settings
                 .apply_environment(&BTreeMap::from([(

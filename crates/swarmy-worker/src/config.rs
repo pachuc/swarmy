@@ -84,11 +84,7 @@ impl Config {
                 .context_window
                 .map(std::num::NonZeroU64::get),
             catalog,
-            memory_dir: settings
-                .memory
-                .dir
-                .to_string_lossy()
-                .into_owned(),
+            memory_dir: settings.memory.dir.to_string_lossy().into_owned(),
             memory_max_bytes: settings.memory.max_bytes.get(),
             kill_point,
             max_inference_wait: settings.inference.max_wait,

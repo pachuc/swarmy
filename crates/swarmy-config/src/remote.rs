@@ -532,10 +532,7 @@ mod tests {
         assert_eq!(loaded.settings.s3.endpoint, profile.s3_endpoint);
         assert_eq!(loaded.settings.api.url, profile.api_url);
         assert_eq!(loaded.settings.api.token, "fixture-token");
-        assert_eq!(
-            loaded.settings.fdb_cluster_file,
-            profile.fdb_cluster_file
-        );
+        assert_eq!(loaded.settings.fdb_cluster_file, profile.fdb_cluster_file);
         assert_eq!(loaded.settings.s3.bucket, "custom");
         assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
         let mut invalid = profile;

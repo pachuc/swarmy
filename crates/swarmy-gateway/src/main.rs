@@ -13,8 +13,7 @@ use swarmy_core::{
 use swarmy_llm::{Delta, InferenceJob, InferenceJobRef, Response};
 use swarmy_store::{
     CredentialKey, GatewayProvider, InferenceClaim, InferenceCompletion, ServiceDetail,
-    ServiceHeartbeat, ServiceRole, Store,
-    blob::BlobStore,
+    ServiceHeartbeat, ServiceRole, Store, blob::BlobStore,
 };
 use tokio::{
     sync::Semaphore,
