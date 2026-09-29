@@ -26,3 +26,13 @@ pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
     }
     value
 }
+
+/// Read an optional fixture setting. Missing images skip even in CI because
+/// kernel-only suites are not provisioned on hosted runners.
+pub fn optional_env(name: &str) -> Result<String, std::env::VarError> {
+    let value = std::env::var(name);
+    if value.is_err() {
+        eprintln!("skipping integration test: optional {name} unavailable");
+    }
+    value
+}
