@@ -90,7 +90,7 @@ impl VolumeDevice {
         let first =
             usize::try_from(number).map_err(|_| VolumeError::InvalidBlock(number))? * BLOCKS;
         let present = dirty.present[first..first + BLOCKS].to_vec();
-        let boundary = dirty.boundary.as_mut().unwrap();
+        let boundary = dirty.boundary.as_mut().expect("preserve observed a live boundary, and the exclusive dirty borrow keeps it live while dirty_chunk leaves the boundary alone");
         let bytes = if boundary.memory + bytes.len() <= MEMORY_BUDGET {
             boundary.memory += bytes.len();
             Some(bytes)
@@ -103,7 +103,7 @@ impl VolumeDevice {
             boundary.spill.flush().await?;
             None
         };
-        boundary.chunks.get_mut(&number).unwrap().saved = Some(Saved { present, bytes });
+        boundary.chunks.get_mut(&number).expect("preserve observed this chunk entry, and entries are never removed while the boundary lives").saved = Some(Saved { present, bytes });
         Ok(())
     }
 
@@ -180,17 +180,17 @@ impl VolumeDevice {
         let mut builder = ManifestBuilder::new(self.store.inner.clone(), base);
         {
             let dirty = self.lock_dirty().await;
-            if dirty.boundary.as_ref().unwrap().failed {
+            if dirty.boundary.as_ref().expect("publish installs the boundary before publish_boundary runs and clears it only after it returns").failed {
                 return Err(std::io::Error::other("snapshot boundary copy failed").into());
             }
-            for (&number, version) in &dirty.boundary.as_ref().unwrap().chunks {
+            for (&number, version) in &dirty.boundary.as_ref().expect("publish installs the boundary before publish_boundary runs and clears it only after it returns").chunks {
                 builder.set_chunk(number, version.hash.ok_or(VolumeError::Corrupt)?)?;
             }
         }
         let manifest = builder.build().await?;
         commit(manifest.header().clone()).await?;
         let mut dirty = self.lock_dirty().await;
-        let boundary = dirty.boundary.take().unwrap();
+        let boundary = dirty.boundary.take().expect("publish installs the boundary before publish_boundary runs and clears it only after it returns");
         self.uploads.record_referenced(
             boundary
                 .chunks
@@ -214,8 +214,8 @@ impl VolumeDevice {
         let mut bytes = self.chunk(number, false).await?.to_vec();
         let generation = {
             let mut dirty = self.lock_upload_dirty().await;
-            let boundary = dirty.boundary.as_mut().unwrap();
-            let version = boundary.chunks.get_mut(&number).unwrap();
+            let boundary = dirty.boundary.as_mut().expect("uploads run only for chunks publish placed in the boundary map, which lives until every upload completes");
+            let version = boundary.chunks.get_mut(&number).expect("uploads run only for chunks publish placed in the boundary map, which lives until every upload completes");
             let generation = version.generation;
             if let Some(saved) = version.saved.take() {
                 let overlay = if let Some(bytes) = saved.bytes {
@@ -242,10 +242,10 @@ impl VolumeDevice {
             dirty
                 .boundary
                 .as_mut()
-                .unwrap()
+                .expect("uploads run only for chunks publish placed in the boundary map, which lives until every upload completes")
                 .chunks
                 .get_mut(&number)
-                .unwrap()
+                .expect("uploads run only for chunks publish placed in the boundary map, which lives until every upload completes")
                 .prepared = true;
             generation
         };
@@ -258,10 +258,10 @@ impl VolumeDevice {
         dirty
             .boundary
             .as_mut()
-            .unwrap()
+            .expect("publish cannot complete and clear the boundary while its own uploads are still awaited")
             .chunks
             .get_mut(&number)
-            .unwrap()
+            .expect("publish cannot complete and clear the boundary while its own uploads are still awaited")
             .hash = Some(result.hash);
         if dirty.generations.get(&number).copied().unwrap_or(0) == generation {
             dirty.uploaded.insert(number, result.hash);

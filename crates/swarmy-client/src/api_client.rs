@@ -44,7 +44,7 @@ pub fn api_error(error: crate::Error, endpoint: &str) -> anyhow::Error {
 /// Fails if the request times out or the API rejects it.
 pub async fn call<T>(
     endpoint: &str,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
+    future: impl Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     crate::timed_call(future)
         .await
@@ -59,7 +59,7 @@ pub async fn call<T>(
 pub async fn call_with_timeout<T>(
     endpoint: &str,
     timeout: std::time::Duration,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
+    future: impl Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     tokio::time::timeout(timeout, future)
         .await
@@ -73,7 +73,7 @@ pub async fn call_with_timeout<T>(
 pub async fn call_upload<T>(
     endpoint: &str,
     file: &std::path::Path,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
+    future: impl Future<Output = Result<T, crate::Error>>,
 ) -> Result<T> {
     let size = std::fs::metadata(file)
         .with_context(|| format!("reading upload size for {}", file.display()))?
