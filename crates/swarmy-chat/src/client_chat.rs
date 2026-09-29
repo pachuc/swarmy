@@ -483,10 +483,14 @@ impl View {
                             self.message(&message, session_id, true);
                         }
                     }
-                    swarmy_core::Event::MessageAppended { message, .. }
-                    | swarmy_core::Event::InferenceCompleted { message, .. } => {
+                    swarmy_core::Event::MessageAppended { message, .. } => {
                         if let api::LogId::Session(session_id) = &event.log_id {
                             self.message(&message, session_id, false);
+                        }
+                    }
+                    swarmy_core::Event::InferenceCompleted { completion, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&completion.message, session_id, false);
                         }
                     }
                     _ => {}

@@ -139,17 +139,17 @@ async fn inspect_agents(
     second: SessionId,
 ) {
     let text = success(fixture.output(&["agent", "ls"]).await);
-    assert!(text.contains("tommy") && text.contains("node=-") && text.contains("created="));
+    assert!(text.contains("tommy") && text.contains("created="));
     let listed = success(fixture.output(&["agent", "ls", "--json"]).await);
     let rows: Vec<serde_json::Value> = listed
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 2);
-    // List rows are summaries: the count and sessions hydrate on show.
-    assert_eq!(rows[0]["session_count"], 0);
-    assert!(rows[0]["sessions"].as_array().unwrap().is_empty());
-    assert!(rows[0]["node_id"].is_null());
+    // List rows omit detail keys instead of printing placeholders.
+    assert!(rows[0].get("session_count").is_none());
+    assert!(rows[0].get("sessions").is_none());
+    assert!(rows[0].get("node_id").is_none());
     let text = success(fixture.output(&["agent", "show", "tommy"]).await);
     for expected in [
         "Build things",
@@ -558,10 +558,10 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(rows.len(), 66);
-        // List rows are summaries: the count hydrates on show, so one page
-        // of 66 agents costs one scan, not 66 session scans.
-        assert_eq!(rows[0]["session_count"], 0);
-        assert!(rows[0]["sessions"].as_array().unwrap().is_empty());
+        // List rows omit detail keys, so one page of 66 agents costs one
+        // scan, not 66 session scans.
+        assert!(rows[0].get("session_count").is_none());
+        assert!(rows[0].get("sessions").is_none());
         assert_eq!(rows.last().unwrap()["name"], "agent-65");
         let shown: serde_json::Value = serde_json::from_str(&success(
             fixture

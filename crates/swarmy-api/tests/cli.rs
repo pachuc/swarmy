@@ -96,7 +96,6 @@ async fn assert_resource_projections(
     let rows = client.agents(None, 10).await.unwrap();
     assert_eq!(rows[0].id, agent.agent_id.to_string());
     // List rows are summaries: no session scan, usage, or placement reads.
-    assert_eq!(rows[0].session_count, 0);
     assert!(rows[0].sessions.is_empty());
     assert!(rows[0].usage.is_none());
     assert!(rows[0].placement.is_none());

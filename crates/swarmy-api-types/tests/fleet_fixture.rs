@@ -21,6 +21,18 @@ fn fleet_fixture_matches_typed_structs() {
             .map(|usage| usage.cost_dollars.as_str()),
         Some("1.25")
     );
+    // Detail keys stay absent on summary rows: list output omits them
+    // instead of printing nulls or zeros.
+    let agent_value = serde_json::to_value(&agent).expect("agent serializes");
+    for key in [
+        "node_id",
+        "session_count",
+        "sessions",
+        "placement",
+        "sandbox_state",
+    ] {
+        assert!(agent_value.get(key).is_none(), "summary Agent omits {key}");
+    }
 
     let listed: Session = serde_json::from_value(value["session_ls_item"].clone())
         .expect("session_ls_item matches api::Session");

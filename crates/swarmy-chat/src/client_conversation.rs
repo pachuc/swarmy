@@ -667,9 +667,11 @@ impl Conversation {
             } => {
                 progress.error = Some(inference_error(error, *failure_kind));
             }
-            swarmy_core::Event::MessageAppended { message, .. }
-            | swarmy_core::Event::InferenceCompleted { message, .. } => {
+            swarmy_core::Event::MessageAppended { message, .. } => {
                 self.render_message(message, json, quiet, progress)?;
+            }
+            swarmy_core::Event::InferenceCompleted { completion, .. } => {
+                self.render_message(&completion.message, json, quiet, progress)?;
             }
             _ => {}
         }

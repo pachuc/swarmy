@@ -213,31 +213,34 @@ pub struct Agent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     pub requirements: SandboxRequirements,
-    #[serde(default)]
+    // Everything below hydrates on show/create/update only. List rows omit
+    // these keys instead of printing nulls, zeros, or empty arrays as if
+    // they were observed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scratch: Option<ScratchView>,
-    #[serde(default)]
-    pub session_count: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageTotalsView>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<EntryUsageView>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementView>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_address: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_snapshot_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_snapshot_age_seconds: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_state: Option<SandboxState>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_status: Option<AgentCallView>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<Session>,
 }
 

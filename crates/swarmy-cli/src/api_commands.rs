@@ -642,25 +642,29 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
     })
 }
 fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
-    // List rows are summaries without usage, placement, or sessions; the
-    // session count renders in detail only, so `agent ls` never prints a
-    // zero from an unhydrated row.
+    // List rows are summaries: the list endpoint serves no placement,
+    // scratch, usage, or sessions, so `agent ls` prints none of those
+    // columns instead of placeholders. Detail hydrates them on show.
     let mut text = format!(
-        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} created={} main_session={}",
+        "{} {} image={}:{} created={} main_session={}",
         agent.name,
         agent.id,
         agent.image.name,
         agent.image.tag,
-        agent.node_id.as_deref().unwrap_or("-"),
-        agent
-            .scratch
-            .as_ref()
-            .map_or("-", |scratch| scratch.node_id.as_str()),
-        agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
         agent.created_at,
         agent.main_session_id.as_deref().unwrap_or("-"),
     );
     if detail {
+        let _ = write!(
+            text,
+            "\nnode={} scratch_node={} scratch_bytes={}",
+            agent.node_id.as_deref().unwrap_or("-"),
+            agent
+                .scratch
+                .as_ref()
+                .map_or("-", |scratch| scratch.node_id.as_str()),
+            agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
+        );
         text.push_str(&settings_text(agent));
         if let Some(usage) = &agent.usage {
             let _ = write!(
@@ -726,7 +730,9 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 session.next_session.is_some()
             );
         }
-        let _ = write!(text, "\nsessions={}", agent.session_count);
+        if let Some(count) = agent.session_count {
+            let _ = write!(text, "\nsessions={count}");
+        }
     }
     text
 }

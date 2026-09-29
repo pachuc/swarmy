@@ -143,7 +143,6 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
     // List rows are summaries; show carries the detail create returned.
     assert_eq!(listed[0].id, first.id);
     assert_eq!(listed[0].name, first.name);
-    assert_eq!(listed[0].session_count, 0);
     assert!(listed[0].sessions.is_empty());
     assert!(listed[0].usage.is_none());
     let shown: Agent = client

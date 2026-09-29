@@ -151,7 +151,7 @@ pub(crate) fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         requirements: requirements(record.requirements),
         node_id: None,
         scratch: None,
-        session_count: 0,
+        session_count: None,
         usage: None,
         entries: Vec::new(),
         providers: Vec::new(),
@@ -594,7 +594,7 @@ pub(crate) async fn agent_value(
         after = page.last().map(|session| session.session_id);
         sessions.extend(page);
     }
-    view.session_count = sessions.len();
+    view.session_count = Some(sessions.len());
     populate_agent_detail(state, &mut view, agent_id, placement, sessions).await?;
     Ok(view)
 }
@@ -691,17 +691,7 @@ async fn populate_agent_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    /// Pin the full API JSON for one fully populated turn: every converted
-    /// field appears, so a dropped or renamed field fails here instead of
-    /// silently vanishing from the contract.
-    // The pinned literal must stay adjacent to the fixture it pins;
-    // splitting them into helpers would let the two drift apart unseen.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the exact-JSON pin needs its full fixture and literal inline"
-    )]
     #[test]
     fn stage_view_pins_every_field() {
         let converted = into_api_stage(store::StageTiming {
