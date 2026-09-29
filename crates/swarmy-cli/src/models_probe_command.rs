@@ -1,7 +1,7 @@
 use swarmy_core::ReasoningEffort;
 
 #[derive(clap::Args)]
-pub struct Args {
+pub(crate) struct Args {
     /// Exact PROVIDER/MODEL from the configured catalog
     pub model: String,
     #[arg(long)]

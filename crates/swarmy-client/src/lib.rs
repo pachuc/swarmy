@@ -1109,7 +1109,7 @@ mod tests {
     async fn stream_handler(
         State(head): State<Arc<AtomicU64>>,
         Query(query): Query<HashMap<String, String>>,
-    ) -> impl axum::response::IntoResponse {
+    ) -> impl IntoResponse {
         let sub: api::Subscription = serde_json::from_str(&query["subscription"]).unwrap();
         let start = sub.cursors[0].sequence;
         let end = head.load(Ordering::SeqCst);

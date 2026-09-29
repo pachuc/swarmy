@@ -5,10 +5,10 @@ use swarmy_core::{
     Event, MessageRole, Part, RequestId, SessionId, SessionRecord, SessionState, ToolResult,
 };
 
-pub const ANSWER: &str = "chaos session complete";
+pub(crate) const ANSWER: &str = "chaos session complete";
 
 /// Check prefixes too: a duplicate must fail even if the broken worker then hangs.
-pub fn log(id: SessionId, events: &[Event]) -> Result<usize> {
+pub(crate) fn log(id: SessionId, events: &[Event]) -> Result<usize> {
     let mut requests = HashSet::new();
     let mut steps = HashSet::new();
     let mut pending = None;
@@ -60,7 +60,7 @@ pub fn log(id: SessionId, events: &[Event]) -> Result<usize> {
     Ok(requests.len() - retryable_failures)
 }
 
-pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize) -> Result<()> {
+pub(crate) fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize) -> Result<()> {
     let id = session.session_id;
     ensure!(
         log(id, events)? == expected_steps,
@@ -156,7 +156,7 @@ fn tool_results(id: SessionId, events: &[Event], expected: usize) -> Result<()> 
     Ok(())
 }
 
-pub fn calls(actual: usize, steps: usize, gateway_kills: usize) -> Result<()> {
+pub(crate) fn calls(actual: usize, steps: usize, gateway_kills: usize) -> Result<()> {
     ensure!(
         (steps..=steps + gateway_kills).contains(&actual),
         "provider call count {actual} outside {steps}..={} ({gateway_kills} gateway kills)",

@@ -388,7 +388,7 @@ impl Fixture {
                         .iter()
                         .filter(|event| matches!(
                             event,
-                            swarmy_core::Event::ToolCallCompleted {
+                            Event::ToolCallCompleted {
                                 result: swarmy_core::ToolResult::Error { .. },
                                 ..
                             }
@@ -397,7 +397,7 @@ impl Fixture {
                         == 1,
                     "expected exactly one failed interrupted call"
                 );
-                ensure!(events.iter().filter(|event| matches!(event, swarmy_core::Event::MessageAppended { message, .. } if message.role == swarmy_core::MessageRole::System)).count() == 1,
+                ensure!(events.iter().filter(|event| matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::System)).count() == 1,
                     "expected exactly one recovery system message");
             }
             if let Some(image) = self.image {

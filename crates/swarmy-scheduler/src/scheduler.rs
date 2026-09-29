@@ -6,18 +6,18 @@ use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
 
-pub struct Scheduler {
+pub(crate) struct Scheduler {
     store: Store,
     bus: Bus,
     config: Config,
 }
 
 impl Scheduler {
-    pub fn new(store: Store, bus: Bus, config: Config) -> Self {
+    pub(crate) fn new(store: Store, bus: Bus, config: Config) -> Self {
         Self { store, bus, config }
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub(crate) async fn run(&self) -> anyhow::Result<()> {
         tokio::select! {
             () = self.scan_loop() => {},
             () = self.reaper_loop() => {},

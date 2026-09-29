@@ -604,7 +604,7 @@ impl MemoryCredentials {
 impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
     fn load(
         &self,
-    ) -> futures::future::BoxFuture<'_, Result<swarmy_llm::auth::Credentials, swarmy_llm::Error>>
+    ) -> futures::future::BoxFuture<'_, Result<swarmy_llm::auth::Credentials, Error>>
     {
         Box::pin(async { Ok(self.0.lock().await.clone()) })
     }
@@ -613,7 +613,7 @@ impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
         &'a self,
         client: &'a swarmy_llm::auth::OAuthClient,
         observed: &'a swarmy_llm::auth::Credentials,
-    ) -> futures::future::BoxFuture<'a, Result<swarmy_llm::auth::Credentials, swarmy_llm::Error>>
+    ) -> futures::future::BoxFuture<'a, Result<swarmy_llm::auth::Credentials, Error>>
     {
         Box::pin(async move {
             let mut stored = self.0.lock().await;

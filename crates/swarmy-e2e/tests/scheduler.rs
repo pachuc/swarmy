@@ -539,7 +539,7 @@ async fn scan_recovers_an_atomic_user_append_whose_nudge_was_lost() {
         let mut observer = f.observe(&f.prefix).await;
         let message = swarmy_core::Message {
             id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
-            role: swarmy_core::MessageRole::User,
+            role: MessageRole::User,
             parts: vec![swarmy_core::Part::Text {
                 text: "lost publication".into(),
             }],

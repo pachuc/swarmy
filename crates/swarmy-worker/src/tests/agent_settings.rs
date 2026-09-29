@@ -95,7 +95,7 @@ impl Fixture {
                     message: Message {
                         id: MessageId::from_ulid(Ulid::generate()),
                         role: MessageRole::User,
-                        parts: vec![swarmy_core::Part::Text {
+                        parts: vec![Part::Text {
                             text: "Hello".into(),
                         }],
                     },

@@ -1,7 +1,7 @@
 use anyhow::{Context, ensure};
 use clap::Subcommand;
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// List available models.
     Ls {
         #[arg(long)]
@@ -19,7 +19,7 @@ pub enum Command {
     Probe(crate::models_probe_command::Args),
 }
 
-pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
+pub(crate) async fn run(command: Command, json: bool) -> anyhow::Result<()> {
     // One match owns every variant. Probes resolve credentials through the
     // control plane without a prior listing connection; every listing arm
     // connects on its own path.

@@ -9,7 +9,7 @@ use swarmy_llm::GenerationSettings;
 /// without rebuilding; every call site and the setting parser share this
 /// one list instead of repeating string literals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KillPoint {
+pub(crate) enum KillPoint {
     AfterClaim,
     BeforeRelease,
     AfterRequestEvent,
@@ -40,7 +40,7 @@ impl KillPoint {
     }
 }
 
-pub struct Config {
+pub(crate) struct Config {
     pub nats: String,
     pub bus: BusConfig,
     pub partitions: BTreeSet<u16>,
@@ -62,7 +62,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
+    pub(crate) fn from_settings(settings: &swarmy_config::Settings) -> Result<Self> {
         let catalog = settings.catalog()?;
         let provider = settings.selection.provider.clone();
         ensure!(
@@ -118,7 +118,7 @@ impl Config {
 }
 
 impl Config {
-    pub fn summarization_threshold(&self, provider: &str, model: &str) -> Option<u64> {
+    pub(crate) fn summarization_threshold(&self, provider: &str, model: &str) -> Option<u64> {
         self.summarize_at_tokens
             .or_else(|| {
                 self.model_context_window_tokens
@@ -127,7 +127,7 @@ impl Config {
             .or_else(|| self.catalog.summarize_at(provider, model))
     }
 
-    pub fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
+    pub(crate) fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
         self.summarization_threshold(provider, model)
             .unwrap_or(u64::MAX)
     }

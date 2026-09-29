@@ -8,7 +8,7 @@ use tokio::{
     sync::mpsc,
 };
 
-pub async fn handle(
+pub(crate) async fn handle(
     socket: UnixStream,
     runtime: Arc<RuncRuntime>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,

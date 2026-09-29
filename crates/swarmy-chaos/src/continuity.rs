@@ -129,7 +129,7 @@ async fn settled(
     .context("continuity turn timed out")?
 }
 
-pub async fn exercise(f: &mut Fixture) -> Result<()> {
+pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
     let agent = f
         .store
         .create_agent(

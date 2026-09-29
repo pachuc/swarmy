@@ -27,7 +27,7 @@ async fn complete(
             id,
             LeaseOwnerId::from_ulid(Ulid::generate()),
             Timestamp::now()
-                .checked_add(std::time::Duration::from_secs(60))
+                .checked_add(Duration::from_secs(60))
                 .unwrap(),
         )
         .await
@@ -55,7 +55,7 @@ async fn complete(
         request_id: request,
         owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         expires_at: Timestamp::now()
-            .checked_add(std::time::Duration::from_secs(60))
+            .checked_add(Duration::from_secs(60))
             .unwrap(),
     };
     store
@@ -290,7 +290,7 @@ async fn auth_quota_lists_observed_and_configured_entries() {
                         access: "test".into(),
                         refresh: "test".into(),
                         expires_at: Timestamp::now()
-                            .checked_add(std::time::Duration::from_secs(3_600))
+                            .checked_add(Duration::from_secs(3_600))
                             .unwrap(),
                         extra: std::collections::BTreeMap::new(),
                     },

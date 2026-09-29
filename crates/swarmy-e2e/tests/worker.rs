@@ -88,7 +88,7 @@ impl Fixture {
         let api_token = Ulid::generate().to_string();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());
-        let objects = swarmy_store::blob::ObjectBlobStore::from_env()
+        let objects = ObjectBlobStore::from_env()
             .unwrap()
             .object_store();
         let api = swarmy_api::AppState::new(
@@ -186,8 +186,8 @@ impl Fixture {
             }],
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         };
         let mut responses: BTreeMap<_, _> = (0..100).map(|index| (index, answer.clone())).collect();
         if tools {
@@ -201,8 +201,8 @@ impl Fixture {
                     }],
                     stop_reason: StopReason::ToolCalls,
                     usage: TokenUsage::default(),
-                    quota_remaining: std::collections::BTreeMap::new(),
-                    quota_resets: std::collections::BTreeMap::new(),
+                    quota_remaining: BTreeMap::new(),
+                    quota_resets: BTreeMap::new(),
                 },
             );
         }
@@ -221,8 +221,8 @@ impl Fixture {
             }],
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         };
         let responses: BTreeMap<_, _> = (failures..100).map(|index| (index, &answer)).collect();
         let failures: BTreeMap<_, _> = (0..failures).map(|index| (index, serde_json::json!({
@@ -379,7 +379,7 @@ impl Fixture {
         .unwrap();
     }
 
-    fn histories(&self) -> Vec<Vec<swarmy_core::Message>> {
+    fn histories(&self) -> Vec<Vec<Message>> {
         std::fs::read_to_string(self.files.path().join("calls"))
             .unwrap_or_default()
             .lines()
@@ -1595,8 +1595,8 @@ Finish the task
         let response = |text: String, input_tokens| Response {
             parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
             usage: TokenUsage { input_tokens, ..Default::default() },
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         };
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}
@@ -1695,7 +1695,7 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
         let mut large_tool = side_tool_response("clock-next", 20, false);
         large_tool.parts.push(Part::Reasoning {
             text: "thinking ".repeat(13_000),
-            metadata: std::collections::BTreeMap::new(),
+            metadata: BTreeMap::new(),
         });
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {
@@ -2180,8 +2180,8 @@ fn side_response(text: String, input_tokens: u64) -> Response {
             input_tokens,
             ..Default::default()
         },
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
+        quota_remaining: BTreeMap::new(),
+        quota_resets: BTreeMap::new(),
     }
 }
 
@@ -2340,8 +2340,8 @@ fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Respons
             input_tokens,
             ..Default::default()
         },
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
+        quota_remaining: BTreeMap::new(),
+        quota_resets: BTreeMap::new(),
     }
 }
 

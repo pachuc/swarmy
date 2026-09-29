@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Sign in with `ChatGPT`, `OpenRouter`, or Azure
     Login {
         #[arg(default_value = "chatgpt")]
@@ -62,7 +62,7 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
-pub enum RoutesCommand {
+pub(crate) enum RoutesCommand {
     /// List named routes with their steps in order
     Ls,
     /// Show one route's steps in order
@@ -79,7 +79,7 @@ pub enum RoutesCommand {
 
 #[derive(Args)]
 #[group(required = false, multiple = false)]
-pub struct Source {
+pub(crate) struct Source {
     #[arg(long)]
     pub api_key: Option<String>,
     #[arg(long)]
@@ -89,7 +89,7 @@ pub struct Source {
 }
 
 #[derive(Args)]
-pub struct Set {
+pub(crate) struct Set {
     /// Provider id (also accepted as --provider).
     pub provider: Option<String>,
     #[arg(long = "provider", conflicts_with = "provider")]
@@ -125,7 +125,7 @@ fn extra(value: &str) -> Result<(String, String), String> {
 /// Run one credential command. One match owns every variant: logins and
 /// imports shell out to the `swarmy-auth` helper without connecting, while
 /// every other arm connects on its own path.
-pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
     match command {
         Command::Login {
             provider,

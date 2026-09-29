@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Build a recipe directory (or recipe.toml) and register its directory name
     Build {
         recipe: PathBuf,

@@ -80,7 +80,7 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
 
 async fn assert_named_session_pin(
     store: &Store,
-    agent: &swarmy_core::AgentRecord,
+    agent: &AgentRecord,
     image: &str,
 ) -> SessionId {
     let id = SessionId::from_ulid(Ulid::generate());

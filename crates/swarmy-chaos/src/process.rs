@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use tokio::process::{Child, Command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Scheduler,
     Worker,
     Gateway,
@@ -13,7 +13,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const fn binary(self) -> &'static str {
+    pub(crate) const fn binary(self) -> &'static str {
         match self {
             Self::Scheduler => "swarmy-scheduler",
             Self::Worker => "swarmy-worker",
@@ -26,7 +26,7 @@ impl Kind {
 
 /// A restart reuses the complete command and environment for this service slot.
 /// Add a Kind and register its slots to extend the set of killable services.
-pub struct Process {
+pub(crate) struct Process {
     pub kind: Kind,
     pub name: String,
     command: Command,
@@ -34,7 +34,7 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn start(
+    pub(crate) fn start(
         kind: Kind,
         index: usize,
         binaries: &Path,
@@ -64,7 +64,7 @@ impl Process {
         })
     }
 
-    pub fn check(&mut self) -> Result<()> {
+    pub(crate) fn check(&mut self) -> Result<()> {
         ensure!(
             self.child.try_wait()?.is_none(),
             "{} exited unexpectedly; see its service log",
@@ -73,7 +73,7 @@ impl Process {
         Ok(())
     }
 
-    pub async fn restart(&mut self) -> Result<()> {
+    pub(crate) async fn restart(&mut self) -> Result<()> {
         self.check()?;
         self.child
             .kill()
@@ -86,7 +86,7 @@ impl Process {
         Ok(())
     }
 
-    pub fn start_stopped(&mut self) -> Result<()> {
+    pub(crate) fn start_stopped(&mut self) -> Result<()> {
         ensure!(
             self.child.try_wait()?.is_some(),
             "{} is still running",
@@ -99,7 +99,7 @@ impl Process {
         Ok(())
     }
 
-    pub fn kill_now(&mut self) {
+    pub(crate) fn kill_now(&mut self) {
         let _ = self.child.start_kill();
         for _ in 0..500 {
             if self.child.try_wait().ok().flatten().is_some() {
@@ -109,7 +109,7 @@ impl Process {
         }
     }
 
-    pub async fn stop(&mut self) -> Result<()> {
+    pub(crate) async fn stop(&mut self) -> Result<()> {
         if self.child.try_wait()?.is_none() {
             if self.kind == Kind::Node {
                 let status = std::process::Command::new("kill")

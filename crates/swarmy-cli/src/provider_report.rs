@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub struct ProviderRow {
+pub(crate) struct ProviderRow {
     pub provider: String,
     pub credential: String,
     pub status: String,
@@ -10,7 +10,7 @@ pub struct ProviderRow {
     pub gateway_reason: String,
 }
 
-pub fn local(
+pub(crate) fn local(
     providers: impl IntoIterator<Item = (String, Vec<String>)>,
     store: &str,
 ) -> Vec<ProviderRow> {
@@ -77,6 +77,6 @@ fn ambient(provider: &str) -> bool {
 }
 
 /// Environment keys advertised by the control plane for a provider.
-pub fn credential_env_keys(provider: &swarmy_api_types::Provider) -> Vec<String> {
+pub(crate) fn credential_env_keys(provider: &swarmy_api_types::Provider) -> Vec<String> {
     provider.credential_env_keys.clone()
 }

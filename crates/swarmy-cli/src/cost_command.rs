@@ -4,7 +4,7 @@
 /// `swarmy cost --agent coder --group week --since 3mo` shows what the
 /// `coder` agent cost each week this quarter.
 #[derive(clap::Args)]
-pub struct Args {
+pub(crate) struct Args {
     /// Rollup dimension to read: session, agent, provider, entry, kind, or model
     #[arg(long, value_enum)]
     pub by: Option<CostDimension>,
@@ -40,7 +40,7 @@ pub struct Args {
 
 /// Rollup dimension for `swarmy cost --by`, parsed once by clap.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum CostDimension {
+pub(crate) enum CostDimension {
     Session,
     Agent,
     Provider,
@@ -51,7 +51,7 @@ pub enum CostDimension {
 
 /// Calendar grouping for usage rows, parsed once by clap.
 #[derive(Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum UsageGroup {
+pub(crate) enum UsageGroup {
     #[default]
     Day,
     Week,
@@ -62,7 +62,7 @@ pub enum UsageGroup {
 /// The clap name for a value-enum flag. One helper replaces the hand-written
 /// `as_str` methods each flag enum used to carry.
 #[must_use]
-pub fn value_name(value: &impl clap::ValueEnum) -> String {
+pub(crate) fn value_name(value: &impl clap::ValueEnum) -> String {
     value
         .to_possible_value()
         .map(|possible| possible.get_name().to_owned())

@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 type CacheKey = (swarmy_core::AgentId, u64, ManifestId, u64, String, usize);
 
-pub fn spawn(
+pub(crate) fn spawn(
     bus: swarmy_bus::Bus,
     store: Store,
     runtime: Arc<RuncRuntime>,

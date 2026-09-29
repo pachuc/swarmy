@@ -146,7 +146,7 @@ fn verify_remote(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn exercise(f: &mut Fixture) -> Result<()> {
+pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
     remote(f.files.path())?;
     let responses: serde_json::Map<_, _> = script("/home/agent/work/remote.git", WORK)
         .into_iter()

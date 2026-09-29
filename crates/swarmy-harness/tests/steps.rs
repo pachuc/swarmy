@@ -91,7 +91,7 @@ fn inference_event(calls: &[ToolCallRecord]) -> Event {
             provider: String::new(),
             model: String::new(),
             effort_used: None,
-            usage: swarmy_core::TokenUsage::default(),
+            usage: TokenUsage::default(),
             cost_micros: 0,
             effort_requested: None,
             effort_clamped: false,
@@ -395,8 +395,8 @@ fn fake_provider() -> FakeProvider {
             }],
             stop_reason: StopReason::EndTurn,
             usage: TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         },
     );
     provider.tool_calls = Some(BTreeMap::from([(
@@ -445,7 +445,7 @@ async fn fake_provider_and_worker_tool_complete_a_turn() {
                 provider: String::new(),
                 model: String::new(),
                 effort_used: None,
-                usage: swarmy_core::TokenUsage::default(),
+                usage: TokenUsage::default(),
                 cost_micros: 0,
                 effort_requested: None,
                 effort_clamped: false,
@@ -561,9 +561,9 @@ fn disk_manifest_and_command_status_survive_folding_and_snapshot_replay() {
 
 #[test]
 fn sandbox_tools_dispatch_with_validated_arguments() {
-    let mut registry = swarmy_harness::ToolRegistry::default();
+    let mut registry = ToolRegistry::default();
     swarmy_tools::register(&mut registry);
-    let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::from(42_u128));
+    let id = swarmy_core::ProcessId::from_ulid(Ulid::from(42_u128));
     for (name, arguments) in [
         ("bash", json!({"command":"echo hello"})),
         ("process_start", json!({"command":"sleep 300"})),

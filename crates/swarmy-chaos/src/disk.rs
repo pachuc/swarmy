@@ -10,7 +10,7 @@ use swarmy_sandbox::{BlockDevice, ExecOutput, ExecRequest, RuncRuntime, SandboxS
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
 
-pub async fn kill_mid_command(processes: &mut [Process], files: &Path) -> Result<()> {
+pub(crate) async fn kill_mid_command(processes: &mut [Process], files: &Path) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             if let Ok(bundles) = std::fs::read_dir(files.join(".swarmy/node/bundles")) {
@@ -42,7 +42,7 @@ pub async fn kill_mid_command(processes: &mut [Process], files: &Path) -> Result
     .context("command did not reach its write before the kill deadline")?
 }
 
-pub async fn verify(
+pub(crate) async fn verify(
     store: &Store,
     events: &[Event],
     id: SessionId,
@@ -164,7 +164,7 @@ async fn final_checkpoint(store: &Store, id: SessionId, image: ManifestId) -> Re
     Ok(final_manifest)
 }
 
-pub struct Cleanup(pub PathBuf);
+pub(crate) struct Cleanup(pub PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         cleanup(&self.0);
@@ -173,7 +173,7 @@ impl Drop for Cleanup {
 
 /// Remove only containers and mounts owned by this isolated run, even after a
 /// failed assertion or a killed daemon. The device is captured before unmount.
-pub fn cleanup(root: &Path) {
+pub(crate) fn cleanup(root: &Path) {
     use std::process::{Command, Stdio};
     if let Ok(bundles) = std::fs::read_dir(root.join("bundles")) {
         for bundle in bundles.flatten() {

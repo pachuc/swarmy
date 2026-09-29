@@ -36,7 +36,7 @@ fn profile_dir() -> PathBuf {
 /// Panics when the test binary path has no parent directories or when the
 /// sibling binary is missing because the workspace was not built first.
 #[must_use]
-pub fn bin(name: &str) -> PathBuf {
+pub(crate) fn bin(name: &str) -> PathBuf {
     if name == "swarmy"
         && let Some(path) = std::env::var_os("CARGO_BIN_EXE_swarmy")
     {

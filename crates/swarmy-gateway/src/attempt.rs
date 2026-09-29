@@ -365,7 +365,7 @@ mod retry_tests {
         let mut scripted = swarmy_llm::fake::FakeProvider::default();
         scripted.responses.insert(
             0,
-            swarmy_llm::Response {
+            Response {
                 parts: vec![Part::Text {
                     text: "done".into(),
                 }],
@@ -406,7 +406,7 @@ mod retry_tests {
         let mut scripted = swarmy_llm::fake::FakeProvider::default();
         scripted.responses.insert(
             0,
-            swarmy_llm::Response {
+            Response {
                 parts: vec![Part::Text {
                     text: "done".into(),
                 }],
@@ -496,7 +496,7 @@ mod retry_tests {
         assert!(is_stream_chunk(&text));
         assert!(!is_stream_chunk(&done));
         assert!(!is_stream_chunk(&Delta::Completed(
-            swarmy_llm::Response {
+            Response {
                 parts: Vec::new(),
                 stop_reason: swarmy_llm::StopReason::EndTurn,
                 usage: swarmy_llm::TokenUsage::default(),
@@ -558,10 +558,10 @@ mod retry_tests {
         }
     }
 
-    fn stream_test_job() -> swarmy_llm::InferenceJob {
+    fn stream_test_job() -> InferenceJob {
         let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let step = 1;
-        swarmy_llm::InferenceJob {
+        InferenceJob {
             summary: false,
             summary_prefix: false,
             summary_cut: None,
@@ -591,7 +591,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = swarmy_llm::Response {
+        let completed = Response {
             parts: vec![Part::Text { text: "hi".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),
@@ -623,7 +623,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = swarmy_llm::Response {
+        let completed = Response {
             parts: vec![Part::Text { text: "ab".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),

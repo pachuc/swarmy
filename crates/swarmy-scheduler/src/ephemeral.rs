@@ -2,7 +2,7 @@
 use std::time::Duration;
 use swarmy_store::Store;
 
-pub async fn run(store: &Store, retention: Duration) {
+pub(crate) async fn run(store: &Store, retention: Duration) {
     let interval = retention.min(Duration::from_secs(60));
     loop {
         tokio::time::sleep(interval).await;

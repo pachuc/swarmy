@@ -215,7 +215,7 @@ pub(super) async fn start(
     (node, bus)
 }
 
-pub async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
+pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
     Box::pin(differing_leases(settings.clone(), store, base, 30, 3)).await;
     Box::pin(differing_leases(settings.clone(), store, base, 3, 30)).await;
     let (mut node, bus) = start(settings, store, base, 3).await;
@@ -366,7 +366,7 @@ async fn survives_renewals(
     node: &Node,
     store: &Store,
     bus: &Bus,
-    mut placement: swarmy_core::PlacementRecord,
+    mut placement: PlacementRecord,
     process: &serde_json::Value,
 ) {
     for _ in 0..3 {
