@@ -103,20 +103,18 @@ pub enum Error {
 /// the chain here supplies the causes.
 #[cfg(feature = "remote")]
 pub(crate) fn render(error: &Error) -> String {
-    match error {
-        // Transparent: the outer message is the cause's message.
-        Error::Other(source) => render_source(source.as_ref()),
-        _ => {
-            let mut out = error.to_string();
-            let mut next = std::error::Error::source(error);
-            while let Some(source) = next {
-                out.push_str(": ");
-                out.push_str(&source.to_string());
-                next = source.source();
-            }
-            out
-        }
+    // Transparent: the outer message is the cause's message.
+    if let Error::Other(source) = error {
+        return render_source(source.as_ref());
     }
+    let mut out = error.to_string();
+    let mut next = std::error::Error::source(error);
+    while let Some(source) = next {
+        out.push_str(": ");
+        out.push_str(&source.to_string());
+        next = source.source();
+    }
+    out
 }
 
 /// Render an arbitrary cause with its source chain.
