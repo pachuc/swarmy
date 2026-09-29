@@ -35,18 +35,7 @@ where
     loop {
         let result = f().await;
         let retry_after = match &result {
-            Err(
-                Error::Retryable {
-                    status,
-                    retry_after,
-                }
-                | Error::ProviderResponse {
-                    status,
-                    retry_after,
-                    ..
-                },
-            ) if retryable(*status) => *retry_after,
-            Err(Error::Status(status)) if retryable(*status) => None,
+            Err(error) if error.classify().retryable => error.classify().retry_after,
             _ => return result,
         };
         if attempt >= policy.max_attempts.max(1) {
