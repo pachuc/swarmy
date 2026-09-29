@@ -39,6 +39,24 @@ pub async fn build(
         }),
     )
     .await?;
+    if let Some(output) = output {
+        // Refuse to overwrite an existing image, including through a symlink.
+        let destination = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)?;
+        drop(destination);
+        // A same-filesystem output can reuse the completed image without
+        // allocating a second copy of a large development cache.
+        if std::fs::rename(image.path(), &output).is_err() {
+            let status = std::process::Command::new("cp")
+                .args(["--sparse=always", "--"])
+                .arg(image.path())
+                .arg(&output)
+                .status()?;
+            anyhow::ensure!(status.success(), "copying ext4 image failed: {status}");
+        }
+    }
     if json {
         println!(
             "{}",

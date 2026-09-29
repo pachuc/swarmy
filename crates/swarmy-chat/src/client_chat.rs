@@ -36,9 +36,8 @@ fn terminal() -> Result<(DefaultTerminal, RestoreTerminal)> {
     enable_raw_mode().map_err(terminal_error)?;
     let restore = RestoreTerminal;
     execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
-    let mut terminal =
-        DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))
-            .map_err(terminal_error)?;
+    let mut terminal = DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))
+        .map_err(terminal_error)?;
     terminal.clear().map_err(terminal_error)?;
     Ok((terminal, restore))
 }
@@ -84,18 +83,19 @@ async fn picker(
     let sessions = recent(client).await?;
     let mut selection = ListState::default().with_selected(Some(0));
     loop {
-        terminal.draw(|frame| {
-            let items = std::iter::once(ListItem::new("New session")).chain(
-                sessions
-                    .iter()
-                    .map(|(id, text)| ListItem::new(format!("{id}  {}", text.replace('\n', " ")))),
-            );
-            frame.render_stateful_widget(
-                List::new(items).highlight_symbol("> "),
-                frame.area(),
-                &mut selection,
-            );
-        }).map_err(terminal_error)?;
+        terminal
+            .draw(|frame| {
+                let items =
+                    std::iter::once(ListItem::new("New session")).chain(sessions.iter().map(
+                        |(id, text)| ListItem::new(format!("{id}  {}", text.replace('\n', " "))),
+                    ));
+                frame.render_stateful_widget(
+                    List::new(items).highlight_symbol("> "),
+                    frame.area(),
+                    &mut selection,
+                );
+            })
+            .map_err(terminal_error)?;
         let Some(event) = keys.next().await else {
             return Err(terminal_error("terminal input closed"));
         };
@@ -176,30 +176,32 @@ pub async fn run(
     view.ready = conversation.session.state == api::SessionState::Idle;
     let mut input = Input::default();
     loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let rows = ratatui::layout::Layout::vertical([
-                ratatui::layout::Constraint::Min(0),
-                ratatui::layout::Constraint::Length(1),
-                ratatui::layout::Constraint::Length(1),
-            ])
-            .split(area);
-            let body = view.body();
-            let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
-            let offset = paragraph
-                .line_count(rows[0].width)
-                .saturating_sub(usize::from(rows[0].height));
-            frame.render_widget(
-                paragraph.scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
-                rows[0],
-            );
-            frame.render_widget(Paragraph::new(view.status(&conversation)), rows[1]);
-            let (line, cursor) = input.view(rows[2].width);
-            frame.render_widget(Paragraph::new(line), rows[2]);
-            if rows[2].width > 0 {
-                frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
-            }
-        }).map_err(terminal_error)?;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let rows = ratatui::layout::Layout::vertical([
+                    ratatui::layout::Constraint::Min(0),
+                    ratatui::layout::Constraint::Length(1),
+                    ratatui::layout::Constraint::Length(1),
+                ])
+                .split(area);
+                let body = view.body();
+                let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+                let offset = paragraph
+                    .line_count(rows[0].width)
+                    .saturating_sub(usize::from(rows[0].height));
+                frame.render_widget(
+                    paragraph.scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
+                    rows[0],
+                );
+                frame.render_widget(Paragraph::new(view.status(&conversation)), rows[1]);
+                let (line, cursor) = input.view(rows[2].width);
+                frame.render_widget(Paragraph::new(line), rows[2]);
+                if rows[2].width > 0 {
+                    frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
+                }
+            })
+            .map_err(terminal_error)?;
         tokio::select! {
             event = conversation.next() => {
                 view.event(event?);

@@ -142,10 +142,10 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         // `dev` manages local processes with human-readable progress lines,
         // so it has no JSON rendering. Reject `--json` explicitly instead of
         // silently printing text.
-        Command::Up { .. } | Command::Down | Command::Status | Command::Logs { .. }
-            if json =>
-        {
-            bail!("--json is not supported for dev commands; run without it for human-readable output")
+        Command::Up { .. } | Command::Down | Command::Status | Command::Logs { .. } if json => {
+            bail!(
+                "--json is not supported for dev commands; run without it for human-readable output"
+            )
         }
         Command::Up {
             allow_version_mismatch,
@@ -170,11 +170,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         }
         Command::Status => status(&Layout::discover()?).await,
         Command::Logs { service } => {
-            logs(
-                &Layout::discover()?.state,
-                service.map(DevService::as_str),
-            )
-            .await
+            logs(&Layout::discover()?.state, service.map(DevService::as_str)).await
         }
     }
 }

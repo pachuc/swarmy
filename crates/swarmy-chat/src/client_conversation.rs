@@ -179,6 +179,7 @@ fn api_endpoint() -> Result<String> {
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Format a terminal failure without pulling anyhow into this crate.
+#[cfg(feature = "terminal")]
 pub(crate) fn terminal_error(error: impl std::fmt::Display) -> Error {
     Error::Terminal(error.to_string())
 }
@@ -263,10 +264,9 @@ async fn create_session(
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(Error::ImageNotFound {
-                requested: image.as_ref().map_or_else(
-                    || "default".into(),
-                    |i| format!("{}:{}", i.name, i.tag),
-                ),
+                requested: image
+                    .as_ref()
+                    .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag)),
                 known,
             })
         }
@@ -307,7 +307,7 @@ fn tool_outputs(record: &swarmy_core::Event) -> Vec<TurnOutput> {
         swarmy_core::Event::ToolCallRequested { call, .. } => vec![TurnOutput::ToolCall {
             call_id: call.call_id.0.clone(),
             tool: call.tool.clone(),
-            arguments: call.arguments.clone(),
+            arguments: call.arguments.to_string(),
         }],
         swarmy_core::Event::ToolCallCompleted {
             call_id, result, ..
@@ -366,7 +366,9 @@ impl Conversation {
             ));
         }
         if agent.is_some() && image.is_some() {
-            return Err(Error::InvalidArgs("--agent cannot be combined with --image"));
+            return Err(Error::InvalidArgs(
+                "--agent cannot be combined with --image",
+            ));
         }
         let provider = selection.provider.clone();
         let agent_record = if let Some(name) = &agent {
@@ -487,8 +489,7 @@ impl Conversation {
                 status,
                 body: error,
             }) if status.as_u16() == 409 && error.code == "stale_head" => {
-                self.session =
-                    call(&self.endpoint, self.client.session(&self.id)).await?;
+                self.session = call(&self.endpoint, self.client.session(&self.id)).await?;
                 if !queue && self.session.state != api::SessionState::Idle {
                     return Err(SessionNotIdle.into());
                 }
@@ -836,10 +837,10 @@ impl Conversation {
                 progress.error = Some(inference_error(error, *failure_kind));
             }
             swarmy_core::Event::MessageAppended { message, .. } => {
-                self.render_message(message, mode, progress, emit)?;
+                self.render_message(message, mode, progress, emit);
             }
             swarmy_core::Event::InferenceCompleted { completion, .. } => {
-                self.render_message(&completion.message, mode, progress, emit)?;
+                self.render_message(&completion.message, mode, progress, emit);
             }
             _ => {}
         }
@@ -858,8 +859,7 @@ impl Conversation {
         progress: &mut TurnProgress,
         emit: &mut impl FnMut(TurnOutput),
     ) -> Result<bool> {
-        if !mode.is_json() && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n')
-        {
+        if !mode.is_json() && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
             emit(TurnOutput::TokenText("\n".into()));
         }
         if mode.is_json() {
@@ -887,9 +887,9 @@ impl Conversation {
         mode: OutputMode,
         progress: &mut TurnProgress,
         emit: &mut impl FnMut(TurnOutput),
-    ) -> Result<()> {
+    ) {
         let Some(text) = assistant_reply_text(message) else {
-            return Ok(());
+            return;
         };
         progress.reply = true;
         progress.error = None;
@@ -898,7 +898,7 @@ impl Conversation {
             let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
         }
         if mode.is_silent() {
-            return Ok(());
+            return;
         }
         if mode.is_json() {
             emit(TurnOutput::AssistantMessage(text));
@@ -911,7 +911,6 @@ impl Conversation {
             emit(TurnOutput::AssistantMessage(line));
             progress.streamed.clear();
         }
-        Ok(())
     }
 }
 

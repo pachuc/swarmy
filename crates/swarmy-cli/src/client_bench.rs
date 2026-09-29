@@ -155,8 +155,9 @@ async fn measure(
     let mut events = Vec::new();
     let mut idle = false;
     let mut client_elapsed = Duration::ZERO;
+    let mut silent = |_: swarmy_chat::client_conversation::TurnOutput| {};
     {
-        let done = conversation.until_idle(OutputMode::Silent, &mut |_| {});
+        let done = conversation.until_idle(OutputMode::Silent, &mut silent);
         tokio::pin!(done);
         loop {
             tokio::select! {

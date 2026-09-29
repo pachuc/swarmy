@@ -174,7 +174,9 @@ fn main() -> anyhow::Result<()> {
             }
             command => runtime.block_on(api_commands::auth_command(command, json)),
         },
-        Command::Session { command } => runtime.block_on(api_commands::session_command(command, json)),
+        Command::Session { command } => {
+            runtime.block_on(api_commands::session_command(command, json))
+        }
         Command::Agent { command } => runtime.block_on(api_commands::agent_command(command, json)),
         Command::Cost { args } => runtime.block_on(api_commands::cost_command(args, json)),
         Command::Image { command } => match command {
@@ -187,10 +189,7 @@ fn main() -> anyhow::Result<()> {
             command => runtime.block_on(api_commands::image_command(command, json)),
         },
         Command::Models { command } => runtime.block_on(models::run(command, json)),
-        Command::Bench { command } => runtime.block_on(async {
-            let (client, _) = connect_client().await?;
-            client_bench::run(client, command, json).await
-        }),
+        Command::Bench { command } => runtime.block_on(run_bench(command, json)),
         Command::Run {
             prompt,
             image,
@@ -199,51 +198,16 @@ fn main() -> anyhow::Result<()> {
             session,
             queue,
             selection,
-        } => runtime.block_on(async {
-            let (client, _) = connect_client().await?;
-            client_commands::run(
-                client, prompt, image, agent, new, session, queue, selection, json,
-            )
-            .await
-        }),
+        } => runtime.block_on(run_prompt(
+            prompt, image, agent, new, session, queue, selection, json,
+        )),
         Command::Chat {
             session_id,
             image,
             agent,
             new,
             selection,
-        } => runtime.block_on(async {
-            let (client, endpoint) = connect_client().await?;
-            client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            if json {
-                client_commands::chat(client, session_id, image, agent, new, selection, true)
-                    .await
-            } else {
-                #[cfg(feature = "chat")]
-                {
-                    swarmy_chat::client_chat::run(
-                        client,
-                        session_id,
-                        image,
-                        agent,
-                        new,
-                        selection.clone().into(),
-                        selection.route,
-                    )
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                    Ok(())
-                }
-                #[cfg(not(feature = "chat"))]
-                {
-                    anyhow::bail!(
-                        "interactive chat is unavailable in this headless build; use --json or install with --features chat"
-                    );
-                }
-            }
-        }),
+        } => runtime.block_on(run_chat(session_id, image, agent, new, selection, json)),
         #[cfg(feature = "remote")]
         Command::Remote { command } => runtime.block_on(remote(command, json)),
         #[cfg(not(feature = "remote"))]
@@ -254,13 +218,8 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             grace_seconds,
         } => runtime.block_on(gc::run(dry_run, grace_seconds, json)),
-        Command::Doctor => runtime.block_on(async {
-            if !doctor::run(json).await? {
-                std::process::exit(1);
-            }
-            Ok(())
-        }),
-        Command::Version => swarmy_version::print("swarmy", json),
+        Command::Doctor => runtime.block_on(run_doctor(json)),
+        Command::Version => swarmy_version::print("swarmy", json).map_err(anyhow::Error::from),
     }
 }
 
@@ -271,6 +230,85 @@ async fn connect_client() -> anyhow::Result<(swarmy_client::Client, String)> {
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     swarmy_client::api_client::call(&endpoint, client.health()).await?;
     Ok((client, endpoint))
+}
+
+/// Map a chat-library failure into the binary's error type.
+fn chat_error(error: swarmy_chat::client_conversation::Error) -> anyhow::Error {
+    anyhow::anyhow!(error.to_string())
+}
+
+async fn run_bench(command: bench_command::Command, json: bool) -> anyhow::Result<()> {
+    let (client, _) = connect_client().await?;
+    client_bench::run(client, command, json).await
+}
+
+// The arguments mirror the `run` CLI flags, so eight parameters is inherent
+// to the dispatch shape.
+#[allow(clippy::too_many_arguments)]
+async fn run_prompt(
+    prompt: String,
+    image: Option<String>,
+    agent: Option<String>,
+    new: bool,
+    session: Option<ulid::Ulid>,
+    queue: bool,
+    selection: selection_command::SelectionArgs,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (client, _) = connect_client().await?;
+    client_commands::run(
+        client, prompt, image, agent, new, session, queue, selection, json,
+    )
+    .await
+}
+
+// The arguments mirror the `chat` CLI flags, so six parameters is inherent
+// to the dispatch shape.
+#[allow(clippy::too_many_arguments)]
+async fn run_chat(
+    session_id: Option<ulid::Ulid>,
+    image: Option<String>,
+    agent: Option<String>,
+    new: bool,
+    selection: selection_command::SelectionArgs,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client().await?;
+    client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
+        .await
+        .map_err(chat_error)?;
+    if json {
+        client_commands::chat(client, session_id, image, agent, new, selection, true).await
+    } else {
+        #[cfg(feature = "chat")]
+        {
+            swarmy_chat::client_chat::run(
+                client,
+                session_id,
+                image,
+                agent,
+                new,
+                selection.clone().into(),
+                selection.route,
+            )
+            .await
+            .map_err(chat_error)?;
+            Ok(())
+        }
+        #[cfg(not(feature = "chat"))]
+        {
+            anyhow::bail!(
+                "interactive chat is unavailable in this headless build; use --json or install with --features chat"
+            );
+        }
+    }
+}
+
+async fn run_doctor(json: bool) -> anyhow::Result<()> {
+    if !doctor::run(json).await? {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 // `login` and `import` shell out to the `swarmy-auth` helper so terminal
