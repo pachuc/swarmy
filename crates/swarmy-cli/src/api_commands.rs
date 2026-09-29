@@ -743,6 +743,75 @@ async fn update_agent(
     request(endpoint, client.agent_view(name)).await
 }
 
+async fn agent_create(
+    client: &Client,
+    endpoint: &str,
+    args: agent_command::CreateArgs,
+    json: bool,
+) -> Result<()> {
+    let agent_command::CreateArgs {
+        name,
+        image,
+        description,
+        inference: flags,
+        github_token,
+        github_token_stdin,
+    } = args;
+    let token = if github_token_stdin {
+        use std::io::Read as _;
+        let mut token = String::new();
+        std::io::stdin().read_to_string(&mut token)?;
+        Some(token.trim_end_matches(['\r', '\n']).to_owned())
+    } else {
+        github_token
+    };
+    let flags = inference(flags, false)?;
+    let image = image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image);
+    let image = match image {
+        Some(image) => image,
+        None => request(endpoint, client.doctor())
+            .await?
+            .default_image
+            .context("no default image configured")?,
+    };
+    let (image_name, image_tag) = image.split_once(':').context("expected image NAME:TAG")?;
+    let created = request(
+        endpoint,
+        client.create_agent(&swarmy_api_types::CreateAgent {
+            idempotency_key: Ulid::generate().to_string(),
+            name: name.clone(),
+            description,
+            image: swarmy_api_types::ImageRef {
+                name: image_name.into(),
+                tag: image_tag.into(),
+            },
+            provider: flags.provider,
+            model: flags.model,
+            effort: flags.effort,
+            system_prompt: flags.system_prompt,
+            route: flags.route,
+            memory_mib: flags.memory_mib,
+            gpu: flags.gpu,
+            github_token: token,
+        }),
+    )
+    .await?;
+    let created = request(endpoint, client.agent_view(&created.id)).await?;
+    print(
+        &created,
+        &format!(
+            "Created agent {} {} image={}:{}{}",
+            created.record.name,
+            created.record.agent_id,
+            created.record.image.name,
+            created.record.image.tag.0,
+            settings_text(&created)
+        ),
+        json,
+    );
+    Ok(())
+}
+
 async fn agent(
     client: &Client,
     endpoint: &str,
@@ -767,68 +836,8 @@ async fn agent(
             let row = request(endpoint, client.agent_view(&name)).await?;
             print(&row, &agent_text(&row, true), json);
         }
-        agent_command::Command::Create {
-            name,
-            image,
-            description,
-            inference: flags,
-            github_token,
-            github_token_stdin,
-        } => {
-            let token = if github_token_stdin {
-                use std::io::Read as _;
-                let mut token = String::new();
-                std::io::stdin().read_to_string(&mut token)?;
-                Some(token.trim_end_matches(['\r', '\n']).to_owned())
-            } else {
-                github_token
-            };
-            let flags = inference(flags, false)?;
-            let image =
-                image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image);
-            let image = match image {
-                Some(image) => image,
-                None => request(endpoint, client.doctor())
-                    .await?
-                    .default_image
-                    .context("no default image configured")?,
-            };
-            let (image_name, image_tag) =
-                image.split_once(':').context("expected image NAME:TAG")?;
-            let created = request(
-                endpoint,
-                client.create_agent(&swarmy_api_types::CreateAgent {
-                    idempotency_key: Ulid::generate().to_string(),
-                    name: name.clone(),
-                    description,
-                    image: swarmy_api_types::ImageRef {
-                        name: image_name.into(),
-                        tag: image_tag.into(),
-                    },
-                    provider: flags.provider,
-                    model: flags.model,
-                    effort: flags.effort,
-                    system_prompt: flags.system_prompt,
-                    route: flags.route,
-                    memory_mib: flags.memory_mib,
-                    gpu: flags.gpu,
-                    github_token: token,
-                }),
-            )
-            .await?;
-            let created = request(endpoint, client.agent_view(&created.id)).await?;
-            print(
-                &created,
-                &format!(
-                    "Created agent {} {} image={}:{}{}",
-                    created.record.name,
-                    created.record.agent_id,
-                    created.record.image.name,
-                    created.record.image.tag.0,
-                    settings_text(&created)
-                ),
-                json,
-            );
+        agent_command::Command::Create(args) => {
+            agent_create(client, endpoint, args, json).await?;
         }
         agent_command::Command::Set {
             name,

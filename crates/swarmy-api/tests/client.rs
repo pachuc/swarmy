@@ -229,7 +229,7 @@ async fn assert_catalog_and_credentials(client: &Client) {
                 kind: api::CredentialKind::ApiKey,
                 label: "test".into(),
                 secret: "secret".into(),
-                extra: Default::default(),
+                extra: std::collections::BTreeMap::default(),
             })
             .await
             .unwrap();

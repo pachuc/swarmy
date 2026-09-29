@@ -159,7 +159,7 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
             kind: swarmy_api_types::CredentialKind::Cloud,
             label: "backup".into(),
             secret: "synthetic-cloud-secret".into(),
-            extra: Default::default(),
+            extra: std::collections::BTreeMap::default(),
         })
         .await
         .unwrap();

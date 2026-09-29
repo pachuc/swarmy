@@ -452,7 +452,7 @@ impl View {
                         }
                     }
                     swarmy_core::Event::InferenceFailed { error, .. } => {
-                        self.entries.push(format!("Error: {error}"))
+                        self.entries.push(format!("Error: {error}"));
                     }
                     swarmy_core::Event::ToolCallRequested { call, .. } => {
                         let id = call.call_id.0;
@@ -505,15 +505,19 @@ impl View {
             })
             .collect::<String>();
         match message.role {
-            swarmy_core::MessageRole::User if self.users.insert(id.clone()) => {
-                self.entries.push(format!(
-                    "You{}: {text}",
-                    if queued { " (queued)" } else { "" }
-                ));
+            swarmy_core::MessageRole::User => {
+                if self.users.insert(id) {
+                    self.entries.push(format!(
+                        "You{}: {text}",
+                        if queued { " (queued)" } else { "" }
+                    ));
+                }
             }
-            swarmy_core::MessageRole::System if self.systems.insert(id.clone()) => {
-                self.entries
-                    .push(format!("System [session {session_id}]: {text}"));
+            swarmy_core::MessageRole::System => {
+                if self.systems.insert(id) {
+                    self.entries
+                        .push(format!("System [session {session_id}]: {text}"));
+                }
             }
             swarmy_core::MessageRole::Assistant if self.assistants.insert(id) => {
                 self.partial.clear();
@@ -521,7 +525,7 @@ impl View {
                     self.entries.push(format!("Agent: {text}"));
                 }
             }
-            _ => {}
+            swarmy_core::MessageRole::Assistant | swarmy_core::MessageRole::Tool => {}
         }
     }
 }

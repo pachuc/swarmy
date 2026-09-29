@@ -604,10 +604,10 @@ impl Conversation {
                 }
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
-                    if let api::EventPayload::StoreRecord { record } = event.payload {
-                        if self.record_event(&record, sequence, json, run, quiet, &mut progress)? {
-                            return Ok(());
-                        }
+                    if let api::EventPayload::StoreRecord { record } = event.payload
+                        && self.record_event(&record, sequence, json, run, quiet, &mut progress)?
+                    {
+                        return Ok(());
                     }
                 }
                 ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
@@ -648,7 +648,7 @@ impl Conversation {
         match event {
             swarmy_core::Event::StateChanged { to, .. } => match to {
                 swarmy_core::SessionState::Leased | swarmy_core::SessionState::WaitingInference => {
-                    progress.started = true
+                    progress.started = true;
                 }
                 swarmy_core::SessionState::Completed => bail!("session completed"),
                 swarmy_core::SessionState::Idle => {
@@ -658,7 +658,7 @@ impl Conversation {
             },
             swarmy_core::Event::InferenceRequested { .. } => progress.started = true,
             swarmy_core::Event::MessageQueued { .. } if !quiet && !json => {
-                println!("[queued message delivered]")
+                println!("[queued message delivered]");
             }
             swarmy_core::Event::ToolCallCompleted { result, .. } => {
                 self.tool_count += 1;
@@ -674,7 +674,7 @@ impl Conversation {
             }
             swarmy_core::Event::MessageAppended { message, .. }
             | swarmy_core::Event::InferenceCompleted { message, .. } => {
-                self.render_message(message, json, quiet, progress)?
+                self.render_message(message, json, quiet, progress)?;
             }
             _ => {}
         }

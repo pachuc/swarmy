@@ -220,7 +220,7 @@ async fn assert_credentials(client: &reqwest::Client, base: &str) {
         kind: CredentialKind::ApiKey,
         label: "primary".into(),
         secret: secret.into(),
-        extra: Default::default(),
+        extra: std::collections::BTreeMap::default(),
     };
     let created = client
         .post(format!("{base}/v1/credentials"))

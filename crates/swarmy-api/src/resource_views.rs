@@ -213,20 +213,7 @@ pub(crate) async fn session_show(
             .await
             .map_err(storage)?,
     );
-    let mut after = 0;
-    let mut events = Vec::new();
-    while after < record.head_seq {
-        let page = state
-            .store
-            .read_events(session_id, after, MAX_SCAN_LIMIT)
-            .await
-            .map_err(storage)?;
-        if page.is_empty() {
-            return Err(error(StatusCode::INTERNAL_SERVER_ERROR, "truncated_log"));
-        }
-        after = page.last().map_or(after, swarmy_core::Event::seq);
-        events.extend(page);
-    }
+    let events = session_events(&state, session_id, record.head_seq).await?;
     Ok(Json(api::SessionDetail {
         session: record,
         resolved: selection,
@@ -247,6 +234,28 @@ pub(crate) async fn session_show(
         }),
         events,
     }))
+}
+
+async fn session_events(
+    state: &AppState,
+    session_id: SessionId,
+    head_seq: u64,
+) -> Result<Vec<swarmy_core::Event>, (StatusCode, Json<api::ApiError>)> {
+    let mut after = 0;
+    let mut events = Vec::new();
+    while after < head_seq {
+        let page = state
+            .store
+            .read_events(session_id, after, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        if page.is_empty() {
+            return Err(error(StatusCode::INTERNAL_SERVER_ERROR, "truncated_log"));
+        }
+        after = page.last().map_or(after, swarmy_core::Event::seq);
+        events.extend(page);
+    }
+    Ok(events)
 }
 
 pub(crate) async fn agents(
@@ -342,87 +351,97 @@ async fn agent_value(
         sessions: Vec::new(),
     };
     if detail {
-        let totals = state
-            .store
-            .agent_usage(view.record.agent_id)
-            .await
-            .map_err(storage)?;
-        view.cost_dollars = Some(totals.dollars());
-        view.usage = Some(totals);
-        let (entries, providers) = super::entry_breakdown(
-            state
-                .store
-                .dimension_totals(
-                    swarmy_store::MeteringDimension::AgentEntry,
-                    &view.record.agent_id.to_string(),
-                    None,
-                )
-                .await
-                .map_err(storage)?,
-        );
-        view.entries = entries;
-        view.providers = providers;
-        view.sandbox_address = match &placement {
-            Some(value) => state
-                .store
-                .placement_address(value)
-                .await
-                .map_err(storage)?
-                .map(|address| address.to_string()),
-            None => None,
-        };
-        view.placement = placement;
-        let volume = state
-            .store
-            .get_volume(VolumeId::from_ulid(view.record.agent_id.as_ulid()))
-            .await
-            .map_err(storage)?;
-        let snapshot = volume
-            .as_ref()
-            .map(|value| {
-                jiff::Timestamp::from_millisecond(
-                    i64::try_from(value.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
-                )
-            })
-            .transpose()
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
-        view.last_snapshot_at = snapshot.map(|at| at.to_string());
-        view.last_snapshot_age_seconds =
-            snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0));
-        let status = state
-            .store
-            .agent_call_status(view.record.agent_id)
-            .await
-            .map_err(storage)?;
-        let busy = status
-            .as_ref()
-            .is_some_and(|status| status.holder_session_id.is_some() || status.queued_calls > 0);
-        view.sandbox_state = Some(
-            if busy {
-                "busy"
-            } else if status.is_some() {
-                "idle"
-            } else {
-                "unknown"
-            }
-            .into(),
-        );
-        view.call_status = status;
-        for session in sessions {
-            let next = state
-                .store
-                .next_session(session.session_id)
-                .await
-                .map_err(storage)?;
-            view.sessions.push(api::AgentSessionView {
-                record: session,
-                archived: next.is_some(),
-                next_session: next.map(|id| id.to_string()),
-            });
-        }
+        populate_agent_detail(state, &mut view, placement, sessions).await?;
     }
     Ok(view)
 }
+async fn populate_agent_detail(
+    state: &AppState,
+    view: &mut api::AgentView,
+    placement: Option<swarmy_core::PlacementRecord>,
+    sessions: Vec<swarmy_core::SessionRecord>,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    let totals = state
+        .store
+        .agent_usage(view.record.agent_id)
+        .await
+        .map_err(storage)?;
+    view.cost_dollars = Some(totals.dollars());
+    view.usage = Some(totals);
+    let (entries, providers) = super::entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                swarmy_store::MeteringDimension::AgentEntry,
+                &view.record.agent_id.to_string(),
+                None,
+            )
+            .await
+            .map_err(storage)?,
+    );
+    view.entries = entries;
+    view.providers = providers;
+    view.sandbox_address = match &placement {
+        Some(value) => state
+            .store
+            .placement_address(value)
+            .await
+            .map_err(storage)?
+            .map(|address| address.to_string()),
+        None => None,
+    };
+    view.placement = placement;
+    let volume = state
+        .store
+        .get_volume(VolumeId::from_ulid(view.record.agent_id.as_ulid()))
+        .await
+        .map_err(storage)?;
+    let snapshot = volume
+        .as_ref()
+        .map(|value| {
+            jiff::Timestamp::from_millisecond(
+                i64::try_from(value.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
+            )
+        })
+        .transpose()
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
+    view.last_snapshot_at = snapshot.map(|at| at.to_string());
+    view.last_snapshot_age_seconds =
+        snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0));
+    let status = state
+        .store
+        .agent_call_status(view.record.agent_id)
+        .await
+        .map_err(storage)?;
+    let busy = status
+        .as_ref()
+        .is_some_and(|status| status.holder_session_id.is_some() || status.queued_calls > 0);
+    view.sandbox_state = Some(
+        if busy {
+            "busy"
+        } else if status.is_some() {
+            "idle"
+        } else {
+            "unknown"
+        }
+        .into(),
+    );
+    view.call_status = status;
+    for session in sessions {
+        let next = state
+            .store
+            .next_session(session.session_id)
+            .await
+            .map_err(storage)?;
+        view.sessions.push(api::AgentSessionView {
+            record: session,
+            archived: next.is_some(),
+            next_session: next.map(|id| id.to_string()),
+        });
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct ModelsQuery {
     pub q: Option<String>,
