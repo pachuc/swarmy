@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal},
     time::Duration,
 };
 
@@ -9,7 +9,11 @@ use swarmy_config::RemoteNode;
 use super::{Cloud, Ownership, key_name, state::State};
 
 pub(crate) fn actionable_error(error: anyhow::Error) -> anyhow::Error {
-    if error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))) {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<crate::Error>()
+            .is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))
+    }) {
         error.context("AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained")
     } else {
         error
@@ -91,10 +95,7 @@ pub async fn confirm(
     if role_owned {
         cloud_out!("  role {role}");
     }
-    print!("Continue? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
+    let answer = crate::prompt("Continue? [y/N] ")?;
     if answer.trim() != "y" && answer.trim() != "yes" {
         bail!("remote down cancelled");
     }
@@ -107,13 +108,10 @@ pub async fn tag(cloud: &impl Cloud, state: &State, node: &RemoteNode) -> Result
         if !io::stdin().is_terminal() {
             bail!("remote tag requires a terminal");
         }
-        print!(
+        let answer = crate::prompt(&format!(
             "Type the exact {kind} name {name} to adopt it for remote {}: ",
             node.name
-        );
-        io::stdout().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
+        ))?;
         if answer.trim() != name {
             bail!("remote tag cancelled");
         }

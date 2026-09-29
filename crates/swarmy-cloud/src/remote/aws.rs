@@ -226,7 +226,9 @@ impl Aws {
                 )
                 .send()
                 .await
-                .aws_context("s3:PutEncryptionConfiguration (bucket may belong to another account)")?;
+                .aws_context(
+                    "s3:PutEncryptionConfiguration (bucket may belong to another account)",
+                )?;
         }
         self.s3
             .put_public_access_block()
@@ -348,7 +350,10 @@ impl Aws {
 }
 
 fn access_denied(code: Option<&str>) -> bool {
-    matches!(code, Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation"))
+    matches!(
+        code,
+        Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation")
+    )
 }
 
 fn warn_untagged(permission: &str, resource: &str, owner: &str) {
@@ -363,7 +368,11 @@ fn warn_tag_denied(
     resource: &str,
     owner: &str,
 ) -> Result<()> {
-    if !error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))) {
+    if !error.chain().any(|cause| {
+        cause
+            .downcast_ref::<crate::Error>()
+            .is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))
+    }) {
         return Err(error);
     }
     warn_untagged(permission, resource, owner);
@@ -564,7 +573,7 @@ impl Cloud for Aws {
             Duration::from_secs(2),
         )
         .await
-        .aws_context("ec2:RunInstances and iam:PassRole (when using a bucket profile)")?;
+        .context("ec2:RunInstances and iam:PassRole (when using a bucket profile)")?;
         Ok(output
             .instances()
             .first()
@@ -894,7 +903,9 @@ impl Cloud for Aws {
                             .as_service_error()
                             .and_then(ProvideErrorMetadata::code)
                             == Some("NoSuchEntity") => {}
-                    Err(error) => return Err(error).aws_context("iam:RemoveRoleFromInstanceProfile"),
+                    Err(error) => {
+                        return Err(error).aws_context("iam:RemoveRoleFromInstanceProfile");
+                    }
                 }
             }
             match self
@@ -1110,7 +1121,11 @@ mod tag_denial_tests {
     fn denied_tagging_does_not_abort_creation_but_other_errors_do() {
         assert!(
             warn_tag_denied(
-                &anyhow::anyhow!("s3:PutBucketTagging: AccessDenied"),
+                crate::Error::MissingPermission {
+                    operation: "s3:PutBucketTagging".into(),
+                    source: Box::new(std::io::Error::other("AccessDenied"))
+                }
+                .into(),
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"
@@ -1119,7 +1134,7 @@ mod tag_denial_tests {
         );
         assert!(
             warn_tag_denied(
-                &anyhow::anyhow!("s3:PutBucketTagging: network failure"),
+                anyhow::anyhow!("s3:PutBucketTagging: network failure"),
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"

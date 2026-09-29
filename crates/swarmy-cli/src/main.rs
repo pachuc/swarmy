@@ -153,6 +153,14 @@ fn main() -> anyhow::Result<()> {
             println!("{message}");
         }
     });
+    swarmy_cloud::set_prompt_sink(|message| {
+        use std::io::Write;
+        print!("{message}");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        Ok(answer)
+    });
     swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {

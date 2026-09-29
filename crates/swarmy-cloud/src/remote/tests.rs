@@ -14,6 +14,17 @@ use super::{
     state::State, up, wait_running,
 };
 
+fn denied(operation: &str) -> anyhow::Error {
+    crate::Error::MissingPermission {
+        operation: operation.to_owned(),
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "AccessDenied",
+        )),
+    }
+    .into()
+}
+
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
@@ -98,9 +109,14 @@ impl Cloud for FakeCloud {
     fn create(&self, spec: &MachineSpec) -> impl Future<Output = Result<String>> {
         self.requests.borrow_mut().push(spec.clone());
         if self.fail_profile_launch_once.replace(false) {
-            return std::future::ready(Err(anyhow::anyhow!(
-                "InvalidParameterValue: Invalid IAM Instance Profile name"
-            )));
+            return std::future::ready(Err(crate::Error::Aws {
+                operation: "ec2:RunInstances".into(),
+                code: Some("InvalidParameterValue".into()),
+                source: Box::new(std::io::Error::other(
+                    "InvalidParameterValue: Invalid IAM Instance Profile name",
+                )),
+            }
+            .into()));
         }
         std::future::ready(Ok(self
             .launch_ids
@@ -121,7 +137,7 @@ impl Cloud for FakeCloud {
     }
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>> {
         if self.fail_terminate.get() {
-            return std::future::ready(Err(anyhow::anyhow!("access denied")));
+            return std::future::ready(Err(denied("ec2:TerminateInstances")));
         }
         self.teardown.borrow_mut().push(format!("instance {id}"));
         self.terminated.borrow_mut().push(id.into());
@@ -129,7 +145,7 @@ impl Cloud for FakeCloud {
     }
     fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
         if self.deny_tag_read.get() {
-            return std::future::ready(Err(anyhow::anyhow!("s3:GetBucketTagging: AccessDenied")));
+            return std::future::ready(Err(denied("s3:GetBucketTagging")));
         }
         std::future::ready(Ok(if self.absent.get() || self.absent_bucket.get() {
             Ownership::Absent
@@ -176,7 +192,7 @@ impl Cloud for FakeCloud {
     }
     fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
         if self.deny_version_list.get() {
-            return std::future::ready(Err(anyhow::anyhow!("s3:ListBucketVersions: AccessDenied")));
+            return std::future::ready(Err(denied("s3:ListBucketVersions")));
         }
         self.teardown.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(!self.absent.get()))
@@ -189,7 +205,7 @@ impl Cloud for FakeCloud {
         self.teardown.borrow_mut().push(format!("key {name}"));
         self.key_delete_attempts.borrow_mut().push(name.into());
         if self.fail_delete.get() {
-            return std::future::ready(Err(anyhow::anyhow!("access denied")));
+            return std::future::ready(Err(denied("ec2:DeleteKeyPair")));
         }
         self.deleted.borrow_mut().push(name.into());
         std::future::ready(Ok(()))

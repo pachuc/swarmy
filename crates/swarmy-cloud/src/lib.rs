@@ -16,6 +16,22 @@ pub fn set_output_sink(sink: fn(&str, bool)) {
     let _ = OUTPUT.set(sink);
 }
 
+static PROMPT: std::sync::OnceLock<fn(&str) -> std::io::Result<String>> =
+    std::sync::OnceLock::new();
+
+/// Install the CLI's interactive prompt handler.
+pub fn set_prompt_sink(sink: fn(&str) -> std::io::Result<String>) {
+    let _ = PROMPT.set(sink);
+}
+
+fn prompt(message: &str) -> std::io::Result<String> {
+    PROMPT
+        .get()
+        .ok_or_else(|| std::io::Error::other("interactive prompt handler not installed"))?(
+        message
+    )
+}
+
 fn emit(message: &str, stderr: bool) {
     if let Some(sink) = OUTPUT.get() {
         sink(message, stderr);
