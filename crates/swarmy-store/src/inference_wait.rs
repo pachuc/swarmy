@@ -6,6 +6,12 @@ use swarmy_core::{SessionId, SessionState};
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
+/// How long a granted entry probe stays visibly open after its window ends,
+/// so waiters see one stable deadline instead of a flapping breaker.
+pub(crate) const BREAKER_PROBE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long a granted probe may spend one request before the entry opens again.
+pub(crate) const BREAKER_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Breaker identity: one record per auth entry. A rate limit on one key opens
 /// only that key's breaker and leaves the provider's other entries closed.
 /// Entries without a stored label (environment keys, ambient host chains, the
@@ -101,7 +107,7 @@ pub(crate) fn open_state(
         if record.open_until > now {
             Some(record.open_until)
         } else if record.probe_until.is_some_and(|until| until > now) {
-            now.checked_add(std::time::Duration::from_secs(1)).ok()
+            now.checked_add(BREAKER_PROBE_GRACE).ok()
         } else {
             None
         }
@@ -138,12 +144,12 @@ impl Store {
             }
             if breaker.probe_until.is_some_and(|until| until > now) {
                 return Ok(Some(
-                    now.checked_add(std::time::Duration::from_secs(1))
+                    now.checked_add(BREAKER_PROBE_GRACE)
                         .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
                 ));
             }
             breaker.probe_until = Some(
-                now.checked_add(std::time::Duration::from_secs(120))
+                now.checked_add(BREAKER_PROBE_WINDOW)
                     .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
             );
             write(&trx, &self.breaker_key(key), &breaker)?;
@@ -167,7 +173,7 @@ impl Store {
                     if breaker.open_until > now {
                         Some(breaker.open_until)
                     } else if breaker.probe_until.is_some_and(|until| until > now) {
-                        now.checked_add(std::time::Duration::from_secs(1)).ok()
+                        now.checked_add(BREAKER_PROBE_GRACE).ok()
                     } else {
                         None
                     }

@@ -131,29 +131,6 @@ pub fn database(cluster_file: &std::path::Path) -> Result<Database> {
     Ok(Database::new(Some(path))?)
 }
 
-/// Wait for a process shutdown signal: SIGINT (Ctrl-C) or SIGTERM.
-/// Systemd and the node launchers stop services with SIGTERM, so waiting
-/// only for Ctrl-C would skip the metric flush on every real shutdown.
-/// Callers await this instead of `tokio::signal::ctrl_c` directly.
-/// # Panics
-/// Panics if the SIGTERM handler cannot be installed.
-pub async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("SIGTERM handler must install");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = terminate.recv() => {},
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 enum StoredValue {
     Inline(Vec<u8>),
@@ -298,11 +275,13 @@ impl Store {
         if self.metrics_drain.get().is_some() {
             return;
         }
-        let rx = self
-            .metrics_rx
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
+        let rx = match self.metrics_rx.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(error) => {
+                tracing::warn!(%error, "metrics queue lock poisoned; skipping drain start");
+                return;
+            }
+        };
         let Some(rx) = rx else {
             return;
         };
@@ -313,7 +292,9 @@ impl Store {
             return;
         }
         let handle = crate::metrics::spawn_metrics_drain(self.metrics_writer(), rx);
-        let _ = self.metrics_drain.set(handle);
+        if self.metrics_drain.set(handle).is_err() {
+            tracing::debug!("metrics drain already started");
+        }
     }
 
     /// Use a deterministic clock for lease and expiry tests.

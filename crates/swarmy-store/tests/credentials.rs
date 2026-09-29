@@ -109,6 +109,64 @@ async fn put_get_list_delete_and_wrong_key() {
 }
 
 #[tokio::test]
+async fn touch_records_last_use_without_changing_the_secret() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.credentials
+        .put_entry(SCOPE, "openai", "ready", &api_key("live"))
+        .await
+        .unwrap();
+    // Touching records last use without changing the encrypted credential: a
+    // subsequent read returns the same secret, while listings show the use.
+    let before = f
+        .credentials
+        .get_entry(SCOPE, "openai", "ready")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        f.credentials
+            .list_entries(SCOPE)
+            .await
+            .unwrap()
+            .iter()
+            .find(|entry| entry.label == "ready")
+            .unwrap()
+            .last_used_at
+            .is_none()
+    );
+    f.credentials
+        .touch_entry(SCOPE, "openai", "ready")
+        .await
+        .unwrap();
+    let after = f
+        .credentials
+        .get_entry(SCOPE, "openai", "ready")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(before == after);
+    assert!(
+        f.credentials
+            .list_entries(SCOPE)
+            .await
+            .unwrap()
+            .iter()
+            .find(|entry| entry.label == "ready")
+            .unwrap()
+            .last_used_at
+            .is_some()
+    );
+    assert!(matches!(
+        f.credentials.touch_entry(SCOPE, "openai", "missing").await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::CredentialMissing
+        ))
+    ));
+}
+
+#[tokio::test]
 async fn simultaneous_refresh_invokes_one_function() {
     let Some(f) = Fixture::new() else {
         return;

@@ -7,7 +7,7 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
 };
-use swarmy_core::{CredentialKind, CredentialRecord, CredentialStatus};
+use swarmy_core::{CredentialEntryKind, CredentialKind, CredentialRecord, CredentialStatus};
 
 /// The gateway supplies persistence so protocol clients do not link `FoundationDB`.
 #[async_trait]
@@ -58,18 +58,8 @@ pub struct ResolvedAuth {
     pub auth: ClientAuth,
     pub version: [u8; 32],
     pub entry: Option<String>,
-    /// Kind behind the resolved entry (`subscription`, `api-key`, `cloud`).
-    pub entry_kind: Option<String>,
-}
-
-/// Derive the rollup kind from a stored record without exposing secrets.
-#[must_use]
-pub(crate) fn entry_kind_for(record: &CredentialRecord) -> String {
-    match &record.kind {
-        CredentialKind::OAuth { .. } => "subscription".into(),
-        CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud".into(),
-        CredentialKind::ApiKey { .. } => "api-key".into(),
-    }
+    /// Kind behind the resolved entry, derived from the stored record.
+    pub entry_kind: Option<CredentialEntryKind>,
 }
 
 #[derive(Clone)]
@@ -163,11 +153,11 @@ impl Resolver {
                 })),
                 version: version(&record)?,
                 entry,
-                entry_kind: Some(entry_kind_for(&record)),
+                entry_kind: Some(record.entry_kind()),
             });
         }
         let version = version(&record)?;
-        let entry_kind = Some(entry_kind_for(&record));
+        let entry_kind = Some(record.entry_kind());
         let auth = if is_vertex(provider) {
             vertex_from_record(record.kind)
         } else {
@@ -198,13 +188,13 @@ impl Resolver {
                     account,
                 })),
                 version: version(&record)?,
-                entry_kind: Some(entry_kind_for(&record)),
+                entry_kind: Some(record.entry_kind()),
                 entry,
             });
         }
         if let Some(record) = record {
             let version = version(&record)?;
-            let kind = entry_kind_for(&record);
+            let kind = record.entry_kind();
             let auth = if is_vertex(provider) {
                 vertex_from_record(record.kind)
             } else {

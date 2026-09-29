@@ -1,9 +1,9 @@
 use super::inference::warn_on_route_fallback;
 use super::{
-    Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, LiveFeed, MAX_SCAN_LIMIT,
-    MessageId, RequestId, Result, SandboxArguments, SessionId, SessionRecord, SessionState,
-    Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
-    encode,
+    Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, KillPoint, LiveFeed,
+    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SNAPSHOT_CACHE_SIZE, SandboxArguments, SessionId,
+    SessionRecord, SessionState, Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord,
+    TurnStage, Ulid, Worker, decode, encode,
 };
 use swarmy_llm::InferenceJob;
 
@@ -114,7 +114,7 @@ impl Worker {
         // avoiding repeat downloads for the claim, dispatch, and fold of a turn.
         if bytes.len() <= 1024 * 1024 {
             let mut cache = self.snapshots.lock().await;
-            if cache.len() >= 16 {
+            if cache.len() >= SNAPSHOT_CACHE_SIZE {
                 cache.clear();
             }
             cache.insert(key.to_owned(), snapshot.clone());
@@ -515,7 +515,7 @@ impl Worker {
             FailoverAction::AdvanceTo(step) => {
                 warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = step;
-                self.kill("after_advance");
+                self.kill(KillPoint::AfterAdvance);
                 Ok(false)
             }
             FailoverAction::Park => {
@@ -585,18 +585,39 @@ impl Worker {
     }
 
     pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        let mut cache = self.display_by_session.lock().await;
-        if let Some(display) = cache.get(&session.session_id) {
-            return Ok(*display);
+        // The display flag varies only by image manifest, so the cache is
+        // keyed by manifest id with a per-session index for read-free hits.
+        // The lock is released before the database reads below so concurrent
+        // steps do not block on them.
+        {
+            let cache = self.display.lock().await;
+            if let Some(display) = cache.get(session.session_id) {
+                return Ok(display);
+            }
         }
-        let display = if let Some(agent) = self.store.get_agent(session.agent_id).await? {
-            self.store.image_display(&agent.image).await?
-        } else {
-            false
+        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
+            // Sessions without an agent row (ephemeral tests, deleted agents)
+            // have no display. Remember the miss so repeated lookups cost no
+            // reads, as a hit would.
+            let mut cache = self.display.lock().await;
+            cache.insert(session.session_id, None, false);
+            return Ok(false);
         };
-        // Session images do not change during a worker lifetime. A worker restart
-        // drops this cache; restart workers after changing an agent's image.
-        cache.insert(session.session_id, display);
+        let manifest = agent.image.manifest_id;
+        {
+            let cache = self.display.lock().await;
+            if let Some(display) = cache.get_image(manifest) {
+                drop(cache);
+                let mut cache = self.display.lock().await;
+                cache.insert(session.session_id, Some(manifest), display);
+                return Ok(display);
+            }
+        }
+        let display = self.store.image_display(&agent.image).await?;
+        {
+            let mut cache = self.display.lock().await;
+            cache.insert(session.session_id, Some(manifest), display);
+        }
         Ok(display)
     }
 
@@ -759,7 +780,7 @@ impl Worker {
                 seq: head,
             };
             self.blobs.put(&reference.object_key, bytes.into()).await?;
-            self.kill("before_release");
+            self.kill(KillPoint::BeforeRelease);
             let result = {
                 let mut token = lease.lock().await;
                 let result = self
@@ -850,12 +871,18 @@ pub(super) fn pending_inference(events: &[Event]) -> Option<RequestId> {
         .flatten()
 }
 
-pub(super) fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)> {
+pub(super) fn pending_tools(events: &[Event]) -> Vec<PendingCall> {
     events.iter().filter_map(|event| {
         if let Event::ToolCallRequested { request_id, call, .. } = event
             && !events.iter().any(|event| matches!(event, Event::ToolCallCompleted { request_id: completed, call_id, .. } if completed == request_id && *call_id == call.call_id)) {
-                return Some((*request_id, call.clone()));
-        }
+                return Some(PendingCall { request_id: *request_id, call: call.clone() });
+            }
         None
     }).collect()
+}
+
+/// One tool call awaiting dispatch: its request id and the recorded call.
+pub(super) struct PendingCall {
+    pub(super) request_id: RequestId,
+    pub(super) call: ToolCallRecord,
 }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use swarmy_core::{AgentId, RequestId, SessionId, TokenUsage, UsageTotals};
+use swarmy_core::{AgentId, CredentialEntryKind, RequestId, SessionId, TokenUsage, UsageTotals};
 
 use crate::{Result, Store, read};
 
@@ -13,7 +13,7 @@ pub struct UsageRecord {
     pub session: Option<SessionId>,
     pub agent: Option<AgentId>,
     pub model: String,
-    pub entry_kind: Option<String>,
+    pub entry_kind: Option<CredentialEntryKind>,
     pub recorded_at: Option<jiff::Timestamp>,
     /// Route that selected the entry, when a named route resolved it.
     pub route: Option<String>,
@@ -27,7 +27,7 @@ pub struct UsageAttribution<'a> {
     pub model: &'a str,
     pub recorded_at: jiff::Timestamp,
     pub entry: Option<&'a str>,
-    pub entry_kind: Option<&'a str>,
+    pub entry_kind: Option<CredentialEntryKind>,
     pub route: Option<String>,
     pub route_step: Option<u32>,
 }
@@ -85,10 +85,7 @@ impl Store {
             read::<UsageTotals>(trx, &agent_key)
         )?;
         // The completion carries the entry, so the hot path needs no extra reads.
-        let (entry, kind) = (
-            attribution.entry.map(str::to_owned),
-            attribution.entry_kind.map(str::to_owned),
-        );
+        let (entry, kind) = (attribution.entry.map(str::to_owned), attribution.entry_kind);
         crate::write(
             trx,
             &self.keys().usage_record(attribution.request),
@@ -100,7 +97,7 @@ impl Store {
                 session: Some(session),
                 agent: Some(agent),
                 model: attribution.model.into(),
-                entry_kind: kind.clone(),
+                entry_kind: kind,
                 recorded_at: Some(attribution.recorded_at),
                 route: attribution.route.clone(),
                 route_step: attribution.route_step,
@@ -124,7 +121,7 @@ impl Store {
             model: attribution.model,
             recorded_at: attribution.recorded_at,
             entry: entry.as_deref(),
-            kind: kind.as_deref(),
+            kind: kind.map(swarmy_core::CredentialEntryKind::as_str),
             usage,
             cost: cost_micros,
         };
@@ -247,5 +244,20 @@ mod tests {
         );
         let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
         assert_eq!(decoded.provider, "p");
+        // `entry_kind` is stored inline, so `Some(ApiKey)` changes the row
+        // bytes: the option tag flips to 1 and the variant index follows.
+        let keyed = UsageRecord {
+            entry_kind: Some(CredentialEntryKind::ApiKey),
+            ..record
+        };
+        let bytes = swarmy_core::encode(&keyed).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 1, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 109, 1, 1, 0, 0, 0
+            ]
+        );
+        let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(decoded.entry_kind, Some(CredentialEntryKind::ApiKey));
     }
 }
