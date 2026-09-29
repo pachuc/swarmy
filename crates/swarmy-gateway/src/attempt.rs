@@ -87,6 +87,115 @@ pub(crate) struct Delivery<'a> {
     pub(crate) turn: Option<MessageId>,
 }
 
+/// Per-delta state while streaming one provider response: token positions,
+/// chunk counts for the streamed verdict, the first-token flag, and the
+/// terminal response. Each stage of a delta is its own method so the
+/// streaming loop reads as the pipeline it drives.
+struct DeltaFold {
+    turn_id: String,
+    token_position: u64,
+    // Count streaming chunks: more than one means the provider streamed the
+    // response, while zero or one means the whole response arrived in a
+    // single chunk (the fake provider yields no incremental deltas at all,
+    // and single-chunk OpenRouter responses yield one). `PartDone` is
+    // excluded from the count but still starts the first-token clock below
+    // so the fake provider reports a first token.
+    content_chunks: u32,
+    first_token: bool,
+    response: Option<Response>,
+}
+
+impl DeltaFold {
+    fn new(turn_id: String) -> Self {
+        Self {
+            turn_id,
+            token_position: 0,
+            content_chunks: 0,
+            first_token: false,
+            response: None,
+        }
+    }
+
+    async fn accumulate(
+        &mut self,
+        gateway: &Gateway,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        delta: Delta,
+    ) -> Result<(), swarmy_llm::Error> {
+        if is_stream_chunk(&delta) {
+            self.content_chunks = self.content_chunks.saturating_add(1);
+        }
+        self.observe_first_token(gateway, job, turn, &delta).await;
+        if self.response.is_some() {
+            return Err(swarmy_llm::Error::Protocol("delta after completion".into()));
+        }
+        self.publish_live(gateway, job, &delta).await;
+        if let Delta::Completed(completed) = delta {
+            self.response = Some(completed);
+        }
+        Ok(())
+    }
+
+    async fn observe_first_token(
+        &mut self,
+        gateway: &Gateway,
+        job: &InferenceJob,
+        turn: Option<MessageId>,
+        delta: &Delta,
+    ) {
+        if !is_first_content(delta) || self.first_token {
+            return;
+        }
+        self.first_token = true;
+        if let Some(turn) = turn {
+            let event = Bus::turn_event(
+                job.session_id,
+                turn,
+                swarmy_core::TurnStage::FirstToken,
+                Some(job.request_id),
+            );
+            gateway.store.observe_turn_stage(event.clone());
+            gateway.bus.record_turn(&event).await;
+        }
+    }
+
+    /// Publish one delta to both live feeds. Live feeds are ephemeral: an
+    /// unavailable observer path must not lose a provider result that can
+    /// still be committed to the durable log.
+    async fn publish_live(&mut self, gateway: &Gateway, job: &InferenceJob, delta: &Delta) {
+        if let Err(error) = gateway
+            .bus
+            .publish_live(LiveFeed::ModelDeltas(job.session_id), delta)
+            .await
+        {
+            warn!(%error, "live delta publication failed");
+        }
+        if let Delta::Text { text, .. } = delta {
+            let live = swarmy_core::LiveTokenDelta {
+                turn_id: self.turn_id.clone(),
+                position: self.token_position,
+                text: text.clone(),
+            };
+            self.token_position = self.token_position.saturating_add(text.len() as u64);
+            if let Err(error) = gateway
+                .bus
+                .publish_live(LiveFeed::ApiTokenDeltas(job.session_id), &live)
+                .await
+            {
+                warn!(%error, "api token publication failed");
+            }
+        }
+    }
+
+    fn finish(self) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
+        let response = self
+            .response
+            .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))?;
+        Ok((response, Some(is_streamed_response(self.content_chunks))))
+    }
+}
+
 impl Gateway {
     pub(crate) async fn stream(
         &self,
@@ -99,69 +208,12 @@ impl Gateway {
         request.settings.reasoning_effort = effort;
         request.no_cache = job.summary;
         let mut stream = client.request_for_session(request, job.session_id);
-        let mut response = None;
         let turn_id = turn.map_or_else(|| job.request_id.to_string(), |id| id.to_string());
-        let mut token_position = 0_u64;
-        let mut first_token = false;
-        // Count streaming chunks: more than one means the provider streamed
-        // the response, while zero or one means the whole response arrived in
-        // a single chunk (the fake provider yields no incremental deltas at
-        // all, and single-chunk OpenRouter responses yield one). `PartDone`
-        // is excluded from the count but still starts the first-token clock
-        // below so the fake provider reports a first token.
-        let mut content_chunks = 0_u32;
+        let mut fold = DeltaFold::new(turn_id);
         while let Some(delta) = stream.next().await {
-            let delta = delta?;
-            if is_stream_chunk(&delta) {
-                content_chunks = content_chunks.saturating_add(1);
-            }
-            if is_first_content(&delta) && !first_token {
-                first_token = true;
-                if let Some(turn) = turn {
-                    let event = Bus::turn_event(
-                        job.session_id,
-                        turn,
-                        swarmy_core::TurnStage::FirstToken,
-                        Some(job.request_id),
-                    );
-                    self.store.observe_turn_stage(event.clone());
-                    self.bus.record_turn(&event).await;
-                }
-            }
-            if response.is_some() {
-                return Err(swarmy_llm::Error::Protocol("delta after completion".into()));
-            }
-            // Live feeds are ephemeral. An unavailable observer path must not lose
-            // a provider result that can still be committed to the durable log.
-            if let Err(error) = self
-                .bus
-                .publish_live(LiveFeed::ModelDeltas(job.session_id), &delta)
-                .await
-            {
-                warn!(%error, "live delta publication failed");
-            }
-            if let Delta::Text { text, .. } = &delta {
-                let live = swarmy_core::LiveTokenDelta {
-                    turn_id: turn_id.clone(),
-                    position: token_position,
-                    text: text.clone(),
-                };
-                token_position = token_position.saturating_add(text.len() as u64);
-                if let Err(error) = self
-                    .bus
-                    .publish_live(LiveFeed::ApiTokenDeltas(job.session_id), &live)
-                    .await
-                {
-                    warn!(%error, "api token publication failed");
-                }
-            }
-            if let Delta::Completed(completed) = delta {
-                response = Some(completed);
-            }
+            fold.accumulate(self, job, turn, delta?).await?;
         }
-        let response = response
-            .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))?;
-        Ok((response, Some(is_streamed_response(content_chunks))))
+        fold.finish()
     }
 
     pub(crate) fn effort_for(&self, job: &InferenceJob, provider: &str) -> EffortChoice<'_> {
