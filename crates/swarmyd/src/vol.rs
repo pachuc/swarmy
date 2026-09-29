@@ -165,5 +165,5 @@ pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
 /// Open the cluster store for volume commands.
 pub(crate) async fn store() -> Result<swarmy_store::Store> {
     let settings = swarmy_config::Settings::load()?.settings;
-    Ok(swarmy_store::Store::open_store(&settings).await?.0)
+    Ok(swarmy_store::Store::open_store(&settings).await?.store)
 }

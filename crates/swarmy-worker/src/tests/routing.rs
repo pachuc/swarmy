@@ -114,7 +114,7 @@ impl Fixture {
         config.bus.ack_wait = Duration::from_millis(200);
         let blobs = Arc::new(MemoryBlobStore::default());
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(std::slice::from_ref(&prefix)),
             blobs.clone(),
         )

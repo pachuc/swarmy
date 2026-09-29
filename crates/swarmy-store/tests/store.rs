@@ -948,7 +948,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     };
     let path = vec![format!("swarmy-store-test-{}", Ulid::generate())];
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&path), blobs.clone())
+    let store = Store::open(Some(std::path::Path::new(&cluster)), Some(&path), blobs.clone())
         .await
         .unwrap();
     let record = session();
@@ -956,7 +956,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
         .create_session(&record, timestamp(0), image_fixture::image(&store).await)
         .await
         .unwrap();
-    let reopened = Store::open(Some(&cluster), Some(&path), blobs)
+    let reopened = Store::open(Some(std::path::Path::new(&cluster)), Some(&path), blobs)
         .await
         .unwrap();
     assert_eq!(

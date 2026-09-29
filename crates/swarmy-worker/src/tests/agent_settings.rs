@@ -26,7 +26,7 @@ impl Fixture {
         config.harness.settings.reasoning_effort = Some(ReasoningEffort::Medium);
         let blobs = Arc::new(MemoryBlobStore::default());
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(std::slice::from_ref(&prefix)),
             blobs.clone(),
         )

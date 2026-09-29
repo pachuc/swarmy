@@ -41,7 +41,7 @@ use config::Config;
 use process::{Kind, Process};
 
 fn main() -> Result<()> {
-    swarmy_config::init_tracing("info");
+    swarmy_config::init_tracing();
     let config = swarmy_version::parse::<Config>("swarmy-chaos")?;
     config.validate()?;
     if !config.no_start_stack {
@@ -77,9 +77,8 @@ impl Fixture {
     async fn new() -> Result<Self> {
         let prefix = format!("chaos_{}", Ulid::generate());
         let settings = swarmy_config::Settings::load()?.settings;
-        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
         let store = Store::open(
-            Some(&cluster),
+            Some(settings.store.cluster_file.as_path()),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env()?),
         )
@@ -108,7 +107,8 @@ impl Fixture {
     async fn import_image(&mut self, image: &str) -> Result<()> {
         let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
         let settings = swarmy_config::Settings::load()?.settings;
-        let (images, _) = Store::open_store(&settings).await?;
+        let opened = Store::open_store(&settings).await?;
+        let images = opened.store;
         let manifest = images
             .get_image(name, &swarmy_core::ImageTag(tag.into()))
             .await?
@@ -434,7 +434,7 @@ impl Fixture {
         }
         // Like the service integration fixtures, remove only this run's directory and streams.
         let settings = swarmy_config::Settings::load()?.settings;
-        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
+        let cluster = settings.store.cluster_file.to_string_lossy().into_owned();
         let db = Database::new(Some(&cluster))?;
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {

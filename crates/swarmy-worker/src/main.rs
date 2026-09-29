@@ -14,15 +14,17 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-worker")?;
-    swarmy_config::init_tracing("info");
-    let config = config::Config::from_env()?;
+    swarmy_config::init_tracing();
+    let settings = swarmy_config::Settings::load()?.settings;
+    let config = config::Config::from_settings(&settings)?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(config))
+    tokio::runtime::Runtime::new()?.block_on(run(config, settings))
 }
 
-async fn run(config: config::Config) -> Result<()> {
-    let (store, blobs) = Store::open_store(&config.settings).await?;
-    let blobs: Arc<dyn swarmy_store::blob::BlobStore> = blobs;
+async fn run(config: config::Config, settings: swarmy_config::Settings) -> Result<()> {
+    let opened = Store::open_store(&settings).await?;
+    let store = opened.store;
+    let blobs: Arc<dyn swarmy_store::blob::BlobStore> = opened.blobs;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     bus.setup(&[]).await?;
     let (send, mut receive) = mpsc::channel(1);

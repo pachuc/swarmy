@@ -4281,6 +4281,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "swarmy-bus",
  "swarmy-catalog",
  "swarmy-core",
  "tempfile",

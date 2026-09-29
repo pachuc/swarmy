@@ -88,7 +88,8 @@ async fn process_list_with_timeout(
 
 pub async fn run(loaded: &swarmy_config::Loaded, warn: impl Fn(&str)) -> Result<Vec<String>> {
     let node: NodeId = loaded.node_id()?;
-    let (store, _) = swarmy_store::Store::open_store(&loaded.settings).await?;
+    let opened = swarmy_store::Store::open_store(&loaded.settings).await?;
+    let store = opened.store;
     let socket = loaded.root.join(".swarmy/node/control.sock");
     let mut after = None;
     let mut busy = Vec::new();

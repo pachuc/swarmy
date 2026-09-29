@@ -403,16 +403,23 @@ pub struct Store {
     session_record_reads: Arc<AtomicU64>,
 }
 
+/// Store and blob handles opened together from one settings object.
+pub struct OpenedStore {
+    pub store: Store,
+    pub blobs: Arc<crate::blob::ObjectBlobStore>,
+}
+
 impl Store {
     /// Open the `swarmy` directory, or a separate directory path for isolation.
     /// # Errors
     /// Returns client, directory, or transaction errors.
     pub async fn open(
-        cluster_file: Option<&str>,
+        cluster_file: Option<&std::path::Path>,
         directory: Option<&[String]>,
         blobs: Arc<dyn BlobStore>,
     ) -> Result<Self> {
-        let db = Arc::new(Database::new(cluster_file)?);
+        let cluster = cluster_file.map(|path| path.to_string_lossy().into_owned());
+        let db = Arc::new(Database::new(cluster.as_deref())?);
         let path = directory.map_or_else(|| vec!["swarmy".into()], <[String]>::to_vec);
         let prefix = db
             .run(|trx, _| {
@@ -439,20 +446,21 @@ impl Store {
 
     /// Open the store described by `settings`: its cluster file, directory
     /// namespace, and object namespace. Every service starts here instead of
-    /// splitting `store_directory` and building a blob client by hand.
+    /// splitting the directory and building a blob client by hand.
     /// # Errors
     /// Returns configuration, client, directory, or transaction errors.
-    pub async fn open_store(
-        settings: &swarmy_config::Settings,
-    ) -> Result<(Self, std::sync::Arc<crate::blob::ObjectBlobStore>)> {
+    pub async fn open_store(settings: &swarmy_config::Settings) -> Result<OpenedStore> {
         let directory = settings
             .store_directory_path()
             .map_err(crate::blob::BlobError::from)?;
-        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
-        let objects = crate::objects::from_settings(settings)?;
-        let blobs = Arc::new(crate::blob::ObjectBlobStore::new(objects));
-        let store = Self::open(Some(&cluster), Some(&directory), blobs.clone()).await?;
-        Ok((store, blobs))
+        let blobs = Arc::new(crate::blob::ObjectBlobStore::from_settings(settings)?);
+        let store = Self::open(
+            Some(settings.store.cluster_file.as_path()),
+            Some(&directory),
+            blobs.clone(),
+        )
+        .await?;
+        Ok(OpenedStore { store, blobs })
     }
 
     /// Use an explicitly allocated root prefix, primarily for isolated tests.

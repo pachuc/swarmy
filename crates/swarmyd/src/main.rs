@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     if !upgrade_processes && !vol_command {
         swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
     }
-    swarmy_config::init_tracing("info");
+    swarmy_config::init_tracing();
     let loaded = swarmy_config::Settings::load()?;
     if vol_command {
         let _network = swarmy_store::boot();
@@ -45,23 +45,11 @@ fn main() -> Result<()> {
 async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     let settings = &loaded.settings;
     ensure!(
-        !settings.node.heartbeat_interval.is_zero(),
-        "node heartbeat interval must be positive"
-    );
-    ensure!(
         !settings.node.roles.is_empty(),
         "node roles must not be empty"
     );
     let (store, objects) = storage(settings).await?;
-    let bus_config = swarmy_bus::Config {
-        prefix: if settings.bus.prefix.is_empty() {
-            None
-        } else {
-            Some(swarmy_bus::SubjectToken::new(&settings.bus.prefix)?)
-        },
-        ack_wait: settings.bus.ack_wait,
-        max_deliver: settings.bus.max_deliver_i64(),
-    };
+    let bus_config = settings.bus.bus_config()?;
     let bus = swarmy_bus::Bus::connect(&settings.bus.nats_url, bus_config.clone()).await?;
     let node = loaded.node_id()?;
     let root = loaded.root.join(".swarmy/node");
@@ -87,7 +75,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     }
     store.put_node(&record).await?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
-    let mut heartbeat = tokio::time::interval(settings.node.heartbeat_interval);
+    let mut heartbeat = tokio::time::interval(settings.node.heartbeat_interval_ms);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
     scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -112,7 +100,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                 _ = heartbeat.tick() => {
                     record.last_heartbeat = jiff::Timestamp::now();
                     store.put_node(&record).await?;
-                    hosting.report_status(settings.node.heartbeat_interval.saturating_mul(3)).await?;
+                    hosting.report_status(settings.node.heartbeat_interval_ms.saturating_mul(3)).await?;
                 }
                 _ = scratch_sweep.tick() => {
                     if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(%error, "scratch sweep failed"); }
@@ -168,8 +156,8 @@ async fn open_runtime(
 async fn storage(
     settings: &swarmy_config::Settings,
 ) -> Result<(Store, Arc<dyn object_store::ObjectStore>)> {
-    let (store, blobs) = Store::open_store(settings).await?;
-    Ok((store, blobs.object_store()))
+    let opened = Store::open_store(settings).await?;
+    Ok((opened.store, opened.blobs.object_store()))
 }
 
 fn advertised_memory(reserve_mib: u64) -> Result<u64> {

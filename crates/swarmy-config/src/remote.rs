@@ -276,7 +276,7 @@ impl RemoteProfile {
 
     /// Apply stack endpoints and its default image, preserving credentials and namespaces.
     pub fn apply(&self, settings: &mut Settings) {
-        settings.fdb_cluster_file.clone_from(&self.fdb_cluster_file);
+        settings.store.cluster_file.clone_from(&self.fdb_cluster_file);
         settings.bus.nats_url.clone_from(&self.nats_url);
         settings.s3.endpoint.clone_from(&self.s3_endpoint);
         settings.api.url.clone_from(&self.api_url);
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(loaded.settings.s3.endpoint, profile.s3_endpoint);
         assert_eq!(loaded.settings.api.url, profile.api_url);
         assert_eq!(loaded.settings.api.token, "fixture-token");
-        assert_eq!(loaded.settings.fdb_cluster_file, profile.fdb_cluster_file);
+        assert_eq!(loaded.settings.store.cluster_file, profile.fdb_cluster_file);
         assert_eq!(loaded.settings.s3.bucket, "custom");
         assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
         let mut invalid = profile;

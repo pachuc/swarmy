@@ -199,13 +199,13 @@ impl Worker {
         if !summarizing {
             request.system_prompt = request
                 .system_prompt
-                .replace("{memory_dir}", &self.config.memory_dir);
+                .replace("{memory_dir}", &self.config.memory_dir.to_string_lossy());
             if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
                 let memory = self.prompt_context(session.agent_id, false).await?;
                 write!(
                     request.system_prompt,
                     "\n\nAgent memory ({}):\n{memory}",
-                    self.config.memory_dir
+                    self.config.memory_dir.display()
                 )?;
             }
             let instructions = self.prompt_context(session.agent_id, true).await?;
@@ -521,7 +521,7 @@ impl Worker {
             directory: if instructions {
                 "/home/agent/work".into()
             } else {
-                self.config.memory_dir.clone()
+                self.config.memory_dir.to_string_lossy().into_owned()
             },
             max_bytes: if instructions {
                 32_768

@@ -1888,7 +1888,7 @@ mod integration_tests {
             ulid::Ulid::generate().to_string(),
         ];
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(&path),
             Arc::new(MemoryBlobStore::default()),
         )
@@ -2004,7 +2004,7 @@ mod integration_tests {
             ulid::Ulid::generate().to_string(),
         ];
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(&path),
             Arc::new(MemoryBlobStore::default()),
         )
@@ -2073,7 +2073,7 @@ mod integration_tests {
             ulid::Ulid::generate().to_string(),
         ];
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(&path),
             Arc::new(MemoryBlobStore::default()),
         )

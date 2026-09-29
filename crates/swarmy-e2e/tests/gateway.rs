@@ -66,7 +66,7 @@ impl Fixture {
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("gateway_{}", Ulid::generate());
         let store = Store::open(
-            Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap()),
+            Some(std::path::Path::new(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap())),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env().unwrap()),
         )

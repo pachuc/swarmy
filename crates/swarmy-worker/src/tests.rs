@@ -56,7 +56,6 @@ fn config(url: String, prefix: &str, calls: Arc<AtomicUsize>) -> Config {
     let mut tools = ToolRegistry::default();
     tools.register(Box::new(SlowTool(calls)));
     Config {
-        settings: swarmy_config::Settings::default(),
         nats: url,
         bus: BusConfig {
             prefix: Some(SubjectToken::new(prefix).unwrap()),
@@ -157,7 +156,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )
@@ -350,7 +349,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )

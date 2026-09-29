@@ -69,19 +69,9 @@ async fn setup(image: &str) -> BenchFixture {
         settings.selection.provider, "fake",
         "benchmark needs the fake provider stack"
     );
-    let (store, _) = Store::open_store(&settings).await.unwrap();
-    let bus = Bus::connect(
-        &settings.bus.nats_url,
-        Config {
-            prefix: if settings.bus.prefix.is_empty() {
-                None
-            } else {
-                Some(SubjectToken::new(&settings.bus.prefix).unwrap())
-            },
-            ack_wait: settings.bus.ack_wait,
-            max_deliver: settings.bus.max_deliver_i64(),
-        },
-    )
+    let opened = Store::open_store(&settings).await.unwrap();
+    let store = opened.store;
+    let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
     .await
     .unwrap();
     let state = AppState::new(
@@ -146,7 +136,7 @@ async fn setup(image: &str) -> BenchFixture {
         api_id,
         direct_id,
         server,
-        resend: settings.scheduler.resend_interval,
+        resend: settings.scheduler.resend_interval_ms,
     }
 }
 

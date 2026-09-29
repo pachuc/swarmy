@@ -1,7 +1,5 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use anyhow::ensure;
-
 pub struct Config {
     pub partitions: BTreeSet<u16>,
     pub scan_interval: Duration,
@@ -16,16 +14,11 @@ impl Config {
         let settings = swarmy_config::Settings::load()?.settings;
         Ok(Self {
             partitions: settings.scheduler.partitions.0,
-            scan_interval: interval(settings.scheduler.scan_interval)?,
-            resend_interval: interval(settings.scheduler.resend_interval)?,
+            scan_interval: settings.scheduler.scan_interval_ms,
+            resend_interval: settings.scheduler.resend_interval_ms,
             provider: settings.selection.provider,
-            max_inference_wait: settings.inference.max_wait,
+            max_inference_wait: settings.inference.max_wait_secs,
             default_route: settings.inference.default_route,
         })
     }
-}
-
-fn interval(value: Duration) -> anyhow::Result<Duration> {
-    ensure!(!value.is_zero(), "scheduler interval must be positive");
-    Ok(value)
 }

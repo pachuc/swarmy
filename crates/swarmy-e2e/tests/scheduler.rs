@@ -231,7 +231,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     let directory = format!("scheduler-test-{prefix}");
     let fixture = Fixture {
         store: Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(std::slice::from_ref(&directory)),
             Arc::new(MemoryBlobStore::default()),
         )

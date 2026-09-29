@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use jiff::Timestamp;
 use swarmy_api::{AppState, router};
-use swarmy_bus::{Bus, Config, SubjectToken};
+use swarmy_bus::Bus;
 use swarmy_config::Settings;
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;
-    swarmy_config::init_tracing("info");
+    swarmy_config::init_tracing();
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run())
 }
@@ -15,22 +15,11 @@ async fn run() -> Result<()> {
     let settings = Settings::load()?.settings;
     let token = std::env::var("SWARMY_API_TOKEN").unwrap_or(settings.api.token.clone());
     let listen = std::env::var("SWARMY_API_LISTEN").unwrap_or(settings.api.listen.clone());
-    let (store, blobs) = Store::open_store(&settings).await?;
-    let objects = blobs.object_store();
+    let opened = Store::open_store(&settings).await?;
+    let store = opened.store;
+    let objects = opened.blobs.object_store();
     let keyring = swarmy_config::Keyring::load().ok();
-    let bus = Bus::connect(
-        &settings.bus.nats_url,
-        Config {
-            prefix: if settings.bus.prefix.is_empty() {
-                None
-            } else {
-                Some(SubjectToken::new(settings.bus.prefix.clone())?)
-            },
-            ack_wait: settings.bus.ack_wait,
-            max_deliver: settings.bus.max_deliver_i64(),
-        },
-    )
-    .await?;
+    let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config()?).await?;
     let heartbeat_store = store.clone();
     let started = Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
@@ -58,7 +47,7 @@ async fn run() -> Result<()> {
     state.upload_dir = settings.state_dir.join("uploads");
     state.upload_max_bytes = settings.image.upload_max_bytes;
     swarmy_api::images::sweep_stale_uploads(&state.upload_dir);
-    state.resend_interval = settings.scheduler.resend_interval;
+    state.resend_interval = settings.scheduler.resend_interval_ms;
     state.default_image = settings.selection.default_image.clone();
     state.fake_files = Some((settings.fake.script.clone(), settings.fake.call_log.clone()));
     state.default_selection = swarmy_core::ResolvedSelection {

@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+swarmy-bus.workspace = true
 swarmy-catalog.workspace = true
 base64.workspace = true
 rand.workspace = true

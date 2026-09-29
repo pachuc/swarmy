@@ -109,7 +109,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
             default_image: Some("fixture:test".into()),
             ..Default::default()
         },
-        store_directory: prefix.clone(),
+        store: swarmy_config::StoreSettings { directory: prefix.clone(), ..Default::default() },
         bus: swarmy_config::BusSettings {
             prefix: prefix.clone(),
             ..Default::default()
@@ -149,7 +149,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     );
 
     let mut settings = swarmy_config::Settings::read(&config).unwrap();
-    settings.store_directory = format!("{prefix}_changed");
+    settings.store.directory = format!("{prefix}_changed");
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
     fixture.output(&["dev", "up"]).await;
     assert!(fixture.output(&["session", "list"]).await.stdout.is_empty());

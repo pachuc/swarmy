@@ -22,7 +22,7 @@ async fn authenticated_routes_and_create_replay() {
     NETWORK.get_or_init(swarmy_store::boot);
     let path = vec!["swarmy-api-test".to_owned(), Ulid::generate().to_string()];
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(&path),
         Arc::new(MemoryBlobStore::default()),
     )
@@ -457,7 +457,7 @@ async fn route_server() -> Option<(
         Ulid::generate().to_string(),
     ];
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(&path),
         Arc::new(MemoryBlobStore::default()),
     )

@@ -4,29 +4,22 @@ mod gc;
 mod scheduler;
 
 use jiff::Timestamp;
-use swarmy_bus::{Bus, SubjectToken};
+use swarmy_bus::Bus;
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 use tokio::time::{Duration, interval};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-scheduler")?;
-    swarmy_config::init_tracing("info");
+    swarmy_config::init_tracing();
     let config = config::Config::from_env()?;
     let settings = swarmy_config::Settings::load()?.settings;
     let url = settings.bus.nats_url.clone();
-    let bus_config = swarmy_bus::Config {
-        prefix: if settings.bus.prefix.is_empty() {
-            None
-        } else {
-            Some(SubjectToken::new(settings.bus.prefix.clone())?)
-        },
-        ack_wait: settings.bus.ack_wait,
-        max_deliver: settings.bus.max_deliver_i64(),
-    };
+    let bus_config = settings.bus.bus_config()?;
     let _network = swarmy_store::boot();
-    let (store, blobs) = Store::open_store(&settings).await?;
-    let objects = blobs.object_store();
+    let opened = Store::open_store(&settings).await?;
+    let store = opened.store;
+    let objects = opened.blobs.object_store();
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;
@@ -60,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         result = scheduler.run() => result?,
         () = health => {},
         () = gc::run(&store, objects, settings.gc, settings.metering) => {},
-        () = ephemeral::run(&store, settings.ephemeral_retention) => {},
+        () = ephemeral::run(&store, settings.scheduler.ephemeral_retention_secs) => {},
         result = tokio::signal::ctrl_c() => result?,
     }
     Ok(())

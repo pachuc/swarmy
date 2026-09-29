@@ -35,13 +35,12 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         fs::create_dir(dir.path().join(".swarmy")).unwrap();
         let settings = swarmy_config::Settings {
-            fdb_cluster_file: cluster.clone().into(),
+            store: swarmy_config::StoreSettings { cluster_file: cluster.clone().into(), directory: format!("auth-test-{}", ulid::Ulid::generate()), ..Default::default() },
             api: swarmy_config::ApiSettings {
                 url: Some(endpoint),
                 token: "auth-test-token".into(),
                 ..Default::default()
             },
-            store_directory: format!("auth-test-{}", ulid::Ulid::generate()),
             selection: swarmy_config::SelectionSettings {
                 credential_file: dir.path().join("auth.json"),
                 ..Default::default()
@@ -61,7 +60,7 @@ impl Fixture {
         )
         .unwrap();
         NETWORK.get_or_init(swarmy_store::boot);
-        let directory = settings.store_directory;
+        let directory = settings.store.directory;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {

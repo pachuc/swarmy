@@ -91,7 +91,7 @@ fn is_streamed_response(content_chunks: u32) -> bool {
 // Boot before the runtime so the network guard outlives all database tasks.
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-gateway")?;
-    swarmy_config::init_tracing("info");
+    swarmy_config::init_tracing();
     let config = config::Config::from_env()?;
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(async {
@@ -103,7 +103,9 @@ fn main() -> Result<()> {
 }
 
 async fn run(config: config::Config) -> Result<()> {
-    let (store, blobs) = Store::open_store(&config.settings).await?;
+    let opened = Store::open_store(&config.settings).await?;
+    let store = opened.store;
+    let blobs = opened.blobs;
     let blobs: Arc<dyn swarmy_store::blob::BlobStore> = blobs;
     let providers = Providers::discover(store.clone(), &config.settings).await?;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
@@ -128,7 +130,7 @@ async fn run(config: config::Config) -> Result<()> {
         ack_wait: config.bus.ack_wait,
         max_deliver: config.bus.max_deliver,
         resend_interval: config.resend_interval,
-        max_backoff: config.settings.inference.max_backoff,
+        max_backoff: config.settings.inference.max_backoff_secs,
         health_id: Ulid::generate().to_string(),
         started_at: Timestamp::now(),
     });
