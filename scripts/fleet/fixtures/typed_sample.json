@@ -1,0 +1,44 @@
+{
+  "agent_show": {
+    "id": "01AGENT",
+    "name": "worker-1",
+    "description": "",
+    "image": {"name": "fixture", "tag": "test"},
+    "provider": "fake",
+    "model": "fake",
+    "effort": null,
+    "system_prompt": null,
+    "created_at": "2026-09-23T00:00:00Z",
+    "main_session_id": "01AAAA",
+    "requirements": {"memory_mib": 512, "gpu": "none"},
+    "usage": {"input_tokens": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 0, "cost_micros": 1250000, "cost_dollars": "1.25", "completions": 0}
+  },
+  "session_ls_item": {
+    "id": "01AAAA",
+    "agent_id": "01AGENT",
+    "kind": "named",
+    "state": "sleeping",
+    "log_id": {"kind": "session", "id": "01AAAA"},
+    "head_sequence": 1,
+    "created_at": "2026-09-23T00:00:00Z",
+    "computer_deleted": false,
+    "waiting": null,
+    "state_since": "2026-09-23T00:01:00Z",
+    "agent_name": "worker-1",
+    "interrupt_requested": false
+  },
+  "session_show_item": {
+    "id": "01AAAA",
+    "agent_id": "01AGENT",
+    "kind": "named",
+    "state": "sleeping",
+    "log_id": {"kind": "session", "id": "01AAAA"},
+    "head_sequence": 1,
+    "created_at": "2026-09-23T00:00:00Z",
+    "computer_deleted": false,
+    "waiting": {"wake_at": null, "reasons": ["429 rate limited"]},
+    "state_since": "2026-09-23T00:01:00Z",
+    "agent_name": "worker-1",
+    "interrupt_requested": false
+  }
+}

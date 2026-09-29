@@ -14,6 +14,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ['STUB_STATE'])
+# Clone the typed API sample so the fake keeps the real field names.
+# scripts/fleet/fixtures/typed_sample.json is checked by
+# crates/swarmy-api-types/tests/fleet_fixture.rs; a renamed typed field
+# fails that test instead of silently drifting here.
+_fixture_path = os.environ.get('FLEET_FIXTURE', '')
+try:
+    _fixture = json.loads(Path(_fixture_path).read_text()) if _fixture_path else {}
+except Exception:
+    _fixture = {}
+_agent_base = _fixture.get('agent_show', {})
+_ls_base = _fixture.get('session_ls_item', {})
+_show_base = _fixture.get('session_show_item', {})
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
@@ -40,9 +52,11 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         print(json.dumps({'event':'session_opened', 'session_id':'01AAAA', 'agent_name': rest[2]}), flush=True)
         print(json.dumps({'event':'run_outcome', 'outcome':'completed'}), flush=True)
     elif rest[:2] == ['agent', 'show']:
-        print(json.dumps({'name': rest[2], 'id':'01AGENT', 'main_session_id':'01AAAA','provider':'fake','model':'fake',
+        out = dict(_agent_base) if _agent_base else {'id':'01AGENT', 'main_session_id':'01AAAA','provider':'fake','model':'fake',
             'usage':{'input_tokens':0,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':0,'reasoning_output_tokens':0,'total_tokens':0,'cost_micros':1250000,'cost_dollars':'1.25','completions':0},
-            'created_at':'2026-09-23T00:00:00Z'}))
+            'created_at':'2026-09-23T00:00:00Z'}
+        out['name'] = rest[2]
+        print(json.dumps(out))
     elif rest[:3] == ['session', 'ls', '--json']:
         if (root / 'interrupted').exists():
             count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
@@ -55,19 +69,32 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         successor = os.environ.get('SUCCESSOR', '')
         if successor and ':' in successor:
             old, new = successor.split(':', 1)
-            print(json.dumps({'id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new}))
-            print(json.dumps({'id':new,'state':state,'state_since':since,'agent_name':'worker-1'}))
+            first = dict(_ls_base) if _ls_base else {}
+            first.update({'id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new})
+            print(json.dumps(first))
+            second = dict(_ls_base) if _ls_base else {}
+            second.update({'id':new,'state':state,'state_since':since,'agent_name':'worker-1'})
+            second.pop('next_session', None)
+            print(json.dumps(second))
         else:
-            print(json.dumps({'id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
+            item = dict(_ls_base) if _ls_base else {}
+            item.update({'id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'})
+            item.pop('next_session', None)
+            print(json.dumps(item))
     elif rest[:2] == ['session', 'show']:
         sid = rest[2] if len(rest) > 2 else ''
         if sid not in ('01AAAA', '01BBBB'):
-            print(json.dumps({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':[]}}))
+            item = dict(_show_base) if _show_base else {}
+            item.update({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':[]}})
+            print(json.dumps(item))
         else:
             if not (root / 'interrupted').exists() and not os.environ.get('SUCCESSOR'):
-                print(json.dumps({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}}))
+                waiting = {'wake_at':None,'reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}
             else:
-                print(json.dumps({'id':sid,'state':'sleeping','waiting':None}))
+                waiting = None
+            item = dict(_show_base) if _show_base else {}
+            item.update({'id':sid,'state':'sleeping','waiting':waiting})
+            print(json.dumps(item))
             if os.environ.get('SUCCESSOR') and sid == '01AAAA':
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
@@ -120,8 +147,10 @@ class FleetTests(unittest.TestCase):
         self.config = self.root / "fleet.toml"
         self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
+        fixture = Path(__file__).with_name("fixtures") / "typed_sample.json"
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config))
+                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config),
+                        FLEET_FIXTURE=str(fixture))
 
     def call(self, *args, env=None):
         return subprocess.run([sys.executable, str(FLEET), *args], env=env or self.env,
