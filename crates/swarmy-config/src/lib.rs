@@ -596,9 +596,12 @@ impl Loaded {
 }
 
 /// Initialise process-wide tracing once from `RUST_LOG`, falling back to
-/// `default_level` when the variable is absent or invalid.
+/// `default_level` when the variable is absent or invalid. Services log plain
+/// text to stderr, keeping `field=value` pairs greppable in service log files.
 pub fn init_tracing(default_level: &'static str) {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| default_level.into()),
