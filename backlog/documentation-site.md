@@ -35,7 +35,7 @@ the getting-started section of the README carry the load until then.
    `/v1/docs`.
 3. A publish step in the release workflow so the site tracks releases, with a
    "latest" and a per-version path.
-4. Rewrite `docs/swarms.md`, `docs/providers.md`, and the agent lifecycle
+4. Rewrite the swarm documentation, `docs/providers.md`, and the agent lifecycle
    document for a reader who is not a contributor, and keep `docs/ARCHITECTURE.md`
    as the design chapter.
 

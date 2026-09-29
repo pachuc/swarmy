@@ -28,10 +28,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping credentials integration: SWARMY_FDB_CLUSTER_FILE unset");
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let db = Arc::new(Database::new(Some(&cluster)).unwrap());
         let root =

@@ -27,13 +27,8 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping auth integration: SWARMY_FDB_CLUSTER_FILE unset");
-            return None;
-        };
-        let Ok(nats) = std::env::var("SWARMY_NATS_URL") else {
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         let dir = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());

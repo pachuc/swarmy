@@ -25,4 +25,5 @@ delete the file and say why in the commit.
 | [documentation-site](documentation-site.md) | A public documentation site from the prototype outside this repository |
 | [build-time](build-time.md) | Twenty-minute cold builds in workers and benchmarks: drop the AWS SDK from the common path, shared sccache, warm images, cheaper profiles |
 | [final-qa](final-qa.md) | A newcomer brings up a second swarm from the runbook alone; every gap becomes a doc fix; after the cleanup goal and the roadmap build-out |
+| [claude-subscription-harness](claude-subscription-harness.md) | Run the official Claude Code on the operator's own Claude subscription as a session kind, with swarmy's tools over MCP; works, but policy and billing are fragile |
 | [housekeeping](housekeeping.md) | Stale design sections, an issue that cannot be closed, and other small chores |

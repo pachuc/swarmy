@@ -5,7 +5,7 @@
     "InstanceType": "m6id.xlarge",
     "State": "running at initial capture",
     "Volumes": [
-      "vol-0f5e6eb21211f2d79"
+      "vol-<redacted>"
     ],
     "LaunchTime": "2026-09-17T12:12:21+00:00"
   },
@@ -192,7 +192,7 @@
       "command": [
         "sudo",
         "-E",
-        "/home/ubuntu/workspace/target/debug/deps/vol-20d42cd4293af60f",
+        "/home/ubuntu/workspace/target/debug/deps/vol-<redacted>",
         "--nocapture",
         "--test-threads=1"
       ],
@@ -259,7 +259,7 @@
       "command": [
         "sudo",
         "-E",
-        "/home/ubuntu/workspace/target/debug/deps/vol-20d42cd4293af60f",
+        "/home/ubuntu/workspace/target/debug/deps/vol-<redacted>",
         "root_volume_durability_clone_crash_fencing_and_history",
         "--nocapture",
         "--test-threads=1"

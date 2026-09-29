@@ -100,13 +100,8 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let (Ok(cluster), Ok(url)) = (
-            std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-            std::env::var("SWARMY_NATS_URL"),
-        ) else {
-            eprintln!("skipping routing test: FoundationDB or NATS environment is unset");
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("routing_{}", Ulid::generate());
         let mut config = config(url.clone(), &prefix, Arc::default());

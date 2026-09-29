@@ -7,8 +7,7 @@ fn root_bash_disk_and_failure_acceptance() {
         eprintln!("skipping bash acceptance: run the built test with sudo");
         return;
     }
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
-        eprintln!("skipping bash acceptance: SWARMY_TEST_IMAGE is unset");
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     for variable in [
@@ -16,8 +15,7 @@ fn root_bash_disk_and_failure_acceptance() {
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping bash acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }

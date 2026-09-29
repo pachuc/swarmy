@@ -20,7 +20,6 @@ anyhow.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
 swarmy-store.workspace = true
-swarmy-api-types.workspace = true
 swarmy-volume.workspace = true
 swarmy-sandbox.workspace = true
 serde.workspace = true
@@ -32,6 +31,7 @@ object_store.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 
 foundationdb.workspace = true

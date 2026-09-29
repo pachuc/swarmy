@@ -1354,14 +1354,8 @@ mod retry_tests {
         use foundationdb::{Database, tuple::Subspace};
         use std::sync::OnceLock;
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping gateway stream test: SWARMY_FDB_CLUSTER_FILE unset");
-            return None;
-        };
-        let Ok(nats_url) = std::env::var("SWARMY_NATS_URL") else {
-            eprintln!("skipping gateway stream test: SWARMY_NATS_URL unset");
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats_url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let store = Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),

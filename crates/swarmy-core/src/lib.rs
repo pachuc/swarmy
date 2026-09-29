@@ -99,6 +99,8 @@ pub struct LiveTokenDelta {
     pub text: String,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 /// Bounded retry delay shared by durable inference and reconnect loops.
 #[must_use]
 pub fn backoff(base: std::time::Duration, attempt: u32, max_doublings: u32) -> std::time::Duration {

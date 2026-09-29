@@ -1633,8 +1633,8 @@ aws ec2 describe-key-pairs --region us-east-1 \
 # []
 ```
 
-The deleted EBS volumes were `vol-01c2df92c27efcb5e` and
-`vol-0ef8fff9d923e53f4`. Instance-store disks and assigned public IPv4 addresses
+The deleted EBS volumes were `vol-<redacted>` and
+`vol-<redacted>`. Instance-store disks and assigned public IPv4 addresses
 were released with their instances. The pre-existing launcher, subnet, security
 group, and benchmark bucket were left intact. No Google Cloud resources or
 external S3 objects needed cleanup because this workflow created none.
@@ -2577,7 +2577,7 @@ and `swarmy remote down turn-roundtrips` completed. Final AWS queries returned:
 ```text
 aws ec2 describe-instances --instance-ids i-<redacted>
 [{"InstanceId":"i-<redacted>","State":"terminated"}]
-aws ec2 describe-volumes --filters Name=volume-id,Values=vol-0f5e6eb21211f2d79
+aws ec2 describe-volumes --filters Name=volume-id,Values=vol-<redacted>
 []
 aws ec2 describe-key-pairs --filters Name=key-name,Values=swarmy-01M2QMGDVPV7D6N0DZ4NWC2P4A
 []
@@ -2791,7 +2791,7 @@ aws ec2 describe-instances --region us-east-1 \
   --instance-ids i-<redacted> i-<redacted> \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
 aws ec2 describe-volumes --region us-east-1 \
-  --filters Name=volume-id,Values=vol-0f0ef1d924cc5ab81,vol-0f0cf1088b6dee3f4
+  --filters Name=volume-id,Values=vol-<redacted>,vol-<redacted>
 aws ec2 describe-key-pairs --region us-east-1 \
   --filters Name=key-name,Values=swarmy-01M2SG1PSZMKR0N9TYYX294J1E,swarmy-01M2SGPA8GG4FSH36FR2GC303W
 gcloud compute instances list --project swarmy-508717 --format=json
