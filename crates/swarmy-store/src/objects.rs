@@ -102,8 +102,8 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
 /// Build the shared S3 client from one bucket description instead of service
 /// settings. Static keys and the custom endpoint become the client
 /// credentials; the instance-role source falls back to the instance-metadata
-/// provider. Used by `remote up` and by tests exercising the same object
-/// operations through the new description.
+/// provider. Tests exercise the same object operations through this
+/// constructor that the node services reach through settings.
 /// # Errors
 /// Rejects invalid S3 client settings.
 pub fn from_bucket_spec(

@@ -751,11 +751,7 @@ impl Aws {
 /// Marker object recording swarm ownership under the prefix, for providers
 /// without bucket-tag support.
 fn marker_key(bucket: &ObjectBucket) -> String {
-    if bucket.prefix.is_empty() {
-        ".swarmy-owner".into()
-    } else {
-        format!("{}/.swarmy-owner", bucket.prefix)
-    }
+    swarmy_config::ownership_marker_key(&bucket.prefix)
 }
 
 fn error_code<E>(error: &aws_sdk_s3::error::SdkError<E>) -> Option<&str>

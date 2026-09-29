@@ -202,11 +202,7 @@ impl BucketSpec {
     /// the provider does not support bucket tags.
     #[must_use]
     pub fn ownership_marker(&self) -> String {
-        if self.prefix.as_str().is_empty() {
-            ".swarmy-owner".into()
-        } else {
-            format!("{}/.swarmy-owner", self.prefix.as_str())
-        }
+        ownership_marker_key(self.prefix.as_str())
     }
 
     /// Copy the bucket coordinates into service settings. Static keys become
@@ -245,6 +241,18 @@ impl BucketSpec {
             ));
         }
         Ok(())
+    }
+}
+
+/// Marker object recording swarm ownership under a prefix, for providers
+/// without bucket-tag support. One implementation serves the bucket
+/// description and the provisioning client.
+#[must_use]
+pub fn ownership_marker_key(prefix: &str) -> String {
+    if prefix.is_empty() {
+        ".swarmy-owner".into()
+    } else {
+        format!("{prefix}/.swarmy-owner")
     }
 }
 
