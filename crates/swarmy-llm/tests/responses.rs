@@ -398,9 +398,12 @@ async fn transient_http_errors_retry_and_permanent_errors_do_not() {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("provider explanation"));
-        assert!(
-            matches!(error, Error::ProviderResponse { status: code, .. } if code.as_u16() == status)
-        );
+        assert!(match status {
+            400 => matches!(error, Error::BadRequest(_)),
+            401 => matches!(error, Error::Authentication(_)),
+            _ =>
+                matches!(error, Error::ProviderResponse { status: code, .. } if code.as_u16() == status),
+        });
     }
 }
 

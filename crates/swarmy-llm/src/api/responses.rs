@@ -226,10 +226,7 @@ impl ResponsesProvider {
                 credentials = self.oauth.refresh(store.as_ref(), &credentials).await?;
             }
             match self.send_with_retry(body, Some(&credentials)).await {
-                Err(Error::ProviderResponse {
-                    status: reqwest::StatusCode::UNAUTHORIZED,
-                    ..
-                }) => {
+                Err(Error::Authentication(_)) => {
                     credentials = self.oauth.refresh(store.as_ref(), &credentials).await?;
                     self.send_with_retry(body, Some(&credentials)).await
                 }

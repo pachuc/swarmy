@@ -17,6 +17,7 @@ default = ["azure", "bedrock", "gemini"]
 azure = []
 bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
 gemini = []
+fake = []
 
 [dependencies]
 async-trait.workspace = true

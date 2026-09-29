@@ -79,27 +79,13 @@ pub(crate) fn classify_http_failure(
     if status == StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(body) {
         return Error::ContextOverflow(body.to_owned());
     }
-    if crate::retry::retryable(status) || status == StatusCode::UNAUTHORIZED {
-        return Error::ProviderResponse {
-            status,
-            reason: crate::classify_provider_failure(body),
-            message: body.to_owned(),
-            retry_after,
-        };
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Error::Authentication(body.to_owned());
     }
-    provider_error(status, body)
-}
-
-/// Classify a failed HTTP request before retrying it.
-pub(crate) fn classify_http_failure(
-    status: StatusCode,
-    body: &str,
-    retry_after: Option<std::time::Duration>,
-) -> Error {
-    if status == StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(body) {
-        return Error::ContextOverflow(body.to_owned());
+    if status == StatusCode::BAD_REQUEST {
+        return Error::BadRequest(body.to_owned());
     }
-    if crate::retry::retryable(status) || status == StatusCode::UNAUTHORIZED {
+    if crate::retry::retryable(status) {
         return Error::ProviderResponse {
             status,
             reason: crate::classify_provider_failure(body),

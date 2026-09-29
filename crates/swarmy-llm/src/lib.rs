@@ -6,14 +6,15 @@ pub mod catalog;
 pub mod chatgpt;
 pub mod cost;
 pub(crate) mod error;
+#[cfg(feature = "fake")]
 pub mod fake;
 pub(crate) mod protocol;
-pub mod quota;
+pub(crate) mod quota;
 pub mod reasoning;
 pub mod responses;
 pub mod retry;
 pub mod selection;
-pub mod sse;
+pub(crate) mod sse;
 
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -360,6 +361,12 @@ pub enum Error {
         status: reqwest::StatusCode,
         retry_after: Option<std::time::Duration>,
     },
+    #[error("authentication failed: {0}")]
+    Authentication(String),
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("malformed provider stream: {0}")]
+    MalformedStream(String),
     #[error("context overflow: {0}")]
     ContextOverflow(String),
     #[error("invalid provider credentials: {0}")]
@@ -376,6 +383,59 @@ pub enum Error {
     Join(#[from] tokio::task::JoinError),
     #[error("fake provider has no response for turn {0}")]
     UnscriptedTurn(usize),
+}
+
+/// Retry, pacing, and permanent-failure policy for a provider error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorClass {
+    pub retryable: bool,
+    pub retry_after: Option<std::time::Duration>,
+    pub rate_limited: bool,
+    pub permanent: bool,
+}
+
+impl Error {
+    #[must_use]
+    pub fn classify(&self) -> ErrorClass {
+        let (status, retry_after, quota) = match self {
+            Self::Retryable {
+                status,
+                retry_after,
+            } => (Some(*status), *retry_after, false),
+            Self::ProviderResponse {
+                status,
+                retry_after,
+                reason,
+                ..
+            } => (
+                Some(*status),
+                *retry_after,
+                *reason == ProviderFailureReason::Quota,
+            ),
+            Self::Status(status) => (Some(*status), None, false),
+            _ => (None, None, false),
+        };
+        let retryable = status.is_some_and(retry::retryable)
+            || quota
+            || matches!(self, Self::Http(error) if error.is_connect() || error.is_timeout());
+        let rate_limited = status
+            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            || retry_after.is_some();
+        let permanent = !retryable
+            && (matches!(
+                self,
+                Self::UnknownModel { .. }
+                    | Self::Unsupported(_)
+                    | Self::Credentials(_)
+                    | Self::NeedsLogin(_)
+            ) || status.is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)));
+        ErrorClass {
+            retryable,
+            retry_after,
+            rate_limited,
+            permanent,
+        }
+    }
 }
 
 #[cfg(test)]

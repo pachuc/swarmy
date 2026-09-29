@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 pub enum ToolWire {
     Anthropic,
     Completions,
+    Responses,
 }
 
 /// Repair missing and displaced tool results before submitting a request.
@@ -13,6 +14,7 @@ pub fn repair_tool_results(messages: &mut Vec<Value>, wire: ToolWire) {
     match wire {
         ToolWire::Anthropic => repair_anthropic(messages),
         ToolWire::Completions => *messages = repair_completions(std::mem::take(messages)),
+        ToolWire::Responses => *messages = repair_responses(std::mem::take(messages)),
     }
 }
 
@@ -156,4 +158,57 @@ pub(crate) fn sanitize_tool_id(id: &str, prefix: &str, max_len: usize) -> String
     }
     let hash = blake3::hash(id.as_bytes()).to_hex();
     format!("{prefix}{}", &hash[..(max_len - prefix.len()).min(64)])
+}
+
+fn repair_responses(mut items: Vec<Value>) -> Vec<Value> {
+    let known: std::collections::BTreeSet<String> = items
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
+        .collect();
+    let mut taken = vec![false; items.len()];
+    let mut repaired = std::collections::BTreeSet::new();
+    let mut output = Vec::with_capacity(items.len() * 2);
+    for index in 0..items.len() {
+        if taken[index] {
+            continue;
+        }
+        let item = std::mem::take(&mut items[index]);
+        if item.is_null() {
+            continue;
+        }
+        if item["type"] == "function_call_output" {
+            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
+            if known.contains(&id) {
+                continue;
+            }
+            taken[index] = true;
+            output.push(json!({"type": "function_call", "call_id": id.clone(), "name": "unknown_tool", "arguments": "{}"}));
+            repaired.insert(id);
+            output.push(item);
+        } else if item["type"] == "function_call" {
+            let id = item["call_id"].as_str().unwrap_or_default().to_owned();
+            output.push(item);
+            if let Some(candidate) = items.iter().enumerate().find_map(|(candidate, other)| {
+                (!taken[candidate]
+                    && other["type"] == "function_call_output"
+                    && other["call_id"].as_str() == Some(&id))
+                .then_some(candidate)
+            }) {
+                taken[candidate] = true;
+                output.push(std::mem::take(&mut items[candidate]));
+            } else {
+                output.push(json!({"type": "function_call_output", "call_id": id, "output": "Error: No result provided"}));
+            }
+        } else {
+            output.push(item);
+        }
+    }
+    if !repaired.is_empty() {
+        tracing::warn!(
+            call_ids = repaired.iter().cloned().collect::<Vec<_>>().join(", "),
+            "repaired tool result without a stored tool call; synthesized unknown_tool call"
+        );
+    }
+    output
 }

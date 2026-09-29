@@ -40,41 +40,6 @@ struct Gateway {
     started_at: Timestamp,
 }
 
-fn retryable_error(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
-    use swarmy_llm::Error;
-    match error {
-        Error::Retryable {
-            status,
-            retry_after,
-        } => (
-            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                || status.is_server_error()
-                || matches!(status.as_u16(), 408 | 409),
-            *retry_after,
-        ),
-        Error::ProviderResponse {
-            status,
-            reason,
-            retry_after,
-            ..
-        } => (
-            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                || status.is_server_error()
-                || matches!(status.as_u16(), 408 | 409)
-                || *reason == swarmy_llm::ProviderFailureReason::Quota,
-            *retry_after,
-        ),
-        Error::Status(status) => (
-            *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                || status.is_server_error()
-                || matches!(status.as_u16(), 408 | 409),
-            None,
-        ),
-        Error::Http(error) => (error.is_connect() || error.is_timeout(), None),
-        _ => (false, None),
-    }
-}
-
 /// The fake provider yields whole parts without streaming text deltas, so a
 /// completed part is the first observable content for those turns.
 fn part_has_content(part: &swarmy_core::Part) -> bool {
@@ -122,40 +87,6 @@ fn is_stream_chunk(delta: &swarmy_llm::Delta) -> bool {
 /// streaming tail.
 fn is_streamed_response(content_chunks: u32) -> bool {
     content_chunks > 1
-}
-
-/// A 5xx, 408, or 409 is a provider failure, not a rate limit. Only 429 or an
-/// explicit retry-after means the provider asked for a slower pace.
-fn rate_limited(error: &swarmy_llm::Error) -> bool {
-    use swarmy_llm::Error;
-    match error {
-        Error::Retryable {
-            status,
-            retry_after,
-        }
-        | Error::ProviderResponse {
-            status,
-            retry_after,
-            ..
-        } => *status == reqwest::StatusCode::TOO_MANY_REQUESTS || retry_after.is_some(),
-        Error::Status(status) => *status == reqwest::StatusCode::TOO_MANY_REQUESTS,
-        _ => false,
-    }
-}
-
-fn permanent_error(error: &swarmy_llm::Error) -> bool {
-    use swarmy_llm::Error;
-    if retryable_error(error).0 {
-        return false;
-    }
-    matches!(
-        error,
-        Error::UnknownModel { .. }
-            | Error::Unsupported(_)
-            | Error::Credentials(_)
-            | Error::NeedsLogin(_)
-    ) || matches!(error, Error::ProviderResponse { status, .. } | Error::Status(status)
-            if matches!(status.as_u16(), 401 | 403 | 404))
 }
 
 // Boot before the runtime so the network guard outlives all database tasks.
@@ -757,8 +688,8 @@ impl Gateway {
             Ok(response) => Ok(Some((Ok(response), streamed))),
             Err(error)
                 if !blocked
-                    && !permanent_error(&error)
-                    && !retryable_error(&error).0
+                    && !error.classify().permanent
+                    && !error.classify().retryable
                     // The worker, not the transport queue, owns the single
                     // compact-and-retry attempt for context overflow.
                     && !matches!(error, swarmy_llm::Error::ContextOverflow(_)) =>
@@ -773,8 +704,7 @@ impl Gateway {
                     warn!(%error, attempts, request_id = %job.request_id, "provider retries exhausted");
                     return Ok(Some((Err(error), streamed)));
                 }
-                let delay =
-                    Duration::from_millis(100) * 2_u32.pow(attempts.saturating_sub(1).min(5));
+                let delay = swarmy_core::backoff(attempts);
                 // Store the next deadline based on the durable attempt count.
                 warn!(%error, attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
@@ -811,7 +741,7 @@ impl Gateway {
             .record_breaker(provider, entry.as_deref(), job, &result, blocked)
             .await?;
         if let Err(error) = &result {
-            let kind = if rate_limited(error) {
+            let kind = if error.classify().rate_limited {
                 swarmy_store::WaitKind::RateLimit
             } else {
                 swarmy_store::WaitKind::ProviderFailure
@@ -1014,7 +944,7 @@ impl Gateway {
             }
             return Ok((false, None));
         };
-        let (retryable, retry_after) = retryable_error(error);
+        let (retryable, retry_after) = (error.classify().retryable, error.classify().retry_after);
         if !retryable {
             if !blocked {
                 self.store.entry_success(&key).await?;
@@ -1259,6 +1189,15 @@ impl Gateway {
 mod retry_tests {
     use super::*;
 
+    fn retry_class(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
+        (error.classify().retryable, error.classify().retry_after)
+    }
+    fn is_limited(error: &swarmy_llm::Error) -> bool {
+        error.classify().rate_limited
+    }
+    fn is_permanent(error: &swarmy_llm::Error) -> bool {
+        error.classify().permanent
+    }
     #[test]
     fn rate_limits_outages_and_permanent_errors_are_distinct() {
         let rate_limit = swarmy_llm::Error::ProviderResponse {
@@ -1268,7 +1207,7 @@ mod retry_tests {
             retry_after: Some(Duration::from_secs(2)),
         };
         assert_eq!(
-            retryable_error(&rate_limit),
+            retry_class(&rate_limit),
             (true, Some(Duration::from_secs(2)))
         );
         let usage_limit = swarmy_llm::Error::ProviderResponse {
@@ -1277,19 +1216,19 @@ mod retry_tests {
             message: "usage_limit_reached".into(),
             retry_after: None,
         };
-        assert!(retryable_error(&usage_limit).0);
-        assert!(!permanent_error(&usage_limit));
+        assert!(retry_class(&usage_limit).0);
+        assert!(!is_permanent(&usage_limit));
         let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
-        assert!(retryable_error(&outage).0);
+        assert!(retry_class(&outage).0);
         let auth = swarmy_llm::Error::ProviderResponse {
             reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::UNAUTHORIZED,
             message: "invalid token".into(),
             retry_after: None,
         };
-        assert!(!retryable_error(&auth).0);
-        assert!(permanent_error(&auth));
-        assert!(!permanent_error(&swarmy_llm::Error::ContextOverflow(
+        assert!(!retry_class(&auth).0);
+        assert!(is_permanent(&auth));
+        assert!(!is_permanent(&swarmy_llm::Error::ContextOverflow(
             "too long".into()
         )));
     }
@@ -1302,20 +1241,20 @@ mod retry_tests {
             message: "slow down".into(),
             retry_after: None,
         };
-        assert!(rate_limited(&limited));
+        assert!(is_limited(&limited));
         let delayed = swarmy_llm::Error::ProviderResponse {
             reason: swarmy_llm::ProviderFailureReason::Other,
             status: reqwest::StatusCode::BAD_GATEWAY,
             message: "outage".into(),
             retry_after: Some(Duration::from_secs(1)),
         };
-        assert!(rate_limited(&delayed));
+        assert!(is_limited(&delayed));
         let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
-        assert!(retryable_error(&outage).0);
-        assert!(!rate_limited(&outage));
+        assert!(retry_class(&outage).0);
+        assert!(!is_limited(&outage));
         let conflict = swarmy_llm::Error::Status(reqwest::StatusCode::from_u16(409).unwrap());
-        assert!(retryable_error(&conflict).0);
-        assert!(!rate_limited(&conflict));
+        assert!(retry_class(&conflict).0);
+        assert!(!is_limited(&conflict));
     }
 
     #[test]

@@ -5,7 +5,6 @@ use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult}
 use swarmy_llm::{
     Delta, GenerationSettings, Provider, ReasoningEffort, Request, Response, StopReason,
     TokenUsage, ToolDefinition,
-    fake::FakeProvider,
     responses::{ResponsesStream as SseParser, request_json},
 };
 
@@ -249,7 +248,9 @@ fn multiline_data_and_incomplete_response() {
 }
 
 #[tokio::test]
+#[cfg(feature = "fake")]
 async fn fake_scripts_and_counter_work_through_dyn_provider() {
+    use swarmy_llm::fake::FakeProvider;
     let response = Response {
         parts: vec![text("scripted")],
         stop_reason: StopReason::EndTurn,

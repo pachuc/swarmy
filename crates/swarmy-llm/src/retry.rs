@@ -64,7 +64,7 @@ pub(crate) fn retryable(status: reqwest::StatusCode) -> bool {
 
 /// Parse a Retry-After value as seconds or an HTTP date.
 #[must_use]
-pub fn retry_after(value: &str) -> Option<Duration> {
+pub(crate) fn retry_after(value: &str) -> Option<Duration> {
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
@@ -77,7 +77,7 @@ pub fn retry_after(value: &str) -> Option<Duration> {
 
 /// Read Retry-After from a response.
 #[must_use]
-pub fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()

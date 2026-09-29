@@ -98,3 +98,9 @@ pub struct LiveTokenDelta {
     pub position: u64,
     pub text: String,
 }
+
+/// Bounded retry delay shared by durable inference and reconnect loops.
+#[must_use]
+pub fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(100) * (1_u32 << attempt.saturating_sub(1).min(5))
+}

@@ -503,7 +503,9 @@ async fn context_overflow_and_other_client_errors_do_not_retry() {
             assert!(matches!(error, Error::ContextOverflow(_)));
         } else {
             // The provider's own text is kept for non-retryable failures.
-            assert!(matches!(&error, Error::Protocol(message) if message.contains("invalid key")));
+            assert!(
+                matches!(&error, Error::Authentication(message) if message.contains("invalid key"))
+            );
         }
     }
 }

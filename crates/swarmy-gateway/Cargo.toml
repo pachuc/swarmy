@@ -32,7 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
-swarmy-llm.workspace = true
+swarmy-llm = { workspace = true, features = ["fake"] }
 swarmy-harness.workspace = true
 blake3.workspace = true
 swarmy-store.workspace = true
