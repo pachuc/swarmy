@@ -175,19 +175,19 @@ async fn inspect_agents(
             .await,
     ))
     .unwrap();
-    assert_eq!(shown["main_session"], first.to_string());
+    assert_eq!(shown["main_session_id"], first.to_string());
     assert_eq!(shown["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(shown["sessions"][0]["state"], "idle");
     assert!(shown["last_snapshot_at"].is_null());
     // The expected projection is assembled from the fixture's store records, not the API.
     let expected_agent = serde_json::json!({
-        "agent_id": agent.agent_id, "name": agent.name, "description": agent.description,
-        "main_session": first, "session_count": 2, "sandbox_state": "unknown",
+        "id": agent.agent_id, "name": agent.name, "description": agent.description,
+        "main_session_id": first, "session_count": 2, "sandbox_state": "unknown",
         "last_snapshot_at": null, "node_id": null,
     });
     let actual_agent = serde_json::json!({
-        "agent_id": shown["agent_id"], "name": shown["name"],
-        "description": shown["description"], "main_session": shown["main_session"],
+        "id": shown["id"], "name": shown["name"],
+        "description": shown["description"], "main_session_id": shown["main_session_id"],
         "session_count": shown["session_count"], "sandbox_state": shown["sandbox_state"],
         "last_snapshot_at": shown["last_snapshot_at"], "node_id": shown["node_id"],
     });

@@ -576,7 +576,7 @@ async fn recover_service(
             .count(),
         count
     );
-    assert!(screen.contains("Idle | fake"));
+    assert!(screen.contains("idle | fake"));
 }
 
 #[tokio::test]

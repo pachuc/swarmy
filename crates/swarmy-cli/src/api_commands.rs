@@ -481,7 +481,16 @@ async fn show_session(
             );
         }
     }
-    let events = request(endpoint, client.events(&id, 0, 10_000)).await?;
+    let mut events = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = request(endpoint, client.events(&id, after, 256)).await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map_or(after, |event| event.sequence);
+        events.extend(page);
+    }
     for event in &events {
         let swarmy_api_types::EventPayload::StoreRecord {
             record: swarmy_api_types::RecordBody::Event(inner),
