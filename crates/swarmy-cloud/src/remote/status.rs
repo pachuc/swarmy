@@ -321,7 +321,7 @@ async fn inventory(
         }
         for image in page {
             let manifest = image
-                .id
+                .manifest_id
                 .parse::<ulid::Ulid>()
                 .map_err(|source| crate::Error::context(source, "invalid manifest id"))
                 .map(swarmy_core::ManifestId::from_ulid)?;
