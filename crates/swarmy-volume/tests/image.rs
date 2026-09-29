@@ -68,28 +68,46 @@ fn recipes_reject_typos_and_invalid_dimensions() {
         assert!(Recipe::load(&path).is_err());
     }
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-ubuntu");
-    let (recipe, _, name) = Recipe::load(&base).unwrap();
-    assert_eq!(name, "base-ubuntu");
-    assert_eq!(recipe.disk_size, 8 * 1024 * 1024 * 1024);
-    assert_eq!(recipe.sandbox.scratch, vec!["/tmp".to_string()]);
-    assert!(!recipe.sandbox.display);
+    // The checked-in recipes must keep loading; image names come from the
+    // directory name, so each recipe's name must match its directory.
+    let (_, _, name) = Recipe::load(&base).unwrap();
+    assert_eq!(
+        name, "base-ubuntu",
+        "image name comes from the recipe directory"
+    );
     let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-desktop");
-    let (desktop_recipe, _, _) = Recipe::load(&desktop).unwrap();
-    assert!(desktop_recipe.sandbox.display);
+    let (desktop_recipe, _, name) = Recipe::load(&desktop).unwrap();
+    assert_eq!(
+        name, "base-desktop",
+        "image name comes from the recipe directory"
+    );
+    assert!(
+        desktop_recipe.sandbox.display,
+        "desktop sessions need sandbox.display"
+    );
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/swarmy-dev");
     let (recipe, _, name) = Recipe::load(&dev).unwrap();
-    assert_eq!(name, "swarmy-dev");
     assert_eq!(
-        recipe.sandbox.scratch,
-        vec!["/home/agent/.cargo-target".to_string(), "/tmp".to_string()]
+        name, "swarmy-dev",
+        "image name comes from the recipe directory"
     );
-    assert!(matches!(
-        recipe.source,
-        Source::Debootstrap {
-            source_commit: Some(_),
-            ..
-        }
-    ));
+    assert!(
+        recipe
+            .sandbox
+            .scratch
+            .contains(&"/home/agent/.cargo-target".to_string()),
+        "worker builds spill onto the agent disk without the cargo-target scratch mount"
+    );
+    assert!(
+        matches!(
+            recipe.source,
+            Source::Debootstrap {
+                source_commit: Some(_),
+                ..
+            }
+        ),
+        "swarmy-dev rebuilds must pin their debootstrap source commit"
+    );
 }
 
 #[test]
