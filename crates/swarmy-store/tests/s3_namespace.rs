@@ -170,15 +170,13 @@ async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStor
 
 #[tokio::test]
 async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
-    for name in [
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_S3_TEST_BUCKET",
-    ] {
-        if std::env::var_os(name).is_none() {
-            eprintln!("skipping S3 acceptance test: {name} is unset");
+    for name in ["SWARMY_S3_ENDPOINT", "SWARMY_FDB_CLUSTER_FILE"] {
+        if swarmy_core::test_support::stack_env_os(name).is_none() {
             return;
         }
+    }
+    if swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET").is_err() {
+        return;
     }
     let mut settings = Settings::load().unwrap().settings;
     settings.s3_bucket = std::env::var("SWARMY_S3_TEST_BUCKET").unwrap();

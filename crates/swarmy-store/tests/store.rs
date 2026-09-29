@@ -381,10 +381,6 @@ fn event(text: &str) -> Event {
         },
     }
 }
-fn skip(variable: &str) {
-    eprintln!("skipping integration test: {variable} is unset");
-}
-
 struct TestStore {
     store: Store,
     db: Arc<Database>,
@@ -394,7 +390,6 @@ impl TestStore {
     fn new(blobs: Arc<dyn BlobStore>) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            skip("SWARMY_FDB_CLUSTER_FILE");
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);
@@ -913,7 +908,6 @@ async fn lease_renewal_and_state_transitions_update_indexes() {
 #[tokio::test]
 async fn s3_blob_store_and_large_event_round_trip() {
     if swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err() {
-        skip("SWARMY_S3_ENDPOINT");
         return;
     }
     let blobs = Arc::new(ObjectBlobStore::from_env().unwrap());

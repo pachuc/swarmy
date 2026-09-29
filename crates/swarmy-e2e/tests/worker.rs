@@ -1307,7 +1307,6 @@ async fn large_request_dispatches_on_default_nats_limit() {
     if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
         || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
     {
-        eprintln!("skipping worker integration test: dev stack is unset");
         return;
     }
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1389,7 +1388,6 @@ async fn permanent_publish_error_ends_turn() {
     if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_err()
         || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_err()
     {
-        eprintln!("skipping worker integration test: dev stack is unset");
         return;
     }
     let port = std::net::TcpListener::bind("127.0.0.1:0")

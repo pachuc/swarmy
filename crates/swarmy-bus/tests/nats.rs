@@ -30,8 +30,6 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     let url = match swarmy_core::test_support::stack_env("SWARMY_NATS_URL") {
         Ok(url) => url,
         Err(std::env::VarError::NotPresent) => {
-            // Test skips must be visible even without a tracing subscriber.
-            eprintln!("skipping NATS integration test: SWARMY_NATS_URL is unset");
             return;
         }
         Err(error) => panic!("invalid SWARMY_NATS_URL: {error}"),
