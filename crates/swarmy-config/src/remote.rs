@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Settings};
+use crate::{Error, ObjectPrefix, Settings};
 
 /// Location of the scheduler, worker, and inference gateway.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +50,219 @@ impl Default for AwsSettings {
     }
 }
 
+/// Credential source for a remote object bucket. The secret value only ever
+/// lives in 0600 state files and 0600 node environment files; [`std::fmt::Debug`]
+/// redacts both keys so logs and status output can print the description safely.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum BucketCredentials {
+    /// AWS today: nodes reach the bucket through the instance role.
+    #[default]
+    InstanceRole,
+    /// Any S3-compatible bucket reached by endpoint URL with static keys.
+    StaticKeys {
+        access_key: String,
+        secret_key: String,
+    },
+}
+
+impl std::fmt::Debug for BucketCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InstanceRole => formatter.write_str("InstanceRole"),
+            Self::StaticKeys { .. } => formatter.write_str("StaticKeys(..redacted..)"),
+        }
+    }
+}
+
+/// Provider-neutral description of the object bucket backing a remote.
+///
+/// One type covers both AWS S3 through an IAM instance role (empty endpoint,
+/// [`BucketCredentials::InstanceRole`]) and any S3-compatible bucket reached
+/// by endpoint URL with static keys. `up`, `add-node`, `connect`, `upgrade`,
+/// and the node environment all use this; there are no parallel AWS and
+/// non-AWS copies.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(default)]
+pub struct BucketSpec {
+    /// Storage endpoint override for S3-compatible providers. Empty selects
+    /// the AWS regional endpoints.
+    pub endpoint: String,
+    /// Bucket region. Empty falls back to the remote's configured region.
+    pub region: String,
+    /// Bucket name.
+    pub bucket: String,
+    /// Object namespace inside the bucket shared by every service.
+    pub prefix: ObjectPrefix,
+    /// How nodes authenticate to the bucket.
+    pub credentials: BucketCredentials,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BucketSpecHelper {
+    /// Shorthand for an AWS instance-role bucket: `bucket = "name"`.
+    Name(String),
+    Table(BucketSpecTable),
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct BucketSpecTable {
+    endpoint: String,
+    region: String,
+    bucket: String,
+    prefix: ObjectPrefix,
+    credentials: BucketCredentials,
+}
+
+impl<'de> Deserialize<'de> for BucketSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match BucketSpecHelper::deserialize(deserializer)? {
+            BucketSpecHelper::Name(bucket) => Ok(Self {
+                bucket,
+                ..Self::default()
+            }),
+            BucketSpecHelper::Table(table) => Ok(Self {
+                endpoint: table.endpoint,
+                region: table.region,
+                bucket: table.bucket,
+                prefix: table.prefix,
+                credentials: table.credentials,
+            }),
+        }
+    }
+}
+
+impl BucketSpec {
+    /// An AWS instance-role bucket named `bucket`.
+    #[must_use]
+    pub fn aws(bucket: &str) -> Self {
+        Self {
+            bucket: bucket.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether this bucket uses the AWS regional endpoints with an instance
+    /// role. Anything else is an S3-compatible bucket with static keys.
+    #[must_use]
+    pub fn is_aws(&self) -> bool {
+        self.endpoint.is_empty() && self.credentials == BucketCredentials::InstanceRole
+    }
+
+    /// Whether nodes need static keys uploaded to reach this bucket.
+    #[must_use]
+    pub fn needs_static_keys(&self) -> bool {
+        matches!(
+            self.credentials,
+            BucketCredentials::StaticKeys { .. }
+        )
+    }
+
+    /// The region to use, falling back to the remote's configured region when
+    /// the description leaves it unset.
+    #[must_use]
+    pub fn effective_region<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.region.is_empty() {
+            fallback
+        } else {
+            &self.region
+        }
+    }
+
+    /// Fill an unset region from the remote's configured region so saved
+    /// records always carry a concrete region.
+    pub fn resolve_region(&mut self, fallback: &str) {
+        if self.region.is_empty() {
+            self.region = fallback.to_owned();
+        }
+    }
+
+    /// Short description without secrets, for logs and status output.
+    #[must_use]
+    pub fn describe(&self, fallback_region: &str) -> String {
+        if self.endpoint.is_empty() {
+            format!(
+                "{} ({})",
+                self.bucket,
+                self.effective_region(fallback_region)
+            )
+        } else {
+            format!(
+                "{} at {} ({})",
+                self.bucket,
+                self.endpoint,
+                self.effective_region(fallback_region)
+            )
+        }
+    }
+
+    /// Marker object recording swarm ownership under the prefix, used where
+    /// the provider does not support bucket tags.
+    #[must_use]
+    pub fn ownership_marker(&self) -> String {
+        if self.prefix.as_str().is_empty() {
+            ".swarmy-owner".into()
+        } else {
+            format!("{}/.swarmy-owner", self.prefix.as_str())
+        }
+    }
+
+    /// Copy the bucket coordinates into service settings. Static keys become
+    /// the S3 credentials; the instance-role source clears them so nodes fall
+    /// back to the instance-metadata provider.
+    pub fn apply_to_settings(&self, settings: &mut Settings) {
+        settings.s3.endpoint.clone_from(&self.endpoint);
+        if !self.region.is_empty() {
+            settings.s3.region.clone_from(&self.region);
+        }
+        settings.s3.bucket.clone_from(&self.bucket);
+        settings.s3.prefix.clone_from(&self.prefix);
+        match &self.credentials {
+            BucketCredentials::InstanceRole => {
+                settings.s3.access_key.clear();
+                settings.s3.secret_key.clear();
+            }
+            BucketCredentials::StaticKeys {
+                access_key,
+                secret_key,
+            } => {
+                settings.s3.access_key.clone_from(access_key);
+                settings.s3.secret_key.clone_from(secret_key);
+            }
+        }
+    }
+
+    /// Check the bucket name before creating cloud resources. HTTPS
+    /// virtual-hosted requests fail for other names, so reject them early.
+    /// # Errors
+    /// Rejects names that are not 3-63 character lowercase DNS labels.
+    pub fn validate_name(&self) -> Result<(), Error> {
+        if !valid_bucket_name(&self.bucket) {
+            return Err(Error::Remote(
+                "bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// S3 bucket names are lowercase DNS labels; HTTPS virtual-hosted requests
+/// fail otherwise, so reject them before creating cloud resources.
+#[must_use]
+pub fn valid_bucket_name(bucket: &str) -> bool {
+    fn dns(byte: u8) -> bool {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+    }
+    (3..=63).contains(&bucket.len())
+        && bucket.bytes().all(dns)
+        && !bucket.starts_with('-')
+        && !bucket.ends_with('-')
+}
 /// Placement, resource ownership, and the selected tunnel profile.
 #[derive(Clone, Debug, Serialize)]
 pub struct RemoteSettings {
@@ -57,7 +270,10 @@ pub struct RemoteSettings {
     pub provider: String,
     pub services: RemoteServices,
     pub region: String,
-    pub bucket: Option<String>,
+    /// Object bucket backing the remote, if any. One description covers both
+    /// AWS instance-role buckets (empty endpoint) and S3-compatible buckets
+    /// reached by endpoint URL with static keys.
+    pub bucket: Option<BucketSpec>,
     pub disk_gb: u32,
     pub managed_by_tag: String,
     pub profile: Option<String>,
@@ -95,7 +311,7 @@ struct RemoteSettingsHelper {
     provider: String,
     services: RemoteServices,
     region: String,
-    bucket: Option<String>,
+    bucket: Option<BucketSpec>,
     disk_gb: u32,
     managed_by_tag: String,
     profile: Option<String>,
@@ -169,15 +385,30 @@ impl<'de> Deserialize<'de> for RemoteSettings {
 
 impl RemoteSettings {
     /// Node credentials for a remote: the IAM role override, or
-    /// `swarmy-{remote}` when the remote uses an object bucket.
+    /// `swarmy-{remote}` when the remote uses an AWS instance-role bucket.
+    /// Static-key buckets need no IAM role, so they report no profile.
     #[must_use]
     pub fn instance_profile(&self, remote: &str) -> Option<String> {
-        self.bucket.as_ref().map(|_| {
-            self.aws
-                .iam_role
-                .clone()
-                .unwrap_or_else(|| format!("swarmy-{remote}"))
+        self.bucket.as_ref().and_then(|spec| {
+            if spec.is_aws() {
+                Some(
+                    self.aws
+                        .iam_role
+                        .clone()
+                        .unwrap_or_else(|| format!("swarmy-{remote}")),
+                )
+            } else {
+                None
+            }
         })
+    }
+
+    /// Fill an unset bucket region from the remote's configured region so
+    /// saved records always carry a concrete region.
+    pub fn resolve_bucket_region(&mut self) {
+        if let Some(spec) = self.bucket.as_mut() {
+            spec.resolve_region(&self.region.clone());
+        }
     }
 }
 
@@ -230,9 +461,23 @@ pub struct RemoteNode {
 }
 
 impl RemoteNode {
+    /// Bucket name backing this remote, if any.
     #[must_use]
     pub fn bucket(&self) -> Option<&str> {
-        self.launch_settings.as_ref()?.bucket.as_deref()
+        self.launch_settings
+            .as_ref()?
+            .bucket
+            .as_ref()
+            .map(|spec| spec.bucket.as_str())
+    }
+
+    /// Full bucket description backing this remote, with the region filled
+    /// from the node's region when the saved record leaves it unset.
+    #[must_use]
+    pub fn bucket_spec(&self) -> Option<BucketSpec> {
+        let mut spec = self.launch_settings.as_ref()?.bucket.clone()?;
+        spec.resolve_region(&self.region);
+        Some(spec)
     }
 
     /// Login that owns the checkout and runs the node units. Saved launch
@@ -325,15 +570,18 @@ pub struct RemoteProfile {
     pub remote_ports: RemotePorts,
     pub fdb_cluster_file: PathBuf,
     pub nats_url: String,
+    /// Local tunnel endpoint for the SeaweedFS object store. Empty when the
+    /// remote uses an object bucket (see `bucket`); bucket coordinates,
+    /// including a static-key endpoint, live in the bucket description.
     pub s3_endpoint: String,
     #[serde(default)]
     pub api_url: Option<String>,
     #[serde(default)]
     pub api_token: Option<String>,
+    /// Object bucket backing the remote. The credential source is either the
+    /// instance role or static keys; the secret itself is redacted in logs.
     #[serde(default)]
-    pub s3_bucket: Option<String>,
-    #[serde(default)]
-    pub s3_region: Option<String>,
+    pub bucket: Option<BucketSpec>,
     #[serde(default)]
     pub default_image: Option<String>,
 }
@@ -351,7 +599,10 @@ impl RemoteProfile {
         Ok(())
     }
 
-    /// Apply stack endpoints and its default image, preserving credentials and namespaces.
+    /// Apply stack endpoints and its default image, preserving namespaces.
+    /// A bucket description carries the endpoint, region, bucket, prefix,
+    /// and credential source; static keys become the S3 credentials while
+    /// the instance-role source clears them.
     pub fn apply(&self, settings: &mut Settings) {
         settings
             .store
@@ -363,11 +614,8 @@ impl RemoteProfile {
         if let Some(token) = &self.api_token {
             settings.api.token.clone_from(token);
         }
-        if let (Some(bucket), Some(region)) = (&self.s3_bucket, &self.s3_region) {
-            settings.s3.bucket.clone_from(bucket);
-            settings.s3.region.clone_from(region);
-            settings.s3.access_key.clear();
-            settings.s3.secret_key.clear();
+        if let Some(spec) = &self.bucket {
+            spec.apply_to_settings(settings);
         }
         if self.default_image.is_some() {
             settings
@@ -457,7 +705,7 @@ mod tests {
         assert_eq!(fallback.aws.instance_type, "m6id.xlarge");
 
         let settings = RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(BucketSpec::aws("test-bucket")),
             ..RemoteSettings::default()
         };
         assert_eq!(
@@ -476,6 +724,69 @@ mod tests {
             Some("custom-role")
         );
         assert!(RemoteSettings::default().instance_profile("demo").is_none());
+        // Static-key buckets need no IAM role or instance profile.
+        let settings = RemoteSettings {
+            bucket: Some(BucketSpec {
+                endpoint: "https://objects.example.invalid".into(),
+                region: "eu-west-1".into(),
+                bucket: "test-bucket".into(),
+                credentials: BucketCredentials::StaticKeys {
+                    access_key: "test-access".into(),
+                    secret_key: "test-secret".into(),
+                },
+                ..BucketSpec::default()
+            }),
+            ..RemoteSettings::default()
+        };
+        assert!(settings.instance_profile("demo").is_none());
+        let debug = format!("{:?}", settings.bucket.as_ref().unwrap());
+        assert!(!debug.contains("test-access"));
+        assert!(!debug.contains("test-secret"));
+    }
+
+    #[test]
+    fn bucket_specs_parse_shorthand_table_and_validate() {
+        let shorthand: Settings =
+            toml::from_str("[remote]\nbucket = 'test-bucket'").unwrap();
+        let spec = shorthand.remote.bucket.clone().unwrap();
+        assert_eq!(spec.bucket, "test-bucket");
+        assert!(spec.is_aws());
+        assert!(!spec.needs_static_keys());
+        assert_eq!(spec.effective_region("eu-west-1"), "eu-west-1");
+        // The table form carries endpoint, region, prefix, and static keys.
+        let table: Settings = toml::from_str(
+            "[remote.bucket]\nendpoint = 'https://objects.example.invalid'\nregion = 'eu-west-1'\nbucket = 'test-bucket'\nprefix = 'runs/team'\n[remote.bucket.credentials]\nsource = 'static_keys'\naccess_key = 'test-access'\nsecret_key = 'test-secret'\n",
+        )
+        .unwrap();
+        let spec = table.remote.bucket.clone().unwrap();
+        assert!(!spec.is_aws());
+        assert!(spec.needs_static_keys());
+        assert_eq!(spec.effective_region("us-east-1"), "eu-west-1");
+        assert_eq!(spec.prefix.as_str(), "runs/team");
+        assert_eq!(spec.ownership_marker(), "runs/team/.swarmy-owner");
+        assert_eq!(
+            spec.describe("us-east-1"),
+            "test-bucket at https://objects.example.invalid (eu-west-1)"
+        );
+        spec.validate_name().unwrap();
+        // Unknown keys are rejected in the bucket table.
+        assert!(toml::from_str::<Settings>("[remote.bucket]\nbucket_typo = 'x'").is_err());
+        for bad in ["bad/bucket", "bad.bucket", "ab", "-lead", "trail-"] {
+            let spec = BucketSpec::aws(bad);
+            assert!(spec.validate_name().is_err(), "{bad}");
+        }
+        // Static keys reach service settings; the instance role clears them.
+        let mut settings = Settings::default();
+        spec.apply_to_settings(&mut settings);
+        assert_eq!(settings.s3.access_key, "test-access");
+        assert_eq!(settings.s3.secret_key, "test-secret");
+        assert_eq!(settings.s3.prefix.as_str(), "runs/team");
+        BucketSpec::aws("test-bucket").apply_to_settings(&mut settings);
+        assert!(settings.s3.access_key.is_empty());
+        assert!(settings.s3.secret_key.is_empty());
+        // A table round trip keeps every field, including the secret.
+        let decoded: Settings = toml::from_str(&table.to_toml().unwrap()).unwrap();
+        assert_eq!(decoded.remote.bucket, table.remote.bucket);
     }
 
     #[test]
@@ -573,15 +884,17 @@ mod tests {
             s3_endpoint: "http://127.0.0.1:18333".into(),
             api_url: Some("http://127.0.0.1:18742".into()),
             api_token: Some("fixture-token".into()),
-            s3_bucket: None,
-            s3_region: None,
+            bucket: None,
             default_image: Some("base-ubuntu:test".into()),
         };
         // A profile with its own bucket and region takes the laptop's regional
         // credentials into the service settings without an endpoint override.
         let mut regional_profile = profile.clone();
-        regional_profile.s3_bucket = Some("bucket".into());
-        regional_profile.s3_region = Some("eu-west-1".into());
+        regional_profile.bucket = Some(BucketSpec {
+            region: "eu-west-1".into(),
+            bucket: "bucket".into(),
+            ..BucketSpec::default()
+        });
         regional_profile.s3_endpoint.clear();
         let mut regional_settings = Settings::default();
         regional_profile.apply(&mut regional_settings);
@@ -590,6 +903,28 @@ mod tests {
         assert!(regional_settings.s3.endpoint.is_empty());
         assert!(regional_settings.s3.access_key.is_empty());
         assert!(regional_settings.s3.secret_key.is_empty());
+        // A static-key profile carries the endpoint and keys into settings.
+        let mut static_profile = profile.clone();
+        static_profile.bucket = Some(BucketSpec {
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            bucket: "bucket".into(),
+            prefix: "runs/team".parse().unwrap(),
+            credentials: BucketCredentials::StaticKeys {
+                access_key: "test-access".into(),
+                secret_key: "test-secret".into(),
+            },
+        });
+        static_profile.s3_endpoint.clear();
+        let mut static_settings = Settings::default();
+        static_profile.apply(&mut static_settings);
+        assert_eq!(
+            static_settings.s3.endpoint,
+            "https://objects.example.invalid"
+        );
+        assert_eq!(static_settings.s3.access_key, "test-access");
+        assert_eq!(static_settings.s3.secret_key, "test-secret");
+        assert_eq!(static_settings.s3.prefix.as_str(), "runs/team");
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
             serde_json::to_vec(&profile).unwrap(),
