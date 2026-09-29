@@ -92,13 +92,12 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
     // main, wake it runnable, and drain exactly once.
     let (_agent, main, lease) = named_main(store).await;
     let waiting = user_message("waiting during summary");
-    assert_eq!(
-        store
+    assert!(
+        !store
             .queue_user_message_idempotent(main, &waiting, "rollover-once")
             .await
             .unwrap()
-            .2,
-        false
+            .2
     );
     let (next_main, _) = store
         .summarize_main_session(main, 0, &lease, &opening_summary("main summary"), &[])
