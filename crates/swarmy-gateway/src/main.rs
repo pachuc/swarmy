@@ -8,7 +8,8 @@ use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, WorkMessage, WorkQueue};
 use swarmy_core::{
-    Event, IdempotencyState, LeaseOwnerId, Message, MessageId, MessageRole, RequestId,
+    CredentialEntryKind, Event, IdempotencyState, LeaseOwnerId, Message, MessageId, MessageRole,
+    RequestId,
 };
 use swarmy_llm::{Delta, InferenceJob, InferenceJobRef, Response};
 use swarmy_store::{
@@ -292,9 +293,40 @@ async fn refresh(
 
 struct CompletionAttribution {
     entry: Option<String>,
-    entry_kind: Option<String>,
+    entry_kind: Option<CredentialEntryKind>,
     quota_remaining: std::collections::BTreeMap<String, u64>,
     quota_resets: std::collections::BTreeMap<String, u64>,
+}
+
+/// Effort selected for one provider attempt: the catalog model when known,
+/// the effort actually sent, the effort the turn requested, and whether the
+/// model clamp changed it.
+struct EffortChoice<'a> {
+    model: Option<&'a swarmy_llm::catalog::ModelInfo>,
+    used: Option<swarmy_core::ReasoningEffort>,
+    requested: Option<swarmy_core::ReasoningEffort>,
+    clamped: bool,
+}
+
+/// One provider attempt: the response or failure, whether the body streamed,
+/// whether a breaker blocked the call without spending it, and the entry
+/// the call is attributed to.
+struct AttemptOutcome {
+    result: std::result::Result<Response, swarmy_llm::Error>,
+    streamed: Option<bool>,
+    blocked: bool,
+    entry: Option<String>,
+    entry_kind: Option<CredentialEntryKind>,
+}
+
+/// Stable per-delivery context threading through attempt, retry, and commit
+/// so those stages take two or three arguments instead of seven or fourteen.
+struct Delivery<'a> {
+    message: &'a WorkMessage<InferenceJobRef>,
+    claim: &'a InferenceClaim,
+    job: &'a InferenceJob,
+    provider: &'a str,
+    turn: Option<MessageId>,
 }
 
 struct TerminalInput<'a> {
@@ -580,51 +612,38 @@ impl Gateway {
         } else {
             &job.provider
         };
-        let (model, effort_used, effort_clamped, effort_requested) =
-            Self::effort_for(self, job, provider);
-        let turn = Self::turn_id(job);
-        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceStarted)
-            .await;
-        let (result, streamed, blocked, entry, entry_kind) = self
-            .attempt_provider(job, provider, effort_used, turn, job.entry.as_deref())
-            .await?;
-        self.observe_inference_stage(job, turn, swarmy_core::TurnStage::InferenceFinished)
-            .await;
-        let Some((result, streamed)) = self
-            .retry_or_continue(message, claim, job, turn, result, streamed, blocked)
-            .await?
-        else {
-            return Ok(());
-        };
-        self.commit_terminal(
+        let delivery = Delivery {
             message,
             claim,
             job,
             provider,
-            model,
-            turn,
-            effort_used,
-            effort_requested,
-            effort_clamped,
-            result,
-            streamed,
-            blocked,
-            entry,
-            entry_kind,
-        )
-        .await
+            turn: Self::turn_id(job),
+        };
+        let effort = self.effort_for(job, provider);
+        self.observe_inference_stage(job, delivery.turn, swarmy_core::TurnStage::InferenceStarted)
+            .await;
+        let outcome = self
+            .attempt_provider(
+                job,
+                provider,
+                effort.used,
+                delivery.turn,
+                job.entry.as_deref(),
+            )
+            .await?;
+        self.observe_inference_stage(job, delivery.turn, swarmy_core::TurnStage::InferenceFinished)
+            .await;
+        let Some(outcome) = self.retry_or_continue(&delivery, outcome).await? else {
+            return Ok(());
+        };
+        self.commit_terminal(&delivery, &effort, outcome).await
     }
 
     fn effort_for(
         &self,
         job: &InferenceJob,
         provider: &str,
-    ) -> (
-        Option<&swarmy_llm::catalog::ModelInfo>,
-        Option<swarmy_core::ReasoningEffort>,
-        bool,
-        Option<swarmy_core::ReasoningEffort>,
-    ) {
+    ) -> EffortChoice<'_> {
         let model = self
             .providers
             .catalog
@@ -637,30 +656,36 @@ impl Gateway {
                     let (used, clamped) = model.clamp_effort(requested);
                     (Some(used), clamped)
                 });
-        (model, effort_used, effort_clamped, effort_requested)
+        EffortChoice {
+            model,
+            used: effort_used,
+            requested: effort_requested,
+            clamped: effort_clamped,
+        }
     }
 
-    // Retry routing carries the claim, job, result, streaming flag, and block
-    // state together; splitting would separate the retry decision from the
-    // streamed flag it preserves.
-    #[allow(clippy::too_many_arguments)]
     async fn retry_or_continue(
         &self,
-        message: &WorkMessage<InferenceJobRef>,
-        claim: &InferenceClaim,
-        job: &InferenceJob,
-        turn: Option<MessageId>,
-        result: std::result::Result<Response, swarmy_llm::Error>,
-        streamed: Option<bool>,
-        blocked: bool,
-    ) -> Result<
-        Option<(
-            std::result::Result<Response, swarmy_llm::Error>,
-            Option<bool>,
-        )>,
-    > {
+        delivery: &Delivery<'_>,
+        outcome: AttemptOutcome,
+    ) -> Result<Option<AttemptOutcome>> {
+        let AttemptOutcome {
+            result,
+            streamed,
+            blocked,
+            entry,
+            entry_kind,
+        } = outcome;
+        let job = delivery.job;
+        let turn = delivery.turn;
         match result {
-            Ok(response) => Ok(Some((Ok(response), streamed))),
+            Ok(response) => Ok(Some(AttemptOutcome {
+                result: Ok(response),
+                streamed,
+                blocked,
+                entry,
+                entry_kind,
+            })),
             Err(error)
                 if !blocked
                     && {
@@ -675,45 +700,59 @@ impl Gateway {
                 // Its delivery count starts at one, so it cannot bound calls.
                 let attempts = self
                     .store
-                    .record_inference_retry(claim, Timestamp::now())
+                    .record_inference_retry(delivery.claim, Timestamp::now())
                     .await?;
                 if i64::from(attempts) >= self.max_deliver {
                     warn!(%error, attempts, request_id = %job.request_id, "provider retries exhausted");
-                    return Ok(Some((Err(error), streamed)));
+                    return Ok(Some(AttemptOutcome {
+                        result: Err(error),
+                        streamed,
+                        blocked,
+                        entry,
+                        entry_kind,
+                    }));
                 }
                 let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
                 // Store the next deadline based on the durable attempt count.
                 warn!(%error, attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
                 self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
-                self.store.release_inference(claim).await?;
-                message.negative_acknowledge(Some(delay)).await?;
+                self.store.release_inference(delivery.claim).await?;
+                delivery.message.negative_acknowledge(Some(delay)).await?;
                 Ok(None)
             }
-            Err(error) => Ok(Some((Err(error), streamed))),
+            Err(error) => Ok(Some(AttemptOutcome {
+                result: Err(error),
+                streamed,
+                blocked,
+                entry,
+                entry_kind,
+            })),
         }
     }
 
-    // Terminal commit carries breaker, event, attribution, and ack state
-    // together; splitting would separate the atomic usage write from its fan-out.
-    #[allow(clippy::too_many_arguments)]
     async fn commit_terminal(
         &self,
-        message: &WorkMessage<InferenceJobRef>,
-        claim: &InferenceClaim,
-        job: &InferenceJob,
-        provider: &str,
-        model: Option<&swarmy_llm::catalog::ModelInfo>,
-        turn: Option<MessageId>,
-        effort_used: Option<swarmy_core::ReasoningEffort>,
-        effort_requested: Option<swarmy_core::ReasoningEffort>,
-        effort_clamped: bool,
-        result: std::result::Result<Response, swarmy_llm::Error>,
-        streamed: Option<bool>,
-        blocked: bool,
-        entry: Option<String>,
-        entry_kind: Option<String>,
+        delivery: &Delivery<'_>,
+        effort: &EffortChoice<'_>,
+        outcome: AttemptOutcome,
     ) -> Result<()> {
+        let AttemptOutcome {
+            result,
+            streamed,
+            blocked,
+            entry,
+            entry_kind,
+        } = outcome;
+        let (message, claim, job, provider, turn) = (
+            delivery.message,
+            delivery.claim,
+            delivery.job,
+            delivery.provider,
+            delivery.turn,
+        );
+        let (model, effort_used, effort_requested, effort_clamped) =
+            (effort.model, effort.used, effort.requested, effort.clamped);
         let (class, retry_at) = self
             .record_breaker(provider, entry.as_deref(), job, &result, blocked)
             .await?;
@@ -759,7 +798,7 @@ impl Gateway {
     fn attribution_for(
         result: &std::result::Result<Response, swarmy_llm::Error>,
         entry: Option<String>,
-        entry_kind: Option<String>,
+        entry_kind: Option<CredentialEntryKind>,
     ) -> CompletionAttribution {
         let (quota_remaining, quota_resets) = result.as_ref().map_or_else(
             |_| {
@@ -845,13 +884,7 @@ impl Gateway {
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
         pinned: Option<&str>,
-    ) -> Result<(
-        std::result::Result<Response, swarmy_llm::Error>,
-        Option<bool>,
-        bool,
-        Option<String>,
-        Option<String>,
-    )> {
+    ) -> Result<AttemptOutcome> {
         // Resolve the entry first so the breaker check and the call use the
         // same key. Resolution already skips entries with open breakers; the
         // claim below serializes the remaining race to a single probe. A
@@ -861,22 +894,28 @@ impl Gateway {
             .catalog
             .model(provider, &job.request.settings.model);
         let Some(model) = model else {
-            return Ok((
-                Err(swarmy_llm::Error::UnknownModel {
+            return Ok(AttemptOutcome {
+                result: Err(swarmy_llm::Error::UnknownModel {
                     provider: provider.into(),
                     model: job.request.settings.model.clone(),
                 }),
-                None,
-                false,
-                None,
-                None,
-            ));
+                streamed: None,
+                blocked: false,
+                entry: None,
+                entry_kind: None,
+            });
         };
         let (client, entry, entry_kind) =
             match self.providers.client_pinned(provider, model, pinned).await {
                 Ok(resolved) => resolved,
                 Err(error) => {
-                    return Ok((Err(error), None, false, pinned.map(str::to_owned), None));
+                    return Ok(AttemptOutcome {
+                        result: Err(error),
+                        streamed: None,
+                        blocked: false,
+                        entry: pinned.map(str::to_owned),
+                        entry_kind: None,
+                    });
                 }
             };
         let key = CredentialKey::for_label(provider, entry.clone());
@@ -886,8 +925,8 @@ impl Gateway {
                 .entry_reason(&key)
                 .await?
                 .unwrap_or_else(|| "provider temporarily unavailable".into());
-            return Ok((
-                Err(swarmy_llm::Error::ProviderResponse {
+            return Ok(AttemptOutcome {
+                result: Err(swarmy_llm::Error::ProviderResponse {
                     reason: swarmy_llm::ProviderFailureReason::Other,
                     status: reqwest::StatusCode::TOO_MANY_REQUESTS,
                     message: reason,
@@ -895,17 +934,23 @@ impl Gateway {
                         std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
                     ),
                 }),
-                None,
-                true,
+                streamed: None,
+                blocked: true,
                 entry,
                 entry_kind,
-            ));
+            });
         }
         let (result, streamed) = match self.stream(&client, job, effort, turn).await {
             Ok((response, streamed)) => (Ok(response), streamed),
             Err(error) => (Err(error), None),
         };
-        Ok((result, streamed, false, entry, entry_kind))
+        Ok(AttemptOutcome {
+            result,
+            streamed,
+            blocked: false,
+            entry,
+            entry_kind,
+        })
     }
 
     async fn record_breaker(
@@ -976,7 +1021,7 @@ impl Gateway {
                 event: event.clone(),
                 now: Timestamp::now(),
                 entry: attribution.entry.clone(),
-                entry_kind: attribution.entry_kind.clone(),
+                entry_kind: attribution.entry_kind,
                 quota_remaining: attribution.quota_remaining.clone(),
                 quota_resets: attribution.quota_resets.clone(),
             };

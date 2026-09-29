@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use swarmy_config::Settings;
-use swarmy_core::CredentialScope;
+use swarmy_core::{CredentialEntryKind, CredentialScope};
 use swarmy_llm::{
     ClientAuth, Provider,
     auth::{ResolvedAuth, Resolver},
@@ -269,7 +269,7 @@ impl Providers {
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
+    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<CredentialEntryKind>), swarmy_llm::Error> {
         self.client_pinned(provider, model, None).await
     }
 
@@ -281,7 +281,7 @@ impl Providers {
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
         pinned: Option<&str>,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
+    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<CredentialEntryKind>), swarmy_llm::Error> {
         let served = self
             .state
             .read()
