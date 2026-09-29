@@ -62,12 +62,12 @@ impl Settings {
     /// # Errors
     /// Rejects empty bucket names or slash-separated bucket paths.
     pub fn s3_namespace(&self) -> Result<(&str, ObjectPrefix), Error> {
-        if self.s3_bucket.is_empty() || self.s3_bucket.contains('/') {
+        if self.s3.bucket.is_empty() || self.s3.bucket.contains('/') {
             return Err(Error::S3Namespace(
                 "bucket must be a nonempty name, not a path",
             ));
         }
-        Ok((&self.s3_bucket, self.s3_prefix.clone()))
+        Ok((&self.s3.bucket, self.s3.prefix.clone()))
     }
 }
 
@@ -86,8 +86,8 @@ mod tests {
             "/", "/run", "run/", "a//b", ".", "..", "a/./b", "a/../b", "a\n",
         ] {
             assert!(value.parse::<ObjectPrefix>().is_err(), "{value:?}");
-            let encoded = toml::to_string(&BTreeMap::from([("s3_prefix", value)])).unwrap();
-            assert!(toml::from_str::<Settings>(&encoded).is_err());
+            let encoded = toml::to_string(&BTreeMap::from([("prefix", value)])).unwrap();
+            assert!(toml::from_str::<crate::S3Settings>(&encoded).is_err());
             assert!(
                 Settings::default()
                     .apply_environment(&BTreeMap::from([("SWARMY_S3_PREFIX".into(), value.into())]))
@@ -98,33 +98,34 @@ mod tests {
 
     #[test]
     fn prefix_round_trips_and_environment_overrides_file() {
-        let mut settings: Settings = toml::from_str("s3_prefix = 'file/nested'").unwrap();
+        let mut settings: Settings =
+            toml::from_str("[s3]\nprefix = 'file/nested'").unwrap();
         settings
             .apply_environment(&BTreeMap::from([(
                 "SWARMY_S3_PREFIX".into(),
                 "env/nested".into(),
             )]))
             .unwrap();
-        assert_eq!(settings.s3_prefix.as_str(), "env/nested");
+        assert_eq!(settings.s3.prefix.as_str(), "env/nested");
         let decoded: Settings = toml::from_str(&settings.to_toml().unwrap()).unwrap();
-        assert_eq!(decoded.s3_prefix, settings.s3_prefix);
+        assert_eq!(decoded.s3.prefix, settings.s3.prefix);
         let mut exported = Settings::default();
         exported.apply_environment(&settings.environment()).unwrap();
-        assert_eq!(exported.s3_prefix, settings.s3_prefix);
+        assert_eq!(exported.s3.prefix, settings.s3.prefix);
         exported
             .apply_environment(&BTreeMap::from([(
                 "SWARMY_S3_PREFIX".into(),
                 String::new(),
             )]))
             .unwrap();
-        assert_eq!(exported.s3_prefix, ObjectPrefix::default());
+        assert_eq!(exported.s3.prefix, ObjectPrefix::default());
     }
 
     #[test]
     fn bucket_paths_are_rejected() {
         let mut settings = Settings::default();
         for value in ["", "/run", "bucket/", "bucket/run/nested"] {
-            settings.s3_bucket = value.into();
+            settings.s3.bucket = value.into();
             assert!(settings.s3_namespace().is_err(), "{value}");
         }
     }

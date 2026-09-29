@@ -16,6 +16,7 @@ tempfile.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 swarmy-core.workspace = true
 ulid.workspace = true
 fs2.workspace = true

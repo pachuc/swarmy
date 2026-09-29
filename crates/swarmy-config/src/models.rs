@@ -47,7 +47,7 @@ impl Settings {
             .providers()
             .map(|provider| (provider.id.clone(), provider.clone()))
             .collect();
-        for (id, custom) in &self.custom_providers {
+        for (id, custom) in &self.selection.custom_providers {
             if id.trim().is_empty() || id.contains('/') {
                 return Err(Error::Catalog(format!("invalid provider id {id:?}")));
             }
@@ -87,13 +87,13 @@ impl Settings {
                 );
             }
         }
-        for custom in &self.models {
+        for custom in &self.selection.models {
             if custom.id.trim().is_empty() {
                 return Err(Error::Catalog("model id must not be empty".into()));
             }
             let provider = providers.get_mut(&custom.provider).ok_or_else(|| {
                 Error::Catalog(format!(
-                    "unknown provider {:?} for model {:?}; declare [custom_providers.{}] with api and base_url",
+                    "unknown provider {:?} for model {:?}; declare [selection.custom_providers.{}] with api and base_url",
                     custom.provider, custom.id, custom.provider
                 ))
             })?;
@@ -123,7 +123,7 @@ impl Settings {
             custom.apply(model);
         }
         if let Some(fake) = providers.get_mut("fake") {
-            for id in ["", self.model.as_str()] {
+            for id in ["", self.selection.model.as_str()] {
                 fake.models
                     .entry(id.to_owned())
                     .or_insert_with(|| fake_fixture_model(id));
@@ -216,12 +216,12 @@ mod tests {
     fn custom_provider_and_models_merge_over_snapshot() {
         let settings = read(
             r#"
-[custom_providers.private]
+[selection.custom_providers.private]
 api = "OpenAiCompletions"
 base_url = "http://localhost:8000/v1"
-[custom_providers.openai]
+[selection.custom_providers.openai]
 base_url = "https://proxy.example/v1"
-[[models]]
+[[selection.models]]
 provider = "private"
 id = "team/model"
 name = "Private model"
@@ -230,7 +230,7 @@ max_output_tokens = 4096
 reasoning = ["none", "low", "high"]
 cost = { input = 0.5, output = 1.5 }
 compat = { max_tokens_field = "max_tokens", supports_developer_role = false }
-[[models]]
+[[selection.models]]
 provider = "openai"
 id = "gpt-5.5"
 name = "Project GPT"
@@ -303,10 +303,10 @@ compat = { supports_developer_role = false, private_flag = true }
     fn model_defaults_and_explicit_protocol_override() {
         let settings = read(
             r#"
-[[models]]
+[[selection.models]]
 provider = "openai"
 id = "private"
-[[models]]
+[[selection.models]]
 provider = "openrouter"
 id = "anthropic/claude-sonnet-4.6"
 api = "OpenAiCompletions"
@@ -337,8 +337,8 @@ reasoning = []
     #[test]
     fn unknown_api_is_a_load_error_with_allowed_values() {
         for config in [
-            "[custom_providers.private]\napi = 'invalid'\nbase_url = 'http://localhost'",
-            "[[models]]\nprovider = 'openai'\nid = 'private'\napi = 'invalid'",
+            "[selection.custom_providers.private]\napi = 'invalid'\nbase_url = 'http://localhost'",
+            "[[selection.models]]\nprovider = 'openai'\nid = 'private'\napi = 'invalid'",
         ] {
             let error = read(config).err().unwrap().to_string();
             assert!(error.contains("invalid"), "{error}");
@@ -361,15 +361,15 @@ reasoning = []
     fn incomplete_provider_and_unknown_model_provider_fail_loading() {
         for (config, message) in [
             (
-                "[custom_providers.private]\nbase_url = 'http://localhost'",
+                "[selection.custom_providers.private]\nbase_url = 'http://localhost'",
                 "requires api",
             ),
             (
-                "[custom_providers.private]\napi = 'OpenAiCompletions'",
+                "[selection.custom_providers.private]\napi = 'OpenAiCompletions'",
                 "requires base_url",
             ),
             (
-                "[[models]]\nprovider = 'missing'\nid = 'model'",
+                "[[selection.models]]\nprovider = 'missing'\nid = 'model'",
                 "unknown provider",
             ),
         ] {
@@ -382,9 +382,9 @@ reasoning = []
     fn summarize_thresholds_merge_per_provider_and_model() {
         let settings = read(
             r#"
-[custom_providers.openai]
+[selection.custom_providers.openai]
 summarize_at = 500000
-[[models]]
+[[selection.models]]
 provider = "openai"
 id = "gpt-5.5"
 summarize_at = 400000
@@ -395,7 +395,7 @@ summarize_at = 400000
         assert_eq!(catalog.summarize_at("openai", "gpt-5.5"), Some(400_000));
         let settings = read(
             r"
-[custom_providers.openai]
+[selection.custom_providers.openai]
 summarize_at = 500000
 ",
         )
