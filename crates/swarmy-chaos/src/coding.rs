@@ -54,7 +54,7 @@ fn remote(root: &Path) -> Result<()> {
 }
 
 fn tool(index: usize, name: &str, input: &Value) -> Value {
-    json!({"parts":[{"tool_call":{"call_id":format!("coding-{index}"),"tool":name,"input":input}}], "stop_reason":"tool_calls", "usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}})
+    json!({"parts":[{"tool_call":{"call_id":format!("coding-{index}"),"tool":name,"input":input}}], "stop_reason":"tool_calls", "usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}})
 }
 
 fn script(remote: &str, work: &str) -> Vec<Value> {
@@ -109,7 +109,7 @@ fn script(remote: &str, work: &str) -> Vec<Value> {
             "bash",
             &json!({"command":commands[4], "yield_seconds":120}),
         ),
-        json!({"parts":[{"text":{"text":DONE}}],"stop_reason":"end_turn","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}),
+        json!({"parts":[{"text":{"text":DONE}}],"stop_reason":"end_turn","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}),
     ];
     let readme = tool(10, "read", &json!({"path":format!("{work}/README.md")}));
     responses[1]["parts"]
