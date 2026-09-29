@@ -20,7 +20,11 @@ use tokio::{
 use tracing::{error, info, warn};
 use ulid::Ulid;
 
-use crate::{attempt::Delivery, config, providers::Providers};
+use crate::{
+    attempt::Delivery,
+    config,
+    providers::{ProviderChanges, Providers},
+};
 
 /// The gateway engine: claims inference work, streams provider responses,
 /// and commits terminal events. Constructed once in `main` and served until
@@ -96,16 +100,13 @@ impl Gateway {
     async fn serve_inner(self: &Arc<Self>, concurrency: usize) -> Result<()> {
         let mut messages = futures::stream::SelectAll::new();
         let mut subscriptions = BTreeSet::new();
-        let semaphore = Arc::new(Semaphore::new(concurrency));
-        let mut tasks = JoinSet::new();
-        let mut ticks = tokio::time::interval(ADVERTISEMENT_INTERVAL);
+        let mut worker = DispatchWorker::new(concurrency);
+        let mut ticks = tokio::time::interval(swarmy_config::SERVICE_HEALTH_INTERVAL);
         refresh(self, &mut messages, &mut subscriptions).await?;
         ticks.tick().await;
         info!(concurrency, "gateway ready");
         loop {
-            while let Some(result) = tasks.try_join_next() {
-                result?;
-            }
+            worker.reap().await?;
             let delivery = tokio::select! {
                 _ = ticks.tick() => {
                     if let Err(error) = refresh(self, &mut messages, &mut subscriptions).await {
@@ -120,27 +121,59 @@ impl Gateway {
             let Some(delivery) = delivery else {
                 return Err(Error::Internal("work stream ended"));
             };
-            let message = match delivery {
-                Ok(message) => message,
-                Err(error) => {
-                    warn!(%error, "cannot decode work delivery");
-                    continue;
-                }
-            };
-            let gateway = Arc::clone(self);
-            let permit = semaphore.clone().acquire_owned().await?;
-            tasks.spawn(async move {
-                let _permit = permit;
-                if let Err(error) = gateway.handle(&message).await {
-                    error!(%error, "delivery left unacknowledged");
-                }
-            });
+            worker.dispatch(self, delivery).await?;
         }
         Ok(())
     }
 }
 
-const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(30);
+/// In-flight delivery tasks and their concurrency bound. Draining finished
+/// tasks and decoding the next delivery are separate steps so the serving
+/// loop reads as the lifecycle it drives.
+struct DispatchWorker {
+    semaphore: Arc<Semaphore>,
+    tasks: JoinSet<()>,
+}
+
+impl DispatchWorker {
+    fn new(concurrency: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(concurrency)),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    async fn reap(&mut self) -> Result<()> {
+        while let Some(result) = self.tasks.try_join_next() {
+            result?;
+        }
+        Ok(())
+    }
+
+    async fn dispatch(
+        &mut self,
+        gateway: &Arc<Gateway>,
+        delivery: Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+    ) -> Result<()> {
+        let message = match delivery {
+            Ok(message) => message,
+            Err(error) => {
+                warn!(%error, "cannot decode work delivery");
+                return Ok(());
+            }
+        };
+        let permit = self.semaphore.clone().acquire_owned().await?;
+        let gateway = Arc::clone(gateway);
+        self.tasks.spawn(async move {
+            let _permit = permit;
+            if let Err(error) = gateway.handle(&message).await {
+                error!(%error, "delivery left unacknowledged");
+            }
+        });
+        Ok(())
+    }
+}
+
 const ADVERTISEMENT_TTL: Duration = Duration::from_secs(90);
 
 async fn advertise(store: &Store, served: &[String]) -> Result<()> {
@@ -184,7 +217,27 @@ async fn refresh(
     subscriptions: &mut BTreeSet<String>,
 ) -> Result<()> {
     let changes = gateway.providers.refresh().await?;
-    for id in &changes.served {
+    subscribe_new(gateway, messages, subscriptions, &changes.served).await?;
+    log_changes(&changes);
+    record_unserved(gateway, &changes).await?;
+    advertise_health(gateway, &changes).await?;
+    Ok(())
+}
+
+/// Subscribe to each newly served provider queue. Queues that vanished keep
+/// their subscription: redelivery, not resubscription, recovers their work.
+async fn subscribe_new(
+    gateway: &Gateway,
+    messages: &mut futures::stream::SelectAll<
+        futures::stream::BoxStream<
+            'static,
+            Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+        >,
+    >,
+    subscriptions: &mut BTreeSet<String>,
+    served: &[String],
+) -> Result<()> {
+    for id in served {
         if subscriptions.contains(id) {
             continue;
         }
@@ -196,6 +249,10 @@ async fn refresh(
         }));
         subscriptions.insert(id.clone());
     }
+    Ok(())
+}
+
+fn log_changes(changes: &ProviderChanges) {
     for id in &changes.added {
         info!(provider = %id, "serving provider");
     }
@@ -205,6 +262,12 @@ async fn refresh(
     for id in &changes.rotated {
         info!(provider = %id, "provider credential changed");
     }
+}
+
+/// Record why each unserved provider stays out, so `doctor` can report it.
+/// Skipped providers that never served get an immediate row; removed ones
+/// fall back to "provider unavailable" when no skip reason exists.
+async fn record_unserved(gateway: &Gateway, changes: &ProviderChanges) -> Result<()> {
     for (provider, reason) in &changes.skipped {
         if !gateway.store.gateway_serves(provider).await? {
             gateway
@@ -236,6 +299,10 @@ async fn refresh(
             )
             .await?;
     }
+    Ok(())
+}
+
+async fn advertise_health(gateway: &Gateway, changes: &ProviderChanges) -> Result<()> {
     advertise(&gateway.store, &changes.served).await?;
     gateway
         .store
@@ -246,7 +313,7 @@ async fn refresh(
             host: swarmy_config::service_hostname(),
             started_at: gateway.started_at,
             last_seen: Timestamp::now(),
-            detail: ServiceDetail::Providers(changes.served),
+            detail: ServiceDetail::Providers(changes.served.clone()),
         })
         .await?;
     Ok(())
@@ -273,34 +340,56 @@ impl Gateway {
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             expires_at: Timestamp::now(),
         };
+        self.acquire_claim(message, job, &mut claim).await?;
+        let Some(stored) = self.load_stored_job(job).await? else {
+            // Nothing can serve a reference whose request is gone; the worker's
+            // recovery scan republishes live work with its request stored.
+            warn!(request_id = %job.request_id, "terminating job with no stored request");
+            return Ok(message.terminate().await?);
+        };
+        self.drive_work(message, job, &claim, &stored).await
+    }
+
+    /// Hold the inference claim until the store accepts it, backing off on
+    /// the ack deadline while another owner finishes or the job completes.
+    async fn acquire_claim(
+        &self,
+        message: &WorkMessage<InferenceJobRef>,
+        job: &InferenceJobRef,
+        claim: &mut InferenceClaim,
+    ) -> Result<()> {
         loop {
             let now = Timestamp::now();
             claim.expires_at = now.checked_add(self.ack_wait)?;
-            if self.store.start_inference(&claim, now).await? {
-                break;
+            if self.store.start_inference(claim, now).await? {
+                return Ok(());
             }
             if self.completed(job.request_id).await? {
-                return Ok(message.acknowledge().await?);
+                message.acknowledge().await?;
+                return Ok(());
             }
             message.extend_deadline().await?;
             sleep(self.ack_wait / 3).await;
         }
+    }
+
+    /// Load the stored request a delivery refers to and check it still
+    /// matches the delivered selection. Returns `None` when the request is
+    /// gone and the caller must terminate the job.
+    async fn load_stored_job(&self, job: &InferenceJobRef) -> Result<Option<InferenceJob>> {
         let Some(request) = self
             .store
             .get_inference_request::<swarmy_llm::Request>(job.request_id)
             .await?
         else {
-            // Nothing can serve a reference whose request is gone; the worker's
-            // recovery scan republishes live work with its request stored.
-            warn!(request_id = %job.request_id, "terminating job with no stored request");
-            return Ok(message.terminate().await?);
+            return Ok(None);
         };
         if request.settings != job.selection {
             return Err(Error::Internal(
                 "stored inference selection differs from delivery",
             ));
         }
-        let stored = InferenceJob {
+        Ok(Some(InferenceJob {
             summary: job.summary,
             summary_prefix: job.summary_prefix,
             summary_cut: None,
@@ -313,8 +402,19 @@ impl Gateway {
             route: job.route.clone(),
             route_step: job.route_step,
             request,
-        };
-        let work = self.process(message, &claim, &stored);
+        }))
+    }
+
+    /// Drive one claimed delivery to completion, extending the ack deadline
+    /// and renewing the claim until the work finishes or another owner wins.
+    async fn drive_work(
+        &self,
+        message: &WorkMessage<InferenceJobRef>,
+        job: &InferenceJobRef,
+        claim: &InferenceClaim,
+        stored: &InferenceJob,
+    ) -> Result<()> {
+        let work = self.process(message, claim, stored);
         tokio::pin!(work);
         let period = self.ack_wait / 3;
         let mut heartbeat = interval_at(Instant::now() + period, period);
@@ -323,15 +423,34 @@ impl Gateway {
                 result = &mut work => return result,
                 _ = heartbeat.tick() => {
                     message.extend_deadline().await?;
-                    let now = Timestamp::now();
-                    let renewal = InferenceClaim { expires_at: now.checked_add(self.ack_wait)?, ..claim.clone() };
-                    if !self.store.start_inference(&renewal, now).await? {
-                        if self.completed(job.request_id).await? { return Ok(message.acknowledge().await?); }
-                        return Err(Error::Internal("inference claim was replaced"));
-                    }
+                    self.renew_claim(message, job, claim).await?;
                 }
             }
         }
+    }
+
+    /// Renew the inference claim after extending the deadline. A lost claim
+    /// for a completed job just acknowledges; any other loss fails the
+    /// delivery so the worker's recovery scan republishes it.
+    async fn renew_claim(
+        &self,
+        message: &WorkMessage<InferenceJobRef>,
+        job: &InferenceJobRef,
+        claim: &InferenceClaim,
+    ) -> Result<()> {
+        let now = Timestamp::now();
+        let renewal = InferenceClaim {
+            expires_at: now.checked_add(self.ack_wait)?,
+            ..claim.clone()
+        };
+        if self.store.start_inference(&renewal, now).await? {
+            return Ok(());
+        }
+        if self.completed(job.request_id).await? {
+            message.acknowledge().await?;
+            return Ok(());
+        }
+        return Err(Error::Internal("inference claim was replaced"));
     }
 
     fn turn_id(job: &InferenceJob) -> Option<MessageId> {
